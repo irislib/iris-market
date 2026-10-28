@@ -1,0 +1,14 @@
+{
+  "name": "iris-market-web",
+  "compatibility_date": "2026-10-28",
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "single-page-application"
+  },
+  "routes": [
+    {
+      "pattern": "market.iris.to",
+      "custom_domain": true
+    }
+  ]
+}

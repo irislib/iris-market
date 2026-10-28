@@ -1,0 +1,61 @@
+name: IrisMarket
+options:
+  bundleIdPrefix: to.iris.market
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    PRODUCT_BUNDLE_IDENTIFIER: to.iris.market
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.0"
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+schemes:
+  IrisMarket:
+    build:
+      targets:
+        IrisMarket: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - IrisMarketUITests
+    archive:
+      config: Release
+targets:
+  IrisMarket:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      - path: Bindings
+        excludes:
+          - "*.h"
+          - "*.modulemap"
+    settings:
+      base:
+        PRODUCT_NAME: IrisMarket
+        INFOPLIST_FILE: Info.plist
+        "CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]": Simulator.entitlements
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: YES
+    dependencies:
+      - framework: Frameworks/IrisMarketCore.xcframework
+        embed: false
+      - sdk: Security.framework
+
+  IrisMarketUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: UITests
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: to.iris.market.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: IrisMarket
+    dependencies:
+      - target: IrisMarket

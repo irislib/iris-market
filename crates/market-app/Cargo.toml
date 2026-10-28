@@ -1,0 +1,14 @@
+[package]
+name = "iris-market-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "iris_market_app"
+crate-type = ["rlib", "cdylib", "staticlib"]
+
+[dependencies]
+iris-market-core = { path = "../market-core" }
+uniffi.workspace = true
+thiserror.workspace = true

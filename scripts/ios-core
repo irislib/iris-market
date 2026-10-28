@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+cargo build --locked -p iris-market-app -p iris-market-bindgen
+cargo run --locked -p iris-market-bindgen -- generate --library target/debug/libiris_market_app.dylib --language swift --out-dir ios/Bindings --config crates/market-app/uniffi.toml
+IPHONEOS_DEPLOYMENT_TARGET=16.0 CFLAGS_aarch64_apple_ios_sim='-mios-simulator-version-min=16.0' cargo build --locked -p iris-market-app --target aarch64-apple-ios-sim

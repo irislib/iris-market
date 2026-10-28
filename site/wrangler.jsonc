@@ -1,0 +1,14 @@
+{
+  "name": "iris-market-downloads",
+  "compatibility_date": "2026-10-28",
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "single-page-application"
+  },
+  "routes": [
+    {
+      "pattern": "getmarket.iris.to",
+      "custom_domain": true
+    }
+  ]
+}

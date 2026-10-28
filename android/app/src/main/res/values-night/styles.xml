@@ -1,0 +1,7 @@
+<resources>
+<style name="Theme.IrisMarket" parent="android:style/Theme.Material.NoActionBar">
+<item name="android:fontFamily">sans</item><item name="android:windowLightStatusBar">false</item>
+<item name="android:statusBarColor">#111C17</item><item name="android:navigationBarColor">#111C17</item>
+<item name="android:windowLightNavigationBar">false</item><item name="android:windowActionModeOverlay">true</item>
+<item name="android:colorAccent">#B1CDB5</item><item name="android:windowBackground">#111C17</item>
+</style></resources>

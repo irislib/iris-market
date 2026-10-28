@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(cd "$(dirname "$0")/.." && pwd)
+serial="${1:-}"
+if [[ "$serial" != emulator-* ]]; then echo 'Pass an explicitly allocated emulator serial; physical devices are not supported by this check.' >&2; exit 2; fi
+sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}}"
+adb="$sdk/platform-tools/adb"
+apk="$root/android/app/build/outputs/apk/debug/app-debug.apk"
+test_apk="$root/android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk"
+"$adb" -s "$serial" install -r "$apk"
+"$adb" -s "$serial" install -r "$test_apk"
+mkdir -p "$root/work/logs"
+log="$root/work/logs/android-ui-$(date -u +%Y%m%dT%H%M%SZ).log"
+"$adb" -s "$serial" shell am instrument -w to.iris.market.debug.test/androidx.test.runner.AndroidJUnitRunner | tee "$log"
+python3 - "$log" <<'CHECK'
+import re,sys
+from pathlib import Path
+text=Path(sys.argv[1]).read_text()
+match=re.search(r"OK \((\d+) tests?\)",text)
+if not match or any(s in text for s in ('FAILURES!!!','INSTRUMENTATION_FAILED','Process crashed.')):
+    raise SystemExit('Android UI checks failed; inspect '+sys.argv[1])
+print('Verified '+match.group(1)+' passing Android UI checks; log '+sys.argv[1])
+CHECK

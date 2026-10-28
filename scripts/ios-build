@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -euo pipefail
+TASK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TASK_IOS="$TASK_ROOT/ios"
+TASK_LIB="${MARKET_IOS_STATIC_LIB:-$TASK_ROOT/target/aarch64-apple-ios-sim/debug/libiris_market_app.a}"
+TASK_BINDINGS="${MARKET_IOS_BINDINGS:-$TASK_IOS/Bindings}"
+TASK_DERIVED="${MARKET_IOS_DERIVED_DATA:-$TASK_IOS/.build}"
+TASK_FRAMEWORK="$TASK_IOS/Frameworks/IrisMarketCore.xcframework"
+TASK_ACTION="${1:-build}"
+if [[ "$TASK_ACTION" == "--help" ]]; then
+  echo 'Usage: scripts/ios-build [project|framework|build]'
+  echo 'Consumes generated ios/Bindings and a prebuilt simulator Rust static library. Does not run Cargo.'
+  exit 0
+fi
+command -v xcodegen >/dev/null || { echo 'XcodeGen is required.' >&2; exit 1; }
+if [[ "$TASK_ACTION" == "project" ]]; then
+  (cd "$TASK_IOS" && xcodegen generate --spec project.yml)
+  exit 0
+fi
+[[ -f "$TASK_LIB" ]] || { echo 'Build the iOS simulator Rust core before running this script.' >&2; exit 1; }
+shopt -s nullglob
+TASK_HEADERS=("$TASK_BINDINGS"/*.h)
+TASK_MODULES=("$TASK_BINDINGS"/*.modulemap)
+TASK_SWIFT=("$TASK_BINDINGS"/*.swift)
+[[ ${#TASK_HEADERS[@]} -gt 0 && ${#TASK_MODULES[@]} -gt 0 && ${#TASK_SWIFT[@]} -gt 0 ]] || { echo 'Generate Swift bindings into ios/Bindings first.' >&2; exit 1; }
+mkdir -p "$TASK_IOS/Frameworks" "$TASK_DERIVED/headers"
+cp "${TASK_HEADERS[@]}" "$TASK_DERIVED/headers/"
+cp "${TASK_MODULES[0]}" "$TASK_DERIVED/headers/module.modulemap"
+# This script owns only the generated framework under this repository.
+if [[ -d "$TASK_FRAMEWORK" ]]; then
+  if [[ "$TASK_LIB" -nt "$TASK_FRAMEWORK/Info.plist" || "${TASK_MODULES[0]}" -nt "$TASK_FRAMEWORK/Info.plist" ]]; then
+    mv "$TASK_FRAMEWORK" "$TASK_DERIVED/previous-framework-$(date +%s).xcframework"
+  fi
+fi
+if [[ ! -d "$TASK_FRAMEWORK" ]]; then
+  xcodebuild -create-xcframework -library "$TASK_LIB" -headers "$TASK_DERIVED/headers" -output "$TASK_FRAMEWORK"
+fi
+[[ "$TASK_ACTION" == "framework" ]] && exit 0
+[[ "$TASK_ACTION" == "build" ]] || { echo 'Unknown action. Use project, framework or build.' >&2; exit 2; }
+(cd "$TASK_IOS" && xcodegen generate --spec project.yml)
+xcodebuild -project "$TASK_IOS/IrisMarket.xcodeproj" -scheme IrisMarket -configuration Debug \
+  -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath "$TASK_DERIVED" \
+  ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- build
+printf '%s\n' "$TASK_DERIVED/Build/Products/Debug-iphonesimulator/IrisMarket.app"

@@ -1,0 +1,32 @@
+[package]
+name = "iris-market-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+nostr.workspace = true
+nostr-sdk.workspace = true
+nostr-pubsub.workspace = true
+nostr-pubsub-relay.workspace = true
+tokio.workspace = true
+rusqlite = { workspace = true, features = ["blob"] }
+iris-chat-protocol = "=0.3.12"
+nostr-double-ratchet = "=0.0.175"
+chacha20poly1305 = "=0.10.1"
+hkdf = "=0.12.4"
+sha2 = "=0.10.9"
+rand = "=0.8.5"
+fs2 = "=0.4.3"
+reqwest.workspace = true
+url.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio-tungstenite = "=0.26.2"
+futures-util = "=0.3.31"

@@ -1,0 +1,6 @@
+[bindings.swift]
+module_name = "IrisMarketCore"
+
+[bindings.kotlin]
+package_name = "to.iris.market.core"
+cdylib_name = "iris_market_app"

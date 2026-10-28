@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(cd "$(dirname "$0")/.." && pwd)
+skip_rust=false
+bootstrap=false
+for arg in "$@"; do
+  case "$arg" in
+    --skip-rust) skip_rust=true ;;
+    --bootstrap-locks) bootstrap=true ;;
+    *) echo "Usage: scripts/android-build [--skip-rust] [--bootstrap-locks]" >&2; exit 2 ;;
+  esac
+done
+sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}}"
+ndk="$sdk/ndk/28.2.13676358"
+target="${CARGO_TARGET_DIR:-$root/target}"
+if [[ ! -d "$ndk" ]]; then echo "Android NDK 28.2.13676358 is required." >&2; exit 1; fi
+if [[ -z "${JAVA_HOME:-}" ]]; then
+  discovered_java=""
+  if [[ -x /usr/libexec/java_home ]]; then
+    discovered_java=$(/usr/libexec/java_home -v 17 2>/dev/null || true)
+  fi
+  if [[ -z "$discovered_java" && -d /opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home ]]; then
+    discovered_java=/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home
+  fi
+  if [[ -z "$discovered_java" ]]; then echo 'Set JAVA_HOME to JDK 17 or newer.' >&2; exit 1; fi
+  export JAVA_HOME="$discovered_java"
+fi
+python3 - "$root/android/gradle/wrapper/gradle-wrapper.jar" <<'CHECK'
+import hashlib,sys
+from pathlib import Path
+expected='b3a875ddc1f044746e1b1a55f645584505f4a10438c1afea9f15e92a7c42ec13'
+if hashlib.sha256(Path(sys.argv[1]).read_bytes()).hexdigest()!=expected:
+    raise SystemExit('Gradle wrapper checksum does not match the reviewed build input')
+CHECK
+if [[ "$skip_rust" == false ]]; then
+  case "$(uname -s)" in
+    Darwin) host_tag=darwin-x86_64; host_lib="$target/debug/libiris_market_app.dylib" ;;
+    Linux) host_tag=linux-x86_64; host_lib="$target/debug/libiris_market_app.so" ;;
+    *) echo 'Build on macOS or Linux.' >&2; exit 1 ;;
+  esac
+  cd "$root"
+  CARGO_TARGET_DIR="$target" cargo build --locked -p iris-market-app
+  CARGO_TARGET_DIR="$target" cargo run --locked -p iris-market-bindgen -- generate --library "$host_lib" --language kotlin --out-dir "$root/android/app/build/generated/uniffi" --config "$root/crates/market-app/uniffi.toml"
+  bin="$ndk/toolchains/llvm/prebuilt/$host_tag/bin"
+  CARGO_TARGET_DIR="$target" \
+    CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$bin/aarch64-linux-android29-clang" \
+    CC_aarch64_linux_android="$bin/aarch64-linux-android29-clang" \
+    AR_aarch64_linux_android="$bin/llvm-ar" \
+    cargo build --locked -p iris-market-app --target aarch64-linux-android
+fi
+lib="$target/aarch64-linux-android/debug/libiris_market_app.so"
+if [[ ! -f "$lib" ]]; then echo 'Missing Android Rust library; build the shared core first.' >&2; exit 1; fi
+if [[ ! -d "$root/android/app/build/generated/uniffi" ]]; then echo 'Missing generated Kotlin bindings.' >&2; exit 1; fi
+mkdir -p "$root/android/app/build/generated/jniLibs/arm64-v8a"
+cp "$lib" "$root/android/app/build/generated/jniLibs/arm64-v8a/"
+cd "$root/android"
+if [[ "$bootstrap" == true ]]; then
+  ANDROID_HOME="$sdk" ./gradlew --no-daemon --max-workers=2 --write-locks --write-verification-metadata sha256 :app:assembleDebug :app:assembleDebugAndroidTest
+else
+  if [[ ! -f app/gradle.lockfile || ! -f gradle/verification-metadata.xml ]]; then
+    echo 'Missing dependency locks/checksums. The release owner must bootstrap and review them before a normal build.' >&2
+    exit 1
+  fi
+  ANDROID_HOME="$sdk" ./gradlew --no-daemon --max-workers=2 --dependency-verification strict :app:assembleDebug :app:assembleDebugAndroidTest
+fi

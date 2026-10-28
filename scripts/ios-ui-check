@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+TASK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ -z "${MARKET_IOS_SIMULATOR_ID:-}" ]]; then
+  echo 'Set MARKET_IOS_SIMULATOR_ID to a task-owned, already available simulator. This script never selects or boots a shared device.' >&2
+  exit 2
+fi
+TASK_DERIVED="${MARKET_IOS_DERIVED_DATA:-$TASK_ROOT/ios/.build}"
+TASK_RESULT="${MARKET_IOS_UI_RESULT:-$TASK_ROOT/ios/.build/market-ui.xcresult}"
+[[ ! -e "$TASK_RESULT" ]] || { echo 'Result bundle exists; choose a new MARKET_IOS_UI_RESULT to preserve it.' >&2; exit 2; }
+set --
+if [[ -n "${MARKET_IOS_TEST_ONLY:-}" ]]; then
+  set -- "-only-testing:$MARKET_IOS_TEST_ONLY"
+fi
+(cd "$TASK_ROOT/ios" && xcodegen generate --spec project.yml)
+xcodebuild -project "$TASK_ROOT/ios/IrisMarket.xcodeproj" -scheme IrisMarket -configuration Debug \
+  -sdk iphonesimulator -destination "platform=iOS Simulator,id=$MARKET_IOS_SIMULATOR_ID" \
+  -derivedDataPath "$TASK_DERIVED" -resultBundlePath "$TASK_RESULT" \
+  -parallel-testing-enabled NO -collect-test-diagnostics never "$@" ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- test

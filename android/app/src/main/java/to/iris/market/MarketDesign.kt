@@ -14,13 +14,11 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
@@ -36,7 +34,8 @@ import java.net.URI
 enum class Appearance { System, Light, Dark }
 
 val Cream: Color @Composable get() = MaterialTheme.colorScheme.background
-val Ink: Color @Composable get() = MaterialTheme.colorScheme.primary
+val Ink: Color @Composable get() = MaterialTheme.colorScheme.onSurface
+val Action: Color @Composable get() = MaterialTheme.colorScheme.primary
 val OnInk: Color @Composable get() = MaterialTheme.colorScheme.onPrimary
 val Forest: Color @Composable get() = MaterialTheme.colorScheme.secondary
 val Mint: Color @Composable get() = MaterialTheme.colorScheme.primaryContainer
@@ -46,23 +45,28 @@ val Line: Color @Composable get() = MaterialTheme.colorScheme.outlineVariant
 val White: Color @Composable get() = MaterialTheme.colorScheme.surfaceContainer
 
 private val LightColors = lightColorScheme(
-    primary = Color(0xFF173C34), onPrimary = Color.White,
-    primaryContainer = Color(0xFFDDE8D7), onPrimaryContainer = Color(0xFF173C34),
-    secondary = Color(0xFF386452), secondaryContainer = Color(0xFFDDE8D7), onSecondaryContainer = Color(0xFF173C34),
-    tertiary = Color(0xFF386452), tertiaryContainer = Color(0xFFF0E5CB), onTertiaryContainer = Color(0xFF173C34),
-    surface = Color(0xFFF7F6EF), surfaceContainer = Color(0xFFFFFEF8), surfaceContainerHigh = Color(0xFFFFFEF8),
-    surfaceContainerHighest = Color(0xFFE2E4D9), surfaceContainerLow = Color(0xFFF7F6EF), surfaceContainerLowest = Color(0xFFFFFEF8),
-    background = Color(0xFFF7F6EF), onSurface = Color(0xFF173C34), onSurfaceVariant = Color(0xFF727C73),
-    onBackground = Color(0xFF173C34), outline = Color(0xFF727C73), outlineVariant = Color(0xFFE2E4D9))
+    primary = Color(0xFF252525), onPrimary = Color.White,
+    primaryContainer = Color(0xFFF0EFF4), onPrimaryContainer = Color(0xFF222222),
+    secondary = Color(0xFF252525), onSecondary = Color.White,
+    secondaryContainer = Color(0xFFF0EFF4), onSecondaryContainer = Color(0xFF222222),
+    tertiary = Color(0xFF252525), onTertiary = Color.White,
+    tertiaryContainer = Color(0xFFF3F3F5), onTertiaryContainer = Color(0xFF222222),
+    surface = Color(0xFFFFFFFF), surfaceContainer = Color(0xFFF7F7F8), surfaceContainerHigh = Color(0xFFF3F3F5),
+    surfaceContainerHighest = Color(0xFFF0EFF4), surfaceContainerLow = Color(0xFFF7F7F8), surfaceContainerLowest = Color.White,
+    surfaceDim = Color(0xFFE5E5E7), surfaceBright = Color.White, surfaceTint = Color(0xFF252525),
+    background = Color.White, onSurface = Color(0xFF222222), onSurfaceVariant = Color(0xFF686868),
+    onBackground = Color(0xFF222222), outline = Color(0xFF686868), outlineVariant = Color(0xFFE5E5E7),
+    inverseSurface = Color(0xFF222222), inverseOnSurface = Color.White, inversePrimary = Color(0xFFF0EFF4),
+    scrim = Color(0xFF18181B))
 private val DarkColors = darkColorScheme(
-    primary = Color(0xFFE0EAD9), onPrimary = Color(0xFF173C34),
-    primaryContainer = Color(0xFF284438), onPrimaryContainer = Color(0xFFE0EAD9),
-    secondary = Color(0xFFB1CDB5), secondaryContainer = Color(0xFF284438), onSecondaryContainer = Color(0xFFE0EAD9),
-    tertiary = Color(0xFFDBC79E), tertiaryContainer = Color(0xFF413B29), onTertiaryContainer = Color(0xFFEEDDB6),
-    surface = Color(0xFF111C17), surfaceContainer = Color(0xFF1B2922), surfaceContainerHigh = Color(0xFF24342B),
-    surfaceContainerHighest = Color(0xFF34463B), surfaceContainerLow = Color(0xFF17241D), surfaceContainerLowest = Color(0xFF0D1712),
-    background = Color(0xFF111C17), onSurface = Color(0xFFE5EBDD), onSurfaceVariant = Color(0xFFA9B6AA),
-    onBackground = Color(0xFFE5EBDD), outline = Color(0xFF819184), outlineVariant = Color(0xFF34463B))
+    primary = Color(0xFFC2B5F5), onPrimary = Color(0xFF252036),
+    primaryContainer = Color(0xFF2D293C), onPrimaryContainer = Color(0xFFEEEEF2),
+    secondary = Color(0xFFC2B5F5), secondaryContainer = Color(0xFF2D293C), onSecondaryContainer = Color(0xFFEEEEF2),
+    tertiary = Color(0xFFC2B5F5), tertiaryContainer = Color(0xFF292D36), onTertiaryContainer = Color(0xFFEEEEF2),
+    surface = Color(0xFF14161B), surfaceContainer = Color(0xFF1D2027), surfaceContainerHigh = Color(0xFF292D36),
+    surfaceContainerHighest = Color(0xFF292D36), surfaceContainerLow = Color(0xFF1D2027), surfaceContainerLowest = Color(0xFF14161B),
+    background = Color(0xFF14161B), onSurface = Color(0xFFEEEEF2), onSurfaceVariant = Color(0xFFA5A8B3),
+    onBackground = Color(0xFFEEEEF2), outline = Color(0xFFA5A8B3), outlineVariant = Color(0xFF343842))
 
 @Composable fun MarketTheme(dark: Boolean, content: @Composable () -> Unit) {
     MaterialTheme(colorScheme = if (dark) DarkColors else LightColors,
@@ -74,12 +78,16 @@ private val DarkColors = darkColorScheme(
 }
 
 @Composable fun IrisMark(modifier: Modifier = Modifier) {
-    val ink = Ink; val cream = Cream
+    val paths = remember { listOf(
+        PathParser().parsePathString("M7 32a25 25 0 0 1 40-20V7a1 1 0 0 1 1.7-.7L59 17a1.4 1.4 0 0 1 0 2L48.7 29.7A1 1 0 0 1 47 29v-6a15 15 0 0 0-30 9Z").toPath(),
+        PathParser().parsePathString("M57 32a25 25 0 0 1-40 20v5a1 1 0 0 1-1.7.7L5 47a1.4 1.4 0 0 1 0-2l10.3-10.7A1 1 0 0 1 17 35v6a15 15 0 0 0 30-9Z").toPath()
+    ) }
     Canvas(modifier) {
-        val r = size.width * .23f
-        for (p in listOf(Offset(.5f,.25f),Offset(.75f,.5f),Offset(.5f,.75f),Offset(.25f,.5f)))
-            drawCircle(ink, r, Offset(size.width*p.x,size.height*p.y))
-        drawCircle(cream, size.width * .12f, center)
+        val scale = minOf(size.width, size.height) / 64f
+        withTransform({ scale(scale, scale, pivot = Offset.Zero) }) {
+            val gradient = Brush.linearGradient(listOf(Color(0xFF8458DC), Color(0xFFC859A5), Color(0xFFF18A58)), Offset(8f,56f), Offset(56f,8f))
+            paths.forEach { drawPath(it, gradient) }
+        }
     }
 }
 
@@ -95,13 +103,14 @@ private val DarkColors = darkColorScheme(
 
 @Composable fun ListingArt(listing: Listing, demo: Boolean, modifier: Modifier = Modifier) {
     val photo by produceState<Bitmap?>(null, listing.imageUrl, demo) {
+        value = null
         if (!demo && listing.imageUrl != null) value = withContext(Dispatchers.IO) { loadPhoto(listing.imageUrl) }
     }
     if (photo != null) Image(photo!!.asImageBitmap(), listing.title, modifier, contentScale = ContentScale.Crop)
-    else CategoryArt(listing.category, listing.title, modifier)
+    else Box(modifier.background(White))
 }
 
-private fun loadPhoto(source: String): Bitmap? = runCatching {
+internal fun loadPhoto(source: String): Bitmap? = runCatching {
     val url = URI(source).toURL()
     if (url.protocol != "https") return null
     val c = url.openConnection() as HttpURLConnection
@@ -121,79 +130,3 @@ private fun loadPhoto(source: String): Bitmap? = runCatching {
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = factor })
     } finally { c.disconnect() }
 }.getOrNull()
-
-@Composable fun CategoryArt(category: String, title: String, modifier: Modifier = Modifier) {
-    val ink = Color(0xFF173C34); val forest = Color(0xFF386452); val sand = Color(0xFFF0E5CB)
-    val type = when {
-        title.contains("green",true) || title.contains("plant",true) -> 0
-        title.contains("camera",true) || category.contains("photography",true) -> 5
-        title.contains("music",true) || title.contains("headphone",true) -> 6
-        title.contains("coffee",true) -> 7
-        (category+title).contains("bike", true) || category.contains("transport",true) || category.contains("sport",true) -> 1
-        category.contains("elect",true) || title.contains("monitor",true) || title.contains("camera",true) -> 2
-        category.contains("home",true) || category.contains("furn",true) || title.contains("chair",true) -> 3
-        category.contains("service",true) || category.contains("work",true) || category.contains("task",true) -> 4
-        else -> 0
-    }
-    val background = listOf(Color(0xFFE9EDD8), Color(0xFFDDE8D9), Color(0xFFE0E5E9), Color(0xFFECE0CE), Color(0xFFE8E2EE),Color(0xFFDDDCD3),Color(0xFFE8D8CB),Color(0xFFE2DED0))[type]
-    Canvas(modifier.background(background)) {
-        withTransform({ scale(size.width / 200f, size.height / 160f, Offset.Zero) }) {
-            drawCircle(Color.White.copy(alpha=.24f), 63f, Offset(151f,28f))
-            drawOval(ink.copy(alpha=.10f), Offset(30f,126f), Size(145f,16f))
-            when (type) {
-                5 -> {
-                    drawRoundRect(ink,Offset(43f,58f),Size(118f,65f),CornerRadius(10f))
-                    drawRoundRect(ink,Offset(66f,47f),Size(42f,22f),CornerRadius(5f))
-                    drawRoundRect(Color(0xFF718278),Offset(43f,58f),Size(118f,15f),CornerRadius(7f))
-                    drawCircle(Color(0xFFC5CCC4),31f,Offset(108f,90f));drawCircle(ink,25f,Offset(108f,90f))
-                    drawCircle(Color(0xFF57756A),16f,Offset(108f,90f));drawCircle(Color(0xFF9BB5AB),6f,Offset(114f,84f))
-                    drawRoundRect(sand,Offset(51f,66f),Size(19f,10f),CornerRadius(2f))
-                }
-                6 -> {
-                    drawArc(ink,180f,180f,false,Offset(55f,28f),Size(90f,104f),style=Stroke(12f))
-                    drawRoundRect(Color(0xFFAA7354),Offset(43f,78f),Size(30f,52f),CornerRadius(13f))
-                    drawRoundRect(Color(0xFFAA7354),Offset(127f,78f),Size(30f,52f),CornerRadius(13f))
-                    drawRoundRect(ink,Offset(65f,82f),Size(10f,45f),CornerRadius(4f))
-                    drawRoundRect(ink,Offset(125f,82f),Size(10f,45f),CornerRadius(4f))
-                }
-                7 -> {
-                    drawRoundRect(Color(0xFF9C7856),Offset(75f,59f),Size(53f,73f),CornerRadius(8f))
-                    drawRoundRect(ink,Offset(73f,55f),Size(57f,12f),CornerRadius(4f))
-                    drawLine(ink,Offset(101f,55f),Offset(101f,42f),5f);drawLine(ink,Offset(101f,42f),Offset(146f,42f),5f)
-                    drawRoundRect(ink,Offset(137f,32f),Size(21f,12f),CornerRadius(5f))
-                    drawLine(Color(0xFFCCB194),Offset(82f,72f),Offset(82f,118f),3f)
-                }
-                1 -> {
-                    drawCircle(ink, 28f, Offset(52f,110f), style=Stroke(5f)); drawCircle(ink,28f,Offset(151f,110f),style=Stroke(5f))
-                    val frame = Path().apply { moveTo(52f,110f);lineTo(78f,66f);lineTo(110f,110f);close();moveTo(78f,66f);lineTo(133f,66f);lineTo(110f,110f);moveTo(151f,110f);lineTo(128f,49f);lineTo(144f,49f) }
-                    drawPath(frame, Color(0xFFB45E3D), style=Stroke(6f)); drawLine(ink,Offset(68f,58f),Offset(89f,58f),6f); drawLine(ink,Offset(78f,58f),Offset(78f,69f),5f)
-                }
-                2 -> {
-                    drawRoundRect(ink,Offset(35f,35f),Size(130f,81f),CornerRadius(7f))
-                    drawRoundRect(Color(0xFFAFC6BA),Offset(42f,42f),Size(116f,66f),CornerRadius(3f))
-                    val mountains=Path().apply { moveTo(42f,108f);lineTo(86f,60f);lineTo(111f,92f);lineTo(134f,72f);lineTo(158f,108f);close() }
-                    drawPath(mountains, Color(0xFF75978C));drawCircle(Color(0xFFEEDDB6),10f,Offset(132f,60f))
-                    drawRect(ink,Offset(94f,114f),Size(12f,18f));drawRoundRect(ink,Offset(76f,130f),Size(48f,5f),CornerRadius(2f))
-                }
-                3 -> {
-                    drawRoundRect(Color(0xFF987C58),Offset(54f,31f),Size(92f,69f),CornerRadius(18f))
-                    drawRoundRect(Color(0xFFC1A276),Offset(48f,83f),Size(104f,24f),CornerRadius(8f))
-                    drawLine(ink,Offset(60f,104f),Offset(54f,137f),7f);drawLine(ink,Offset(140f,104f),Offset(147f,137f),7f)
-                    drawRoundRect(Color(0xFFDFCBAA),Offset(69f,43f),Size(62f,38f),CornerRadius(12f))
-                }
-                4 -> {
-                    drawRoundRect(Color(0xFF7C7B98),Offset(48f,55f),Size(110f,76f),CornerRadius(11f))
-                    drawRoundRect(Color(0xFF7C7B98),Offset(80f,35f),Size(45f,38f),CornerRadius(9f),style=Stroke(6f))
-                    drawRect(Color(0xFFACA7C1),Offset(48f,82f),Size(110f,14f));drawRoundRect(sand,Offset(95f,82f),Size(17f,24f),CornerRadius(3f))
-                    drawCircle(Color(0xFFCBC5DE),18f,Offset(150f,35f));drawLine(ink,Offset(144f,35f),Offset(149f,40f),3f);drawLine(ink,Offset(149f,40f),Offset(158f,29f),3f)
-                }
-                else -> {
-                    drawRoundRect(Color(0xFFB98254),Offset(75f,91f),Size(49f,42f),CornerRadius(8f))
-                    drawLine(ink,Offset(100f,101f),Offset(100f,41f),4f)
-                    drawOval(forest,Offset(57f,38f),Size(43f,25f));drawOval(Color(0xFF709575),Offset(100f,56f),Size(42f,25f))
-                    drawOval(Color(0xFF89A482),Offset(76f,15f),Size(27f,42f));drawOval(forest,Offset(61f,71f),Size(40f,23f))
-                }
-            }
-        }
-    }
-}

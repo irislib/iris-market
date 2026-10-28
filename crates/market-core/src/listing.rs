@@ -174,6 +174,22 @@ pub fn parse(event: &Event, at: u64) -> Result<Listing> {
         mine: false,
         delivery: "published".into(),
         relevance: None,
+        coordinates: {
+            let mut hashes: Vec<_> = event
+                .tags
+                .iter()
+                .filter_map(|tag| {
+                    let parts = tag.as_slice();
+                    (parts.first().is_some_and(|v| v == "g"))
+                        .then(|| parts.get(1))
+                        .flatten()
+                        .filter(|v| crate::geo::decode(v).is_some())
+                        .map(|v| v.to_lowercase())
+                })
+                .collect();
+            hashes.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+            hashes.first().and_then(|v| crate::geo::decode(v))
+        },
     })
 }
 

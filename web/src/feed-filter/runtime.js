@@ -1,3 +1,4 @@
+import { assetUrl } from '../asset-url.js'
 // Payload from pinned onnxruntime-web 1.31.0-dev.20260914-8d85527a0.
 // Gzip keeps the static deployment below its per-file limit; verify unpacked bytes.
 export const RUNTIME = Object.freeze({
@@ -40,8 +41,8 @@ export async function verifyRuntimeResponse(response, spec = RUNTIME) {
   return binary
 }
 
-export async function loadRuntimeBinary(onProgress = () => {}) {
+export async function loadRuntimeBinary(onProgress = () => {}, { baseURI, fetchImpl = globalThis.fetch } = {}) {
   onProgress('Loading local runtime…')
-  const response = await fetch(new URL(`./${RUNTIME.wasm}`, import.meta.url))
+  const response = await fetchImpl(assetUrl(RUNTIME.wasm, baseURI))
   return verifyRuntimeResponse(response)
 }

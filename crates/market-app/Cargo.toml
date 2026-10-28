@@ -8,7 +8,14 @@ license.workspace = true
 name = "iris_market_app"
 crate-type = ["rlib", "cdylib", "staticlib"]
 
+[features]
+default = []
+cashu-wallet = ["iris-market-core/cashu-wallet"]
+
 [dependencies]
 iris-market-core = { path = "../market-core" }
 uniffi.workspace = true
 thiserror.workspace = true
+nostr.workspace = true
+serde_json.workspace = true
+tokio.workspace = true

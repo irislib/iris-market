@@ -2,11 +2,18 @@ import Foundation
 
 struct MarketSnapshot: Decodable {
     var publicKey: String = ""
+    var canSign = false
+    var messagingReady = false
     var demo: Bool = false
     var status: String = "Opening your market…"
     var error: String?
     var query: String = ""
-    var side: String = "all"
+    var side: String = "offer"
+    var aiSearch = false
+    var sort = "suggested"
+    var people: [String: MarketPerson] = [:]
+    var profile: PublicMarketProfile?
+    var graphContextLoaded = false
     var revision: UInt64 = 0
     var listings: [MarketListing] = []
     var savedCount: Int = 0
@@ -33,6 +40,7 @@ struct MarketListing: Decodable, Identifiable, Hashable {
     let saved: Bool
     let mine: Bool
     let delivery: String
+    let coordinates: [Double]?
     let relevance: Relevance?
     struct Relevance: Decodable, Hashable { let show: Bool; let reason: String }
     var formattedPrice: String {
@@ -43,8 +51,28 @@ struct MarketListing: Decodable, Identifiable, Hashable {
 }
 
 struct MarketSettings: Codable, Equatable {
-    var relays: [String] = ["wss://relay.damus.io", "wss://nos.lol"]
+    var relays: [String] = ["wss://relay.damus.io", "wss://nos.lol", "wss://relay.primal.net"]
     var ai: AISettings = .init()
+    var imageProxy: ImageProxySettings = .init()
+    init() {}
+    private enum CodingKeys: String, CodingKey { case relays, ai, imageProxy }
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        relays = try values.decodeIfPresent([String].self, forKey: .relays) ?? relays
+        ai = try values.decodeIfPresent(AISettings.self, forKey: .ai) ?? ai
+        imageProxy = try values.decodeIfPresent(ImageProxySettings.self, forKey: .imageProxy) ?? imageProxy
+    }
+}
+struct ImageProxySettings: Codable, Equatable {
+    var enabled = true
+    var url = "https://imgproxy.iris.to"
+    init() {}
+    private enum CodingKeys: String, CodingKey { case enabled, url }
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try values.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+        url = try values.decodeIfPresent(String.self, forKey: .url) ?? url
+    }
 }
 struct AISettings: Codable, Equatable {
     var enabled = false
@@ -78,4 +106,34 @@ func marketErrorMessage(_ error: Error) -> String {
         switch coreError { case .Operation(let reason): return reason }
     }
     return error.localizedDescription
+}
+
+struct MarketConnection: Decodable, Hashable {
+    let badge: String?
+    let followDistance: Int?
+    let followedByFriends: Int
+    let description: String
+}
+struct MarketPerson: Decodable, Hashable, Identifiable {
+    let author: String
+    let name: String
+    let pictureUrl: String?
+    let connection: MarketConnection
+    var id: String { author }
+}
+struct PublicMarketProfile: Decodable {
+    let person: MarketPerson
+    let about: String
+    let website: String?
+    let following: [MarketPerson]
+    let followingCount: Int
+    let followingLoaded: Bool
+    let followers: [MarketPerson]
+    let followedByKnown: [MarketPerson]
+    let graphRoot: String
+    let graphLabel: String
+    let graphContextLoaded: Bool
+    let coverage: String
+    let loading: Bool
+    let error: String?
 }

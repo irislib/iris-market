@@ -6,18 +6,22 @@ struct ListingDetailView: View {
     let listing: MarketListing
     var onContact: (() -> Void)? = nil
     @State private var invitation = false
+    @State private var authorProfile = false
     private var current: MarketListing { store.snapshot.listings.first(where: { $0.id == listing.id }) ?? listing }
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 23) {
                     Group {
-                        if let raw = current.imageUrl, let url = URL(string: raw) { AsyncImage(url: url) { phase in if let image = phase.image { image.resizable().scaledToFill() } else { CategoryArt(category: current.category, title: current.title, detail: current.description, large: true) } } }
-                        else { CategoryArt(category: current.category, title: current.title, detail: current.description, large: true) }
+                        if let raw = current.imageUrl, let url = URL(string: raw) { AsyncImage(url: url) { phase in if let image = phase.image { image.resizable().scaledToFill() } else { ListingPlaceholder() } } }
+                        else { ListingPlaceholder() }
                     }.frame(height: 285).clipped().clipShape(RoundedRectangle(cornerRadius: 28))
-                    HStack { Text(current.side == "request" ? "LOOKING FOR" : current.category.uppercased()).font(.system(size: 10, weight: .bold)).tracking(1.5).foregroundStyle(MarketTheme.green); Spacer(); Text(current.delivery == "published" ? "" : current.delivery.capitalized).font(.caption).foregroundStyle(MarketTheme.muted) }
+                    HStack { Text(current.side == "request" ? "BUYING" : current.category.uppercased()).font(.system(size: 10, weight: .bold)).tracking(1.5).foregroundStyle(MarketTheme.green); Spacer(); Text(current.delivery == "published" ? "" : current.delivery.capitalized).font(.caption).foregroundStyle(MarketTheme.muted) }
                     Text(current.title).font(.system(size: 32, weight: .medium, design: .serif)).tracking(-0.7).foregroundStyle(MarketTheme.ink)
                     HStack { Text(current.formattedPrice).font(.system(size: 28, weight: .semibold, design: .rounded)); Spacer(); Label(current.location.isEmpty ? "Anywhere" : current.location, systemImage: "mappin.circle.fill").font(.system(size: 13)).foregroundStyle(MarketTheme.muted) }.foregroundStyle(MarketTheme.ink)
+                    Button { authorProfile = true } label: {
+                        UserRow(person: store.snapshot.people[current.author] ?? .unnamed(current.author))
+                    }.accessibilityIdentifier("listingAuthor")
                     Rectangle().fill(MarketTheme.line).frame(height: 1)
                     Text(current.description).font(.system(size: 16)).lineSpacing(6).foregroundStyle(MarketTheme.ink.opacity(0.90))
                     if let relevance = current.relevance { Label(relevance.reason, systemImage: "sparkles").font(.system(size: 13)).foregroundStyle(MarketTheme.green).padding(15).frame(maxWidth: .infinity, alignment: .leading).background(MarketTheme.mint.opacity(0.4), in: RoundedRectangle(cornerRadius: 16)) }
@@ -31,13 +35,14 @@ struct ListingDetailView: View {
                             }
                         } label: {
                             if store.busy { ProgressView().tint(MarketTheme.onAction) } else { Label("Private enquiry", systemImage: "bubble.left.fill") }
-                        }.buttonStyle(PrimaryButton()).disabled(store.demo || store.busy).accessibilityIdentifier("privateEnquiry")
+                        }.buttonStyle(PrimaryButton()).disabled(store.demo || store.busy || !store.snapshot.messagingReady).accessibilityIdentifier("privateEnquiry")
                         Text(store.demo ? "Private enquiries are unavailable in preview mode." : "Your conversation stays private.").font(.system(size: 12)).foregroundStyle(MarketTheme.muted).multilineTextAlignment(.center).frame(maxWidth: .infinity)
                         Button("Connect with an invitation instead") { invitation = true }.font(.system(size: 12)).frame(maxWidth: .infinity)
                     }
                 }.padding(23)
-            }.background(MarketTheme.paper).navigationTitle("Listing").navigationBarTitleDisplayMode(.inline)
-                .toolbar { ToolbarItem(placement: .navigationBarLeading) { Button("Done") { dismiss() } }; ToolbarItem(placement: .navigationBarTrailing) { Button { store.save(current) } label: { Image(systemName: current.saved ? "bookmark.fill" : "bookmark") }.accessibilityLabel("Save listing") } }
+            }.background(MarketTheme.paper)
+                .sheet(isPresented: $authorProfile) { AuthorProfileView(author: current.author).marketSheetScope() }.navigationTitle("Listing").marketInlineTitle()
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button { store.save(current) } label: { Image(systemName: current.saved ? "bookmark.fill" : "bookmark") }.accessibilityLabel("Save listing") } }
                 .sheet(isPresented: $invitation) { InvitationView().marketSheetScope() }
         }
     }
@@ -60,25 +65,31 @@ struct NewListingView: View {
         NavigationStack {
             Form {
                 Section {
-                    Picker("Listing type", selection: $side) { Text("Offer").tag("offer"); Text("Request").tag("request") }.pickerStyle(.segmented).accessibilityIdentifier("listingSide")
+                    Picker("Listing type", selection: $side) { Text("Selling").tag("offer"); Text("Buying").tag("request") }.pickerStyle(.segmented).accessibilityIdentifier("listingSide")
                     TextField("Title", text: $title, prompt: Text("Title").foregroundColor(MarketTheme.muted)).focused($entryFocused).accessibilityIdentifier("listingTitle")
                     TextField("Description", text: $description, prompt: Text("Description").foregroundColor(MarketTheme.muted), axis: .vertical).lineLimit(4...8).accessibilityIdentifier("listingDescription")
                     Picker("Category", selection: $category) { ForEach(categories, id: \.self) { Text($0) } }
                 }
                 Section("Details") {
-                    HStack { TextField("Price or budget", text: $price, prompt: Text("Price or budget").foregroundColor(MarketTheme.muted)).keyboardType(.decimalPad).accessibilityIdentifier("listingPrice"); Picker("Currency", selection: $currency) { Text("EUR").tag("EUR"); Text("USD").tag("USD"); Text("GBP").tag("GBP"); Text("BTC").tag("BTC") }.labelsHidden().frame(width: 90) }
+                    HStack { TextField("Price or budget", text: $price, prompt: Text("Price or budget").foregroundColor(MarketTheme.muted)).marketDecimalKeyboard().accessibilityIdentifier("listingPrice"); Picker("Currency", selection: $currency) { Text("EUR").tag("EUR"); Text("USD").tag("USD"); Text("GBP").tag("GBP"); Text("BTC").tag("BTC") }.labelsHidden().frame(width: 90) }
                     TextField("Town, area, or remote", text: $location, prompt: Text("Town, area, or remote").foregroundColor(MarketTheme.muted)).accessibilityIdentifier("listingLocation")
-                    TextField("Photo URL (optional)", text: $imageURL, prompt: Text("Photo URL (optional)").foregroundColor(MarketTheme.muted)).textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
+                    TextField("Photo URL (optional)", text: $imageURL, prompt: Text("Photo URL (optional)").foregroundColor(MarketTheme.muted)).marketNoAutocapitalization().autocorrectionDisabled().marketURLKeyboard()
                 }
                 Section {
                     if store.demo { Label("Preview mode: publishing is turned off.", systemImage: "eye").font(.system(size: 13)).foregroundStyle(MarketTheme.muted) }
+                    else if !store.snapshot.canSign { Text("Sign in with your account key to publish listings.").font(.system(size: 13)).foregroundStyle(MarketTheme.muted) }
                     else { Text("Your listing will be public, and people can contact you privately. Keep exact addresses and private contact details out of your listing.").font(.system(size: 13)).foregroundStyle(MarketTheme.muted) }
                     MarketInlineError()
                     Button { publish() } label: { HStack { Spacer(); if store.busy { ProgressView() } else { Text("Publish listing").fontWeight(.semibold) }; Spacer() }.padding(.vertical, 8) }
-                        .disabled(store.demo || store.busy || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty).accessibilityIdentifier("publishListing")
+                        .disabled(store.demo || store.busy || !store.snapshot.canSign || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty).accessibilityIdentifier("publishListing")
                 }
-            }.scrollContentBackground(.hidden).background(MarketTheme.paper).scrollDismissesKeyboard(.interactively).navigationTitle("New listing").navigationBarTitleDisplayMode(.inline)
-                .toolbar { ToolbarItem(placement: .navigationBarLeading) { Button("Cancel") { dismiss() } }; ToolbarItemGroup(placement: .keyboard) { Spacer(); Button("Done") { entryFocused = false }.accessibilityIdentifier("dismissKeyboard") } }
+            }.scrollContentBackground(.hidden).background(MarketTheme.paper).marketKeyboardDismissal().navigationTitle("New listing").marketInlineTitle()
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                    #if !os(macOS)
+                    ToolbarItemGroup(placement: .keyboard) { Spacer(); Button("Done") { entryFocused = false }.accessibilityIdentifier("dismissKeyboard") }
+                    #endif
+                }
         }
     }
     private func publish() {

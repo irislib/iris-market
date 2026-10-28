@@ -8,6 +8,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -27,11 +32,14 @@ import org.json.JSONObject
     selected: (Listing) -> Unit, settings: () -> Unit) {
     var query by remember { mutableStateOf(state.query) }
     var showAll by remember { mutableStateOf(false) }
+    var aiSearch by remember { mutableStateOf(state.aiSearch) }
+    var showMap by remember { mutableStateOf(false) }
+    var sortMenu by remember { mutableStateOf(false) }
     val ai = remember(state.settings) { JSONObject(state.settings).optJSONObject("ai") }
-    val canCurate = ai?.optBoolean("enabled") == true && ai.optBoolean("curate_feed") && state.error == null
+    val canCurate = aiSearch && ai?.optBoolean("enabled") == true && state.error == null
     val hiddenCount = if (canCurate) state.listings.count { it.relevanceShow == false } else 0
     val visibleListings = if (canCurate && !showAll) state.listings.filter { it.relevanceShow != false } else state.listings
-    LaunchedEffect(query) { delay(280); if (query != state.query) model.filter(query, state.side) }
+    LaunchedEffect(query, aiSearch) { delay(280); if (query != state.query || aiSearch != state.aiSearch) model.filter(query, state.side, aiSearch) }
     LazyVerticalGrid(columns = GridCells.Fixed(2), horizontalArrangement = Arrangement.spacedBy(14.dp),
         verticalArrangement = Arrangement.spacedBy(18.dp), contentPadding = PaddingValues(start=22.dp,end=22.dp,bottom=90.dp)) {
         item(span = { GridItemSpan(maxLineSpan) }) {
@@ -40,24 +48,39 @@ import org.json.JSONObject
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                     Text("Listings", style = MaterialTheme.typography.headlineMedium)
                     Spacer(Modifier.weight(1f))
-                    IconButton(onClick = settings) { Icon(Icons.Filled.AutoAwesome, "AI settings", tint=Forest, modifier=Modifier.size(21.dp)) }
+                    Box {
+                        TextButton(onClick = { sortMenu = true }) { Text(if(state.sort == "newest") "Newest" else "Suggested") }
+                        DropdownMenu(expanded=sortMenu,onDismissRequest={sortMenu=false}) {
+                            listOf("suggested" to "Suggested", "newest" to "Newest").forEach { (value,label) -> DropdownMenuItem(text={Text(label)},onClick={model.command(JSONObject().put("type","set_sort").put("sort",value));sortMenu=false}) }
+                        }
+                    }
+                    IconButton(onClick={showMap=!showMap}, enabled=!state.demo) { Icon(if(showMap) Icons.Filled.GridView else Icons.Filled.Map,if(showMap) "Show grid" else "Show map",tint=Forest) }
                     IconButton(onClick = { model.action("refresh") }, enabled = !busy) { Icon(Icons.Filled.Refresh, "Refresh listings", tint=Forest,modifier=Modifier.size(22.dp)) }
                 }
                 Spacer(Modifier.height(16.dp))
                 OutlinedTextField(value = query, onValueChange = { query = it }, placeholder = { Text("Search listings") },
                     leadingIcon = { Icon(Icons.Filled.Search, null, tint = Forest) },
-                    trailingIcon = if (query.isNotBlank()) {{ IconButton(onClick = { query = "" }) { Icon(Icons.Filled.Close, "Clear search") } }} else null,
+                    trailingIcon = { Row {
+                        IconToggleButton(checked=aiSearch,onCheckedChange={aiSearch=it;showAll=false}) { Icon(Icons.Filled.AutoAwesome,"AI search",tint=if(aiSearch) Forest else Muted) }
+                        if(query.isNotBlank()) IconButton(onClick={query=""}) { Icon(Icons.Filled.Close,"Clear search") }
+                    } },
+                    keyboardOptions=KeyboardOptions(imeAction=ImeAction.Search), keyboardActions=KeyboardActions(onSearch={if(aiSearch) model.searchAI(query,state.side) else model.filter(query,state.side)}),
                     singleLine = true, shape = RoundedCornerShape(18.dp), modifier = Modifier.fillMaxWidth(),
                     colors = OutlinedTextFieldDefaults.colors(unfocusedBorderColor = Line, focusedBorderColor = Forest,
                         unfocusedContainerColor = White, focusedContainerColor = White))
+                if(aiSearch) Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
+                    Text("AI search",Modifier.weight(1f),color=Muted,style=MaterialTheme.typography.labelSmall)
+                    if(busy) CircularProgressIndicator(Modifier.size(18.dp),strokeWidth=2.dp)
+                    TextButton(enabled=!busy&&!state.demo&&(ai?.optBoolean("enabled")!=true||query.isNotBlank()),onClick={if(ai?.optBoolean("enabled")==true) model.searchAI(query,state.side) else settings()}) { Text(if(ai?.optBoolean("enabled")==true) "Search" else "Choose model") }
+                }
                 Spacer(Modifier.height(14.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf("all" to "Everything", "offer" to "Offers", "request" to "Requests").forEach { (value,label) ->
-                        FilterChip(selected = state.side == value, onClick = { model.filter(query, value) }, label = { Text(label) },
+                    listOf("offer" to "Selling", "request" to "Buying").forEach { (value,label) ->
+                        FilterChip(selected = state.side == value, onClick = { model.filter(query, value, aiSearch) }, label = { Text(label) },
                             leadingIcon = if (state.side == value) {{ Icon(Icons.Filled.Check, null, Modifier.size(16.dp)) }} else null,
-                            shape = CircleShape, colors = FilterChipDefaults.filterChipColors(selectedContainerColor = Ink,
+                            shape = CircleShape, colors = FilterChipDefaults.filterChipColors(selectedContainerColor = Action,
                                 selectedLabelColor = OnInk, selectedLeadingIconColor = OnInk), border = FilterChipDefaults.filterChipBorder(
-                                enabled=true, selected=state.side==value, borderColor=Line, selectedBorderColor=Ink))
+                                enabled=true, selected=state.side==value, borderColor=Line, selectedBorderColor=Action))
                     }
                 }
                 if (hiddenCount > 0) Surface(color = Mint, shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth().padding(top = 5.dp)) {
@@ -69,16 +92,21 @@ import org.json.JSONObject
                         TextButton(onClick = { showAll = !showAll }) { Text(if (showAll) "Use curation" else "Show all") }
                     }
                 }
-                if (state.error != null) Text(state.error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall,
-                    modifier=Modifier.padding(vertical=6.dp))
+                if (state.error != null) Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
+                    Text("Couldn’t complete that action.",color=MaterialTheme.colorScheme.error,style=MaterialTheme.typography.bodySmall,modifier=Modifier.weight(1f))
+                    TextButton(onClick=settings) { Text("Settings") }
+                }
             }
         }
-        if (visibleListings.isEmpty()) item(span={GridItemSpan(maxLineSpan)}) {
+        if (showMap && !state.demo) item(span={GridItemSpan(maxLineSpan)}) {
+            MarketMapView(visibleListings,selected,Modifier.fillMaxWidth().height(440.dp).clip(RoundedCornerShape(20.dp)))
+        }
+        if (!showMap && visibleListings.isEmpty()) item(span={GridItemSpan(maxLineSpan)}) {
             EmptyView(if(hiddenCount > 0 && !showAll) "No matching listings" else if(query.isBlank()) "No listings" else "No matches",
-                if(hiddenCount > 0 && !showAll) "Show all listings or change your AI settings." else if(query.isBlank()) "Post a listing or refresh to check for new offers and requests." else "Try a different search or clear the filters.",
+                if(hiddenCount > 0 && !showAll) "Show all listings or change your AI settings." else if(query.isBlank()) "Sell something or post what you want to buy." else "Try a different search or clear the filters.",
                 Icons.Filled.Storefront)
         }
-        items(visibleListings, key={it.id}) { listing -> ListingCard(listing, state.demo, {selected(listing)}, {model.save(listing.id)}) }
+        if(!showMap) items(visibleListings, key={it.id}) { listing -> ListingCard(listing, state.demo, {selected(listing)}, {model.save(listing.id)}) }
     }
 }
 
@@ -91,9 +119,9 @@ import org.json.JSONObject
                 Icon(if(listing.saved) Icons.Filled.Bookmark else Icons.Filled.BookmarkBorder,
                     if(listing.saved) "Unsave ${listing.title}" else "Save ${listing.title}", tint=Ink, modifier=Modifier.size(20.dp))
             }
-            if(listing.side == "request") Surface(color=Ink, shape=CircleShape,
+            if(listing.side == "request") Surface(color=Action, shape=CircleShape,
                 modifier=Modifier.align(Alignment.BottomStart).padding(9.dp)) {
-                Text("WANTED", color=OnInk, style=MaterialTheme.typography.labelSmall,
+                Text("BUYING", color=OnInk, style=MaterialTheme.typography.labelSmall,
                     letterSpacing=1.sp,modifier=Modifier.padding(horizontal=9.dp,vertical=4.dp))
             }
         }
@@ -130,7 +158,7 @@ import org.json.JSONObject
     }
 }
 
-@Composable fun ListingDetail(listing: Listing, demo: Boolean, model: MarketModel, busy: Boolean, inbox:()->Unit) {
+@Composable fun ListingDetail(listing: Listing, demo: Boolean, model: MarketModel, busy: Boolean, person: PublicPerson?, openProfile:(String)->Unit, inbox:()->Unit) {
     Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal=24.dp).padding(bottom=30.dp)) {
         ListingArt(listing,demo,Modifier.fillMaxWidth().height(245.dp).clip(RoundedCornerShape(24.dp)))
         Spacer(Modifier.height(22.dp))
@@ -139,6 +167,9 @@ import org.json.JSONObject
         Spacer(Modifier.height(9.dp));Text(listing.displayPrice,fontSize=29.sp,fontWeight=FontWeight.SemiBold)
         if(listing.location.isNotBlank()) Row(Modifier.padding(top=12.dp),verticalAlignment=Alignment.CenterVertically) {
             Icon(Icons.Filled.LocationOn,null,Modifier.size(17.dp),tint=Muted);Spacer(Modifier.width(5.dp));Text(listing.location,color=Muted)
+        }
+        TextButton(onClick={openProfile(listing.author)},modifier=Modifier.fillMaxWidth().padding(top=12.dp).semantics { contentDescription = "View author" }) {
+            UserRow(person ?: PublicPerson.unnamed(listing.author))
         }
         Spacer(Modifier.height(22.dp));HorizontalDivider(color=Line);Spacer(Modifier.height(21.dp))
         Text(listing.description,style=MaterialTheme.typography.bodyLarge)

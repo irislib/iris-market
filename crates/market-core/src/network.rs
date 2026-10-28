@@ -96,12 +96,47 @@ pub(crate) async fn run(state: Arc<Mutex<State>>, notify: Arc<Notify>, stopped: 
                 }
             }
         }
+        let mut metadata_queried = std::collections::HashSet::new();
         loop {
             if stopped.load(Ordering::Acquire) {
                 break;
             }
             if state.lock().unwrap().settings.relays != relays {
                 break;
+            }
+            // These are authors of the public marketplace feed, never inbox peers.
+            let authors = {
+                let s = state.lock().unwrap();
+                s.store
+                    .listings(&s.owner.to_hex(), listing::now())
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|listing| nostr::PublicKey::from_hex(&listing.author).ok())
+                    .filter(|author| metadata_queried.insert(*author))
+                    .take(64)
+                    .collect::<Vec<_>>()
+            };
+            if !authors.is_empty()
+                && let Ok(report) = bus
+                    .query(
+                        vec![
+                            Filter::new()
+                                .kind(Kind::Metadata)
+                                .authors(authors.clone())
+                                .limit(128),
+                        ],
+                        QueryOptions { limit: Some(128) },
+                    )
+                    .await
+            {
+                let mut s = state.lock().unwrap();
+                for received in report.events {
+                    let event = received.event.into_event();
+                    if event.kind == Kind::Metadata && authors.contains(&event.pubkey) {
+                        let _ = s.profiles.ingest(event);
+                    }
+                }
+                s.revision += 1;
             }
             let pending = state.lock().unwrap().store.pending().unwrap_or_default();
             let mut confirmed = 0;
@@ -147,28 +182,97 @@ pub(crate) async fn run(state: Arc<Mutex<State>>, notify: Arc<Notify>, stopped: 
     }
 }
 
-pub(crate) async fn discover_contact(
-    relays: &[String],
-    author: nostr::PublicKey,
-) -> Result<nostr::Event> {
+pub(crate) struct ContactDiscovery {
+    pub authorization: Vec<nostr::Event>,
+    pub invitations: Vec<nostr::Event>,
+}
+
+/// One public author per anonymous discovery scope, separate from all publishing.
+async fn query_private_author(relays: &[String], filter: Filter) -> Result<Vec<nostr::Event>> {
     if relays.is_empty() {
         bail!("Connect to a message server to start a conversation");
     }
-    // This discovery context queries one public author and is never reused for sends.
-    let bus = RelayEventBus::new(relays.to_vec(), Duration::from_secs(8)).await?;
+    let bus = RelayEventBus::new(relays.to_vec(), Duration::from_secs(5)).await?;
     bus.client()
-        .wait_for_connection(Duration::from_secs(5))
+        .wait_for_connection(Duration::from_secs(4))
         .await;
-    let filter = crate::messaging::Messaging::contact_discovery_filter(&author.to_hex())
-        .map_err(anyhow::Error::msg)?
-        .filter;
     let result = bus
-        .query(vec![filter], QueryOptions { limit: Some(5) })
+        .query(vec![filter], QueryOptions { limit: Some(16) })
         .await;
     bus.client().shutdown().await;
-    let report = result?;
-    report.events.into_iter().map(|q|q.event.into_event()).filter(|e|e.pubkey==author)
-        .max_by_key(|e|e.created_at).ok_or_else(||anyhow::anyhow!("This seller has not enabled private enquiries here. You can exchange a private invitation instead."))
+    Ok(result?
+        .events
+        .into_iter()
+        .map(|q| q.event.into_event())
+        .collect())
+}
+
+pub(crate) async fn discover_authorization(
+    relays: &[String],
+    owner: nostr::PublicKey,
+) -> Result<Vec<nostr::Event>> {
+    crate::identity::fetch_authorization_complete(relays, owner).await
+}
+
+pub(crate) async fn discover_contact(
+    relays: &[String],
+    author: nostr::PublicKey,
+) -> Result<ContactDiscovery> {
+    use nostr_double_ratchet::{AppKeys, DeviceMembership, VerifiedAppKeysIndex};
+    let authorization = discover_authorization(relays, author).await?;
+    let mut index = VerifiedAppKeysIndex::default();
+    for event in &authorization {
+        let _ = index.ingest(event.clone(), listing::now());
+    }
+    let mut devices = authorization
+        .iter()
+        .filter_map(|event| AppKeys::from_event(event).ok())
+        .flat_map(|keys| keys.get_all_devices())
+        .map(|device| device.identity_pubkey)
+        .filter(|device| index.membership(author, *device) == DeviceMembership::Authorized)
+        .collect::<Vec<_>>();
+    if authorization.is_empty() {
+        devices.push(author);
+    }
+    devices.sort();
+    devices.dedup();
+    let mut invitations = Vec::new();
+    // Every task has its own anonymous connection; at most four run together.
+    for chunk in devices.chunks(4) {
+        let mut jobs = tokio::task::JoinSet::new();
+        for device in chunk {
+            let device = *device;
+            let relays = relays.to_vec();
+            jobs.spawn(async move {
+                let filter =
+                    crate::messaging::Messaging::contact_discovery_filter(&device.to_hex())
+                        .map_err(anyhow::Error::msg)?
+                        .filter;
+                let mut events = query_private_author(&relays, filter)
+                    .await?
+                    .into_iter()
+                    .filter(|event| event.pubkey == device && event.verify().is_ok())
+                    .filter(|event| event.created_at.as_secs() <= listing::now() + 300)
+                    .collect::<Vec<_>>();
+                events.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(a.id.cmp(&b.id)));
+                Ok::<_, anyhow::Error>(events.into_iter().take(4).collect::<Vec<_>>())
+            });
+        }
+        while let Some(result) = jobs.join_next().await {
+            if let Ok(Ok(events)) = result {
+                invitations.extend(events);
+            }
+        }
+    }
+    if invitations.is_empty() {
+        bail!(
+            "This person has no available Iris Chat invitation. You can exchange a private invitation instead."
+        );
+    }
+    Ok(ContactDiscovery {
+        authorization,
+        invitations,
+    })
 }
 
 pub(crate) async fn run_private(
@@ -234,7 +338,11 @@ pub(crate) async fn run_private(
                         vec![scope.filter],
                         Arc::new(move |q| {
                             let mut s = receiver.lock().unwrap();
-                            if let Some(m) = s.messaging.as_mut()
+                            if q.event.as_event().kind == Kind::Metadata {
+                                if s.profiles.ingest(q.event.as_event().clone()).is_ok() {
+                                    s.revision += 1;
+                                }
+                            } else if let Some(m) = s.messaging.as_mut()
                                 && m.receive(q.event.as_event()).is_ok()
                             {
                                 s.revision += 1;
@@ -265,6 +373,23 @@ pub(crate) async fn run_private(
                     .client()
                     .wait_for_connection(Duration::from_secs(4))
                     .await;
+                // A roster update may have revoked a device while this client connected.
+                let still_allowed =
+                    state
+                        .lock()
+                        .unwrap()
+                        .messaging
+                        .as_ref()
+                        .is_some_and(|messaging| {
+                            messaging
+                                .pending_outbound()
+                                .iter()
+                                .any(|queued| queued.id == event.id)
+                        });
+                if !still_allowed {
+                    sender.client().shutdown().await;
+                    continue;
+                }
                 let result = tokio::time::timeout(
                     Duration::from_secs(8),
                     sender.client().send_event(&event),

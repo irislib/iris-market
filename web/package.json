@@ -12,9 +12,19 @@
     "dev": "node scripts/serve.mjs"
   },
   "dependencies": {
+    "@cashu/cashu-ts": "4.13.0",
+    "@hashtree/core": "https://github.com/mmalmi/hashtree/releases/download/hashtree-ts-runtime-v0.5.9/hashtree-core-0.3.2.tgz",
+    "@hashtree/dexie": "https://github.com/mmalmi/hashtree/releases/download/hashtree-ts-runtime-v0.5.9/hashtree-dexie-0.1.11.tgz",
     "@huggingface/transformers": "4.3.2",
+    "@noble/hashes": "2.0.1",
+    "maplibre-gl": "6.15.0",
+    "marked": "15.0.12",
+    "minidenticons": "4.2.1",
+    "nostr-double-ratchet": "0.0.183",
+    "nostr-social-graph": "https://github.com/mmalmi/nostr-social-graph/releases/download/v2.0.4/nostr-social-graph-2.0.4.tgz",
     "nostr-tools": "2.25.2",
-    "onnxruntime-web": "1.31.0-dev.20260914-8d85527a0"
+    "onnxruntime-web": "1.31.0-dev.20260914-8d85527a0",
+    "pmtiles": "4.4.1"
   },
   "devDependencies": {
     "esbuild": "0.25.12",

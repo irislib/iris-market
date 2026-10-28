@@ -289,3 +289,168 @@ test('filter bounds and exact public author keys are validated before opening co
   const unrestricted = new MarketRelayClient({ authors: null, tags: [] })
   assert.equal(unrestricted.matchesFeed(parseEvent(signed(), { now })), true)
 })
+
+test('map coordinates come only from verified geohash tags, never location text', () => {
+  const mapped = parseEvent(signed({ extra: [['g', 'u6'], ['g', 'u60sc']] }), { now })
+  assert.equal(mapped.geohash, 'u60sc')
+  assert.equal(mapped.coordinates.length, 2)
+  assert.equal(mapped.locationBounds.length, 4)
+  assert(Object.isFrozen(mapped.coordinates))
+  const plain = parseEvent(signed(), { now })
+  assert.equal(plain.coordinates, null)
+  const invalid = parseEvent(signed({ extra: [['g', 'not a coordinate']] }), { now })
+  assert.equal(invalid.geohash, null)
+  const forged = signed({ extra: [['g', 'u60sc']] }); forged.tags.push(['g', 'u60scx'])
+  assert.throws(() => parseEvent(forged, { now }), /signature/)
+})
+
+const turn = () => new Promise(resolve => setImmediate(resolve))
+const openHistory = socket => { socket.open(); return socket.sent.find(frame => frame[0] === 'REQ') }
+
+test('older pages use each relay verified cursor, exclude exact targets, and preserve live subscriptions', async () => {
+  FakeSocket.sockets = []
+  const shared = signed({ identifier: 'shared-old', createdAt: now - 10000 })
+  const recent = signed({ identifier: 'recent', createdAt: now - 10 })
+  const boundary = signed({ identifier: 'boundary', createdAt: now - 20 })
+  const client = new MarketRelayClient({ relays: ['wss://one.example','wss://two.example'], targetId: `${shared.pubkey}:shared-old`, historyPageSize: 2, maxRecords: 20, WebSocketImpl: FakeSocket, now: () => now }).start()
+  try {
+    const live = [...FakeSocket.sockets]
+    for (const [index, socket] of live.entries()) {
+      socket.open(); const subscription = socket.sent[0][1]
+      if (index === 0) socket.frame(['EVENT', subscription, recent])
+      socket.frame(['EVENT', subscription, boundary])
+      socket.frame(['EVENT', subscription, shared])
+      const forged = JSON.parse(JSON.stringify(signed({ createdAt: now - 50000 }))); forged.sig = '0'.repeat(128)
+      socket.frame(['EVENT', subscription, forged]); socket.frame(['EOSE', subscription])
+    }
+    const pending = client.loadOlder(); assert.equal(client.loadOlder(), pending); await turn()
+    const pages = FakeSocket.sockets.slice(2)
+    for (const [index, socket] of pages.entries()) {
+      const [, subscription, filter] = openHistory(socket)
+      assert.deepEqual(filter, { kinds: [30402], until: now - 20, limit: 2 })
+      socket.frame(['EVENT', subscription, boundary])
+      socket.frame(['EVENT', subscription, signed({ identifier: `older-${index}`, createdAt: now - 30 - index * 10 })])
+      socket.frame(['EOSE', subscription])
+    }
+    const result = await pending
+    assert.equal(result.added, 2); assert.equal(result.hasMore, true); assert.equal(result.exhausted, false)
+    assert(live.every(socket => socket.readyState === 1 && socket.sent.length === 1))
+    assert(pages.every(socket => socket.readyState === 3 && socket.sent.at(-1)[0] === 'CLOSE'))
+    live[0].frame(['EVENT', live[0].sent[0][1], signed({ identifier: 'older-0', status: 'sold', createdAt: now - 1 })])
+    assert.equal(client.listings().some(item => item.identifier === 'older-0'), false)
+    const final = client.loadOlder(); await turn()
+    for (const [index, socket] of FakeSocket.sockets.slice(4).entries()) {
+      const [, subscription, filter] = openHistory(socket)
+      assert.equal(filter.until, now - 30 - index * 10)
+      socket.frame(['EOSE', subscription])
+    }
+    assert.equal((await final).exhausted, true); assert.equal(client.pagination().hasMore, false)
+  } finally { client.close() }
+})
+
+test('a full same-second page expands inclusively before moving to older timestamps', async () => {
+  FakeSocket.sockets = []
+  const items = [0,1,2].map(i => signed({ identifier: `same-${i}`, createdAt: now - 20 }))
+  const older = signed({ identifier: 'older', createdAt: now - 21 })
+  const client = new MarketRelayClient({ relays: ['wss://one.example'], historyPageSize: 2, maxRecords: 20, WebSocketImpl: FakeSocket, now: () => now }).start()
+  try {
+    const live = FakeSocket.sockets[0]; live.open(); const subscription = live.sent[0][1]
+    for (const item of items.slice(0,2)) live.frame(['EVENT', subscription, item])
+    live.frame(['EOSE', subscription])
+    const pending = client.loadOlder(); await turn()
+    const first = FakeSocket.sockets[1], [, firstId, firstFilter] = openHistory(first)
+    assert.equal(firstFilter.until, now - 20); assert.equal(firstFilter.limit, 2)
+    for (const item of items.slice(0,2)) first.frame(['EVENT', firstId, item])
+    first.frame(['EOSE', firstId]); await turn()
+    const second = FakeSocket.sockets[2], [, secondId, secondFilter] = openHistory(second)
+    assert.equal(secondFilter.until, now - 20); assert.equal(secondFilter.limit, 4)
+    for (const item of [...items, older]) second.frame(['EVENT', secondId, item])
+    second.frame(['EOSE', secondId])
+    const result = await pending
+    assert.equal(result.exhausted, false); assert.equal(result.added, 2); assert.equal(client.records.size, 4)
+    assert.equal(client.history.values().next().value.cursor, now - 21)
+  } finally { client.close() }
+})
+
+test('short boundary overlap checks the earlier second before declaring exhaustion', async () => {
+  FakeSocket.sockets = []
+  const item = signed({ createdAt: now - 20 })
+  const client = new MarketRelayClient({ relays: ['wss://one.example'], historyPageSize: 2, WebSocketImpl: FakeSocket, now: () => now }).start()
+  try {
+    const live = FakeSocket.sockets[0]; live.open(); live.frame(['EVENT', live.sent[0][1], item]); live.frame(['EOSE', live.sent[0][1]])
+    const pending = client.loadOlder(); await turn()
+    const first = FakeSocket.sockets[1], [, id] = openHistory(first)
+    first.frame(['EVENT', id, item]); first.frame(['EOSE', id]); await turn()
+    assert.equal(client.pagination().exhausted, false)
+    const next = FakeSocket.sockets[2], [, nextId, filter] = openHistory(next)
+    assert.equal(filter.until, now - 21)
+    next.frame(['EOSE', nextId]); assert.equal((await pending).exhausted, true)
+  } finally { client.close() }
+})
+
+test('history timeouts keep the cursor retryable and do not reconnect or close the live stream', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout','setInterval'] })
+  FakeSocket.sockets = []
+  const client = new MarketRelayClient({ relays: ['wss://one.example'], historyPageSize: 2, WebSocketImpl: FakeSocket, now: () => now }).start()
+  try {
+    const live = FakeSocket.sockets[0]; live.open(); const liveId = live.sent[0][1]
+    live.frame(['EVENT', liveId, signed()]); live.frame(['EOSE', liveId])
+    const pending = client.loadOlder(); await turn()
+    const first = FakeSocket.sockets[1], [, id] = openHistory(first)
+    const old = signed({ identifier: 'older', createdAt: now - 30 })
+    first.frame(['EVENT', id, old]); t.mock.timers.tick(12000)
+    const failed = await pending
+    assert(failed.error); assert.equal(failed.hasMore, true); assert.equal(failed.exhausted, false)
+    assert.equal(live.readyState, 1); assert.equal(live.sent.length, 1); assert.equal(first.sent.at(-1)[0], 'CLOSE')
+    const retry = client.loadOlder(); await turn()
+    const next = FakeSocket.sockets[2], [, nextId, filter] = openHistory(next)
+    assert.equal(filter.until, now - 20)
+    next.frame(['EVENT', nextId, old]); next.frame(['EOSE', nextId])
+    assert.equal((await retry).error, ''); assert.equal(client.records.size, 2)
+  } finally { client.close() }
+})
+
+test('invalid older events never advance the cursor or establish exhausted coverage', async () => {
+  FakeSocket.sockets = []
+  const client = new MarketRelayClient({ relays: ['wss://one.example'], WebSocketImpl: FakeSocket, now: () => now }).start()
+  try {
+    const live = FakeSocket.sockets[0]; live.open(); live.frame(['EVENT', live.sent[0][1], signed()]); live.frame(['EOSE', live.sent[0][1]])
+    const pending = client.loadOlder(); await turn()
+    const socket = FakeSocket.sockets[1], [, id] = openHistory(socket)
+    const forged = JSON.parse(JSON.stringify(signed({ identifier: 'forged', createdAt: now - 500 })));
+    forged.content = 'changed'
+    socket.frame(['EVENT', id, forged]); socket.frame(['EOSE', id])
+    const result = await pending
+    assert(result.error); assert.equal(result.exhausted, false); assert.equal(result.hasMore, true)
+    assert.equal(client.records.size, 1); assert.equal(client.history.values().next().value.cursor, now - 20)
+  } finally { client.close() }
+})
+
+test('history capacity keeps tombstones and reports a limit rather than exhaustion', async () => {
+  FakeSocket.sockets = []
+  const client = new MarketRelayClient({ relays: ['wss://one.example'], maxRecords: 2, WebSocketImpl: FakeSocket, now: () => now }).start()
+  try {
+    const live = FakeSocket.sockets[0]; live.open(); live.frame(['EVENT', live.sent[0][1], signed({ status: 'sold' })]); live.frame(['EOSE', live.sent[0][1]])
+    const pending = client.loadOlder(); await turn()
+    const socket = FakeSocket.sockets[1], [, id] = openHistory(socket)
+    socket.frame(['EVENT', id, signed({ createdAt: now - 30 })])
+    socket.frame(['EVENT', id, signed({ identifier: 'lamp', createdAt: now - 40 })])
+    const result = await pending
+    assert.equal(result.limited, true); assert.equal(result.exhausted, false); assert.equal(result.hasMore, false)
+    assert.equal(client.records.size, 2); assert.deepEqual(client.listings().map(item => item.identifier), ['lamp'])
+    assert.equal(socket.readyState, 3)
+    const count = FakeSocket.sockets.length; await client.loadOlder(); assert.equal(FakeSocket.sockets.length, count)
+  } finally { client.close() }
+})
+
+test('closing stops pending older reads and empty follow filters never open history sockets', async () => {
+  FakeSocket.sockets = []
+  const client = new MarketRelayClient({ relays: ['wss://one.example'], WebSocketImpl: FakeSocket, now: () => now }).start()
+  const pending = client.loadOlder(); await turn()
+  const page = FakeSocket.sockets[1]; openHistory(page)
+  client.close(); await pending
+  assert.equal(page.readyState, 3); assert.equal(client.historyReaders.size, 0); assert.equal(client.pagination().loading, false)
+  const empty = new MarketRelayClient({ relays: ['wss://one.example'], authors: [], WebSocketImpl: FakeSocket })
+  const count = FakeSocket.sockets.length
+  empty.start(); assert.equal((await empty.loadOlder()).hasMore, false); assert.equal(FakeSocket.sockets.length, count); empty.close()
+})

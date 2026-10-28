@@ -1,0 +1,15 @@
+Iris Chat source provenance
+
+The remote-signer.js and authorization.js adapters were adapted, at the project’s
+request, from these Iris Chat sources:
+
+Repository: https://github.com/irislib/iris-chat
+Commit: cc68f2fa6ac9396faed732bc94e3b511f09d834f
+Paths: src/lib/remoteSigner.ts, src/lib/signerAuthorization.ts
+
+The inspected upstream commit contains no repository license file or license
+notice for these source files. This record preserves attribution and does not
+assert an upstream license grant.
+
+The separately installed nostr-double-ratchet package declares the MIT license;
+its own package notice applies to that dependency.

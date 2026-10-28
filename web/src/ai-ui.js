@@ -1,64 +1,75 @@
 import { FeedFilterClient } from './feed-filter/client.js';
+import { searchCondition, listingSearchText } from './search-condition.js';
 const $ = id => document.getElementById(id);
-const decisionKey = l => l.eventId || l.id;
-const inputText = l => JSON.stringify({title:l.title, description:l.description, price:l.price, currency:l.currency, side:l.side, location:l.location, category:l.category}).slice(0,2000);
+const keyFor = listing => listing.eventId || listing.id;
 export function setupAI({ getCandidates, onChange }) {
   const client = new FeedFilterClient();
-  let decisions = new Map(), loaded = false, showAll = false, busy = false, generation = 0;
+  let scores = new Map(), showAll = false, busy = false, generation = 0;
+  const enabled = () => $('search-mode').value === 'ai';
+  const threshold = () => $('ai-model').value === 'qwen35' ? .5 : Number($('ai-threshold').value);
   const refresh = () => {
-    if (loaded && !client.info) { loaded = false; $('ai-progress').textContent = 'Unloaded after inactivity'; }
-    const candidates = getCandidates();
-    const hidden = candidates.filter(l => decisions.get(decisionKey(l)) === false).length;
-    const reviewed = candidates.filter(l => decisions.has(decisionKey(l))).length;
-    $('ai-summary').hidden = !hidden && !busy;
-    $('ai-summary-text').textContent = busy ? $('ai-progress').textContent : showAll ? `Showing all · ${hidden} marked less relevant` : `${hidden} hidden · ${reviewed} of ${candidates.length} reviewed`;
-    $('ai-show-all').textContent = showAll ? 'Use AI filter' : 'Show all';
+    const candidates = getCandidates(), active = enabled();
+    const reviewed = candidates.filter(l => scores.has(keyFor(l))).length;
+    const hidden = candidates.filter(l => (scores.get(keyFor(l)) ?? 1) < threshold()).length;
+    const remaining = candidates.length - reviewed;
+    $('ai-options').hidden = !active;
+    $('ai-summary').hidden = !active || (!reviewed && !busy);
+    $('ai-summary-text').textContent = busy ? $('ai-progress').textContent : `${showAll ? 'Showing all · ' : ''}${hidden} hidden · ${reviewed} of ${candidates.length} reviewed`;
+    $('ai-show-all').textContent = showAll ? 'Use AI matches' : 'Show all';
     $('ai-show-all').hidden = !hidden;
     $('ai-stop').hidden = !busy;
-    $('ai-load').disabled = busy;
-    $('ai-filter').disabled = busy || !loaded || !$('ai-condition').value.trim();
     $('ai-model').disabled = busy;
-    const count = Math.min(candidates.length - reviewed, 12);
-    $('ai-filter').textContent = count ? `${reviewed ? 'Filter next' : 'Filter'} ${count} ${count === 1 ? 'listing' : 'listings'}` : 'All reviewed';
-    if (!count) $('ai-filter').disabled = true;
-    $('ai-condition').disabled = busy;
+    $('ai-threshold').disabled = $('ai-model').value === 'qwen35';
+    $('search-run').disabled = busy || (active && (!$('search').value.trim() || !remaining));
+    $('search-run').textContent = !active ? 'Search' : busy ? 'Searching…' : client.info ? reviewed ? remaining ? `Search next ${Math.min(12, remaining)}` : 'Search complete' : 'Search with AI' : `Load & search · ${$('ai-model').value === 'deberta' ? '87' : '551'} MB`;
+    $('search').placeholder = active ? 'Describe what you’re looking for' : 'Search listings';
   };
-  const stop = () => { generation++; busy=false;loaded=false;client.dispose();decisions.clear();showAll=false;$('ai-progress').textContent='Not loaded';refresh();onChange(); };
-  function changed() { decisions.clear();showAll=false;$('ai-error').textContent='';refresh();onChange(); }
-  $('local-ai').onclick = () => { refresh();$('ai-dialog').showModal(); };
-  $('ai-condition').addEventListener('input',changed);
-  $('ai-model').onchange = () => { stop();$('ai-load').textContent=`Load model · ${$('ai-model').value==='deberta'?'87':'551'} MB`; };
-  $('ai-unload').onclick = stop;
-  $('ai-stop').onclick = stop;
-  $('ai-show-all').onclick = () => { showAll=!showAll;refresh();onChange(); };
-  $('ai-load').onclick = async () => {
-    const run=++generation;busy=true;loaded=false;decisions.clear();showAll=false;$('ai-error').textContent='';$('ai-progress').textContent='Preparing model…';refresh();onChange();
+  function invalidate({ unload = false } = {}) {
+    generation++;
+    if (busy || unload) client.dispose();
+    busy = false; scores.clear(); showAll = false;
+    $('ai-error').textContent = '';
+    $('ai-progress').textContent = client.info ? 'Ready' : 'Model not loaded';
+    refresh(); onChange();
+  }
+  async function run() {
+    if (!enabled() || busy) { onChange(); return; }
+    const query = $('search').value.trim();
+    if (!query) return;
+    const condition = searchCondition(query), current = ++generation;
+    busy = true; showAll = false; $('ai-error').textContent = ''; refresh();
     try {
-      const model=$('ai-model').value;
-      await client.load(model,model==='deberta'?'wasm':'webgpu',message=>{if(run===generation){$('ai-progress').textContent=message;refresh();}});
-      if(run!==generation)return;
-      loaded=true;$('ai-progress').textContent='Loaded · ready to filter';
-    } catch(error) { if(run===generation){$('ai-error').textContent=error.message||'Model could not load';$('ai-progress').textContent='Not loaded';decisions.clear();} }
-    finally { if(run===generation){busy=false;refresh();onChange();} }
-  };
-  $('ai-filter').onclick = async () => {
-    if(!loaded)return;
-    const condition=$('ai-condition').value.trim();if(!condition)return;
-    const items=getCandidates().filter(l=>!decisions.has(decisionKey(l))).slice(0,12),run=++generation;busy=true;showAll=false;$('ai-error').textContent='';refresh();
-    try {
-      for(let index=0;index<items.length;index++){
-        if(run!==generation)return;
-        $('ai-progress').textContent=`Filtering ${index+1} of ${items.length}…`;refresh();
-        const result=await client.classify(condition,inputText(items[index]));
-        if(run!==generation)return;
-        if(typeof result.show!=='boolean')throw new Error('The model returned an invalid decision');
-        if(decisions.size>=1000)decisions.delete(decisions.keys().next().value);
-        decisions.set(decisionKey(items[index]),result.show);onChange();
+      if (!client.info) {
+        const model = $('ai-model').value;
+        await client.load(model, model === 'deberta' ? 'wasm' : 'webgpu', message => {
+          if (current === generation) { $('ai-progress').textContent = message; refresh(); }
+        });
       }
-      $('ai-progress').textContent=`Reviewed ${items.length} listings`;
-    } catch(error) { if(run===generation){decisions.clear();loaded=false;client.dispose();$('ai-error').textContent=error.message||'Filtering stopped. All listings remain available.';} }
-    finally { if(run===generation){busy=false;refresh();onChange();} }
-  };
-  window.addEventListener('pagehide',stop);
-  return { isVisible: l => showAll || decisions.get(decisionKey(l)) !== false, refresh, stop };
+      if (current !== generation) return;
+      const items = getCandidates().filter(l => !scores.has(keyFor(l))).slice(0, 12);
+      for (let index = 0; index < items.length; index++) {
+        if (current !== generation) return;
+        $('ai-progress').textContent = `Reviewing ${index + 1} of ${items.length}…`; refresh();
+        const result = await client.classify(condition, listingSearchText(items[index]));
+        if (current !== generation) return;
+        if (!Number.isFinite(result.score)) throw new Error('The model returned an invalid decision');
+        if (scores.size >= 1000) scores.delete(scores.keys().next().value);
+        scores.set(keyFor(items[index]), result.score); onChange();
+      }
+      $('ai-progress').textContent = 'Ready';
+    } catch (error) {
+      if (current === generation) { scores.clear(); client.dispose(); $('ai-error').textContent = `${error.message || 'Search failed'}. All listings remain visible.`; $('ai-progress').textContent = 'Model not loaded'; }
+    } finally { if (current === generation) { busy = false; refresh(); onChange(); } }
+  }
+  $('search-mode').onchange = () => invalidate();
+  $('search').addEventListener('input', () => invalidate());
+  $('search').addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); run(); } });
+  $('search-run').onclick = run;
+  $('ai-model').onchange = () => invalidate({ unload: true });
+  $('ai-threshold').onchange = () => { refresh(); onChange(); };
+  $('ai-stop').onclick = () => invalidate({ unload: true });
+  $('ai-unload').onclick = () => invalidate({ unload: true });
+  $('ai-show-all').onclick = () => { showAll = !showAll; refresh(); onChange(); };
+  window.addEventListener('pagehide', () => { generation++; client.dispose(); });
+  return { enabled, isVisible: listing => !enabled() || showAll || (scores.get(keyFor(listing)) ?? 1) >= threshold(), refresh, stop: () => invalidate({ unload: true }) };
 }

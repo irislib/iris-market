@@ -3,6 +3,7 @@ import { mkdir, copyFile, writeFile, readFile, readdir, rm, stat } from 'node:fs
 import { resolve, relative, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
+import { GRAPH_BOOTSTRAP } from '../src/graph-bootstrap.js';
 import { RUNTIME } from '../src/feed-filter/runtime.js';
 
 const root = resolve(import.meta.dirname, '..');
@@ -23,16 +24,21 @@ async function writeNotices(dest, bundleResults, includeRuntime) {
   const notices = [
     `Iris Market\n${await readFile(resolve(root, '../LICENSE'), 'utf8')}`,
     `Adapted Iris feed-filter source\n${await readFile(resolve(root, 'src/feed-filter/LICENSE'), 'utf8')}`,
+    `Iris Kit profile helpers\n${await readFile(resolve(root, 'src/shared/iris-kit/LICENSE.txt'), 'utf8')}`,
+    `Iris Chat messaging adapters\n${await readFile(resolve(root, 'src/messaging/IRIS_CHAT_LICENSE.txt'), 'utf8')}`,
+    `Iris Client image proxy\n${await readFile(resolve(root, 'licenses/IRIS-CLIENT-LICENSE.txt'), 'utf8')}`,
   ];
   for (const folder of [...packages].sort()) {
     const info = JSON.parse(await readFile(resolve(folder, 'package.json'), 'utf8'));
     const files = (await readdir(folder, { withFileTypes: true }))
       .filter(file => file.isFile() && /^(licen[sc]e|copying|notice)(?:[.-]|$)/i.test(file.name))
       .map(file => file.name).sort();
-    if (!files.length && !info.name.startsWith('onnxruntime-')) {
+    if (!files.length && !['pmtiles','nostr-double-ratchet'].includes(info.name) && !info.name.startsWith('onnxruntime-')) {
       throw new Error(`Missing bundled dependency license: ${info.name}@${info.version}`);
     }
     const texts = await Promise.all(files.map(file => readFile(resolve(folder, file), 'utf8')));
+    if (info.name === 'nostr-double-ratchet') texts.push(await readFile(resolve(root, 'licenses/NOSTR-DOUBLE-RATCHET-LICENSE.txt'), 'utf8'));
+    if (info.name === 'pmtiles') texts.push(await readFile(resolve(root, 'licenses/PMTILES-LICENSE.txt'), 'utf8'));
     notices.push(`${info.name}@${info.version} (${info.license ?? 'see license below'})\n${texts.join('\n\n') || 'Covered by the ONNX Runtime notices below.'}`);
   }
   if (includeRuntime) for (const file of ['ONNX-RUNTIME-LICENSE.txt', 'ONNX-RUNTIME-ThirdPartyNotices.txt']) {
@@ -60,12 +66,21 @@ async function checkAssetSizes(folder) {
 for (const [name, source, entry] of [['web', root, 'src/app.js'], ['site', resolve(root, '../site'), 'app.js']]) {
   const dest = resolve(source, 'dist');
   await mkdir(dest, { recursive: true });
-  const results = [await build({ absWorkingDir: root, entryPoints: [resolve(source, entry)], bundle: true, minify: true, format: 'esm', target: 'es2022', outfile: resolve(dest, 'app.js'), legalComments: 'eof', metafile: true })];
+  const results = [await build({ absWorkingDir: root, entryPoints: [resolve(source, entry)], bundle: true, minify: true, format: 'esm', target: 'es2022', outdir: dest, entryNames: 'app', chunkNames: 'chunks/[name]-[hash]', splitting: true, legalComments: 'eof', metafile: true })];
   for (const file of ['styles.css', 'icon.svg']) await copyFile(resolve(root, file), resolve(dest, file));
   await copyFile(resolve(root, 'src/theme-init.js'), resolve(dest, 'theme-init.js'));
   await copyFile(resolve(source, 'index.html'), resolve(dest, 'index.html'));
   if (name === 'site') for (const file of ['app-light.png', 'app-dark.png']) await copyFile(resolve(source, file), resolve(dest, file));
   if (name === 'web') {
+    await copyFile(resolve(root, 'profiles.css'), resolve(dest, 'profiles.css'));
+    await copyFile(resolve(root, 'account.css'), resolve(dest, 'account.css'));
+    await copyFile(resolve(root, 'wallet.css'), resolve(dest, 'wallet.css'));
+    const graphBytes = await readFile(resolve(root, GRAPH_BOOTSTRAP.packagePath));
+    if (graphBytes.byteLength !== GRAPH_BOOTSTRAP.byteLength || hash(graphBytes) !== GRAPH_BOOTSTRAP.sha256) throw new Error('Unexpected social graph bootstrap payload');
+    await writeFile(resolve(dest, 'social-graph.bin'), graphBytes);
+    await copyFile(resolve(root, 'native-map.html'), resolve(dest, 'native-map.html'));
+    for (const file of ['maplibre-gl.css','maplibre-gl-worker.mjs','maplibre-gl-shared.mjs']) await copyFile(resolve(root, 'node_modules/maplibre-gl/dist', file), resolve(dest, file));
+    results.push(await build({ absWorkingDir: root, entryPoints: [resolve(root, 'src/native-map.js')], bundle: true, minify: true, format: 'esm', target: 'es2022', outfile: resolve(dest, 'native-map.js'), legalComments: 'eof', metafile: true }));
     results.push(await build({ absWorkingDir: root, entryPoints: [resolve(root, 'src/feed-filter/worker.js')], bundle: true, minify: true, format: 'esm', platform: 'browser', target: 'es2022', outfile: resolve(dest, 'feed-filter.worker.js'), legalComments: 'eof', metafile: true }));
     const rawName = RUNTIME.wasm.replace(/\.gz$/, '');
     const binary = await readFile(resolve(root, 'node_modules/onnxruntime-web/dist', rawName));
@@ -80,7 +95,7 @@ for (const [name, source, entry] of [['web', root, 'src/app.js'], ['site', resol
     console.log(`runtime: ${binary.length} → ${compressed.length} bytes; SHA256 ${RUNTIME.sha256}`);
   }
   await writeNotices(dest, results, name === 'web');
-  const headers = `/*\n  X-Content-Type-Options: nosniff\n  Referrer-Policy: no-referrer\n  Permissions-Policy: camera=(), microphone=(), geolocation=()\n  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self'; img-src 'self' data: https:; connect-src 'self' wss: https://huggingface.co https://*.huggingface.co https://*.hf.co https://*.xethub.hf.co; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'\n`;
+  const headers = `/*\n  X-Content-Type-Options: nosniff\n  Referrer-Policy: no-referrer\n  Permissions-Policy: camera=(), microphone=(), geolocation=()\n  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self'; img-src 'self' data: https:; connect-src 'self' wss: https://mint.coinos.io https://upload.iris.to https://api.coinbase.com https://cdn.iris.to https://huggingface.co https://*.huggingface.co https://*.hf.co https://*.xethub.hf.co; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'\n`;
   await writeFile(resolve(dest, '_headers'), headers);
   await writeFile(resolve(dest, 'robots.txt'), 'User-agent: *\nAllow: /\n');
   const largest = await checkAssetSizes(dest);

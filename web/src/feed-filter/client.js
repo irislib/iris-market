@@ -1,3 +1,4 @@
+import { assetUrl } from '../asset-url.js'
 /*! Adapted from Iris client's src/lib/feed-filter/client.ts (MIT, Copyright 2024 Martti Malmi).
  * Upstream pilot snapshot SHA256: e25beb76a39d334d1e53159f8fa7abde84fdbc9fd27f3310d4a788018dbce09f.
  * License: ./LICENSE. Explicit loading, bounded caching, and cancellation for Iris Market. */
@@ -5,7 +6,7 @@ import { FEED_MODELS, FILTER_VERSION, MAX_LISTING_LENGTH, validateModel, validat
 export { FEED_MODELS, DEFAULT_FEED_MODEL } from './models.js'
 
 export class FeedFilterClient {
-  constructor({ WorkerImpl = globalThis.Worker, workerUrl = new URL('./feed-filter.worker.js', import.meta.url) } = {}) {
+  constructor({ WorkerImpl = globalThis.Worker, workerUrl = assetUrl('feed-filter.worker.js') } = {}) {
     this.Worker = WorkerImpl; this.workerUrl = workerUrl
     this.worker = null; this.info = null; this.serial = 0; this.generation = 0
     this.pending = new Map(); this.cache = new Map(); this.queue = Promise.resolve(); this.queued = 0; this.idleTimer = null

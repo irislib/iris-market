@@ -1,5 +1,6 @@
 import { verifyEvent } from 'nostr-tools/pure'
 import { decode } from 'nostr-tools/nip19'
+import { SocialGraph } from 'nostr-social-graph'
 import { DEFAULT_RELAYS, validateRelays } from './market.js'
 
 const MAX_EVENT_BYTES = 1024 * 1024
@@ -45,7 +46,9 @@ function contactList(input, pubkey, now) {
   }
   if (encoder.encode(JSON.stringify(event)).length > MAX_EVENT_BYTES) throw lookupError('limit', 'This public follow list exceeds the supported size.')
   if (!verifyEvent(event)) return null
-  const authors = [...new Set(event.tags.filter(tag => tag[0] === 'p' && isKey(tag[1])).map(tag => tag[1]))].sort()
+  const graph = new SocialGraph(pubkey)
+  if (!graph.handleEvent(event, true, Infinity)) return null
+  const authors = [...graph.getFollowedByUser(pubkey)].sort()
   if (authors.length > MAX_AUTHORS) throw lookupError('limit', 'This profile follows more than 256 authors, beyond the current filter limit.')
   return { authors, createdAt: event.created_at, id: event.id }
 }

@@ -29,7 +29,7 @@ import org.json.JSONObject
     val clipboard=LocalClipboardManager.current
     val conversation=state.conversations.firstOrNull{it.id==selected}
     if(conversation != null) {
-        ConversationView(conversation,model,busy){selected=null};return
+        ConversationView(conversation,state.people[conversation.id] ?: PublicPerson.unnamed(conversation.id),model,busy){selected=null};return
     }
     Column(Modifier.fillMaxSize().padding(horizontal=22.dp)) {
         Row(Modifier.padding(top=15.dp,bottom=8.dp).fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
@@ -57,31 +57,25 @@ import org.json.JSONObject
         else LazyColumn(verticalArrangement=Arrangement.spacedBy(10.dp),contentPadding=PaddingValues(bottom=30.dp)) {
             items(state.conversations,key={it.id}) { c ->
                 Surface(color=White,shape=RoundedCornerShape(20.dp),modifier=Modifier.fillMaxWidth().clickable{selected=c.id}) {
-                    Row(Modifier.padding(16.dp),verticalAlignment=Alignment.CenterVertically) {
-                        Box(Modifier.size(47.dp).background(Mint,CircleShape),contentAlignment=Alignment.Center) { Text(c.name.take(1).uppercase(),fontWeight=FontWeight.SemiBold) }
-                        Spacer(Modifier.width(13.dp));Column(Modifier.weight(1f)) {
-                            Text(c.name,fontWeight=FontWeight.SemiBold,maxLines=1,overflow=TextOverflow.Ellipsis)
-                            Spacer(Modifier.height(5.dp));Text(c.messages.lastOrNull()?.text ?: "No messages",color=Muted,maxLines=1,overflow=TextOverflow.Ellipsis,style=MaterialTheme.typography.bodyMedium)
-                        }
-                        Icon(Icons.Filled.ChevronRight,null,tint=Muted)
-                    }
+                    Box(Modifier.padding(16.dp)) { UserRow(state.people[c.id] ?: PublicPerson.unnamed(c.id),c.messages.lastOrNull()?.text ?: "No messages",47.dp) }
+
                 }
             }
         }
     }
 }
 
-@Composable fun ConversationView(c:Conversation,model:MarketModel,busy:Boolean,back:()->Unit) {
+@Composable fun ConversationView(c:Conversation,person:PublicPerson,model:MarketModel,busy:Boolean,back:()->Unit) {
     var message by remember(c.id) { mutableStateOf("") }
     Column(Modifier.fillMaxSize().padding(horizontal=18.dp).imePadding()) {
         Row(verticalAlignment=Alignment.CenterVertically) {
             IconButton(onClick=back){Icon(Icons.Filled.ArrowBack,"Back to inbox")}
-            Column { Text(c.name,fontWeight=FontWeight.SemiBold);Text("Private conversation",color=Muted,style=MaterialTheme.typography.labelSmall) }
+            Box(Modifier.weight(1f)) { UserRow(person,"Private conversation",32.dp) }
         }
         LazyColumn(Modifier.weight(1f).fillMaxWidth(),contentPadding=PaddingValues(vertical=18.dp),verticalArrangement=Arrangement.spacedBy(10.dp)) {
             items(c.messages,key={it.id}) { m ->
                 Row(Modifier.fillMaxWidth(),horizontalArrangement=if(m.mine) Arrangement.End else Arrangement.Start) {
-                    Surface(color=if(m.mine) Ink else White,contentColor=if(m.mine) OnInk else Ink,
+                    Surface(color=if(m.mine) Action else White,contentColor=if(m.mine) OnInk else Ink,
                         shape=RoundedCornerShape(19.dp),modifier=Modifier.widthIn(max=290.dp)) {
                         Text(m.text,Modifier.padding(horizontal=15.dp,vertical=12.dp),style=MaterialTheme.typography.bodyLarge)
                     }
@@ -98,17 +92,21 @@ import org.json.JSONObject
     }
 }
 
-@Composable fun ProfileView(state:MarketSnapshot,busy:Boolean,settings:()->Unit,switchMode:()->Unit,model:MarketModel,appearance:Appearance,changeAppearance:(Appearance)->Unit) {
+@Composable fun ProfileView(state:MarketSnapshot,busy:Boolean,settings:()->Unit,switchMode:()->Unit,model:MarketModel,appearance:Appearance,changeAppearance:(Appearance)->Unit,openProfile:()->Unit) {
+    var signIn by remember {mutableStateOf(false)}
+    if(signIn) { AccountSignInView(model,busy){signIn=false};return }
     val ai=remember(state.settings){JSONObject(state.settings).optJSONObject("ai")?:JSONObject()}
-    val clipboard=LocalClipboardManager.current
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal=24.dp).padding(bottom=35.dp),verticalArrangement=Arrangement.spacedBy(16.dp)) {
         Spacer(Modifier.height(7.dp))
         Text("Account",style=MaterialTheme.typography.headlineMedium)
         Row(verticalAlignment=Alignment.CenterVertically,modifier=Modifier.padding(vertical=10.dp)) {
-            Box(Modifier.size(70.dp).background(Mint,RoundedCornerShape(25.dp)),contentAlignment=Alignment.Center){Icon(Icons.Filled.Person,null,Modifier.size(34.dp),tint=Forest)}
+            UserAvatar(state.people[state.publicKey] ?: PublicPerson.unnamed(state.publicKey),70.dp)
             Spacer(Modifier.width(17.dp));Column { Text(if(state.demo) "Preview account" else "Your account",style=MaterialTheme.typography.titleLarge,fontWeight=FontWeight.SemiBold)
-                Text(if(state.demo) "Sample listings. No network activity." else "Identity stored on this device.",color=Muted,style=MaterialTheme.typography.bodySmall) }
+                if(state.demo) Text("Sample listings",color=Muted,style=MaterialTheme.typography.bodySmall) }
         }
+        OutlinedButton(onClick={signIn=true},enabled=!state.demo) {Icon(Icons.Filled.Login,null);Spacer(Modifier.width(8.dp));Text("Sign in")}
+        if(!state.demo&&!state.canSign) Text("Sign in with your account key to publish listings.",color=Muted,style=MaterialTheme.typography.bodySmall)
+        TextButton(onClick=openProfile) { Icon(Icons.Filled.AccountCircle,null);Spacer(Modifier.width(8.dp));Text("Public profile") }
         Column {
             Text("Appearance",fontWeight=FontWeight.Medium)
             Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
@@ -127,15 +125,9 @@ import org.json.JSONObject
         }
         HorizontalDivider(color=Line)
         Row(Modifier.fillMaxWidth().clickable(onClick=settings).padding(vertical=10.dp),verticalAlignment=Alignment.CenterVertically) {
-            Icon(Icons.Filled.Settings,null,tint=Forest);Spacer(Modifier.width(12.dp));Text("AI settings",Modifier.weight(1f));Icon(Icons.Filled.ChevronRight,null,tint=Muted)
+            Icon(Icons.Filled.Settings,null,tint=Forest);Spacer(Modifier.width(12.dp));Text("Settings",Modifier.weight(1f));Icon(Icons.Filled.ChevronRight,null,tint=Muted)
         }
         HorizontalDivider(color=Line)
-        if(state.publicKey.isNotBlank()) TextButton(onClick={clipboard.setText(AnnotatedString(state.publicKey))}) {
-            Icon(Icons.Filled.ContentCopy,null,Modifier.size(16.dp));Spacer(Modifier.width(7.dp));Text("Copy account ID")
-        }
-        Text(state.status,color=Muted,style=MaterialTheme.typography.bodySmall)
-        state.error?.let { Text(it,color=MaterialTheme.colorScheme.error,style=MaterialTheme.typography.bodySmall) }
         OutlinedButton(onClick=switchMode,modifier=Modifier.fillMaxWidth(),shape=RoundedCornerShape(15.dp)) { Text(if(state.demo) "Open live market" else "Open Preview") }
-        Text("Iris Market · 0.1.0",color=Muted,style=MaterialTheme.typography.labelSmall,modifier=Modifier.align(Alignment.CenterHorizontally))
     }
 }

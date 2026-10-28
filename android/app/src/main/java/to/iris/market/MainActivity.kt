@@ -17,6 +17,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
@@ -71,6 +72,7 @@ fun MarketAppView(model: MarketModel, appearance: Appearance, changeAppearance: 
     val notice by model.notice.collectAsStateWithLifecycle()
     var tab by remember { mutableIntStateOf(0) }
     var selected by remember { mutableStateOf<Listing?>(null) }
+    var profileAuthor by remember { mutableStateOf<String?>(null) }
     var posting by remember { mutableStateOf(false) }
     var settings by remember { mutableStateOf(false) }
     Scaffold(
@@ -80,15 +82,18 @@ fun MarketAppView(model: MarketModel, appearance: Appearance, changeAppearance: 
                 listOf("Browse" to Icons.Filled.Storefront, "Saved" to Icons.Filled.Bookmark,
                     "Inbox" to Icons.Filled.ChatBubble, "You" to Icons.Filled.Person).forEachIndexed { index, (label, icon) ->
                     NavigationBarItem(selected = tab == index, onClick = {
-                        tab = index
-                        if (index == 1) model.filter("", "all")
+                        if (tab != index) {
+                            tab = index
+                            if (index == 1) model.filter("", "all")
+                            else if (index == 0) model.filter("", "offer")
+                        }
                     }, icon = { Icon(icon, label, Modifier.size(23.dp)) }, label = { Text(label) },
                         colors = NavigationBarItemDefaults.colors(selectedIconColor = Ink, selectedTextColor = Ink,
                             indicatorColor = Mint, unselectedIconColor = Muted, unselectedTextColor = Muted))
                 }
             }
         }, floatingActionButton = {
-            if (tab == 0 || tab == 1) FloatingActionButton(onClick = { posting = true }, containerColor = Ink,
+            if (tab == 0 || tab == 1) FloatingActionButton(onClick = { posting = true }, containerColor = Action,
                 contentColor = OnInk, shape = CircleShape) { Icon(Icons.Filled.Add, "Create listing") }
         }
     ) { inset ->
@@ -97,27 +102,31 @@ fun MarketAppView(model: MarketModel, appearance: Appearance, changeAppearance: 
                 IrisMark(Modifier.size(27.dp)); Spacer(Modifier.width(9.dp))
                 Text("iris market", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.weight(1f))
+                val dark = MaterialTheme.colorScheme.background.luminance() < .5f
+                IconButton(onClick = { changeAppearance(if (dark) Appearance.Light else Appearance.Dark) }) {
+                    Icon(if (dark) Icons.Filled.LightMode else Icons.Filled.DarkMode, if (dark) "Use light appearance" else "Use dark appearance", tint = Muted)
+                }
                 if (state.demo) Surface(color = Sand, shape = CircleShape) {
                     Text("Preview", Modifier.padding(horizontal = 11.dp, vertical = 5.dp), style = MaterialTheme.typography.labelMedium)
-                } else Surface(color = Mint, shape = CircleShape) {
-                    Row(Modifier.padding(horizontal = 10.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.size(6.dp).background(Forest, CircleShape)); Spacer(Modifier.width(5.dp))
-                        Text("Open network", style = MaterialTheme.typography.labelSmall)
-                    }
                 }
             }
             when (tab) {
                 0 -> BrowseView(state, model, busy, selected = { selected = it }, settings = { settings = true })
                 1 -> SavedView(state, model, selected = { selected = it })
                 2 -> InboxView(state, model, busy)
-                3 -> ProfileView(state, busy, { settings = true }, { switchMode(!state.demo) }, model, appearance, changeAppearance)
+                3 -> ProfileView(state, busy, { settings = true }, { switchMode(!state.demo) }, model, appearance, changeAppearance, openProfile={profileAuthor=state.publicKey})
             }
         }
     }
     selected?.let { original ->
         val listing = state.listings.firstOrNull { it.id == original.id } ?: original
         ModalBottomSheet(onDismissRequest = { selected = null }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = Cream) {
-            ListingDetail(listing, state.demo, model, busy) { selected = null; tab = 2 }
+            ListingDetail(listing, state.demo, model, busy, person=state.people[listing.author], openProfile={ profileAuthor=it; selected=null }) { selected = null; tab = 2 }
+        }
+    }
+    profileAuthor?.let { author ->
+        ModalBottomSheet(onDismissRequest={profileAuthor=null},sheetState=rememberModalBottomSheetState(skipPartiallyExpanded=true),containerColor=Cream) {
+            PublicProfileView(author,state,model,openListing={profileAuthor=null;selected=it}) { profileAuthor=null }
         }
     }
     if (posting) ModalBottomSheet(onDismissRequest = { posting = false }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = Cream) {

@@ -1,3 +1,4 @@
+import { assetUrl } from '../asset-url.js'
 /*! Adapted from Iris client's src/lib/feed-filter/inference.ts (MIT, Copyright 2024 Martti Malmi).
  * Upstream pilot snapshot SHA256: 4fc1a0e9646fe5f6a957e9a0b36b4833814bf96f5bb4d3e7ab8421ebe63aebc2.
  * License: ./LICENSE. Prompts adapted to listings; marketplace accuracy is unverified. */
@@ -11,7 +12,7 @@ env.cacheKey = 'iris-market-local-filter-v1'
 // Use the shipped same-origin WASM module directly, avoiding a generated blob module.
 env.useWasmCache = false
 env.backends.onnx.wasm.wasmPaths = {
-  mjs: new URL(`./${RUNTIME.mjs}`, import.meta.url).href,
+  mjs: assetUrl(RUNTIME.mjs),
 }
 env.backends.onnx.wasm.numThreads = 1
 env.backends.onnx.wasm.proxy = false
@@ -71,7 +72,7 @@ export async function classifyListing(condition, content) {
   try {
     let score
     if (info.model === 'deberta') {
-      inputs = tokenizer(listing, { text_pair: `This marketplace listing matches this request: ${condition}`, truncation: true, max_length: 512 })
+      inputs = tokenizer(listing, { text_pair: condition, truncation: true, max_length: 512 })
       output = await model(inputs)
       const logits = output.logits, offset = logits.data.length - logits.dims.at(-1)
       score = 1 / (1 + Math.exp(Number(logits.data[offset]) - Number(logits.data[offset + 1])))

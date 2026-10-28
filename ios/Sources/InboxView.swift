@@ -1,5 +1,4 @@
 import SwiftUI
-import UIKit
 
 struct InboxView: View {
     @EnvironmentObject private var store: MarketStore
@@ -16,11 +15,7 @@ struct InboxView: View {
                     VStack(spacing: 0) {
                         ForEach(store.snapshot.conversations) { conversation in
                             Button { selected = conversation } label: {
-                                HStack(spacing: 13) {
-                                    Text(String(conversation.name.prefix(1)).uppercased()).font(.system(size: 22, weight: .medium, design: .serif)).frame(width: 53, height: 53).background(MarketTheme.mint.opacity(0.65), in: RoundedRectangle(cornerRadius: 19))
-                                    VStack(alignment: .leading, spacing: 5) { Text(conversation.name).font(.system(size: 16, weight: .semibold)); Text(conversation.messages.last?.text ?? "No messages").font(.system(size: 13)).foregroundStyle(MarketTheme.muted).lineLimit(1) }
-                                    Spacer(); Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold)).foregroundStyle(MarketTheme.muted)
-                                }.foregroundStyle(MarketTheme.ink).padding(.vertical, 17)
+                                UserRow(person: store.snapshot.people[conversation.id] ?? .unnamed(conversation.id), subtitle: conversation.messages.last?.text ?? "No messages", size: 48).padding(.vertical, 17)
                             }.buttonStyle(.plain)
                             Divider().overlay(MarketTheme.line)
                         }
@@ -45,7 +40,7 @@ struct InvitationView: View {
                     Text("Exchange a private invitation with the person you want to talk to.").font(.system(size: 15)).lineSpacing(4).foregroundStyle(MarketTheme.muted)
                     VStack(alignment: .leading, spacing: 12) {
                         Text("Accept invitation").font(.system(size: 15, weight: .semibold))
-                        TextField("Paste invitation", text: $input, prompt: Text("Paste invitation").foregroundColor(MarketTheme.muted), axis: .vertical).lineLimit(2...5).font(.system(size: 13)).textInputAutocapitalization(.never).autocorrectionDisabled().padding(15).background(MarketTheme.surface, in: RoundedRectangle(cornerRadius: 15)).accessibilityIdentifier("inviteInput")
+                        TextField("Paste invitation", text: $input, prompt: Text("Paste invitation").foregroundColor(MarketTheme.muted), axis: .vertical).lineLimit(2...5).font(.system(size: 13)).marketNoAutocapitalization().autocorrectionDisabled().padding(15).background(MarketTheme.surface, in: RoundedRectangle(cornerRadius: 15)).accessibilityIdentifier("inviteInput")
                         Button { store.command(["type": "accept_invite", "invite": input]) { if $0 { dismiss() } } } label: { Text("Accept invitation") }.buttonStyle(PrimaryButton()).disabled(input.isEmpty || store.busy || store.demo)
                     }
                     Rectangle().fill(MarketTheme.line).frame(height: 1)
@@ -53,7 +48,7 @@ struct InvitationView: View {
                         Text("Share invitation").font(.system(size: 15, weight: .semibold))
                         if let invite = store.snapshot.invite, !invite.isEmpty {
                             ShareLink(item: invite) { Label("Share invitation", systemImage: "square.and.arrow.up") }.buttonStyle(PrimaryButton(dark: false))
-                            Button { UIPasteboard.general.string = invite } label: { Label("Copy invitation", systemImage: "doc.on.doc") }.font(.system(size: 13)).frame(maxWidth: .infinity)
+                            Button { MarketPlatform.copyToClipboard(invite) } label: { Label("Copy invitation", systemImage: "doc.on.doc") }.font(.system(size: 13)).frame(maxWidth: .infinity)
                         } else {
                             Button { store.command(["type": "create_invite"]) } label: { Label("Create invitation", systemImage: "plus") }.buttonStyle(PrimaryButton(dark: false)).disabled(store.busy || store.demo)
                         }
@@ -61,8 +56,8 @@ struct InvitationView: View {
                     MarketInlineError()
                     if store.demo { Text("Invitations are unavailable in preview mode.").font(.system(size: 12)).foregroundStyle(MarketTheme.muted) }
                 }.padding(25)
-            }.background(MarketTheme.paper).navigationTitle("Private invitation").navigationBarTitleDisplayMode(.inline)
-                .toolbar { ToolbarItem(placement: .navigationBarTrailing) { Button("Done") { dismiss() } } }
+            }.background(MarketTheme.paper).navigationTitle("Private invitation").marketInlineTitle()
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         }
     }
 }
@@ -96,8 +91,11 @@ struct ConversationView: View {
                     TextField("Write a message…", text: $text, prompt: Text("Write a message…").foregroundColor(MarketTheme.muted), axis: .vertical).lineLimit(1...5).padding(14).background(MarketTheme.surface, in: RoundedRectangle(cornerRadius: 20)).accessibilityIdentifier("messageInput")
                     Button { send() } label: { Image(systemName: "arrow.up").font(.system(size: 18, weight: .semibold)).foregroundStyle(MarketTheme.onAction).frame(width: 44, height: 44).background(MarketTheme.action, in: Circle()) }.disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.busy || store.demo).accessibilityLabel("Send message")
                 }.padding(16)
-            }.background(MarketTheme.paper).navigationTitle(current.name).navigationBarTitleDisplayMode(.inline)
-                .toolbar { ToolbarItem(placement: .navigationBarLeading) { Button("Done") { dismiss() } } }
+            }.background(MarketTheme.paper).navigationTitle("").marketInlineTitle()
+                .toolbar {
+                    ToolbarItem(placement: .principal) { UserRow(person: store.snapshot.people[current.id] ?? .unnamed(current.id), size: 30) }
+                    ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
+                }
         }
     }
     private func send() { let pending = text; store.command(["type": "send_message", "peer_id": conversation.id, "text": pending]) { if $0 { text = "" } } }

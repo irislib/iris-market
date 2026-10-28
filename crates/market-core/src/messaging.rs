@@ -1,4 +1,4 @@
-//! Private, single-device marketplace conversations over the shared NDR engine.
+//! Private marketplace conversations over the shared Iris Chat NDR engine.
 //!
 //! Transport deliberately lives outside this module. `PrivateSubscription::scope`
 //! identifies an isolated receive-only anonymous connection. Outbound events must
@@ -20,14 +20,17 @@ use chacha20poly1305::{
 use fs2::FileExt;
 use hkdf::Hkdf;
 use iris_chat_protocol::{
-    INVITE_EVENT_KIND, INVITE_RESPONSE_KIND, Invite, MESSAGE_EVENT_KIND,
-    ProtocolAcceptInviteOutcome, ProtocolDecryptedMessage, ProtocolEffect, ProtocolEngine,
-    ProtocolInviteSessionImportOutcome, ProtocolRetryBatch, StorageAdapter, StorageError,
-    StorageResult, UnixSeconds, invite_unsigned_event, invite_url, parse_invite_event,
-    parse_invite_response_event, parse_invite_url,
+    APP_KEYS_EVENT_KIND, INVITE_EVENT_KIND, INVITE_LIST_LABEL, INVITE_RESPONSE_KIND, Invite,
+    MESSAGE_EVENT_KIND, ProtocolAcceptInviteOutcome, ProtocolDecryptedMessage, ProtocolEffect,
+    ProtocolEngine, ProtocolInviteSessionImportOutcome, ProtocolRetryBatch, StorageAdapter,
+    StorageError, StorageResult, UnixSeconds, app_keys_event_is_acceptable_for_owner,
+    invite_unsigned_event, invite_url, parse_invite_event, parse_invite_response_event,
+    parse_invite_url,
 };
-use nostr::{Event, Filter, JsonUtil, Keys, Kind, PublicKey, UnsignedEvent};
-use nostr_double_ratchet::ProtocolContext;
+use nostr::{
+    Alphabet, Event, Filter, JsonUtil, Keys, Kind, PublicKey, SingleLetterTag, UnsignedEvent,
+};
+use nostr_double_ratchet::{DeviceMembership, ProtocolContext, VerifiedAppKeysIndex};
 use rand::{RngCore, rngs::OsRng};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -41,7 +44,7 @@ const MAX_OUTBOX: usize = 256;
 const MAX_THREADS: usize = 256;
 const MAX_THREAD_MESSAGES: usize = 10_000;
 const MAX_SEEN: usize = 8192;
-const PUBLIC_CONTACT_ID: &str = "double-ratchet/invites/iris-market";
+const INVITE_PREFIX: &str = "double-ratchet/invites/";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Message {
@@ -72,6 +75,8 @@ struct QueuedPublish {
     event: Event,
     inner_id: Option<String>,
     peer_id: String,
+    #[serde(default)]
+    recipient_device_owner: Option<PublicKey>,
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -81,6 +86,8 @@ struct PrivateState {
     seen: Vec<String>,
     #[serde(default)]
     public_invite: Option<Invite>,
+    #[serde(default)]
+    authorization_heads: BTreeMap<String, Vec<Event>>,
 }
 
 /// All protocol keys, plaintext messages and queued ciphertext are encrypted at
@@ -88,6 +95,8 @@ struct PrivateState {
 /// user-visible state/outbox, including rollback/reload on failed mutations.
 pub struct Messaging {
     keys: Keys,
+    owner: PublicKey,
+    owner_keys: Option<Keys>,
     store: Arc<EncryptedStore>,
     engine: ProtocolEngine,
     state: PrivateState,
@@ -95,23 +104,118 @@ pub struct Messaging {
 
 impl Messaging {
     pub fn open(data_dir: &Path, keys: Keys) -> MessagingResult<Self> {
-        let store = Arc::new(EncryptedStore::open(data_dir, &keys)?);
-        let mut engine = make_engine(Arc::clone(&store), &keys)?;
-        engine
-            .authenticate_local_owner_for_sending(&keys)
-            .map_err(protocol_error)?;
+        Self::open_identity(data_dir, keys.public_key(), Some(keys.clone()), keys, None)
+    }
+
+    pub fn open_identity(
+        data_dir: &Path,
+        owner: PublicKey,
+        owner_keys: Option<Keys>,
+        device_keys: Keys,
+        authorization: Option<&Event>,
+    ) -> MessagingResult<Self> {
+        if owner_keys
+            .as_ref()
+            .is_some_and(|keys| keys.public_key() != owner)
+        {
+            return Err("The account key does not match this account".into());
+        }
+        // The existing key remains the at-rest key for legacy profiles. New
+        // accounts use their stable device key, independent of owner signing.
+        let store = Arc::new(EncryptedStore::open(data_dir, &device_keys)?);
+        let owner_binding = "market/account-owner-v1";
+        match store.get(owner_binding).map_err(storage_error)? {
+            Some(stored) if stored != owner.to_hex() => {
+                return Err("Existing conversations belong to a different account".into());
+            }
+            Some(_) => {}
+            None => {
+                if owner != device_keys.public_key()
+                    && !store.list("").map_err(storage_error)?.is_empty()
+                {
+                    return Err("Existing conversations belong to a different account".into());
+                }
+                store
+                    .put(owner_binding, owner.to_hex())
+                    .map_err(storage_error)?;
+            }
+        }
+        let mut engine = make_engine(Arc::clone(&store), owner, &device_keys)?;
+        if let Some(keys) = &owner_keys {
+            engine
+                .authenticate_local_owner_for_sending(keys)
+                .map_err(protocol_error)?;
+        }
         let state = read_state(&store)?;
-        Ok(Self {
-            keys,
+        let mut this = Self {
+            owner,
+            owner_keys,
+            keys: device_keys,
             store,
             engine,
             state,
+        };
+        if let Some(event) = authorization {
+            if event.pubkey != owner {
+                return Err("Device authorization belongs to a different account".into());
+            }
+            this.ingest_authorization(event)?;
+        }
+        Ok(this)
+    }
+
+    pub fn can_send(&self) -> bool {
+        match self.engine.signed_local_device_authorization() {
+            Some(authorized) => authorized,
+            None => self.owner == self.keys.public_key(),
+        }
+    }
+    pub fn import_link_session(
+        &mut self,
+        event_id: &str,
+        owner: PublicKey,
+        approver: PublicKey,
+        session: iris_chat_protocol::SessionState,
+    ) -> MessagingResult<()> {
+        self.require_authorization()?;
+        if owner != self.owner {
+            return Err("Device link belongs to a different account".into());
+        }
+        self.transaction(|this| {
+            match this
+                .engine
+                .import_private_invite_session_once(
+                    event_id,
+                    owner,
+                    approver,
+                    session,
+                    UnixSeconds(now()),
+                )
+                .map_err(protocol_error)?
+            {
+                ProtocolInviteSessionImportOutcome::Imported(batch) => this.apply_batch(batch),
+                ProtocolInviteSessionImportOutcome::AlreadyImported => Ok(()),
+                ProtocolInviteSessionImportOutcome::Blocked(_) => {
+                    Err("Approving device is not authorized".into())
+                }
+            }
         })
+    }
+    pub fn device_public_key(&self) -> PublicKey {
+        self.keys.public_key()
+    }
+    fn require_authorization(&self) -> MessagingResult<()> {
+        if self.can_send() {
+            Ok(())
+        } else {
+            Err("This device needs account approval before messaging".into())
+        }
     }
 
     /// The returned link is a private capability; never publish it as a listing
     /// tag, put it in analytics, or append it to a download-site URL.
     pub fn invite(&self) -> MessagingResult<String> {
+        self.require_authorization()?;
         let invite = self
             .engine
             .local_invite()
@@ -124,12 +228,16 @@ impl Messaging {
     /// The caller publishes the returned standard contact record as public data;
     /// it must never put private invitation URLs into listing tags.
     pub fn public_contact_event(&mut self) -> MessagingResult<Event> {
+        self.require_authorization()?;
         self.transaction(|this| {
             if this.state.public_invite.is_none() {
-                let mut invite =
-                    Invite::create_new(this.keys.public_key(), Some("iris-market".into()), None)
-                        .map_err(protocol_error)?;
-                invite.owner_public_key = Some(this.keys.public_key());
+                let mut invite = Invite::create_new(
+                    this.keys.public_key(),
+                    Some(this.keys.public_key().to_hex()),
+                    None,
+                )
+                .map_err(protocol_error)?;
+                invite.owner_public_key = Some(this.owner);
                 this.state.public_invite = Some(invite);
             }
             let invite = this
@@ -144,6 +252,16 @@ impl Messaging {
         })
     }
 
+    /// Approved devices advertise the canonical public contact capability on
+    /// account open, including linked devices that cannot publish listings.
+    /// Legacy owner=device profiles remain private until an explicit action.
+    pub fn registered_contact_event(&mut self) -> MessagingResult<Option<Event>> {
+        if self.engine.signed_local_device_authorization() != Some(true) {
+            return Ok(None);
+        }
+        self.public_contact_event().map(Some)
+    }
+
     /// Fetch this filter through its own anonymous discovery connection. The
     /// expected seller identity comes from the verified listing, never a model.
     pub fn contact_discovery_filter(author: &str) -> MessagingResult<PrivateSubscription> {
@@ -153,8 +271,8 @@ impl Messaging {
             filter: Filter::new()
                 .kind(Kind::from(INVITE_EVENT_KIND as u16))
                 .author(author)
-                .identifier(PUBLIC_CONTACT_ID)
-                .limit(4),
+                .custom_tag(SingleLetterTag::lowercase(Alphabet::L), INVITE_LIST_LABEL)
+                .limit(16),
         })
     }
 
@@ -171,56 +289,137 @@ impl Messaging {
         event
             .verify()
             .map_err(|_| "Contact invitation signature is invalid".to_string())?;
-        if event.pubkey != expected || event.kind.as_u16() as u32 != INVITE_EVENT_KIND {
+        if event.kind.as_u16() as u32 != INVITE_EVENT_KIND {
             return Err("Contact invitation does not belong to this listing's author".into());
         }
-        let invite = parse_invite_event(event).map_err(protocol_error)?;
-        if invite.inviter_device_pubkey.to_bytes() != expected.to_bytes()
-            || invite_owner(&invite)? != expected
+        let mut invite = parse_invite_event(event).map_err(protocol_error)?;
+        let claimed = invite.owner_public_key.is_some() || invite.inviter_owner_pubkey.is_some();
+        if invite.inviter_device_pubkey.to_bytes() != event.pubkey.to_bytes()
+            || (claimed && invite_owner(&invite)? != expected)
         {
             return Err("Contact invitation identity could not be verified".into());
         }
         if !event.tags.iter().any(|tag| {
             let values = tag.as_slice();
-            values.len() == 2 && values[0] == "d" && values[1] == PUBLIC_CONTACT_ID
+            values.len() == 2 && values[0] == "d" && values[1].starts_with(INVITE_PREFIX)
         }) {
-            return Err("This is not a Market contact invitation".into());
+            return Err("This is not an Iris Chat contact invitation".into());
         }
+        // Public JS device invites deliberately omit an owner tag. The listing
+        // identifies the expected owner; the engine must verify its signed roster.
+        invite.owner_public_key = Some(expected);
+        invite.inviter_owner_pubkey = Some(nostr_double_ratchet::OwnerPubkey::from_bytes(
+            expected.to_bytes(),
+        ));
         self.accept_invite(
             &invite_url(&invite, "https://market.iris.to/invite").map_err(protocol_error)?,
         )
     }
 
     pub fn accept_invite(&mut self, input: &str) -> MessagingResult<String> {
+        self.require_authorization()?;
         if input.len() > 64 * 1024 {
             return Err("Invitation is too large".into());
         }
         let invite = parse_invite_url(input.trim())
             .map_err(|_| "This invitation is not valid".to_string())?;
-        let peer = PublicKey::from_slice(&invite.inviter_device_pubkey.to_bytes())
-            .map_err(|_| "This invitation has an invalid identity".to_string())?;
-        if invite_owner(&invite)? != peer {
-            return Err("This preview supports single-device invitations. Linked-device invitations are not supported yet.".into());
-        }
-        if peer == self.keys.public_key() {
-            return Err("This is your own invitation".into());
+        let peer = invite_owner(&invite)?;
+        if invite.inviter_device_pubkey.to_bytes() == self.keys.public_key().to_bytes() {
+            return Err("This is this device’s own invitation".into());
         }
         self.transaction(move |this| {
             let result = this
                 .engine
                 .accept_invite(&invite, Some(peer))
                 .map_err(protocol_error)?;
-            let ProtocolAcceptInviteOutcome::Accepted(result) = result else {
-                return Err("This invitation's device could not be verified".into());
+            let result = match result {
+                ProtocolAcceptInviteOutcome::Accepted(result) => result,
+                ProtocolAcceptInviteOutcome::Blocked(
+                    iris_chat_protocol::ProtocolAcceptInviteBlock::MissingOwnerRoster { .. },
+                ) => {
+                    return Err(
+                        "Load this person's signed device authorization before connecting".into(),
+                    );
+                }
+                ProtocolAcceptInviteOutcome::Blocked(
+                    iris_chat_protocol::ProtocolAcceptInviteBlock::UnauthorizedDevice { .. },
+                ) => return Err("This device is no longer authorized by its account".into()),
             };
             let id = result.owner_pubkey.to_hex();
-            this.ensure_conversation(&id)?;
+            if result.owner_pubkey != this.owner {
+                this.ensure_conversation(&id)?;
+            }
             this.queue_effects(result.effects)?;
             Ok(id)
         })
     }
 
+    /// Public authorization is accepted only as exact signed evidence. The
+    /// shared engine owns timestamp conflicts, revocations and persisted proofs.
+    pub fn ingest_authorization(&mut self, event: &Event) -> MessagingResult<()> {
+        if !app_keys_event_is_acceptable_for_owner(event.pubkey, event, now()) {
+            return Err("Invalid signed device authorization".into());
+        }
+        self.transaction(|this| {
+            let heads = this
+                .state
+                .authorization_heads
+                .entry(event.pubkey.to_hex())
+                .or_default();
+            let newest = heads.first().map(|head| head.created_at);
+            if newest.is_none_or(|time| event.created_at > time) {
+                *heads = vec![event.clone()];
+            } else if newest == Some(event.created_at)
+                && !heads.iter().any(|head| head.id == event.id)
+                && heads.len() < 2
+            {
+                // Two differing latest heads suffice to retain a conflict. Never
+                // discard one in favor of arrival order or a cached roster.
+                heads.push(event.clone());
+            }
+            let before = this
+                .engine
+                .known_device_identity_pubkeys_for_owner(event.pubkey);
+            let batch = this
+                .engine
+                .ingest_app_keys_event(event)
+                .map_err(protocol_error)?;
+            let after = this
+                .engine
+                .known_device_identity_pubkeys_for_owner(event.pubkey);
+            if before.iter().any(|device| !after.contains(device)) {
+                // Already sealed envelopes cannot be retargeted. Preserve their
+                // visible messages, but never retry a removed device's copies.
+                let peer = event.pubkey.to_hex();
+                this.state.outbox.retain(|_, queued| queued.peer_id != peer);
+                if let Some(thread) = this.state.conversations.get_mut(&peer) {
+                    for message in &mut thread.messages {
+                        if message.mine && message.delivery == "pending" {
+                            message.delivery = "failed".into();
+                        }
+                    }
+                }
+            }
+            this.apply_batch(batch)
+        })
+    }
+
+    pub fn authorization_filter(owner: PublicKey) -> Filter {
+        Filter::new()
+            .kind(Kind::from(APP_KEYS_EVENT_KIND as u16))
+            .author(owner)
+            .limit(16)
+    }
+
+    pub fn invitation_owner(input: &str) -> MessagingResult<PublicKey> {
+        if input.len() > 64 * 1024 {
+            return Err("Invitation is too large".into());
+        }
+        invite_owner(&parse_invite_url(input.trim()).map_err(protocol_error)?)
+    }
+
     pub fn send(&mut self, peer_id: &str, text: &str) -> MessagingResult<()> {
+        self.require_authorization()?;
         let peer = PublicKey::parse(peer_id).map_err(|_| "Invalid conversation".to_string())?;
         let id = peer.to_hex();
         let text = text.trim().to_string();
@@ -264,6 +463,52 @@ impl Messaging {
         event
             .verify()
             .map_err(|_| "Private event signature is invalid".to_string())?;
+        if event.kind.as_u16() as u32 == APP_KEYS_EVENT_KIND {
+            if event.pubkey != self.owner
+                && !self
+                    .state
+                    .conversations
+                    .contains_key(&event.pubkey.to_hex())
+            {
+                return Err("Unrequested device authorization".into());
+            }
+            return self.ingest_authorization(event);
+        }
+        if event.kind.as_u16() as u32 == INVITE_EVENT_KIND {
+            let invite = parse_invite_event(event).map_err(protocol_error)?;
+            let owner =
+                if invite.owner_public_key.is_some() || invite.inviter_owner_pubkey.is_some() {
+                    invite_owner(&invite)?
+                } else {
+                    let owners = self
+                        .engine
+                        .known_verified_peer_owner_pubkeys()
+                        .into_iter()
+                        .filter(|owner| {
+                            self.engine
+                                .owner_device_binding_is_verified(*owner, event.pubkey)
+                        })
+                        .collect::<Vec<_>>();
+                    if owners.len() != 1 {
+                        return Err("Device invitation has no unique verified account".into());
+                    }
+                    owners[0]
+                };
+            if (owner != self.owner && !self.state.conversations.contains_key(&owner.to_hex()))
+                || !self
+                    .engine
+                    .owner_device_binding_is_verified(owner, event.pubkey)
+            {
+                return Err("Unrequested device invitation".into());
+            }
+            return self.transaction(|this| {
+                let batch = this
+                    .engine
+                    .observe_invite_event(event)
+                    .map_err(protocol_error)?;
+                this.apply_batch(batch)
+            });
+        }
         if !matches!(
             event.kind.as_u16() as u32,
             INVITE_RESPONSE_KIND | MESSAGE_EVENT_KIND
@@ -371,6 +616,28 @@ impl Messaging {
                     .limit(128),
             });
         }
+        for owner in std::iter::once(self.owner).chain(
+            self.state
+                .conversations
+                .keys()
+                .filter_map(|id| PublicKey::from_hex(id).ok()),
+        ) {
+            result.push(PrivateSubscription {
+                scope: format!("private-authorization-{}", owner.to_hex()),
+                filter: Filter::new()
+                    .kinds([Kind::from(APP_KEYS_EVENT_KIND as u16), Kind::Metadata])
+                    .author(owner)
+                    .limit(20),
+            });
+            for device in self.engine.known_device_identity_pubkeys_for_owner(owner) {
+                result.push(PrivateSubscription {
+                    scope: format!("private-device-invites-{}", device.to_hex()),
+                    filter: Self::contact_discovery_filter(&device.to_hex())
+                        .expect("valid device")
+                        .filter,
+                });
+            }
+        }
         // Cold-delivery envelopes disclose only the recipient. The sender uses
         // unlinkable session keys. Keep this scope separate from session authors.
         result.push(PrivateSubscription {
@@ -393,11 +660,44 @@ impl Messaging {
     }
 
     pub fn pending_outbound(&self) -> Vec<Event> {
+        if !self.can_send() {
+            return Vec::new();
+        }
         self.state
             .outbox
             .values()
+            .filter(|queued| self.outbound_is_authorized(queued))
             .map(|queued| queued.event.clone())
             .collect()
+    }
+
+    fn outbound_is_authorized(&self, queued: &QueuedPublish) -> bool {
+        let Ok(peer) = PublicKey::from_hex(&queued.peer_id) else {
+            return false;
+        };
+        let recipient = if queued.event.kind.as_u16() as u32 == MESSAGE_EVENT_KIND {
+            queued.event.tags.public_keys().next().copied()
+        } else {
+            None
+        };
+        let owner = queued.recipient_device_owner.unwrap_or(peer);
+        if let Some(heads) = self.state.authorization_heads.get(&owner.to_hex()) {
+            if heads.len() != 1 {
+                return false;
+            }
+            if let Some(device) = recipient {
+                let mut index = VerifiedAppKeysIndex::default();
+                if index.ingest(heads[0].clone(), now()).is_err() {
+                    return false;
+                }
+                return index.membership(owner, device) == DeviceMembership::Authorized;
+            }
+            // A hot session may have no destination tag, but an empty or
+            // conflicting peer roster still cannot authorize a retransmission.
+            return iris_chat_protocol::AppKeys::from_event(&heads[0])
+                .is_ok_and(|keys| !keys.get_all_devices().is_empty());
+        }
+        true // Legacy checkpoints retain their original engine authorization.
     }
 
     /// Relay acknowledgement means stored by a relay, not read by the peer.
@@ -444,15 +744,18 @@ impl Messaging {
             .map_err(protocol_error)?;
         let device = PublicKey::from_slice(&response.invitee_device_pubkey.to_bytes())
             .map_err(protocol_error)?;
-        if response.resolved_owner_pubkey() != device {
-            return Err("Linked-device contact requests are not supported yet".into());
-        }
-        self.ensure_conversation(&device.to_hex())?;
+        let owner = response.resolved_owner_pubkey();
+        let proof = self
+            .engine
+            .ingest_invite_response_owner_proof(&invite, event, owner, device)
+            .map_err(protocol_error)?;
+        self.apply_batch(proof)?;
+        self.ensure_conversation(&owner.to_hex())?;
         let outcome = self
             .engine
             .import_private_invite_session_once(
                 &event.id.to_hex(),
-                device,
+                owner,
                 device,
                 response.session.state,
                 UnixSeconds(now()),
@@ -519,7 +822,7 @@ impl Messaging {
             event
                 .verify()
                 .map_err(|_| "Invalid outgoing private event".to_string())?;
-            if event.pubkey == self.keys.public_key() {
+            if event.pubkey == self.keys.public_key() || event.pubkey == self.owner {
                 return Err("Refusing identity-signed private publication".into());
             }
             if !matches!(
@@ -532,12 +835,31 @@ impl Messaging {
             if !self.state.outbox.contains_key(&id) && self.state.outbox.len() >= MAX_OUTBOX {
                 return Err("Private message queue is full".into());
             }
+            // Own-device copies have the conversation peer in chat_id. Retain
+            // the actual destination owner before a later revocation removes
+            // that device from the current roster.
+            let recipient_device_owner = if event.kind.as_u16() as u32 == MESSAGE_EVENT_KIND {
+                event.tags.public_keys().next().and_then(|device| {
+                    if self
+                        .engine
+                        .known_device_identity_pubkeys_for_owner(self.owner)
+                        .contains(device)
+                    {
+                        Some(self.owner)
+                    } else {
+                        PublicKey::from_hex(&publish.chat_id).ok()
+                    }
+                })
+            } else {
+                PublicKey::from_hex(&publish.chat_id).ok()
+            };
             self.state.outbox.insert(
                 id,
                 QueuedPublish {
                     event,
                     inner_id: publish.inner_event_id,
                     peer_id: publish.chat_id,
+                    recipient_device_owner,
                 },
             );
         }
@@ -563,13 +885,15 @@ impl Messaging {
         if inner.kind != Kind::from(14) {
             return Ok(());
         }
-        if inner.pubkey != message.sender {
+        // Iris Chat JS writes the authenticated device key into kind-14 rumors.
+        // The shared engine has already resolved that device to its signed owner.
+        if inner.pubkey != message.sender && Some(inner.pubkey) != message.sender_device {
             return Err("Private message author does not match the authenticated sender".into());
         }
         if inner.content.len() > MAX_MESSAGE_BYTES {
             return Err("Received message is too long".into());
         }
-        let mine = message.sender == self.keys.public_key();
+        let mine = message.sender == self.owner;
         let peer = if mine {
             message.conversation_owner.unwrap_or(message.sender)
         } else {
@@ -605,10 +929,12 @@ impl Messaging {
             // Protocol operations may have mutated memory before SQLite failed.
             // Reload the committed snapshot instead of continuing a divergent ratchet.
             self.state = read_state(&self.store)?;
-            self.engine = make_engine(Arc::clone(&self.store), &self.keys)?;
-            self.engine
-                .authenticate_local_owner_for_sending(&self.keys)
-                .map_err(protocol_error)?;
+            self.engine = make_engine(Arc::clone(&self.store), self.owner, &self.keys)?;
+            if let Some(keys) = &self.owner_keys {
+                self.engine
+                    .authenticate_local_owner_for_sending(keys)
+                    .map_err(protocol_error)?;
+            }
         }
         result
     }
@@ -630,9 +956,12 @@ fn invite_owner(invite: &Invite) -> MessagingResult<PublicKey> {
     Ok(invite.owner_public_key.or(tagged).unwrap_or(device))
 }
 
-fn make_engine(store: Arc<EncryptedStore>, keys: &Keys) -> MessagingResult<ProtocolEngine> {
-    ProtocolEngine::load_or_create_for_local_device(store, keys.public_key(), keys)
-        .map_err(protocol_error)
+fn make_engine(
+    store: Arc<EncryptedStore>,
+    owner: PublicKey,
+    keys: &Keys,
+) -> MessagingResult<ProtocolEngine> {
+    ProtocolEngine::load_or_create_for_local_device(store, owner, keys).map_err(protocol_error)
 }
 fn read_state(store: &EncryptedStore) -> MessagingResult<PrivateState> {
     match store.get(APP_STATE).map_err(storage_error)? {

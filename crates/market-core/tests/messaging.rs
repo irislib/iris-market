@@ -191,3 +191,196 @@ fn public_contact_is_separate_and_bound_to_listing_author() {
         iris_chat_protocol::invite_url(&private, "https://market.iris.to/invite").unwrap()
     );
 }
+
+fn signed_roster(owner: &Keys, devices: &[nostr::PublicKey], timestamp: u64) -> Event {
+    iris_chat_protocol::AppKeys::new(
+        devices
+            .iter()
+            .map(|device| iris_chat_protocol::DeviceEntry::new(*device, timestamp))
+            .collect(),
+    )
+    .get_event_at(owner.public_key(), timestamp)
+    .sign_with_keys(owner)
+    .unwrap()
+}
+
+fn peer_receive(
+    engine: &mut iris_chat_protocol::ProtocolEngine,
+    events: Vec<Event>,
+) -> Vec<String> {
+    let mut texts = Vec::new();
+    for event in events {
+        match event.kind.as_u16() as u32 {
+            iris_chat_protocol::INVITE_RESPONSE_KIND => {
+                for message in engine
+                    .observe_invite_response_event(&event)
+                    .unwrap()
+                    .direct_messages
+                {
+                    texts.push(message.content);
+                }
+            }
+            iris_chat_protocol::MESSAGE_EVENT_KIND => {
+                if let Some(message) = engine.process_direct_message_event(&event).unwrap() {
+                    texts.push(message.content);
+                }
+            }
+            _ => panic!("unexpected private event"),
+        }
+    }
+    texts
+}
+
+#[test]
+fn iris_chat_linked_device_invite_requires_signed_authorization_and_honors_revocation() {
+    use iris_chat_protocol::{InMemoryStorage, ProtocolEngine, invite_unsigned_event};
+    use std::sync::Arc;
+    let directory = TempDir::new().unwrap();
+    let market_keys = Keys::generate();
+    let owner = Keys::generate();
+    let device = Keys::generate();
+    let mut market = Messaging::open(directory.path(), market_keys.clone()).unwrap();
+    let mut chat = ProtocolEngine::load_or_create_for_local_device(
+        Arc::new(InMemoryStorage::new()),
+        owner.public_key(),
+        &device,
+    )
+    .unwrap();
+    chat.authenticate_local_owner_for_sending(&owner).unwrap();
+    let now = nostr::Timestamp::now().as_secs();
+    let authorization = signed_roster(&owner, &[device.public_key()], now);
+    chat.ingest_app_keys_event(&authorization).unwrap();
+    let unsigned = invite_unsigned_event(&chat.local_invite().unwrap()).unwrap();
+    let invite = nostr::EventBuilder::new(unsigned.kind, unsigned.content)
+        .tags(
+            unsigned
+                .tags
+                .iter()
+                .filter(|tag| {
+                    tag.as_slice()
+                        .first()
+                        .is_none_or(|name| name != "ownerPublicKey")
+                })
+                .cloned(),
+        )
+        .sign_with_keys(&device)
+        .unwrap();
+    assert!(
+        market
+            .accept_public_contact_event(&invite, &owner.public_key().to_hex())
+            .is_err()
+    );
+    assert!(market.conversations().is_empty());
+    market.ingest_authorization(&authorization).unwrap();
+    assert_eq!(
+        market
+            .accept_public_contact_event(&invite, &owner.public_key().to_hex())
+            .unwrap(),
+        owner.public_key().to_hex()
+    );
+    peer_receive(&mut chat, market.pending_outbound());
+    for event in market.pending_outbound() {
+        market.acknowledge_published(&event.id.to_hex()).unwrap();
+    }
+    market
+        .send(
+            &owner.public_key().to_hex(),
+            "Native Market to linked Iris Chat",
+        )
+        .unwrap();
+    let sent = market.pending_outbound();
+    assert!(
+        sent.iter()
+            .all(|event| !event.as_json().contains(&market_keys.public_key().to_hex()))
+    );
+    let received = peer_receive(&mut chat, sent);
+    assert!(
+        received
+            .iter()
+            .any(|text| text.contains("Native Market to linked Iris Chat"))
+    );
+    // Equal-time contradictory signed rosters must fail closed, even if a
+    // library projection still contains the original recipient device.
+    let conflicting = signed_roster(&owner, &[], now);
+    market.ingest_authorization(&conflicting).unwrap();
+    assert!(market.pending_outbound().is_empty());
+    // Revocation must stop both new joins and retransmission of queued ciphertext.
+    let revoked = signed_roster(&owner, &[], now + 1);
+    market.ingest_authorization(&revoked).unwrap();
+    assert!(market.pending_outbound().is_empty());
+    assert!(
+        market
+            .accept_public_contact_event(&invite, &owner.public_key().to_hex())
+            .is_err()
+    );
+    drop(market);
+    let mut market = Messaging::open(directory.path(), market_keys).unwrap();
+    assert!(
+        market
+            .accept_public_contact_event(&invite, &owner.public_key().to_hex())
+            .is_err()
+    );
+    assert_eq!(market.conversations()[0].messages[0].delivery, "failed");
+}
+
+#[test]
+fn iris_chat_owner_proof_connects_to_market_public_invite_without_identity_leakage() {
+    use iris_chat_protocol::{
+        InMemoryStorage, ProtocolAcceptInviteOutcome, ProtocolEffect, ProtocolEngine, UnixSeconds,
+    };
+    use std::sync::Arc;
+    let directory = TempDir::new().unwrap();
+    let market_keys = Keys::generate();
+    let owner = Keys::generate();
+    let device = Keys::generate();
+    let mut market = Messaging::open(directory.path(), market_keys.clone()).unwrap();
+    let mut chat = ProtocolEngine::load_or_create_for_local_device(
+        Arc::new(InMemoryStorage::new()),
+        owner.public_key(),
+        &device,
+    )
+    .unwrap();
+    chat.authenticate_local_owner_for_sending(&owner).unwrap();
+    let now = nostr::Timestamp::now().as_secs();
+    chat.ingest_app_keys_event(&signed_roster(&owner, &[device.public_key()], now))
+        .unwrap();
+    let invite =
+        iris_chat_protocol::parse_invite_event(&market.public_contact_event().unwrap()).unwrap();
+    let ProtocolAcceptInviteOutcome::Accepted(accepted) = chat
+        .accept_invite(&invite, Some(market_keys.public_key()))
+        .unwrap()
+    else {
+        panic!("market invite was rejected")
+    };
+    for ProtocolEffect::Publish(publish) in accepted.effects {
+        let wire = publish.event.as_json();
+        assert!(!wire.contains(&owner.public_key().to_hex()));
+        assert!(!wire.contains(&device.public_key().to_hex()));
+        market.receive(&publish.event).unwrap();
+    }
+    let outgoing = chat
+        .send_direct_text(
+            market_keys.public_key(),
+            &market_keys.public_key().to_hex(),
+            "Iris Chat to Market",
+            None,
+            UnixSeconds(now),
+        )
+        .unwrap();
+    for ProtocolEffect::Publish(publish) in outgoing.effects {
+        market.receive(&publish.event).unwrap();
+    }
+    assert_eq!(market.conversations()[0].id, owner.public_key().to_hex());
+    assert_eq!(
+        market.conversations()[0].messages[0].text,
+        "Iris Chat to Market"
+    );
+    market
+        .send(&owner.public_key().to_hex(), "And back again")
+        .unwrap();
+    assert!(
+        peer_receive(&mut chat, market.pending_outbound())
+            .iter()
+            .any(|text| text.contains("And back again"))
+    );
+}

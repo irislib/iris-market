@@ -47,6 +47,8 @@ pub struct Listing {
     pub mine: bool,
     pub delivery: String,
     pub relevance: Option<Relevance>,
+    #[serde(default)]
+    pub coordinates: Option<[f64; 2]>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -74,15 +76,36 @@ impl Default for AiSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+pub struct ImageProxySettings {
+    pub enabled: bool,
+    pub url: String,
+}
+impl Default for ImageProxySettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            url: crate::image_proxy::DEFAULT_URL.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Settings {
     pub relays: Vec<String>,
     pub ai: AiSettings,
+    pub image_proxy: ImageProxySettings,
 }
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            relays: vec!["wss://relay.damus.io".into(), "wss://nos.lol".into()],
+            relays: vec![
+                "wss://relay.damus.io".into(),
+                "wss://nos.lol".into(),
+                "wss://relay.primal.net".into(),
+            ],
             ai: AiSettings::default(),
+            image_proxy: ImageProxySettings::default(),
         }
     }
 }
@@ -105,17 +128,24 @@ pub struct Conversation {
 #[derive(Debug, Clone, Serialize)]
 pub struct Snapshot {
     pub public_key: String,
+    pub can_sign: bool,
+    pub messaging_ready: bool,
     pub demo: bool,
     pub status: String,
     pub error: Option<String>,
     pub query: String,
     pub side: String,
+    pub ai_search: bool,
+    pub sort: String,
+    pub people: std::collections::BTreeMap<String, crate::profiles::Person>,
     pub revision: u64,
     pub listings: Vec<Listing>,
     pub saved_count: usize,
     pub settings: Settings,
     pub conversations: Vec<Conversation>,
     pub invite: Option<String>,
+    pub profile: Option<crate::profiles::Profile>,
+    pub graph_context_loaded: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -124,6 +154,11 @@ pub enum Command {
     SetFilter {
         query: String,
         side: String,
+        #[serde(default)]
+        ai_search: bool,
+    },
+    SetSort {
+        sort: String,
     },
     Save {
         id: String,
@@ -135,6 +170,10 @@ pub enum Command {
         id: String,
     },
     Refresh,
+    LoadProfile {
+        author: String,
+    },
+    LoadContext,
     SetSettings {
         settings: Settings,
     },

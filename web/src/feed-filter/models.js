@@ -42,7 +42,7 @@ export const FEED_MODELS = Object.freeze({
 export const DEFAULT_FEED_MODEL = 'qwen35'
 export const MAX_CONDITION_LENGTH = 500
 export const MAX_LISTING_LENGTH = 2000
-export const FILTER_VERSION = 1
+export const FILTER_VERSION = 2
 export const isFeedModel = id => typeof id === 'string' && Object.hasOwn(FEED_MODELS, id)
 export function validateModel(id, device) {
   if (!isFeedModel(id)) throw new Error('Choose a supported local model.')

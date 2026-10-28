@@ -11,6 +11,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -40,7 +42,7 @@ import org.json.JSONObject
         verticalArrangement=Arrangement.spacedBy(13.dp)) {
         Text("New listing",style=MaterialTheme.typography.headlineMedium)
         Row(horizontalArrangement=Arrangement.spacedBy(9.dp)) {
-            listOf("offer" to "Offer", "request" to "Request").forEach { (v,label) ->
+            listOf("offer" to "Selling", "request" to "Buying").forEach { (v,label) ->
                 FilterChip(selected=side==v,onClick={side=v},label={Text(label)},shape=CircleShape)
             }
         }
@@ -65,7 +67,8 @@ import org.json.JSONObject
         if(state.demo) Surface(color=Sand,shape=RoundedCornerShape(14.dp)) {
             Text("This is Preview. Switch to your live market to publish a listing.",Modifier.padding(14.dp),style=MaterialTheme.typography.bodySmall)
         } else Text("This listing will be public. Keep personal contact details and exact addresses out of the description.",color=Muted,style=MaterialTheme.typography.bodySmall)
-        Button(enabled=!state.demo && !busy && title.isNotBlank() && description.isNotBlank(),onClick={confirmPublish=true},modifier=Modifier.fillMaxWidth().height(54.dp),shape=RoundedCornerShape(16.dp)) {
+        if(!state.demo && !state.canSign) Text("Sign in with your account key to publish listings.",color=Muted,style=MaterialTheme.typography.bodySmall)
+        Button(enabled=!state.demo && state.canSign && !busy && title.isNotBlank() && description.isNotBlank(),onClick={confirmPublish=true},modifier=Modifier.fillMaxWidth().height(54.dp),shape=RoundedCornerShape(16.dp)) {
             Text(if(busy) "Publishing…" else "Publish listing")
         }
     }
@@ -83,6 +86,10 @@ import org.json.JSONObject
 
 @Composable fun SettingsView(state:MarketSnapshot,model:MarketModel,busy:Boolean,done:()->Unit) {
     val initial=remember { JSONObject(state.settings) }
+    val clipboard=LocalClipboardManager.current
+    val imageProxy=remember { initial.optJSONObject("image_proxy") ?: JSONObject() }
+    var proxyEnabled by remember { mutableStateOf(imageProxy.optBoolean("enabled",true)) }
+    var proxyURL by remember { mutableStateOf(imageProxy.optString("url","https://imgproxy.iris.to")) }
     val ai=remember { initial.optJSONObject("ai") ?: JSONObject() }
     var enabled by remember { mutableStateOf(ai.optBoolean("enabled")) }
     var provider by remember { mutableStateOf(ai.optString("provider","compatible")) }
@@ -95,10 +102,11 @@ import org.json.JSONObject
     var servers by remember { mutableStateOf((initial.optJSONArray("relays") ?: JSONArray()).let { a -> (0 until a.length()).joinToString("\n"){a.getString(it)} }) }
     val settings={ JSONObject(initial.toString()).put("ai",JSONObject().put("enabled",enabled).put("provider",provider)
         .put("base_url",endpoint.trim()).put("model",modelName.trim()).put("interests",interests.trim()).put("curate_feed",curate))
-        .put("relays",JSONArray(servers.lines().map{it.trim()}.filter{it.isNotEmpty()})) }
+        .put("relays",JSONArray(servers.lines().map{it.trim()}.filter{it.isNotEmpty()}))
+        .put("image_proxy",JSONObject(imageProxy.toString()).put("enabled",proxyEnabled).put("url",proxyURL.trim())) }
     Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).imePadding().padding(horizontal=24.dp).padding(bottom=30.dp),verticalArrangement=Arrangement.spacedBy(14.dp)) {
         Row(verticalAlignment=Alignment.CenterVertically) {
-            Icon(Icons.Filled.AutoAwesome,null,tint=Forest);Spacer(Modifier.width(10.dp));Text("AI settings",style=MaterialTheme.typography.titleLarge,fontWeight=FontWeight.SemiBold)
+            Icon(Icons.Filled.Settings,null,tint=Forest);Spacer(Modifier.width(10.dp));Text("Settings",style=MaterialTheme.typography.titleLarge,fontWeight=FontWeight.SemiBold)
         }
         Row(verticalAlignment=Alignment.CenterVertically) {
             Text("Enable AI assistance",modifier=Modifier.weight(1f),fontWeight=FontWeight.Medium)
@@ -134,8 +142,29 @@ import org.json.JSONObject
             Text("Curate listings",modifier=Modifier.weight(1f),fontWeight=FontWeight.Medium)
             Switch(checked=curate,onCheckedChange={curate=it},enabled=enabled)
         }
-        TextButton(onClick={advanced=!advanced}) { Text(if(advanced) "Hide network settings" else "Network settings");Icon(Icons.Filled.ExpandMore,null) }
-        if(advanced) MarketField(servers,{servers=it},"Message servers · one address per line",lines=3)
+        HorizontalDivider(color=Line)
+        Text("Photos",fontWeight=FontWeight.Medium)
+        Row(verticalAlignment=Alignment.CenterVertically) {
+            Text("Use image proxy",modifier=Modifier.weight(1f))
+            Switch(checked=proxyEnabled,onCheckedChange={proxyEnabled=it})
+        }
+        if(proxyEnabled) MarketField(proxyURL,{proxyURL=it},"Image service URL",keyboard=KeyboardType.Uri)
+        Text("Loads smaller photos through the selected service.",color=Muted,style=MaterialTheme.typography.bodySmall)
+        TextButton(onClick={advanced=!advanced}) { Text(if(advanced) "Hide connection details" else "Connection details");Icon(Icons.Filled.ExpandMore,null) }
+        if(advanced) {
+            MarketField(servers,{servers=it},"Message servers · one address per line",lines=3)
+            Text(state.status,color=Muted,style=MaterialTheme.typography.bodySmall)
+            state.error?.let { Text(it,color=MaterialTheme.colorScheme.error,style=MaterialTheme.typography.bodySmall) }
+            state.profile?.let { profile ->
+                Text(profile.graphLabel,style=MaterialTheme.typography.bodySmall)
+                Text(profile.coverage,color=Muted,style=MaterialTheme.typography.bodySmall)
+                profile.error?.let { Text(it,color=MaterialTheme.colorScheme.error,style=MaterialTheme.typography.bodySmall) }
+            }
+            if(state.publicKey.isNotBlank()) TextButton(onClick={clipboard.setText(AnnotatedString(state.publicKey))}) {
+                Icon(Icons.Filled.ContentCopy,null,Modifier.size(16.dp));Spacer(Modifier.width(7.dp));Text("Copy account ID")
+            }
+            Text("Iris Market · 0.1.0",color=Muted,style=MaterialTheme.typography.labelSmall)
+        }
         Button(enabled=!busy,onClick={model.saveSettings(settings(),provider,key,replaceKey,done)},
             modifier=Modifier.fillMaxWidth().height(54.dp),shape=RoundedCornerShape(16.dp)) { Text("Save settings") }
         if(state.demo) Text("Preview makes no provider or network requests.",color=Muted,style=MaterialTheme.typography.bodySmall)

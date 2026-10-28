@@ -22,12 +22,15 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import to.iris.market.core.MarketApp
 import to.iris.market.core.generateSecretKey
+import to.iris.market.core.MarketDeviceLink
+import to.iris.market.core.publicKeyForSecret
+import to.iris.market.core.registerIdentityDevice
 
 data class Listing(
     val id: String, val author: String, val title: String, val description: String, val side: String,
     val price: String, val currency: String, val location: String, val category: String,
     val imageUrl: String?, val saved: Boolean, val mine: Boolean, val status: String,
-    val delivery: String, val relevance: String?, val relevanceShow: Boolean?
+    val delivery: String, val relevance: String?, val relevanceShow: Boolean?, val coordinates: List<Double>? = null
 ) {
     val displayPrice: String get() = when {
         price.isBlank() -> "Let's talk"
@@ -40,11 +43,12 @@ data class Listing(
 data class Message(val id: String, val text: String, val mine: Boolean)
 data class Conversation(val id: String, val name: String, val messages: List<Message>)
 data class MarketSnapshot(
-    val publicKey: String = "", val demo: Boolean = false, val status: String = "Opening your market…",
-    val error: String? = null, val query: String = "", val side: String = "all",
+    val publicKey: String = "", val canSign: Boolean = false, val messagingReady: Boolean = false, val demo: Boolean = false, val status: String = "Opening your market…",
+    val error: String? = null, val query: String = "", val side: String = "offer",
     val listings: List<Listing> = emptyList(), val savedCount: Int = 0,
     val settings: String = "{}", val conversations: List<Conversation> = emptyList(),
-    val invite: String? = null
+    val invite: String? = null, val aiSearch: Boolean = false, val sort: String = "suggested",
+    val people: Map<String, PublicPerson> = emptyMap(), val profile: PublicProfile? = null, val graphContextLoaded: Boolean = false
 ) {
     companion object {
         fun parse(raw: String): MarketSnapshot {
@@ -52,9 +56,9 @@ data class MarketSnapshot(
             val ls = o.optJSONArray("listings") ?: JSONArray()
             val cs = o.optJSONArray("conversations") ?: JSONArray()
             return MarketSnapshot(
-                publicKey = o.optString("public_key"), demo = o.optBoolean("demo"),
+                publicKey = o.optString("public_key"), canSign = o.optBoolean("can_sign"), messagingReady = o.optBoolean("messaging_ready"), demo = o.optBoolean("demo"),
                 status = o.optString("status", "Ready"), error = o.optional("error"),
-                query = o.optString("query"), side = o.optString("side", "all"),
+                query = o.optString("query"), side = o.optString("side", "offer"),
                 listings = (0 until ls.length()).map { i ->
                     val l = ls.getJSONObject(i)
                     Listing(l.getString("id"), l.optString("author"), l.getString("title"), l.optString("description"),
@@ -64,7 +68,7 @@ data class MarketSnapshot(
                         l.optString("delivery"), l.optJSONObject("relevance")?.optional("reason"),
                         l.optJSONObject("relevance")?.let { decision ->
                             if (decision.has("show") && !decision.isNull("show")) decision.optBoolean("show") else null
-                        })
+                        }, l.optJSONArray("coordinates")?.let { a -> if (a.length()==2) listOf(a.optDouble(0),a.optDouble(1)).takeIf { values -> values.all { it.isFinite() } } else null })
                 }, savedCount = o.optInt("saved_count"),
                 settings = (o.optJSONObject("settings") ?: JSONObject()).toString(),
                 conversations = (0 until cs.length()).map { i ->
@@ -72,7 +76,9 @@ data class MarketSnapshot(
                     Conversation(c.getString("id"), c.optString("name", "Conversation"),
                         (0 until ms.length()).map { j -> val m = ms.getJSONObject(j)
                             Message(m.getString("id"), m.optString("text"), m.optBoolean("mine")) })
-                }, invite = o.optional("invite")
+                }, invite = o.optional("invite"), aiSearch = o.optBoolean("ai_search"), sort = o.optString("sort", "suggested"),
+                people = o.optJSONObject("people")?.let { people -> people.keys().asSequence().associateWith { PublicPerson.parse(people.getJSONObject(it)) } } ?: emptyMap(),
+                profile = o.optJSONObject("profile")?.let(PublicProfile::parse), graphContextLoaded = o.optBoolean("graph_context_loaded")
             )
         }
     }
@@ -82,6 +88,7 @@ private fun JSONObject.optional(name: String): String? =
 
 /** The Keystore key is non-exportable. Only authenticated ciphertext is written to disk. */
 class SecureRecord(application: Application) {
+    private companion object { val recordLock = Any() }
     private val file = AtomicFile(File(application.noBackupFilesDir, "market-secrets.v1"))
     private val alias = "iris-market-record-v1"
     private val aad = "to.iris.market.secrets.v1".toByteArray()
@@ -104,8 +111,8 @@ class SecureRecord(application: Application) {
         cipher.updateAAD(aad)
         return JSONObject(String(cipher.doFinal(Base64.decode(envelope.getString("data"), Base64.NO_WRAP)), Charsets.UTF_8))
     }
-    @Synchronized fun get(name: String): String = read().optString(name)
-    @Synchronized fun put(name: String, value: String) {
+    fun get(name: String): String = synchronized(recordLock) { read().optString(name) }
+    fun put(name: String, value: String) = synchronized(recordLock) {
         val values = read().put(name, value)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, key()); cipher.updateAAD(aad)
@@ -129,19 +136,96 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
     val notice = alert.asStateFlow()
     @Volatile private var active = true
     private var operationCount = 0
+    private val linking = MutableStateFlow<String?>(null)
+    val deviceLinkUrl = linking.asStateFlow()
+    private var linkJob: Job? = null
 
     init {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val name = if (preview) "identity-preview" else "identity"
-                val secret = secure.get(name).ifBlank { generateSecretKey().also { secure.put(name, it) } }
-                val directory = File(application.filesDir, if (preview) "preview" else "market").apply { mkdirs() }
-                mutex.withLock { core = MarketApp(directory.absolutePath, secret, preview); refreshSnapshot() }
+                mutex.withLock { openSavedAccount() }
                 while (isActive) { delay(2_000); if (active) mutex.withLock { refreshSnapshot() } }
             } catch (e: CancellationException) { throw e }
             catch (_: Exception) { alert.value = "Your market could not open. Close and reopen the app to try again." }
         }
     }
+    private fun openSavedAccount() {
+        core?.shutdown();core?.close();core=null
+        val application=getApplication<Application>()
+        val name=if(preview) "identity-preview" else "identity"
+        val legacy=secure.get(name).ifBlank {generateSecretKey().also {secure.put(name,it)}}
+        val owner=if(preview) "" else secure.get("active-account")
+        val saved=if(owner.isBlank()) "" else secure.get("account-$owner")
+        check(owner.isBlank() || saved.isNotBlank()) { "Active account credentials are unavailable" }
+        val base=File(application.filesDir,if(preview) "preview" else "market")
+        if(saved.isNotBlank()) {
+            val bundle=JSONObject(saved)
+            val directory=if(bundle.optBoolean("legacy")) base else File(base,"accounts/$owner")
+            directory.mkdirs()
+            core=MarketApp.withIdentity(directory.absolutePath,owner,bundle.optional("secret"),bundle.getString("device"),bundle.optional("authorization"))
+        } else {base.mkdirs();core=MarketApp(base.absolutePath,legacy,preview)}
+        core?.command(JSONObject().put("type", "set_filter").put("query", "").put("side", "offer").put("ai_search", false).toString())
+        refreshSnapshot()
+    }
+    fun signIn(secret: String, done:()->Unit) {
+        if(preview||working.value)return
+        viewModelScope.launch {
+            working.value=true;alert.value=null
+            try {
+                withContext(Dispatchers.IO) {
+                    val owner=publicKeyForSecret(secret)
+                    val prior=secure.get("account-$owner")
+                    val legacy=secure.get("identity")
+                    val usesLegacy=legacy.isNotBlank()&&publicKeyForSecret(legacy)==owner
+                    val bundle=if(prior.isNotBlank()) JSONObject(prior) else JSONObject().put("owner",owner).put("device",if(usesLegacy)legacy else generateSecretKey()).put("legacy",usesLegacy)
+                    bundle.put("secret",secret)
+                    val relays=JSONObject(state.value.settings).getJSONArray("relays").toString()
+                    bundle.put("authorization",registerIdentityDevice(secret,bundle.getString("device"),relays))
+                    mutex.withLock {secure.put("account-$owner",bundle.toString());secure.put("active-account",owner);openSavedAccount()}
+                }
+                done()
+            } catch(e:CancellationException) {throw e}
+            catch(_:Exception) {alert.value="Sign-in failed. Check the key and connection, then try again."}
+            finally {working.value=false}
+        }
+    }
+    fun beginDeviceLink() {
+        if(preview||working.value)return
+        closeDeviceLink()
+        linkJob=viewModelScope.launch {
+            working.value=true;alert.value=null
+            var link:MarketDeviceLink?=null
+            try {
+                val secret=withContext(Dispatchers.IO) {secure.get("device-link-secret").ifBlank {generateSecretKey().also {secure.put("device-link-secret",it)}}}
+                val activeLink=withContext(Dispatchers.IO) {
+                    MarketDeviceLink(secret,secure.get("device-link-bootstrap").ifBlank {null},"wss://temp.iris.to").also {secure.put("device-link-bootstrap",it.bootstrap())}
+                }
+                link=activeLink
+                linking.value=activeLink.invitation();working.value=false
+                val accountRoot=File(getApplication<Application>().filesDir,"market/accounts")
+                while(isActive) {
+                    try {
+                        val approval=withContext(Dispatchers.IO) {activeLink.poll(accountRoot.absolutePath).also {secure.put("device-link-bootstrap",activeLink.bootstrap())}}
+                        if(approval!=null) {
+                            ensureActive()
+                            val result=JSONObject(approval);val owner=result.getString("owner_public_key")
+                            val bundle=JSONObject().put("owner",owner).put("device",secret).put("authorization",result.getJSONObject("authorization").toString()).put("legacy",false)
+                            // Main-thread commit cannot race the user's Cancel action.
+                            secure.put("account-$owner",bundle.toString());secure.put("active-account",owner)
+                            secure.put("device-link-secret","");secure.put("device-link-bootstrap","")
+                            withContext(Dispatchers.IO) {mutex.withLock {openSavedAccount()}}
+                            linking.value=null;break
+                        }
+                    } catch(e:CancellationException) {throw e}
+                    catch(_:Exception) {alert.value="Waiting for the device approval server. Trying again…"}
+                    delay(4_000)
+                }
+            } catch(e:CancellationException) {throw e}
+            catch(_:Exception) {alert.value="Could not start device linking. Try again."}
+            finally {link?.close();working.value=false}
+        }
+    }
+    fun closeDeviceLink() {linkJob?.cancel();linkJob=null;linking.value=null}
     fun setActive(value: Boolean) { active = value }
     private fun refreshSnapshot() { core?.let { mutable.value = MarketSnapshot.parse(it.snapshot()) } }
     fun dismissNotice() { alert.value = null }
@@ -161,7 +245,8 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
             finally { operationCount -= 1; working.value = operationCount > 0 }
         }
     }
-    fun filter(query: String, side: String) = command(JSONObject().put("type", "set_filter").put("query", query).put("side", side))
+    fun filter(query: String, side: String, aiSearch: Boolean = false) = command(JSONObject().put("type", "set_filter").put("query", query).put("side", side).put("ai_search", aiSearch))
+    fun searchAI(query: String, side: String) = command(JSONObject().put("type", "set_filter").put("query", query).put("side", side).put("ai_search", true)) { ai("curate") }
     fun save(id: String) = command(JSONObject().put("type", "save").put("id", id))
     fun action(type: String) = command(JSONObject().put("type", type))
     fun ai(type: String) {
@@ -186,5 +271,25 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
         CoroutineScope(Dispatchers.IO).launch { mutex.withLock {
             runCatching { core?.shutdown() }; core?.close(); core = null
         } }
+    }
+}
+
+data class PublicConnection(val badge: String?, val distance: Int?, val knownFollowers: Int, val description: String) {
+    companion object { fun parse(o: JSONObject) = PublicConnection(o.optional("badge"), if(o.isNull("follow_distance")) null else o.optInt("follow_distance"), o.optInt("followed_by_friends"), o.optString("description")) }
+}
+data class PublicPerson(val author: String, val name: String, val pictureUrl: String?, val connection: PublicConnection) {
+    companion object {
+        fun unnamed(author: String) = PublicPerson(author,"Unnamed user",null,PublicConnection(null,null,0,""))
+        fun parse(o: JSONObject) = PublicPerson(o.getString("author"), o.optString("name","Unnamed user"), o.optional("picture_url"), PublicConnection.parse(o.getJSONObject("connection")))
+    }
+}
+data class PublicProfile(val person: PublicPerson, val about: String, val website: String?, val following: List<PublicPerson>, val followingCount: Int,
+    val followers: List<PublicPerson>, val known: List<PublicPerson>, val graphLabel: String, val graphLoaded: Boolean, val coverage: String, val loading: Boolean, val error: String?) {
+    companion object {
+        fun parse(o: JSONObject): PublicProfile {
+            fun people(key: String): List<PublicPerson> { val a = o.optJSONArray(key) ?: return emptyList(); return (0 until a.length()).map { PublicPerson.parse(a.getJSONObject(it)) } }
+            return PublicProfile(PublicPerson.parse(o.getJSONObject("person")),o.optString("about"),o.optional("website"),people("following"),o.optInt("following_count"),
+                people("followers"),people("followed_by_known"),o.optString("graph_label"),o.optBoolean("graph_context_loaded"),o.optString("coverage"),o.optBoolean("loading"),o.optional("error"))
+        }
     }
 }

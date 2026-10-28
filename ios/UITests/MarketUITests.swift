@@ -8,6 +8,8 @@ final class MarketUITests: XCTestCase {
         app.launchArguments = ["--demo"]
         app.launch()
         XCTAssertTrue(app.staticTexts["Listings"].waitForExistence(timeout: 20))
+        XCTAssertTrue(app.buttons["filterSelling"].isSelected)
+        XCTAssertFalse(app.buttons["filterAll"].exists)
     }
     private func capture(_ name: String) {
         let image = XCTAttachment(screenshot: app.screenshot())
@@ -117,7 +119,7 @@ final class MarketUITests: XCTestCase {
         capture("09-curation-preferences")
         app.buttons["Done"].tap()
         app.buttons["tabExplore"].tap()
-        XCTAssertTrue(app.staticTexts["Curate listings"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["aiSearchToggle"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons.matching(identifier: "listingOpen").firstMatch.exists)
         // Unknown relevance remains visible. Preview makes no provider calls.
         app.buttons["tabAccount"].tap()
@@ -128,6 +130,25 @@ final class MarketUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Preferences saved"].waitForExistence(timeout: 5))
     }
 
+    func testPublicProfilePreviewAndSharedSearchControls() throws {
+        app.buttons.matching(identifier: "listingOpen").firstMatch.tap()
+        let author = app.buttons["listingAuthor"]
+        for _ in 0..<3 where !author.isHittable { app.swipeUp() }
+        author.tap()
+        XCTAssertTrue(app.navigationBars["Profile"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Profiles are unavailable in offline preview."].waitForExistence(timeout: 5))
+        capture("15-profile-preview")
+        app.buttons.matching(identifier: "Done").firstMatch.tap()
+        app.buttons.matching(identifier: "Done").firstMatch.tap()
+        let ai = app.buttons["aiSearchToggle"]
+        ai.tap()
+        XCTAssertEqual(ai.value as? String, "On")
+        XCTAssertTrue(app.textFields["marketSearch"].exists)
+        XCTAssertFalse(app.buttons["runAISearch"].isEnabled)
+        capture("16-shared-search")
+        ai.tap()
+    }
+
     func testSearchAndRequestFilter() throws {
         let search = app.textFields["marketSearch"]
         XCTAssertTrue(search.waitForExistence(timeout: 5))
@@ -135,8 +156,14 @@ final class MarketUITests: XCTestCase {
         search.typeText("no-such-preview-listing-783")
         XCTAssertTrue(app.staticTexts["No results"].waitForExistence(timeout: 8))
         app.buttons["Clear search"].tap()
-        app.buttons["filterRequests"].tap()
-        XCTAssertTrue(app.staticTexts["Listings"].waitForExistence(timeout: 5))
+        app.buttons["filterBuying"].tap()
+        XCTAssertTrue(app.staticTexts["A ride across town"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["filterBuying"].isSelected)
+        XCTAssertFalse(app.staticTexts["A little more green"].exists)
         capture("07-requests")
+        app.buttons["tabSaved"].tap()
+        app.buttons["tabExplore"].tap()
+        XCTAssertTrue(app.staticTexts["A little more green"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["filterSelling"].isSelected)
     }
 }

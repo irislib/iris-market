@@ -41,6 +41,10 @@ impl Store {
         self.db.execute("DELETE FROM relevance", [])?;
         Ok(())
     }
+    pub fn clear_relevance(&self) -> Result<()> {
+        self.db.execute("DELETE FROM relevance", [])?;
+        Ok(())
+    }
     pub fn ingest(&mut self, event: &Event, at: u64, outgoing: bool) -> Result<bool> {
         let parsed = listing::parse(event, at)?;
         let tx = self.db.transaction()?;

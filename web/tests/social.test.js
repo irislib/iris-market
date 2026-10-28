@@ -1,10 +1,13 @@
-import test from 'node:test'
+import test, { beforeEach, afterEach, mock } from 'node:test'
 import assert from 'node:assert/strict'
 import { finalizeEvent, getPublicKey } from 'nostr-tools/pure'
 import { npubEncode, nsecEncode } from 'nostr-tools/nip19'
 import { fetchFollows, normalizePublicKey } from '../src/social.js'
 
 const now = 1800000000
+// The graph library also checks the real clock when accepting signed lists.
+beforeEach(() => mock.method(Date, 'now', () => now * 1000))
+afterEach(() => mock.restoreAll())
 const secret = new Uint8Array(32).fill(1)
 const otherSecret = new Uint8Array(32).fill(2)
 const pubkey = getPublicKey(secret)
@@ -134,4 +137,12 @@ test('transport errors, constructor failures and invalid configuration never bec
   for (const options of [{ relays: [] }, { relays: ['ws://remote.example'] }, { relays: Array(9).fill('wss://one.example') }, { timeoutMs: 0 }, { timeoutMs: 30001 }, { WebSocketImpl: null }]) {
     const invalid = start(options); await assert.rejects(invalid.result); assert.equal(invalid.sockets.length, 0)
   }
+})
+
+
+test('direct follows use library graph semantics and exclude self edges', async () => {
+  const { result, sockets: [socket] } = start()
+  socket.open(); socket.event(signed({ tags: [['p', pubkey], ['p', alice], ['p', alice]] })); socket.eose()
+  assert.deepEqual((await result).authors, [alice])
+  closed([socket])
 })

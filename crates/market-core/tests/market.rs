@@ -222,3 +222,40 @@ fn configurable_model_produces_a_yes_no_decision_without_removing_the_listing() 
     server.join().unwrap();
     app.shutdown();
 }
+
+#[test]
+fn ai_search_uses_one_query_without_hiding_unreviewed_candidates() {
+    let dir = tempfile::tempdir().unwrap();
+    let app =
+        iris_market_core::Market::open(dir.path(), &iris_market_core::generate_secret_key(), true)
+            .unwrap();
+    let ordinary: serde_json::Value = serde_json::from_str(
+        &app.command(r#"{"type":"set_filter","query":"nonliteral matching request","side":"all"}"#)
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(ordinary["listings"].as_array().unwrap().is_empty());
+    let ai: serde_json::Value = serde_json::from_str(&app.command(r#"{"type":"set_filter","query":"nonliteral matching request","side":"all","ai_search":true}"#).unwrap()).unwrap();
+    assert_eq!(ai["listings"].as_array().unwrap().len(), 8);
+    assert_eq!(ai["query"], "nonliteral matching request");
+    assert_eq!(ai["ai_search"], true);
+    let profile: serde_json::Value = serde_json::from_str(
+        &app.command(
+            &serde_json::json!({"type":"load_profile","author":ai["listings"][0]["author"]})
+                .to_string(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        profile["profile"]["error"],
+        "Profiles are unavailable in offline preview."
+    );
+    assert_eq!(profile["graph_context_loaded"], false);
+    let newest: serde_json::Value = serde_json::from_str(
+        &app.command(r#"{"type":"set_sort","sort":"newest"}"#)
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(newest["sort"], "newest");
+}

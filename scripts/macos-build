@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+TASK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TASK_MACOS="$TASK_ROOT/macos"
+TASK_TARGET="${CARGO_TARGET_DIR:-$TASK_ROOT/target}"
+[[ "$TASK_TARGET" = /* ]] || TASK_TARGET="$TASK_ROOT/$TASK_TARGET"
+TASK_LIB="${MARKET_MACOS_STATIC_LIB:-$TASK_TARGET/debug/libiris_market_app.a}"
+[[ "$TASK_LIB" = /* ]] || TASK_LIB="$TASK_ROOT/$TASK_LIB"
+TASK_BINDINGS="$TASK_ROOT/ios/Bindings"
+TASK_DERIVED="${MARKET_MACOS_DERIVED_DATA:-$TASK_MACOS/.build/DerivedData}"
+[[ "$TASK_DERIVED" = /* ]] || TASK_DERIVED="$TASK_ROOT/$TASK_DERIVED"
+TASK_HEADERS="$TASK_MACOS/.build/headers"
+TASK_ACTION="${1:-build}"
+if [[ "$TASK_ACTION" == "--help" ]]; then
+  echo 'Usage: scripts/macos-build [project|build]'
+  echo 'Consumes matching ios/Bindings and a prebuilt host macOS Rust static library. Does not run Cargo.'
+  echo 'MARKET_MACOS_STATIC_LIB selects that archive; MARKET_MACOS_DERIVED_DATA selects the Xcode cache.'
+  exit 0
+fi
+[[ "$TASK_ACTION" == "project" || "$TASK_ACTION" == "build" ]] || { echo 'Unknown action. Use project or build.' >&2; exit 2; }
+[[ "$(uname -s)" == Darwin ]] || { echo 'The macOS build requires macOS and Xcode.' >&2; exit 1; }
+command -v xcodegen >/dev/null || { echo 'XcodeGen is required.' >&2; exit 1; }
+[[ -f "$TASK_BINDINGS/IrisMarketCore.swift" && -f "$TASK_BINDINGS/IrisMarketCoreFFI.h" && -f "$TASK_BINDINGS/IrisMarketCoreFFI.modulemap" ]] || { echo 'Generate matching Swift bindings into ios/Bindings first.' >&2; exit 1; }
+mkdir -p "$TASK_HEADERS"
+cp "$TASK_BINDINGS/IrisMarketCoreFFI.h" "$TASK_HEADERS/"
+cp "$TASK_BINDINGS/IrisMarketCoreFFI.modulemap" "$TASK_HEADERS/module.modulemap"
+(cd "$TASK_MACOS" && xcodegen generate --spec project.yml)
+[[ "$TASK_ACTION" == "project" ]] && exit 0
+[[ -f "$TASK_LIB" ]] || { echo 'Build the host macOS Rust core before running this script. An iOS simulator archive is not compatible.' >&2; exit 1; }
+TASK_ARCH="$(uname -m)"
+xcrun lipo -verify_arch "$TASK_ARCH" "$TASK_LIB"
+# Link the archive in place: do not copy it into another framework or cache.
+xcodebuild -project "$TASK_MACOS/IrisMarketMac.xcodeproj" -scheme IrisMarketMac -configuration Debug \
+  -sdk macosx -destination "platform=macOS,arch=$TASK_ARCH" -derivedDataPath "$TASK_DERIVED" \
+  -jobs 2 ARCHS="$TASK_ARCH" ONLY_ACTIVE_ARCH=YES MARKET_MACOS_STATIC_LIB="$TASK_LIB" \
+  CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- build
+printf '%s\n' "$TASK_DERIVED/Build/Products/Debug/IrisMarket.app"

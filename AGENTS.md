@@ -9,6 +9,7 @@ Build a welcoming general marketplace: offers and requests, visual browsing, pri
 - Private messaging must use nostr-double-ratchet. Private send/discovery scopes must not correlate public account identities with recipient tags. Private inboxes never enter public listing indexes or replay stores.
 - AI is optional, configured by the user. Provider calls require explicit opt-in. Untrusted listings are data, never instructions. Errors must not silently hide listings. Local-only browsing remains available.
 - Imported events must be signed and verified. Persist the winning revision and reject expired/invalid records. Drafts and preview fixtures are never published implicitly.
+- Keep UI actions local-first. Profile creation/restoration, navigation and local saves must never wait for Nostr relay replies, EOSE or publication acknowledgements. Persist outgoing work, sync in the background, and distinguish queued from delivered. Verified device authorization still gates encrypted delivery.
 
 ## Verification and releases
 - Check focused production flows. Visually inspect native screenshots. Test posting, browsing/search, saved items and settings.

@@ -1,9 +1,16 @@
 pub mod ai;
+pub mod geo;
+pub mod identity;
+pub mod image_proxy;
 pub mod listing;
 pub mod messaging;
 pub mod model;
 pub mod network;
+pub mod profiles;
+pub mod ranking;
 pub mod store;
+#[cfg(feature = "cashu-wallet")]
+pub mod wallet;
 
 use anyhow::{Context, Result, bail};
 use model::*;
@@ -19,27 +26,33 @@ use tokio::{runtime::Runtime, sync::Notify};
 
 pub(crate) struct State {
     store: store::Store,
-    keys: Keys,
+    owner: nostr::PublicKey,
+    owner_keys: Option<Keys>,
     settings: Settings,
     demo: bool,
     query: String,
     side: String,
+    ai_search: bool,
+    sort: String,
     status: String,
     error: Option<String>,
     revision: u64,
     messaging: Option<messaging::Messaging>,
     invite: Option<String>,
+    profiles: profiles::Profiles,
+    profile: Option<profiles::Profile>,
+    profile_request: u64,
 }
 impl State {
     fn snapshot(&self) -> Result<Snapshot> {
-        let mut listings = self
-            .store
-            .listings(&self.keys.public_key().to_hex(), listing::now())?;
+        let mut listings = self.store.listings(&self.owner.to_hex(), listing::now())?;
         let saved_count = listings.iter().filter(|l| l.saved).count();
         let query = self.query.to_lowercase();
+        let interests = ranking::saved_interests(&listings);
         listings.retain(|l| {
             (self.side == "all" || l.side == self.side)
-                && (query.is_empty()
+                && (self.ai_search
+                    || query.is_empty()
                     || format!(
                         "{} {} {} {}",
                         l.title, l.description, l.location, l.category
@@ -47,14 +60,59 @@ impl State {
                     .to_lowercase()
                     .contains(&query))
         });
+        if self.sort == "suggested" {
+            ranking::rank(
+                &mut listings,
+                &self.profiles,
+                &interests,
+                &self.query,
+                listing::now(),
+            );
+        }
+        let mut people: std::collections::BTreeMap<_, _> = listings
+            .iter()
+            .map(|l| (l.author.clone(), self.profiles.person(&l.author)))
+            .collect();
+        people.insert(
+            self.owner.to_hex(),
+            self.profiles.person(&self.owner.to_hex()),
+        );
+        if let Some(messaging) = &self.messaging {
+            for conversation in messaging.conversations() {
+                people.insert(
+                    conversation.id.clone(),
+                    self.profiles.person(&conversation.id),
+                );
+            }
+        }
+        for listing in &mut listings {
+            listing.image_url = listing.image_url.as_deref().and_then(|url| {
+                image_proxy::image_url(url, &self.settings.image_proxy, 800, 800, false)
+            });
+        }
+        for person in people.values_mut() {
+            image_proxy::person(person, &self.settings.image_proxy);
+        }
+        let mut profile = self.profile.clone();
+        if let Some(profile) = &mut profile {
+            image_proxy::profile(profile, &self.settings.image_proxy);
+        }
         // Keep all results in the snapshot: UI can offer a curated view without making hidden items inaccessible.
         Ok(Snapshot {
-            public_key: self.keys.public_key().to_hex(),
+            public_key: self.owner.to_hex(),
+            can_sign: self.owner_keys.is_some(),
+            messaging_ready: self
+                .messaging
+                .as_ref()
+                .is_some_and(|messaging| messaging.can_send()),
             demo: self.demo,
             status: self.status.clone(),
             error: self.error.clone(),
             query: self.query.clone(),
             side: self.side.clone(),
+            ai_search: self.ai_search,
+            sort: self.sort.clone(),
+            people,
             revision: self.revision,
             listings,
             saved_count,
@@ -66,8 +124,8 @@ impl State {
                     m.conversations()
                         .into_iter()
                         .map(|c| Conversation {
+                            name: self.profiles.person(&c.id).name,
                             id: c.id,
-                            name: c.name,
                             messages: c
                                 .messages
                                 .into_iter()
@@ -84,6 +142,8 @@ impl State {
                 })
                 .unwrap_or_default(),
             invite: self.invite.clone(),
+            profile,
+            graph_context_loaded: self.profiles.context_loaded,
         })
     }
 }
@@ -96,26 +156,68 @@ pub struct Market {
 }
 impl Market {
     pub fn open(data_dir: &Path, secret: &str, demo: bool) -> Result<Self> {
-        std::fs::create_dir_all(data_dir)?;
         let keys = Keys::new(SecretKey::parse(secret).context("Invalid account secret")?);
+        Self::open_identity(
+            data_dir,
+            keys.public_key(),
+            Some(keys.clone()),
+            keys,
+            None,
+            demo,
+        )
+    }
+    pub fn open_identity(
+        data_dir: &Path,
+        owner: nostr::PublicKey,
+        owner_keys: Option<Keys>,
+        device_keys: Keys,
+        authorization: Option<nostr::Event>,
+        demo: bool,
+    ) -> Result<Self> {
+        std::fs::create_dir_all(data_dir)?;
+        if owner_keys
+            .as_ref()
+            .is_some_and(|keys| keys.public_key() != owner)
+        {
+            bail!("The account key does not match this account");
+        }
         let store = store::Store::open(&data_dir.join(if demo {
             "preview.sqlite"
         } else {
             "market.sqlite"
         }))?;
         let settings = store.settings()?;
-        let messaging = if demo {
+        let mut messaging = if demo {
             None
         } else {
-            Some(messaging::Messaging::open(data_dir, keys.clone()).map_err(anyhow::Error::msg)?)
+            Some(
+                messaging::Messaging::open_identity(
+                    data_dir,
+                    owner,
+                    owner_keys.clone(),
+                    device_keys,
+                    authorization.as_ref(),
+                )
+                .map_err(anyhow::Error::msg)?,
+            )
         };
+        if let Some(messaging) = messaging.as_mut()
+            && let Some(contact) = messaging
+                .registered_contact_event()
+                .map_err(anyhow::Error::msg)?
+        {
+            store.queue_event(&contact)?;
+        }
         let mut state = State {
             store,
-            keys,
+            owner,
+            owner_keys,
             settings,
             demo,
             query: String::new(),
             side: "all".into(),
+            ai_search: false,
+            sort: "suggested".into(),
             status: if demo {
                 "Preview · sample listings"
             } else {
@@ -126,6 +228,9 @@ impl Market {
             revision: 0,
             messaging,
             invite: None,
+            profiles: profiles::Profiles::default(),
+            profile: None,
+            profile_request: 0,
         };
         if demo {
             seed_preview(&mut state)?;
@@ -144,6 +249,9 @@ impl Market {
                 notify.clone(),
                 stopped.clone(),
             ));
+        }
+        if !demo {
+            Self::spawn_profiles(&runtime, state.clone(), None);
         }
         Ok(Self {
             state,
@@ -172,21 +280,41 @@ impl Market {
         self.snapshot()
     }
     fn apply(&self, command: Command) -> Result<()> {
+        if self.stopped.load(Ordering::Acquire) {
+            bail!("Account is closed");
+        }
         match command {
             Command::Curate { api_key } => return self.curate(&api_key, false),
             Command::CheckAi { api_key } => return self.curate(&api_key, true),
             Command::Contact { author, listing_id } => return self.contact(&author, &listing_id),
+            Command::AcceptInvite { invite } => return self.accept_invite(&invite),
+            Command::LoadProfile { author } => return self.load_profile(Some(author)),
+            Command::LoadContext => return self.load_profile(None),
             _ => {}
         }
         let mut s = self.state.lock().unwrap();
         s.error = None;
         match command {
-            Command::SetFilter { query, side } => {
+            Command::SetFilter {
+                query,
+                side,
+                ai_search,
+            } => {
                 if query.len() > 300 || !["all", "offer", "request"].contains(&side.as_str()) {
                     bail!("Invalid search");
                 }
+                if s.query != query || s.ai_search != ai_search {
+                    s.store.clear_relevance()?;
+                }
                 s.query = query;
                 s.side = side;
+                s.ai_search = ai_search;
+            }
+            Command::SetSort { sort } => {
+                if !["suggested", "newest"].contains(&sort.as_str()) {
+                    bail!("Choose Suggested or Newest");
+                }
+                s.sort = sort;
             }
             Command::Save { id } => s.store.toggle_saved(&id)?,
             Command::Publish { draft } => {
@@ -194,7 +322,9 @@ impl Market {
                     bail!("Leave Preview to publish your own listing");
                 }
                 let event = listing::build(
-                    &s.keys,
+                    s.owner_keys
+                        .as_ref()
+                        .context("Approve listing signing with your account key")?,
                     &draft,
                     &uuid::Uuid::new_v4().to_string(),
                     listing::now(),
@@ -216,13 +346,15 @@ impl Market {
                     bail!("Preview listings cannot be changed");
                 }
                 let previous = s.store.event(&id)?;
-                if previous.pubkey != s.keys.public_key() {
+                if previous.pubkey != s.owner {
                     bail!("Only your own listings can be closed");
                 }
                 let l = listing::parse(&previous, listing::now())?;
                 let identifier = id.split_once(':').context("Invalid listing")?.1;
                 let event = listing::build(
-                    &s.keys,
+                    s.owner_keys
+                        .as_ref()
+                        .context("Approve listing signing with your account key")?,
                     &listing::draft_from(&l),
                     identifier,
                     listing::now().max(l.created_at + 1),
@@ -240,10 +372,19 @@ impl Market {
             Command::SetSettings { settings } => {
                 network::validate_relays(&settings.relays)?;
                 ai::validate(&settings.ai)?;
+                image_proxy::validate(&settings.image_proxy)?;
+                let changed_relays = s.settings.relays != settings.relays;
                 s.store.save_settings(&settings)?;
                 s.settings = settings;
                 s.status = "Settings saved".into();
                 self.notify.notify_one();
+                if changed_relays {
+                    s.profiles = profiles::Profiles::default();
+                    s.profile = None;
+                    s.revision += 1;
+                    drop(s);
+                    return self.load_profile(None);
+                }
             }
             Command::CreateInvite => {
                 s.invite = Some(
@@ -254,14 +395,6 @@ impl Market {
                         .map_err(anyhow::Error::msg)?,
                 );
             }
-            Command::AcceptInvite { invite } => {
-                s.messaging
-                    .as_mut()
-                    .context("Leave Preview to connect")?
-                    .accept_invite(&invite)
-                    .map_err(anyhow::Error::msg)?;
-                self.notify.notify_waiters();
-            }
             Command::SendMessage { peer_id, text } => {
                 s.messaging
                     .as_mut()
@@ -270,11 +403,70 @@ impl Market {
                     .map_err(anyhow::Error::msg)?;
                 self.notify.notify_waiters();
             }
-            Command::Contact { .. } => unreachable!(),
+            Command::Contact { .. }
+            | Command::AcceptInvite { .. }
+            | Command::LoadProfile { .. }
+            | Command::LoadContext => {
+                unreachable!()
+            }
             Command::Curate { .. } | Command::CheckAi { .. } => unreachable!(),
         }
         s.revision += 1;
         Ok(())
+    }
+    fn load_profile(&self, author: Option<String>) -> Result<()> {
+        let author = author
+            .map(|p| nostr::PublicKey::parse(&p).map(|p| p.to_hex()))
+            .transpose()?;
+        let runtime = self.runtime.lock().unwrap();
+        let runtime = runtime.as_ref().context("App has closed")?;
+        Self::spawn_profiles(runtime, self.state.clone(), author);
+        Ok(())
+    }
+    fn spawn_profiles(runtime: &Runtime, state: Arc<Mutex<State>>, author: Option<String>) {
+        let (relays, request, demo) = {
+            let mut s = state.lock().unwrap();
+            s.profile_request += 1;
+            if let Some(author) = author.as_deref() {
+                let mut profile = s.profiles.profile(author);
+                profile.loading = !s.demo;
+                if s.demo {
+                    profile.error = Some("Profiles are unavailable in offline preview.".into());
+                }
+                s.profile = Some(profile);
+            }
+            s.revision += 1;
+            (s.settings.relays.clone(), s.profile_request, s.demo)
+        };
+        if demo {
+            return;
+        }
+        runtime.spawn(async move {
+            let result = profiles::fetch(relays, author.clone()).await;
+            let mut s = state.lock().unwrap();
+            if s.profile_request != request {
+                return;
+            }
+            match result {
+                Ok(mut cache) => {
+                    cache.retain_metadata_from(&s.profiles);
+                    if let Some(author) = author {
+                        s.profile = Some(cache.profile(&author));
+                    }
+                    s.profiles = cache;
+                }
+                Err(_) => {
+                    if let Some(profile) = s.profile.as_mut() {
+                        profile.loading = false;
+                        profile.error = Some(
+                            "Could not refresh this profile. Loaded connections may be incomplete."
+                                .into(),
+                        );
+                    }
+                }
+            }
+            s.revision += 1;
+        });
     }
     fn contact(&self, author: &str, listing_id: &str) -> Result<()> {
         let author = nostr::PublicKey::parse(author)?;
@@ -291,37 +483,92 @@ impl Market {
         };
         let runtime = self.runtime.lock().unwrap();
         let runtime = runtime.as_ref().context("App has closed")?;
-        let event = runtime.block_on(network::discover_contact(&relays, author))?;
+        let discovery = runtime.block_on(network::discover_contact(&relays, author))?;
         let mut s = self.state.lock().unwrap();
-        s.messaging
+        let messaging = s
+            .messaging
             .as_mut()
-            .context("Private messaging unavailable")?
-            .accept_public_contact_event(&event, &author.to_hex())
-            .map_err(anyhow::Error::msg)?;
+            .context("Private messaging unavailable")?;
+        for event in &discovery.authorization {
+            messaging
+                .ingest_authorization(event)
+                .map_err(anyhow::Error::msg)?;
+        }
+        let mut accepted = false;
+        for event in &discovery.invitations {
+            if messaging
+                .accept_public_contact_event(event, &author.to_hex())
+                .is_ok()
+            {
+                accepted = true;
+            }
+        }
+        if !accepted {
+            bail!("This person's device authorization could not be verified");
+        }
         s.error = None;
         s.status = "Private conversation ready".into();
         s.revision += 1;
         self.notify.notify_waiters();
         Ok(())
     }
+    fn accept_invite(&self, invite: &str) -> Result<()> {
+        let owner = messaging::Messaging::invitation_owner(invite).map_err(anyhow::Error::msg)?;
+        let relays = {
+            let s = self.state.lock().unwrap();
+            if s.demo {
+                bail!("Leave Preview to connect");
+            }
+            s.settings.relays.clone()
+        };
+        let runtime = self.runtime.lock().unwrap();
+        let runtime = runtime.as_ref().context("App has closed")?;
+        let authorization = runtime.block_on(network::discover_authorization(&relays, owner))?;
+        let mut s = self.state.lock().unwrap();
+        let messaging = s
+            .messaging
+            .as_mut()
+            .context("Private messaging unavailable")?;
+        for event in &authorization {
+            messaging
+                .ingest_authorization(event)
+                .map_err(anyhow::Error::msg)?;
+        }
+        messaging
+            .accept_invite(invite)
+            .map_err(anyhow::Error::msg)?;
+        s.error = None;
+        s.revision += 1;
+        self.notify.notify_waiters();
+        Ok(())
+    }
+
     fn curate(&self, key: &str, check: bool) -> Result<()> {
-        let (settings, candidates) = {
+        let (settings, original_settings, search, candidates) = {
             let s = self.state.lock().unwrap();
             if s.demo {
                 bail!("Leave Preview to connect an AI provider");
             }
-            let listings = s
-                .store
-                .listings(&s.keys.public_key().to_hex(), listing::now())?;
+            let listings = s.snapshot()?.listings;
             let candidates = listings
                 .into_iter()
+                .filter(|l| l.relevance.is_none())
                 .take(12)
                 .map(|l| {
                     let event = s.store.event(&l.id)?;
                     Ok((l, event.id.to_hex()))
                 })
                 .collect::<Result<Vec<_>>>()?;
-            (s.settings.ai.clone(), candidates)
+            let mut ai = s.settings.ai.clone();
+            if s.ai_search {
+                ai.interests = s.query.clone();
+            }
+            (
+                ai,
+                s.settings.ai.clone(),
+                (s.query.clone(), s.ai_search),
+                candidates,
+            )
         };
         let runtime = self.runtime.lock().unwrap();
         let runtime = runtime.as_ref().context("App has closed")?;
@@ -339,14 +586,14 @@ impl Market {
             return Ok(());
         }
         if settings.interests.trim().is_empty() {
-            bail!("Add your interests in AI settings first");
+            bail!("Type what you are looking for in the search field");
         }
         let mut count = 0;
         for (l, event_id) in candidates {
             let result = runtime.block_on(ai::classify(&settings, key, &l));
             let mut s = self.state.lock().unwrap();
             // A settings change invalidates in-flight decisions.
-            if s.settings.ai != settings {
+            if s.settings.ai != original_settings || (s.query.clone(), s.ai_search) != search {
                 break;
             }
             match result {
@@ -374,6 +621,8 @@ impl Market {
         if let Some(runtime) = self.runtime.lock().unwrap().take() {
             runtime.shutdown_background();
         }
+        // Release the private writer lock before opening another secure account.
+        self.state.lock().unwrap().messaging = None;
     }
     pub fn ingest_event(&self, event: &nostr::Event) -> Result<bool> {
         let mut s = self.state.lock().unwrap();

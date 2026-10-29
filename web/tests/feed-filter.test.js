@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { FeedFilterClient, FEED_MODELS } from '../src/feed-filter/client.ts'
+import { FeedFilterClient, FEED_MODELS, DEFAULT_FEED_MODEL } from '../src/feed-filter/client.ts'
 import { validateModel } from '../src/feed-filter/models.ts'
 
 class FakeWorker {
@@ -20,7 +20,10 @@ async function load(client, model = 'deberta') {
   return worker
 }
 
-test('only the two pilot models are offered with immutable revisions and weight hashes', () => {
+test('CPU filtering is the default while both pinned models remain available for diagnostics', () => {
+  assert.equal(DEFAULT_FEED_MODEL, 'deberta')
+  assert.equal(FEED_MODELS[DEFAULT_FEED_MODEL].requiresWebGPU, false)
+  assert.doesNotThrow(() => validateModel(DEFAULT_FEED_MODEL, 'wasm'))
   assert.deepEqual(Object.keys(FEED_MODELS).sort(), ['deberta', 'qwen35'])
   for (const spec of Object.values(FEED_MODELS)) {
     assert.match(spec.revision, /^[0-9a-f]{40}$/)

@@ -40,7 +40,7 @@ export const FEED_MODELS: Readonly<Record<FeedModelId, Readonly<FeedModelSpec>>>
     files: Object.freeze({ 'model_quantized.onnx': '3fac2500c45c75af42c7711de0d1b93d59577456100208be0dc1f9e8811946b6' }),
   }),
 })
-export const DEFAULT_FEED_MODEL = 'qwen35'
+export const DEFAULT_FEED_MODEL = 'deberta'
 export const MAX_CONDITION_LENGTH = 500
 export const MAX_LISTING_LENGTH = 2000
 export const FILTER_VERSION = 4

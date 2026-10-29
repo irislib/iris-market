@@ -29,6 +29,8 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
   }
   let targetMatches=24,sourceExhausted=false,sourceError:string|null=null;
   let sourceEpoch=0,sourceRequest:SourceRequest|null=null,wakeCandidates:(()=>void)|null=null;
+  let sourceErrorVisible=false,runController:AbortController|null=null;
+  let activeRun:{query:string;promise:Promise<void>}|null=null;
   const progress=element('progress');progress.id='ai-download-progress';progress.max=1;progress.hidden=true;progress.setAttribute('aria-label','Model download');
   $('ai-options').append(progress);
   const enabled = () => $('search-mode').value === 'ai';
@@ -42,7 +44,7 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
     const matches=candidates.length-hidden,matchLabel=`${matches} ${matches===1?'match':'matches'}`;
     $('ai-options').hidden = !active;
     $('ai-summary').hidden = !active || (!submittedQuery && !busy);
-    $('ai-summary-text').textContent = showAll ? 'Showing all listings' : phase==='loading' ? $('ai-progress').textContent : busy ? `Searching…${matches?` · ${matchLabel}`:''}` : `${paused?'Search paused · ':''}${matchLabel}`;
+    $('ai-summary-text').textContent = showAll ? 'Showing all listings' : phase==='loading' ? $('ai-progress').textContent : busy ? `Searching…${matches?` · ${matchLabel}`:''}` : `${paused&&!sourceError?'Search paused · ':''}${matchLabel}`;
     $('ai-show-all').textContent = showAll ? 'Use AI matches' : 'Show all';
     $('ai-show-all').hidden = !submittedQuery||(!hidden&&!showAll&&!$('ai-error').textContent);
     $('ai-stop').hidden = !busy;
@@ -57,7 +59,7 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
     $('search-mode').title=preparing?`Preparing AI${downloadFraction===undefined?'':` · ${Math.round(downloadFraction*100)}%`}`:active?'Turn off AI search':'Turn on AI search';
     progress.hidden=phase!=='loading';
     if(active&&!busy&&!$('ai-error').textContent){
-      $('ai-progress').textContent = sourceError || (needsCPU() ? 'Qwen is unavailable in this browser. Use the smaller CPU model.' : submittedQuery&&!candidates.length ? 'Refresh listings or clear filters to search.' : '');
+      $('ai-progress').textContent = needsCPU() ? 'Qwen is unavailable in this browser. Use the smaller CPU model.' : submittedQuery&&!candidates.length&&!sourceError ? 'Refresh listings or clear filters to search.' : '';
     }
     $('ai-progress').hidden=busy||!$('ai-progress').textContent;
     if(active)$('search').setAttribute('aria-describedby','ai-progress');else $('search').removeAttribute('aria-describedby');
@@ -103,27 +105,41 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
     });
   }
   function stop({reset=false,unload=true}={}) {
-    sourceError=null;
-    generation++;sourceEpoch++;wakeCandidates?.();if(unload){prepareGeneration++;preparation=undefined;downloadFraction=undefined;client.dispose();browserClient.dispose();}phase='idle';paused=!reset;progress.hidden=true;$('ai-progress').textContent='';
+    sourceError=null;sourceErrorVisible=false;
+    generation++;runController?.abort();runController=null;activeRun=null;sourceEpoch++;wakeCandidates?.();if(unload){prepareGeneration++;preparation=undefined;downloadFraction=undefined;client.dispose();browserClient.dispose();}phase='idle';paused=!reset;progress.hidden=true;$('ai-progress').textContent='';
     if(reset){scores.clear();submittedQuery='';showAll=false;sourceExhausted=false;targetMatches=24;$('ai-error').textContent='';}
     refresh();onChange();
   }
-  async function run({continuation=false}={}) {
+  function run({continuation=false}={}):Promise<void> {
+    const query=continuation?submittedQuery:$('search').value.trim();
+    // Repeated Submit must not restart a running pass or queue the same work.
+    // A loading pass already adopts the latest input once preparation finishes.
+    if(enabled()&&activeRun&&(phase==='loading'||activeRun.query===query))return activeRun.promise;
+    const promise=executeRun({continuation});
+    const active={query,promise};activeRun=active;
+    void promise.finally(()=>{if(activeRun===active)activeRun=null;}).catch(()=>{});
+    return promise;
+  }
+  async function executeRun({continuation=false}={}) {
     if (!enabled()) { textSubmitted=true;onTextSearch?.($('search').value.trim()); onChange(); return; }
     if(phase==='loading'||continuation&&phase!=='idle')return;
     if(continuation&&!submittedQuery)return;
     if(needsCPU()){$('ai-model').value='deberta';stop();return;}
     const current = ++generation;
+    runController?.abort();
+    const controller=new AbortController();runController=controller;
     const selected=runtime();
     const releaseModel='pin' in selected&&typeof selected.pin==='function'?selected.pin():()=>{};
     wakeCandidates?.();
-    const retrySource=continuation&&!!sourceError;sourceError=null;
+    const sameQuery=!!submittedQuery&&$('search').value.trim()===submittedQuery;
+    const preserve=continuation||sameQuery,retrySource=preserve&&!!sourceError;
+    sourceError=null;sourceErrorVisible=false;
     paused=false;
-    if(!continuation){sourceEpoch++;submittedQuery=$('search').value.trim();scores.clear();showAll=false;sourceExhausted=false;targetMatches=24;}
+    if(!preserve){sourceEpoch++;submittedQuery=$('search').value.trim();scores.clear();showAll=false;sourceExhausted=false;targetMatches=24;}
     else if(!retrySource)targetMatches=matchCount()+24;
     $('ai-error').textContent='';
     phase=selected.info?'searching':'loading';onChange();
-    if(selected.info&&!submittedQuery){phase='idle';refresh();releaseModel();return;}
+    if(selected.info&&!submittedQuery){phase='idle';refresh();releaseModel();if(runController===controller)runController=null;return;}
     try {
       if (!selected.info) {
         phase='loading';progress.removeAttribute('value');$('ai-progress').textContent='Loading model…';refresh();
@@ -132,10 +148,11 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
       if (current !== generation) return;
       // Use the latest query, including edits made while the model was downloading.
       const query=continuation?submittedQuery:$('search').value.trim();
-      if(query!==submittedQuery){submittedQuery=query;scores.clear();onChange();}
+      if(activeRun)activeRun.query=query;
+      if(query!==submittedQuery){sourceEpoch++;submittedQuery=query;scores.clear();onChange();}
       if(!query||!enabled())return;
-      const condition=searchCondition(query);let sourceRequests=0;
-      phase='searching';
+      const condition=searchCondition(query);let sourceRequests=0,unpainted=0,painted=false,lastPaint=performance.now();
+      phase='searching';refresh();
       while(matchCount()<targetMatches) {
         if (current !== generation) return;
         const item=candidates().find(listing=>!scores.has(keyFor(listing)));
@@ -143,9 +160,10 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
           if(sourceRequest?.done){
             const completed=sourceRequest;sourceRequest=null;
             if(completed.epoch===sourceEpoch){
-              if(completed.error){paused=true;sourceError='Listings unavailable. Load more to retry.';sourceExhausted=false;break;}
+              if(completed.error){paused=true;sourceError='Could not fetch more results.';sourceErrorVisible=retrySource;sourceExhausted=false;break;}
               if(completed.more===false)sourceExhausted=true;
             }
+            await new Promise<void>(resolve=>setTimeout(resolve,0));
             continue;
           }
           if(!sourceRequest){
@@ -157,20 +175,26 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
           if(current!==generation)return;
           continue;
         }
-        $('ai-progress').textContent = 'Searching…'; refresh();
+        $('ai-progress').textContent = 'Searching…';
         let score=0;
         for(const text of listingSearchTexts(item,query,$('ai-model').value)){
-          const result=await selected.classify(condition,text,{eventId:item.eventId});
+          const result=await selected.classify(condition,text,{eventId:item.eventId,signal:controller.signal});
           if(current!==generation)return;
           if(!Number.isFinite(result.score))throw new Error('The model returned an invalid decision');
           score=Math.max(score,result.score);
           if(score>=threshold())break;
         }
-        scores.set(keyFor(item),score);onChange();
+        scores.set(keyFor(item),score);unpainted++;
+        if(!painted||unpainted>=16||performance.now()-lastPaint>=12){
+          onChange();painted=true;unpainted=0;lastPaint=performance.now();
+          // Cached decisions can otherwise keep resolving in one microtask
+          // chain, starving paint, input, Stop and a replacement query.
+          await new Promise<void>(resolve=>setTimeout(resolve,0));
+        }
       }
     } catch (error) {
       if (current === generation) { paused=true;selected.dispose(); $('ai-error').textContent = `${error.message || 'Search failed'}. Show all listings or switch to Text to continue browsing.`; }
-    } finally { releaseModel();if (current === generation) { phase='idle';$('ai-progress').textContent='';refresh();onChange(); } }
+    } finally { releaseModel();if(runController===controller)runController=null;if (current === generation) { phase='idle';$('ai-progress').textContent='';refresh();onChange(); } }
   }
   $('search-mode').onclick = () => {
     const active=!enabled();preference=active?'on':'off';writeSetting(AI_MODE_STORAGE_KEY,preference);setEnabled(active);
@@ -193,7 +217,7 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
   $('ai-stop').onclick = () => stop();
   $('ai-unload').onclick = () => {preference='off';writeSetting(AI_MODE_STORAGE_KEY,preference);setEnabled(false);stop({reset:true});};
   $('ai-show-all').onclick = () => { showAll = !showAll; refresh(); onChange(); };
-  window.addEventListener('pagehide', () => {closed=true;generation++;sourceEpoch++;prepareGeneration++;wakeCandidates?.();client.dispose();browserClient.dispose();});
+  window.addEventListener('pagehide', () => {closed=true;generation++;runController?.abort();runController=null;activeRun=null;sourceEpoch++;prepareGeneration++;wakeCandidates?.();client.dispose();browserClient.dispose();});
   const ready=Promise.resolve().then(async()=>{
     const available=await browserClient.probe();if(closed)return;
     if(available!=='unavailable'||preferredModel==='browser'||browserOption){
@@ -206,7 +230,7 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
     try{await prepareModel();if(!closed&&preference!=='off'&&!textSubmitted){preference='on';writeSetting(AI_MODE_STORAGE_KEY,preference);setEnabled(true);refresh();onChange();}}
     catch{/* Background preparation is optional. Explicit Search can retry without blocking Browse. */}
   });
-  const pagination=()=>{const rows=candidates(),remaining=rows.filter(listing=>!scores.has(keyFor(listing))).length;return{hasMore:enabled()&&!!submittedQuery&&!showAll&&(remaining>0||!!fetchMoreCandidates&&!sourceExhausted),loading:phase!=='idle',paused,error:sourceError||$('ai-error').textContent,remaining,reviewed:rows.length-remaining,matches:matchCount(),target:targetMatches};};
+  const pagination=()=>{const rows=candidates(),remaining=rows.filter(listing=>!scores.has(keyFor(listing))).length;return{hasMore:enabled()&&!!submittedQuery&&!showAll&&(remaining>0||!!fetchMoreCandidates&&!sourceExhausted),loading:phase!=='idle',paused,error:sourceErrorVisible?sourceError:$('ai-error').textContent,remaining,reviewed:rows.length-remaining,matches:matchCount(),target:targetMatches};};
   const scoreFor=(listing:SearchListing):number|undefined=>{
     if(!enabled()||showAll||!submittedQuery||$('ai-error').textContent)return undefined;
     const score=scores.get(keyFor(listing));return Number.isFinite(score)?score:undefined;

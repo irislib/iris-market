@@ -12,13 +12,13 @@ class Element extends EventTarget {
   focus(){this.focused=true;}
 }
 const bicycle={id:'bicycle',title:'Bicycle',description:'City bicycle',side:'offer',category:'transport'};
-function fixture({rows=[bicycle],query='',gpu=true,client:provided,fetchMoreCandidates,onTextSearch,autoPrepare=false,mode='ai',storage,saveData,browserClient}={}){
+function fixture({rows=[bicycle],query='',gpu=true,client:provided,fetchMoreCandidates,onTextSearch,autoPrepare=false,mode='ai',storage,saveData,browserClient,onRender=()=>{}}={}){
   const elements=new Map(),calls=[];
   const field=id=>{if(!elements.has(id))elements.set(id,new Element());return elements.get(id);};
   globalThis.document={querySelector:selector=>field(selector.slice(1)),createElement:()=>new Element()};globalThis.window=new EventTarget();
   field('search-mode').value=mode;field('search').value=query;field('ai-model').value='deberta';field('ai-threshold').value='0.5';
   const client=provided??{info:null,async load(model,device,progress){calls.push(['load',model,device]);progress('Downloading model…');this.info={model,device};return this.info;},async classify(condition,text){calls.push(['classify',condition,text]);return{score:.8};},dispose(){calls.push(['dispose']);this.info=null;}};
-  const ui=setupAI({getCandidates:()=>rows,onChange:()=>ui.refresh(),client,hasWebGPU:()=>gpu,fetchMoreCandidates,onTextSearch,autoPrepare,storage,saveData,browserClient});ui.refresh();
+  const ui=setupAI({getCandidates:()=>rows,onChange:()=>{onRender();ui.refresh();},client,hasWebGPU:()=>gpu,fetchMoreCandidates,onTextSearch,autoPrepare,storage,saveData,browserClient});ui.refresh();
   return{ui,client,calls,field,setRows(value){rows=value;ui.refresh();}};
 }
 
@@ -146,11 +146,11 @@ test('match collection fetches older candidates and stops once filled or source 
 test('older inventory failure pauses without automatic retry or revealing unknown listings',async()=>{
   let fetches=0;const client={info:{model:'deberta'},load:async()=>{},classify:async()=>({score:.1}),dispose(){this.info=null;}};
   const {field,ui}=fixture({query:'bicycle',client,fetchMoreCandidates:async()=>{fetches++;throw Error('Listings unavailable');}});
-  await field('search-run').onclick();assert.equal(fetches,1);assert.equal(ui.pagination().paused,true);assert.match(ui.pagination().error,/Listings unavailable/);assert.equal(ui.isVisible(bicycle),false);
+  await field('search-run').onclick();assert.equal(fetches,1);assert.equal(ui.pagination().paused,true);assert.equal(ui.pagination().error,'');assert.equal(field('ai-error').textContent,'');assert.equal(field('ai-progress').textContent,'');assert(client.info);assert.equal(ui.isVisible(bicycle),false);
 });
 
 const deferred=()=>{let resolve,reject;const promise=new Promise((done,fail)=>{resolve=done;reject=fail;});return{promise,resolve,reject};};
-async function until(check){for(let i=0;i<40&&!check();i++)await Promise.resolve();assert(check(),'expected asynchronous progress');}
+async function until(check){for(let i=0;i<40&&!check();i++)await new Promise(resolve=>setTimeout(resolve,0));assert(check(),'expected asynchronous progress');}
 
 test('new candidates stream into classification before their source page finishes',async()=>{
   const source=deferred(),texts=[];let fetches=0;
@@ -190,8 +190,8 @@ test('a late source failure after a full match window is handled on continuation
   setRows(Array.from({length:24},(_,i)=>({...bicycle,id:`stream-${i}`})));await until(()=>finished);await run;
   assert.equal(ui.pagination().matches,24);assert.equal(ui.searching(),false);
   source.reject(Error('Remaining listings unavailable'));await Promise.resolve();
-  await ui.loadMore();assert.equal(fetches,1);assert.equal(ui.pagination().paused,true);assert.equal(field('ai-error').textContent,'');assert.match(ui.pagination().error,/Listings unavailable/);assert.match(field('ai-progress').textContent,/Load more to retry/);assert(client.info,'a source error must not unload the model');
-  assert.equal(field('ai-summary-text').textContent,'Search paused · 24 matches');
+  await ui.loadMore();assert.equal(fetches,1);assert.equal(ui.pagination().paused,true);assert.equal(field('ai-error').textContent,'');assert.equal(ui.pagination().error,'');assert.equal(field('ai-progress').textContent,'');assert(client.info,'a source error must not unload the model');
+  assert.equal(field('ai-summary-text').textContent,'24 matches');
   field('ai-show-all').onclick();assert.equal(field('ai-summary-text').textContent,'Showing all listings');
 });
 
@@ -306,7 +306,7 @@ test('only trusted search activation can prepare a selected downloadable browser
 
 test('classification passes the exact signed listing revision to the pinned decision cache',async()=>{
   const options=[],client={info:{model:'deberta'},async load(){},async classify(_condition,_text,value){options.push(value);return{score:.9};},dispose(){}};
-  const {field}=fixture({query:'bicycle',rows:[{...bicycle,eventId:'a'.repeat(64)}],client});await field('search-run').onclick();assert.deepEqual(options,[{eventId:'a'.repeat(64)}]);
+  const {field}=fixture({query:'bicycle',rows:[{...bicycle,eventId:'a'.repeat(64)}],client});await field('search-run').onclick();assert.deepEqual(options.map(value=>value.eventId),['a'.repeat(64)]);assert(options[0].signal instanceof AbortSignal);
 });
 
 test('relevance scores expose only current submitted query/model/revision decisions',async()=>{
@@ -413,4 +413,64 @@ test('a legacy remembered model with a missing mode migrates to On without downl
     assert.equal(ui.enabled(),true);assert.equal(field('ai-model').value,model);await ui.ready;
     assert.equal(storage.getItem(AI_MODE_STORAGE_KEY),'on');assert.equal(calls.length,0);
   }
+});
+
+
+test('repeated same-query Submit coalesces an active pass and preserves decisions on continuation',async()=>{
+  const first=deferred();let classified=0,disposals=0;
+  const rows=Array.from({length:40},(_,index)=>({...bicycle,id:`repeat-${index}`}));
+  const client={info:{model:'deberta'},load:async()=>{},async classify(){classified++;if(classified===1)await first.promise;return{score:.9,cached:true};},dispose(){disposals++;this.info=null;}};
+  const {field,ui}=fixture({rows,query:'a bicycle',client});
+  const run=field('search-run').onclick();await until(()=>classified===1);
+  const repeated=field('search-run').onclick();assert.equal(repeated,run,'same running pass is shared');assert.equal(classified,1);
+  first.resolve();await run;assert.equal(classified,24);assert.equal(ui.pagination().matches,24);
+  const next=field('search-run').onclick();assert.equal(ui.scoreFor(rows[0]),.9,'confirmed matches never disappear on resubmit');
+  await next;assert.equal(classified,40);assert.equal(ui.pagination().matches,40);assert.equal(disposals,0);
+});
+
+test('a long cached scan yields to input timers and batches expensive render callbacks',async()=>{
+  const rows=Array.from({length:1000},(_,index)=>({...bicycle,id:`cached-${index}`}));let classified=0,paints=0,heartbeatAt=-1;
+  const client={info:{model:'deberta'},load:async()=>{},async classify(){classified++;return{score:.01,cached:true};},dispose(){this.info=null;}};
+  const {field,ui}=fixture({rows,query:'a bicycle',client,onRender:()=>paints++});
+  const run=field('search-run').onclick();setTimeout(()=>{heartbeatAt=classified;},0);await run;
+  assert.equal(classified,1000);assert(heartbeatAt>0&&heartbeatAt<1000,'input timer must run during, not after, the cached scan');
+  assert(paints<150,`renders must be coalesced rather than per-item (${paints})`);assert.equal(ui.pagination().reviewed,1000);
+});
+
+test('Stop is responsive during a long cached pass and no late decisions resume it',async()=>{
+  const rows=Array.from({length:1000},(_,index)=>({...bicycle,id:`cancel-cache-${index}`}));let classified=0,disposals=0;
+  const client={info:{model:'deberta'},load:async()=>{},async classify(){classified++;return{score:.01,cached:true};},dispose(){disposals++;this.info=null;}};
+  const {field,ui}=fixture({rows,query:'a bicycle',client});const run=field('search-run').onclick();
+  setTimeout(()=>field('ai-stop').onclick(),0);await run;
+  const stoppedAt=classified;await new Promise(resolve=>setTimeout(resolve,5));
+  assert(stoppedAt<1000);assert.equal(classified,stoppedAt);assert.equal(disposals,1);assert.equal(ui.pagination().paused,true);assert.equal(field('ai-error').textContent,'');
+});
+
+test('a different submitted query aborts prior inference and ignores its stale result',async()=>{
+  let oldSignal,oldCalls=0,newCalls=0,disposals=0;
+  const client={info:{model:'deberta'},load:async()=>{},async classify(condition,_text,options){
+    if(condition.includes('old query')){oldCalls++;oldSignal=options.signal;return new Promise((_,reject)=>options.signal.addEventListener('abort',()=>reject(new DOMException('Stopped','AbortError')),{once:true}));}
+    newCalls++;return{score:.9};
+  },dispose(){disposals++;this.info=null;}};
+  const {field,ui}=fixture({query:'old query',client});const old=field('search-run').onclick();await until(()=>oldCalls===1);
+  field('search').value='new query';const next=field('search-run').onclick();assert.equal(oldSignal.aborted,true);await Promise.all([old,next]);
+  assert.equal(ui.query(),'new query');assert.equal(newCalls,1);assert.equal(ui.pagination().matches,1);assert.equal(disposals,0);assert.equal(field('ai-error').textContent,'');
+});
+
+test('source failure keeps partial matches quiet; only a failed explicit retry reports a bottom error',async()=>{
+  let fetches=0,disposals=0;
+  const client={info:{model:'deberta'},load:async()=>{},classify:async()=>({score:.9}),dispose(){disposals++;this.info=null;}};
+  const {field,ui}=fixture({query:'a bicycle',client,fetchMoreCandidates:async()=>{if(++fetches<3)throw Error('Relay diagnostic');return false;}});
+  await field('search-run').onclick();assert.equal(ui.pagination().matches,1);assert.equal(ui.pagination().error,'');assert.equal(field('ai-summary-text').textContent,'1 match');assert.equal(field('ai-error').textContent,'');assert.equal(field('ai-progress').textContent,'');
+  await ui.loadMore();assert.equal(ui.pagination().error,'Could not fetch more results.');assert.equal(field('ai-error').textContent,'');assert.equal(field('ai-progress').textContent,'');assert.equal(ui.pagination().matches,1);
+  await ui.loadMore();assert.equal(ui.pagination().error,'');assert.equal(fetches,3);assert.equal(disposals,0);assert(client.info);
+});
+
+
+test('immediately cached source pages also yield instead of chaining pagination renders',async()=>{
+  let fetches=0,heartbeatAt=-1;
+  const client={info:{model:'deberta'},load:async()=>{},classify:async()=>{throw Error('No candidates');},dispose(){this.info=null;}};
+  const {field}=fixture({rows:[],query:'a bicycle',client,fetchMoreCandidates:async()=>{fetches++;return true;}});
+  const run=field('search-run').onclick();setTimeout(()=>{heartbeatAt=fetches;},0);await run;
+  assert.equal(fetches,32);assert(heartbeatAt>0&&heartbeatAt<32,'input can run between immediate source pages');assert(client.info);
 });

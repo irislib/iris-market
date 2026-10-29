@@ -39,6 +39,17 @@ data class Listing(
         currency == "GBP" -> "£$price"
         else -> "$price $currency"
     }
+    companion object {
+        fun parse(l: JSONObject) = Listing(l.getString("id"), l.optString("author"), l.getString("title"), l.optString("description"),
+            l.optString("side", "offer"), l.optString("price"), l.optString("currency", "EUR"),
+            l.optString("location"), l.optString("category", "Other"), l.optional("image_url"),
+            l.optBoolean("saved"), l.optBoolean("mine"), l.optString("status", "active"),
+            l.optString("delivery"), l.optJSONObject("relevance")?.optional("reason"),
+            l.optJSONObject("relevance")?.let { decision ->
+                if (decision.has("show") && !decision.isNull("show")) decision.optBoolean("show") else null
+            }, l.optJSONArray("coordinates")?.let { a -> if (a.length()==2) listOf(a.optDouble(0),a.optDouble(1)).takeIf { values -> values.all { it.isFinite() } } else null })
+    }
+
 }
 data class Message(val id: String, val text: String, val mine: Boolean, val orderId: String? = null, val cashu: CashuPayment? = null)
 data class Conversation(val id: String, val name: String, val messages: List<Message>)
@@ -49,7 +60,8 @@ data class MarketSnapshot(
     val settings: String = "{}", val conversations: List<Conversation> = emptyList(),
     val invite: String? = null, val aiSearch: Boolean = false, val sort: String = "suggested",
     val orders: List<MarketOrder> = emptyList(), val liveLocationSupported: Boolean = false,
-    val people: Map<String, PublicPerson> = emptyMap(), val profile: PublicProfile? = null, val graphContextLoaded: Boolean = false
+    val people: Map<String, PublicPerson> = emptyMap(), val profile: PublicProfile? = null, val graphContextLoaded: Boolean = false,
+    val profileListings: ProfileListings? = null
 ) {
     companion object {
         fun parse(raw: String): MarketSnapshot {
@@ -60,17 +72,7 @@ data class MarketSnapshot(
                 publicKey = o.optString("public_key"), canSign = o.optBoolean("can_sign"), messagingReady = o.optBoolean("messaging_ready"), demo = o.optBoolean("demo"),
                 status = o.optString("status", "Ready"), error = o.optional("error"),
                 query = o.optString("query"), side = o.optString("side", "offer"),
-                listings = (0 until ls.length()).map { i ->
-                    val l = ls.getJSONObject(i)
-                    Listing(l.getString("id"), l.optString("author"), l.getString("title"), l.optString("description"),
-                        l.optString("side", "offer"), l.optString("price"), l.optString("currency", "EUR"),
-                        l.optString("location"), l.optString("category", "Other"), l.optional("image_url"),
-                        l.optBoolean("saved"), l.optBoolean("mine"), l.optString("status", "active"),
-                        l.optString("delivery"), l.optJSONObject("relevance")?.optional("reason"),
-                        l.optJSONObject("relevance")?.let { decision ->
-                            if (decision.has("show") && !decision.isNull("show")) decision.optBoolean("show") else null
-                        }, l.optJSONArray("coordinates")?.let { a -> if (a.length()==2) listOf(a.optDouble(0),a.optDouble(1)).takeIf { values -> values.all { it.isFinite() } } else null })
-                }, savedCount = o.optInt("saved_count"),
+                listings = (0 until ls.length()).map { Listing.parse(ls.getJSONObject(it)) }, savedCount = o.optInt("saved_count"),
                 settings = (o.optJSONObject("settings") ?: JSONObject()).toString(),
                 conversations = (0 until cs.length()).map { i ->
                     val c = cs.getJSONObject(i); val ms = c.optJSONArray("messages") ?: JSONArray()
@@ -81,7 +83,8 @@ data class MarketSnapshot(
                 liveLocationSupported = o.optBoolean("live_location_supported", false),
                 orders = o.optJSONArray("orders")?.let { a -> (0 until a.length()).map { MarketOrder.parse(a.getJSONObject(it)) } } ?: emptyList(),
                 people = o.optJSONObject("people")?.let { people -> people.keys().asSequence().associateWith { PublicPerson.parse(people.getJSONObject(it)) } } ?: emptyMap(),
-                profile = o.optJSONObject("profile")?.let(PublicProfile::parse), graphContextLoaded = o.optBoolean("graph_context_loaded")
+                profile = o.optJSONObject("profile")?.let(PublicProfile::parse), graphContextLoaded = o.optBoolean("graph_context_loaded"),
+                profileListings = o.optJSONObject("profile_listings")?.let(ProfileListings::parse)
             )
         }
     }
@@ -317,6 +320,17 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
         CoroutineScope(Dispatchers.IO).launch { mutex.withLock {
             runCatching { core?.shutdown() }; core?.close(); core = null
         } }
+    }
+}
+
+data class ProfileListings(val author: String, val listings: List<Listing>, val loading: Boolean, val canLoadMore: Boolean, val error: String?) {
+    companion object {
+        fun parse(o: JSONObject): ProfileListings {
+            val author = o.getString("author")
+            val rows = o.optJSONArray("listings") ?: JSONArray()
+            return ProfileListings(author, (0 until rows.length()).map { Listing.parse(rows.getJSONObject(it)) }.filter { it.author == author },
+                o.optBoolean("loading"), o.optBoolean("can_load_more"), o.optional("error"))
+        }
     }
 }
 

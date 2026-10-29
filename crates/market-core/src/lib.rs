@@ -7,6 +7,7 @@ pub mod messaging;
 pub mod model;
 pub mod network;
 pub mod orders;
+pub mod profile_listings;
 pub mod profiles;
 pub mod ranking;
 pub mod store;
@@ -43,6 +44,7 @@ pub(crate) struct State {
     profiles: profiles::Profiles,
     profile: Option<profiles::Profile>,
     profile_request: u64,
+    profile_listings: Option<profile_listings::Feed>,
 }
 impl State {
     fn snapshot(&self) -> Result<Snapshot> {
@@ -166,6 +168,17 @@ impl State {
                 .unwrap_or_default(),
             invite: self.invite.clone(),
             profile,
+            profile_listings: self
+                .profile_listings
+                .as_ref()
+                .map(|feed| {
+                    feed.snapshot(
+                        &self.store,
+                        &self.owner.to_hex(),
+                        &self.settings.image_proxy,
+                    )
+                })
+                .transpose()?,
             graph_context_loaded: self.profiles.context_loaded,
         })
     }
@@ -292,6 +305,7 @@ impl Market {
             profiles: profiles::Profiles::default(),
             profile: None,
             profile_request: 0,
+            profile_listings: None,
         };
         if demo {
             seed_preview(&mut state)?;
@@ -350,6 +364,24 @@ impl Market {
             Command::Contact { author, listing_id } => return self.contact(&author, &listing_id),
             Command::AcceptInvite { invite } => return self.accept_invite(&invite),
             Command::LoadProfile { author } => return self.load_profile(Some(author)),
+            Command::LoadMoreProfileListings { author } => {
+                return self.load_profile_listings(&author, true);
+            }
+            Command::CloseProfile { author } => {
+                let mut s = self.state.lock().unwrap();
+                if s.profile_listings
+                    .as_ref()
+                    .is_some_and(|feed| feed.author == author)
+                {
+                    if let Some(feed) = s.profile_listings.take() {
+                        feed.cancel();
+                    }
+                    s.profile = None;
+                    s.profile_request += 1;
+                    s.revision += 1;
+                }
+                return Ok(());
+            }
             Command::LoadContext => return self.load_profile(None),
             _ => {}
         }
@@ -440,6 +472,9 @@ impl Market {
                 s.status = "Settings saved".into();
                 self.notify.notify_one();
                 if changed_relays {
+                    if let Some(feed) = s.profile_listings.take() {
+                        feed.cancel();
+                    }
                     s.profiles = profiles::Profiles::default();
                     s.profile = None;
                     s.revision += 1;
@@ -496,7 +531,9 @@ impl Market {
             Command::Contact { .. }
             | Command::AcceptInvite { .. }
             | Command::LoadProfile { .. }
-            | Command::LoadContext => {
+            | Command::LoadContext
+            | Command::LoadMoreProfileListings { .. }
+            | Command::CloseProfile { .. } => {
                 unreachable!()
             }
             Command::Curate { .. } | Command::CheckAi { .. } => unreachable!(),
@@ -510,8 +547,17 @@ impl Market {
             .transpose()?;
         let runtime = self.runtime.lock().unwrap();
         let runtime = runtime.as_ref().context("App has closed")?;
+        if let Some(author) = &author {
+            profile_listings::start(runtime, self.state.clone(), author, false)?;
+        }
         Self::spawn_profiles(runtime, self.state.clone(), author);
         Ok(())
+    }
+    fn load_profile_listings(&self, author: &str, more: bool) -> Result<()> {
+        let author = nostr::PublicKey::parse(author)?.to_hex();
+        let runtime = self.runtime.lock().unwrap();
+        let runtime = runtime.as_ref().context("App has closed")?;
+        profile_listings::start(runtime, self.state.clone(), &author, more)
     }
     fn spawn_profiles(runtime: &Runtime, state: Arc<Mutex<State>>, author: Option<String>) {
         let (relays, request, demo) = {
@@ -700,6 +746,9 @@ impl Market {
     pub fn shutdown(&self) {
         self.stopped.store(true, Ordering::Release);
         self.notify.notify_waiters();
+        if let Some(feed) = self.state.lock().unwrap().profile_listings.as_ref() {
+            feed.cancel();
+        }
         if let Some(runtime) = self.runtime.lock().unwrap().take() {
             runtime.shutdown_background();
         }

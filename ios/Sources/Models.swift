@@ -14,6 +14,7 @@ struct MarketSnapshot: Decodable {
     var sort = "suggested"
     var people: [String: MarketPerson] = [:]
     var profile: PublicMarketProfile?
+    var profileListings: ProfileListingPage?
     var graphContextLoaded = false
     var revision: UInt64 = 0
     var listings: [MarketListing] = []
@@ -140,5 +141,13 @@ struct PublicMarketProfile: Decodable {
     let graphContextLoaded: Bool
     let coverage: String
     let loading: Bool
+    let error: String?
+}
+
+struct ProfileListingPage: Decodable {
+    let author: String
+    let listings: [MarketListing]
+    let loading: Bool
+    let canLoadMore: Bool
     let error: String?
 }

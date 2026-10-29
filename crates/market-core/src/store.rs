@@ -76,8 +76,22 @@ impl Store {
         Ok(true)
     }
     pub fn listings(&self, owner: &str, at: u64) -> Result<Vec<Listing>> {
-        let mut stmt = self.db.prepare("SELECT e.raw, s.coordinate IS NOT NULL, EXISTS(SELECT 1 FROM outbox o WHERE o.event_id=e.event_id), r.value FROM events e LEFT JOIN saved s ON s.coordinate=e.coordinate LEFT JOIN relevance r ON r.coordinate=e.coordinate AND r.event_id=e.event_id ORDER BY e.created_at DESC,e.event_id LIMIT 5000")?;
-        let rows = stmt.query_map([], |r| {
+        self.listings_for_scope(owner, at, None)
+    }
+    pub fn listings_for_author(&self, owner: &str, author: &str, at: u64) -> Result<Vec<Listing>> {
+        let author = nostr::PublicKey::from_hex(author)?.to_hex();
+        self.listings_for_scope(owner, at, Some(&author))
+    }
+    fn listings_for_scope(
+        &self,
+        owner: &str,
+        at: u64,
+        author: Option<&str>,
+    ) -> Result<Vec<Listing>> {
+        let lower = author.map(|author| format!("{author}:"));
+        let upper = author.map(|author| format!("{author};"));
+        let mut stmt = self.db.prepare("SELECT e.raw, s.coordinate IS NOT NULL, EXISTS(SELECT 1 FROM outbox o WHERE o.event_id=e.event_id), r.value FROM events e LEFT JOIN saved s ON s.coordinate=e.coordinate LEFT JOIN relevance r ON r.coordinate=e.coordinate AND r.event_id=e.event_id WHERE (?1 IS NULL OR (e.coordinate >= ?1 AND e.coordinate < ?2)) ORDER BY e.created_at DESC,e.event_id LIMIT 5000")?;
+        let rows = stmt.query_map(params![lower, upper], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, bool>(1)?,

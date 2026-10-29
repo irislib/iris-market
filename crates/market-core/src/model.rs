@@ -151,6 +151,7 @@ pub struct Snapshot {
     pub orders: Vec<crate::orders::OrderView>,
     pub invite: Option<String>,
     pub profile: Option<crate::profiles::Profile>,
+    pub profile_listings: Option<crate::profile_listings::Page>,
     pub graph_context_loaded: bool,
 }
 
@@ -180,6 +181,12 @@ pub enum Command {
         author: String,
     },
     LoadContext,
+    LoadMoreProfileListings {
+        author: String,
+    },
+    CloseProfile {
+        author: String,
+    },
     SetSettings {
         settings: Settings,
     },

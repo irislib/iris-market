@@ -85,6 +85,7 @@ class MarketFlowsTest {
     @Test fun profileAndSharedSearchKeepPreviewOffline() {
         compose.onNodeWithText("A little more green").performClick()
         compose.onNodeWithContentDescription("View author").performScrollTo().performClick()
+        compose.onNodeWithText("Known",substring=true).performClick()
         compose.waitUntil(5_000) { compose.onAllNodesWithText("Profiles are unavailable in offline preview.").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("Done").performClick()
         compose.onNodeWithContentDescription("AI search").performClick()

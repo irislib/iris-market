@@ -329,3 +329,78 @@ fn fresh_constructor_never_rewrites_existing_legacy_or_other_owner_authorization
         Market::open_fresh(fresh_dir.path(), &iris_market_core::generate_secret_key()).is_err()
     );
 }
+
+#[test]
+fn public_profile_listings_are_cached_immediately_and_independent_of_browse_filters() {
+    let dir = tempfile::tempdir().unwrap();
+    offline(dir.path());
+    let app = Market::open(dir.path(), &iris_market_core::generate_secret_key(), false).unwrap();
+    let author = Keys::generate();
+    let now = listing::now();
+    for i in 0..60 {
+        let mut d = draft();
+        d.title = format!("Author listing {i}");
+        app.ingest_event(
+            &listing::build(&author, &d, &format!("author-{i}"), now - i, false).unwrap(),
+        )
+        .unwrap();
+    }
+    // The latest closed revision remains a tombstone, not a visible profile tile.
+    app.ingest_event(&listing::build(&author, &draft(), "author-5", now + 1, true).unwrap())
+        .unwrap();
+    app.command(r#"{"type":"set_filter","query":"no-match","side":"request"}"#)
+        .unwrap();
+    let state: Value = serde_json::from_str(
+        &app.command(
+            &json!({"type":"load_profile","author":author.public_key().to_hex()}).to_string(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(state["listings"].as_array().unwrap().is_empty());
+    assert_eq!(state["query"], "no-match");
+    assert_eq!(state["side"], "request");
+    let page = &state["profile_listings"];
+    assert_eq!(page["listings"].as_array().unwrap().len(), 48);
+    assert_eq!(page["can_load_more"], true);
+    assert_eq!(page["loading"], false);
+    assert!(
+        !page["listings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["id"] == format!("{}:author-5", author.public_key().to_hex()))
+    );
+    let state: Value = serde_json::from_str(
+        &app.command(
+            &json!({"type":"load_more_profile_listings","author":author.public_key().to_hex()})
+                .to_string(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        state["profile_listings"]["listings"]
+            .as_array()
+            .unwrap()
+            .len(),
+        59
+    );
+    assert_eq!(state["profile_listings"]["can_load_more"], false);
+    app.command(
+        &json!({"type":"close_profile","author":Keys::generate().public_key().to_hex()})
+            .to_string(),
+    )
+    .unwrap();
+    assert!(
+        serde_json::from_str::<Value>(&app.snapshot().unwrap()).unwrap()["profile_listings"]
+            .is_object()
+    );
+    app.command(&json!({"type":"close_profile","author":author.public_key().to_hex()}).to_string())
+        .unwrap();
+    assert!(
+        serde_json::from_str::<Value>(&app.snapshot().unwrap()).unwrap()["profile_listings"]
+            .is_null()
+    );
+    app.shutdown();
+}

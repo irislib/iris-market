@@ -58,13 +58,20 @@ struct AuthorProfileView: View {
                                 }.buttonStyle(.plain)
                             }
                         } else {
-                            let authorListings = store.snapshot.listings.filter { $0.author == author }
+                            let feed = store.snapshot.profileListings.flatMap { $0.author == author ? $0 : nil }
+                            let authorListings = feed?.listings ?? []
                             Text("Listings").font(.headline).accessibilityIdentifier("profileListings")
-                            if authorListings.isEmpty { Text("No listings to show yet.").font(.subheadline).foregroundStyle(MarketTheme.muted).padding(.vertical, 12) }
+                            if authorListings.isEmpty && feed?.loading != true { Text("No listings to show yet.").font(.subheadline).foregroundStyle(MarketTheme.muted).padding(.vertical, 12) }
                             LazyVGrid(columns: [GridItem(.flexible(), spacing: 14), GridItem(.flexible(), spacing: 14)], spacing: 22) {
                                 ForEach(authorListings) { listing in
                                     ListingCard(listing: listing, open: { selectedListing = listing }, save: { store.save(listing) })
                                 }
+                            }
+                            if feed?.loading == true { ProgressView("Loading listings…").font(.caption) }
+                            if let issue = feed?.error {
+                                HStack { Text(issue).font(.caption).foregroundStyle(MarketTheme.muted); Spacer(); Button("Retry") { loadMore() } }
+                            } else if feed?.canLoadMore == true {
+                                Button("Load more") { loadMore() }.frame(maxWidth: .infinity).disabled(feed?.loading == true).accessibilityIdentifier("profileLoadMore")
                             }
                         }
                     } else { ProgressView("Loading profile…").frame(maxWidth: .infinity).padding(.vertical, 60) }
@@ -76,8 +83,10 @@ struct AuthorProfileView: View {
                 }
                 .sheet(item: $selectedListing) { listing in ListingDetailView(listing: listing).marketSheetScope() }
                 .task(id: author) { store.command(["type": "load_profile", "author": author]) }
+                .onDisappear { store.command(["type": "close_profile", "author": author]) }
         }
     }
+    private func loadMore() { store.command(["type": "load_more_profile_listings", "author": author]) }
     private func connectionControl(_ label: String, count: Int, value: String) -> some View {
         Button { selection = selection == value ? nil : value } label: {
             HStack(spacing: 4) { Text("\(count)").fontWeight(.semibold); Text(label) }

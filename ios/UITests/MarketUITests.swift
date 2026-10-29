@@ -208,6 +208,38 @@ final class MarketUITests: XCTestCase {
         capture("local-signin-ready-with-silent-relay")
     }
 
+    /// Opt-in localhost inventory fixture provides one Browse item and sixty author listings.
+    func testLocalAuthorInventoryAndLoadMore() throws {
+        guard ProcessInfo.processInfo.environment["MARKET_LOCAL_PROFILE_UI_TEST"] == "1" else { throw XCTSkip("Needs isolated localhost author inventory") }
+        app.terminate(); app.launchArguments = []; app.launch()
+        XCTAssertTrue(app.staticTexts["Studio collection 00"].waitForExistence(timeout: 20))
+        let search = app.textFields["marketSearch"]
+        search.tap(); search.typeText("collection 00\n")
+        app.buttons.matching(identifier: "listingOpen").firstMatch.tap()
+        let author = app.buttons["listingAuthor"]
+        for _ in 0..<4 where !author.isHittable { app.swipeUp() }
+        author.tap()
+        XCTAssertTrue(app.navigationBars["Profile"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Studio collection 01"].waitForExistence(timeout: 12))
+        capture("author-01-independent-listings")
+        let save = app.buttons.matching(NSPredicate(format: "label == %@", "Save Studio collection 01")).firstMatch
+        XCTAssertTrue(save.isHittable); save.tap()
+        let more = app.buttons["profileLoadMore"]
+        for _ in 0..<30 where !more.isHittable { app.swipeUp() }
+        XCTAssertTrue(more.isHittable); more.tap()
+        let next = app.staticTexts["Studio collection 48"]
+        for _ in 0..<8 where !next.isHittable { app.swipeUp() }
+        XCTAssertTrue(next.waitForExistence(timeout: 12))
+        capture("author-02-load-more")
+        app.navigationBars["Profile"].buttons["Done"].tap()
+        app.navigationBars["Listing"].buttons["Done"].tap()
+        XCTAssertEqual(search.value as? String, "collection 00")
+        XCTAssertTrue(app.buttons["filterSelling"].isSelected)
+        app.buttons["tabSaved"].tap()
+        XCTAssertTrue(app.staticTexts["Studio collection 01"].waitForExistence(timeout: 8))
+        capture("author-03-saved-listing")
+    }
+
     func testSearchAndRequestFilter() throws {
         let search = app.textFields["marketSearch"]
         XCTAssertTrue(search.waitForExistence(timeout: 5))

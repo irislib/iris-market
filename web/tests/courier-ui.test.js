@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {courierListingType,courierListings,courierServiceDraft,courierJobs,orderReviewParticipants,setupCourierWorkspace} from '../src/courier-ui.ts';
+import {serviceAreaCircle} from '../src/service-area.ts';
 
 class Element {
   constructor(tag){this.tag=tag;this.children=[];this.attributes=new Map();this.dataset={};this.className='';this.textContent='';this.value='';this.hidden=false;this.classList={toggle:(name,on)=>{const names=new Set(this.className.split(' ').filter(Boolean));on?names.add(name):names.delete(name);this.className=[...names].join(' ');}};}
@@ -15,13 +16,15 @@ globalThis.document={createElement:tag=>new Element(tag)};
 const all=node=>[node,...node.children.flatMap(all)];
 const find=(node,text)=>all(node).find(child=>child.textContent===text);
 const author='a'.repeat(64),buyer='b'.repeat(64),courier='c'.repeat(64),outsider='d'.repeat(64);
+const pickup=serviceAreaCircle([24.94,60.17],10),serviceAreas={pickup,destination:pickup};
 const listing=(id,tags=['parcel'],extra={})=>({id,author,title:`Request ${id}`,side:'request',category:'transport',tags,location:'Helsinki',status:'active',createdAt:10,...extra});
 const order=(extra={})=>({id:'order',buyer,seller:author,items:[{id:'item',title:'Parcel',price:'10',currency:'EUR',quantity:1}],status:'accepted',shipment:{stops:[{id:'pickup',status:'pending',courierPubkey:courier}]},updatedAt:10,archived:false,...extra});
 function fixture(options={}){
   let owner=courier,rows=[listing('parcel'),listing('ride',['passenger'])],jobs=[order()],moreCalls=0;
   const announced=[],edited=[],opened=[],reviewed=[],storage=new Map();let signIns=0;
-  const ui=setupCourierWorkspace({getListings:()=>rows,getOwner:()=>owner,getOrders:()=>jobs,onListing:item=>opened.push(item),onAnnounce:value=>announced.push(value),onEditListing:item=>edited.push(item),onReviews:key=>reviewed.push(key),onSignIn:()=>signIns++,renderOrder:job=>{const button=new Element('button');button.textContent=`Job ${job.id}`;return button;},storage:{getItem:key=>storage.get(key),setItem:(key,value)=>storage.set(key,value)},...options});
-  return {ui,root:ui.element,announced,edited,opened,reviewed,storage,get signIns(){return signIns;},setRows:value=>{rows=value;ui.refresh();},setOwner:value=>{owner=value;ui.refresh();}};
+  let selected=null;const picker={element:new Element('section'),getValue:()=>selected,validate:()=>selected,setValue:value=>{selected=value;},async show(){this.element.hidden=false;},hide(){this.element.hidden=true;},async destroy(){this.element.remove();}};
+  const ui=setupCourierWorkspace({getListings:()=>rows,getOwner:()=>owner,getOrders:()=>jobs,onListing:item=>opened.push(item),onAnnounce:value=>announced.push(value),onEditListing:item=>edited.push(item),onReviews:key=>reviewed.push(key),onSignIn:()=>signIns++,renderOrder:job=>{const button=new Element('button');button.textContent=`Job ${job.id}`;return button;},storage:{getItem:key=>storage.get(key),setItem:(key,value)=>storage.set(key,value)},createAreaPicker:()=>picker,...options});
+  return {ui,picker,root:ui.element,announced,edited,opened,reviewed,storage,get signIns(){return signIns;},setRows:value=>{rows=value;ui.refresh();},setOwner:value=>{owner=value;ui.refresh();}};
 }
 
 test('only explicit transport service tags classify gigs, including passenger-only courier listings',()=>{
@@ -41,10 +44,13 @@ test('work uses actual active requests, excludes own listings and checks expiry 
 
 test('service draft keeps area explicit and public, with shared listing tags and no automatic publication',()=>{
   for(const type of ['parcel','passenger','both']){
-    const value=courierServiceDraft(type,' Helsinki ');assert.equal(value.side,'offer');assert.equal(value.category,'transport');assert.equal(value.location,'Helsinki');assert.equal(value.price,'');assert.equal(courierListingType(value),type);
-    assert.deepEqual(Object.keys(value).sort(),['category','description','location','price','side','tags','title']);
+    const value=courierServiceDraft(type,' Helsinki ',serviceAreas);assert.equal(value.side,'offer');assert.equal(value.category,'transport');assert.equal(value.location,'Helsinki');assert.equal(value.price,'');assert.equal(courierListingType(value),type);
+    assert.deepEqual(Object.keys(value).sort(),['category','description','location','price','serviceAreas','side','tags','title']);assert.deepEqual(value.serviceAreas,serviceAreas);
   }
-  for(const area of ['', 'x'.repeat(161),'a\nb'])assert.throws(()=>courierServiceDraft('parcel',area),/service area/);
+  assert.equal(courierServiceDraft('parcel','',serviceAreas).location,'');
+  for(const area of ['x'.repeat(161),'a\nb'])assert.throws(()=>courierServiceDraft('parcel',area,serviceAreas),/area name/);
+  assert.throws(()=>courierServiceDraft('parcel','Helsinki'),/pickup area/);
+  assert.throws(()=>courierServiceDraft('parcel','Helsinki',{pickup}),/destination area/);
   assert.throws(()=>courierServiceDraft('unknown','Helsinki'));
 });
 
@@ -65,7 +71,7 @@ test('completed-job review links work in both directions without exposing order 
 
 test('workspace defaults to parcels, preserves preference, and never treats untagged purchases as work',()=>{
   const f=fixture();assert(find(f.root,'Request parcel'));assert.equal(find(f.root,'Request ride'),undefined);
-  find(f.root,'Passenger').click();assert(find(f.root,'Request ride'));assert.equal(find(f.root,'Request parcel'),undefined);
+  find(f.root,'Rides').click();assert(find(f.root,'Request ride'));assert.equal(find(f.root,'Request parcel'),undefined);
   assert.equal(f.storage.get('market-courier-type-v1'),'passenger');
   find(f.root,'Both').click();assert(find(f.root,'Request parcel'));assert(find(f.root,'Request ride'));
   f.setRows([listing('car',[],{title:'Buying a car'})]);assert(find(f.root,'No matching requests'));assert.equal(find(f.root,'Buying a car'),undefined);f.ui.destroy();
@@ -80,8 +86,10 @@ test('public feed refresh leaves area input mounted and typing does not apply a 
 
 test('announcing opens a draft only on explicit submit; existing service edit uses original listing',()=>{
   const f=fixture(),mine=listing('my-service',['courier','passenger'],{author:courier,side:'offer'});f.setRows([mine]);
-  find(f.root,'Passenger').click();find(f.root,'My service').click();assert.equal(f.announced.length,0);
+  find(f.root,'Rides').click();find(f.root,'My service').click();assert.equal(f.announced.length,0);
   const area=all(f.root).find(node=>node.tag==='input');area.value='Helsinki';f.ui.refresh();assert.equal(f.announced.length,0);
+  all(f.root).find(node=>node.tag==='form').onsubmit({preventDefault(){}});
+  assert.equal(f.announced.length,0);assert(find(f.root,'Choose a pickup area.'));f.picker.setValue(serviceAreas);
   all(f.root).find(node=>node.tag==='form').onsubmit({preventDefault(){}});
   assert.equal(f.announced.length,1);assert.equal(f.announced[0].location,'Helsinki');assert.deepEqual(f.announced[0].tags,['courier','passenger']);
   find(f.root,'Edit listing').click();assert.equal(f.edited[0],mine);find(f.root,'My reviews').click();assert.deepEqual(f.reviewed,[courier]);f.ui.destroy();
@@ -90,7 +98,7 @@ test('announcing opens a draft only on explicit submit; existing service edit us
 test('signed-out work browsing stays public, private jobs require sign-in, and identity change clears drafts',()=>{
   const f=fixture();f.setOwner(undefined);assert(find(f.root,'Request parcel'));
   find(f.root,'My jobs').click();find(f.root,'Sign in to see your jobs').click();assert.equal(f.signIns,1);assert.equal(find(f.root,'Job order'),undefined);
-  f.setOwner(courier);assert(find(f.root,'Job order'));find(f.root,'My service').click();const area=all(f.root).find(node=>node.tag==='input');area.value='Unpublished area';f.setOwner(outsider);assert.equal(area.value,'');f.ui.destroy();
+  f.setOwner(courier);assert(find(f.root,'Job order'));find(f.root,'My service').click();const area=all(f.root).find(node=>node.tag==='input');area.value='Unpublished area';f.picker.setValue(serviceAreas);f.setOwner(outsider);assert.equal(area.value,'');assert.equal(f.picker.getValue(),null);f.ui.hide();assert.equal(f.picker.element.hidden,true);f.ui.show();assert.equal(f.picker.element.hidden,false);f.ui.destroy();
 });
 
 test('pagination reveals the next local page before asking for more inventory and never retries automatically',async()=>{

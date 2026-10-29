@@ -33,9 +33,9 @@ export function setupMap({ getListings, onSelect, onVisibilityChange = () => {},
   }
   function refresh() {
     if (!visible || !instance) return;
-    const listings = getListings(), located = listings.filter(item => item.coordinates).length;
+    const listings = getListings(), located = listings.filter(item => item.coordinates||item.serviceAreas).length;
     instance.setListings(listings);
-    $('map-status').textContent = isDiscoveryLimited() ? 'Listing limit reached. Narrow your search in Filters to find more.' : `${located} of ${listings.length} listings have a shared map location`;
+    $('map-status').textContent = isDiscoveryLimited() ? 'Listing limit reached. Narrow your search in Filters to find more.' : `${located} of ${listings.length} listings have a shared location or service area`;
   }
   const theme = () => instance?.setDark(darkAppearance()).catch(() => {});
   const watcher = matchMedia('(prefers-color-scheme: dark)'); watcher.addEventListener('change', theme);

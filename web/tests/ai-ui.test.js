@@ -1,22 +1,24 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {setupAI} from '../src/ai-ui.ts';
+import {setupAI,AI_MODE_STORAGE_KEY,AI_MODEL_STORAGE_KEY} from '../src/ai-ui.ts';
+import {BrowserFeedFilterClient} from '../src/feed-filter/browser-client.ts';
 
 class Element extends EventTarget {
-  constructor(value=''){super();this.value=value;this.textContent='';this.hidden=false;this.disabled=false;this.attributes=new Map();this.children=[];}
+  constructor(value=''){super();this.value=value;this.textContent='';this.hidden=false;this.disabled=false;this.attributes=new Map();this.children=[];this.styles=new Map();this.style={setProperty:(key,value)=>this.styles.set(key,value)};this.handlers=new Map();}
+  addEventListener(name,listener,options){const list=this.handlers.get(name)||[];list.push(listener);this.handlers.set(name,list);super.addEventListener(name,listener,options);}
   append(...children){this.children.push(...children);}
   setAttribute(name,value){this.attributes.set(name,value);}
   removeAttribute(name){this.attributes.delete(name);}
   focus(){this.focused=true;}
 }
 const bicycle={id:'bicycle',title:'Bicycle',description:'City bicycle',side:'offer',category:'transport'};
-function fixture({rows=[bicycle],query='',gpu=true,client:provided,fetchMoreCandidates,onTextSearch}={}){
+function fixture({rows=[bicycle],query='',gpu=true,client:provided,fetchMoreCandidates,onTextSearch,autoPrepare=false,mode='ai',storage,saveData,browserClient}={}){
   const elements=new Map(),calls=[];
   const field=id=>{if(!elements.has(id))elements.set(id,new Element());return elements.get(id);};
   globalThis.document={querySelector:selector=>field(selector.slice(1)),createElement:()=>new Element()};globalThis.window=new EventTarget();
-  field('search-mode').value='ai';field('search').value=query;field('ai-model').value='deberta';field('ai-threshold').value='0.5';
+  field('search-mode').value=mode;field('search').value=query;field('ai-model').value='deberta';field('ai-threshold').value='0.5';
   const client=provided??{info:null,async load(model,device,progress){calls.push(['load',model,device]);progress('Downloading model…');this.info={model,device};return this.info;},async classify(condition,text){calls.push(['classify',condition,text]);return{score:.8};},dispose(){calls.push(['dispose']);this.info=null;}};
-  const ui=setupAI({getCandidates:()=>rows,onChange:()=>ui.refresh(),client,hasWebGPU:()=>gpu,fetchMoreCandidates,onTextSearch});ui.refresh();
+  const ui=setupAI({getCandidates:()=>rows,onChange:()=>ui.refresh(),client,hasWebGPU:()=>gpu,fetchMoreCandidates,onTextSearch,autoPrepare,storage,saveData,browserClient});ui.refresh();
   return{ui,client,calls,field,setRows(value){rows=value;ui.refresh();}};
 }
 
@@ -238,4 +240,82 @@ test('topic matching can recover from vague title evidence using the description
  const texts=[];const client={info:{model:'deberta'},load:async()=>{},async classify(condition,text){texts.push(text);return{score:text.includes('Categories:')?.9:.1};},dispose(){this.info=null;}};
  const {field,ui}=fixture({query:'electronics',client});await field('search-run').onclick();
  assert.equal(texts.length,2);assert.equal(ui.isVisible(bicycle),true);
+});
+
+const memoryStorage=values=>{const data=new Map(Object.entries(values||{}));return{getItem:key=>data.get(key)??null,setItem:(key,value)=>data.set(key,value)};};
+
+test('background preparation shows circular progress, enables available AI and never submits typed text',async()=>{
+  let finish,report;const calls=[];
+  const client={info:null,load(model,_device,progress){calls.push('load');report=progress;return new Promise(resolve=>finish=()=>{this.info={model};resolve(this.info);});},async classify(){calls.push('classify');return{score:.9};},dispose(){}};
+  const {ui,field}=fixture({mode:'text',autoPrepare:true,client});await until(()=>!!finish);
+  assert.equal(field('search-mode').attributes.get('data-loading'),'true');assert.equal(field('search-run').disabled,false);
+  report('Downloading…',{loaded:40,total:100});assert.equal(field('search-mode').styles.get('--ai-download'),'0.4');assert.equal(field('search-mode').attributes.get('data-indeterminate'),'false');
+  field('search').value='bicycle';field('search').dispatchEvent(new Event('input'));assert.deepEqual(calls,['load']);finish();await ui.ready;
+  assert.equal(ui.enabled(),true);assert.equal(ui.query(),'');assert.equal(field('search-mode').attributes.get('data-loading'),'false');assert.deepEqual(calls,['load']);
+  await field('search-run').onclick();assert.deepEqual(calls,['load','classify']);
+});
+
+test('explicit enabled and disabled choices survive refresh, with off preventing any automatic model load',async()=>{
+  const storage=memoryStorage();const first=fixture({mode:'text',storage});await first.ui.ready;await first.field('search-mode').onclick();
+  assert.equal(storage.getItem(AI_MODE_STORAGE_KEY),'on');
+  const reloaded=fixture({mode:'text',storage,autoPrepare:true});assert.equal(reloaded.ui.enabled(),true);await reloaded.ui.ready;
+  assert.equal(reloaded.calls.filter(call=>call[0]==='load').length,1);reloaded.field('search-mode').onclick();assert.equal(storage.getItem(AI_MODE_STORAGE_KEY),'off');
+  const off=fixture({mode:'text',storage,autoPrepare:true});await off.ui.ready;assert.equal(off.ui.enabled(),false);assert.equal(off.calls.length,0);
+});
+
+test('data saver and preview suppress automatic downloads while an explicit action remains available',async()=>{
+  const saver=fixture({mode:'text',autoPrepare:true,saveData:()=>true});await saver.ui.ready;assert.equal(saver.calls.length,0);
+  await saver.field('search-mode').onclick();assert.equal(saver.calls.filter(call=>call[0]==='load').length,1);
+  const preview=fixture({mode:'text',autoPrepare:false});await preview.ui.ready;assert.equal(preview.calls.length,0);
+});
+
+test('turning AI off during background loading cannot be undone by its late completion',async()=>{
+  let rejectLoad;const storage=memoryStorage({[AI_MODE_STORAGE_KEY]:'on'});
+  const client={info:null,load:()=>new Promise((_,reject)=>rejectLoad=reject),async classify(){throw Error('Must not classify');},dispose(){rejectLoad?.(Error('Stopped'));}};
+  const {ui,field}=fixture({storage,autoPrepare:true,client});await until(()=>!!rejectLoad);field('search-mode').onclick();await ui.ready;
+  assert.equal(ui.enabled(),false);assert.equal(storage.getItem(AI_MODE_STORAGE_KEY),'off');assert.equal(field('ai-error').textContent,'');
+});
+
+test('a submitted text search is preserved when background AI finishes',async()=>{
+  let finish;const queries=[];
+  const client={info:null,load(model){return new Promise(resolve=>finish=()=>{this.info={model};resolve(this.info);});},async classify(){throw Error('Must not classify');},dispose(){}};
+  const {ui,field}=fixture({mode:'text',query:'bicycle',client,autoPrepare:true,onTextSearch:query=>queries.push(query)});await until(()=>!!finish);
+  await field('search-run').onclick();finish();await ui.ready;assert.equal(ui.enabled(),false);assert.deepEqual(queries,['bicycle']);assert.equal(ui.query(),'');
+});
+
+test('restored browser provider auto-loads only an already available model and never loads DeBERTa',async()=>{
+  let creates=0,prompts=0;const session={destroy(){},async clone(){return{destroy(){},async prompt(){prompts++;return 'true';}};}};
+  const browserClient=new BrowserFeedFilterClient({getAPI:()=>({availability:async()=> 'available',create:async()=>{creates++;return session;}})});
+  const storage=memoryStorage({[AI_MODE_STORAGE_KEY]:'on',[AI_MODEL_STORAGE_KEY]:'browser'});
+  const {ui,field,calls}=fixture({mode:'text',query:'bicycle',storage,browserClient,autoPrepare:true});await ui.ready;
+  assert.equal(field('ai-model').value,'browser');assert.equal(ui.enabled(),true);assert.equal(creates,1);assert.equal(prompts,0);assert.equal(calls.length,0);
+  await field('search-run').onclick();assert.equal(prompts,1);assert.equal(field('ai-threshold').disabled,true);browserClient.dispose();
+});
+
+test('only trusted search activation can prepare a selected downloadable browser model; focus, scroll and typing do not classify',async()=>{
+  let creates=0,prompts=0;const session={destroy(){},async clone(){return{destroy(){},async prompt(){prompts++;return 'true';}};}};
+  const browserClient=new BrowserFeedFilterClient({getAPI:()=>({availability:async()=> 'downloadable',create:async()=>{creates++;return session;}}),hasActivation:()=>true});
+  const storage=memoryStorage({[AI_MODE_STORAGE_KEY]:'on',[AI_MODEL_STORAGE_KEY]:'browser'});
+  const {ui,field}=fixture({storage,browserClient,autoPrepare:true});await ui.ready;assert.equal(creates,0);
+  field('search').dispatchEvent(new Event('focus'));window.dispatchEvent(new Event('scroll'));field('search').dispatchEvent(new Event('click'));assert.equal(creates,0);
+  const saved=Object.getOwnPropertyDescriptor(globalThis,'navigator');Object.defineProperty(globalThis,'navigator',{configurable:true,value:{userActivation:{isActive:true}}});
+  try{field('search').handlers.get('click')[0]({isTrusted:true});assert.equal(creates,1);await until(()=>!!browserClient.info);
+    field('search').value='bicycle';field('search').dispatchEvent(new Event('input'));assert.equal(prompts,0);await field('search-run').onclick();assert.equal(prompts,1);
+  }finally{if(saved)Object.defineProperty(globalThis,'navigator',saved);else delete globalThis.navigator;browserClient.dispose();}
+});
+
+test('classification passes the exact signed listing revision to the pinned decision cache',async()=>{
+  const options=[],client={info:{model:'deberta'},async load(){},async classify(_condition,_text,value){options.push(value);return{score:.9};},dispose(){}};
+  const {field}=fixture({query:'bicycle',rows:[{...bicycle,eventId:'a'.repeat(64)}],client});await field('search-run').onclick();assert.deepEqual(options,[{eventId:'a'.repeat(64)}]);
+});
+
+test('relevance scores expose only current submitted query/model/revision decisions',async()=>{
+  const row={...bicycle,eventId:'a'.repeat(64)},client={info:{model:'deberta'},async load(){},async classify(){return{score:.83};},dispose(){this.info=null;}};
+  const {ui,field}=fixture({query:'a bicycle',rows:[row],client});assert.equal(ui.scoreFor(row),undefined);await field('search-run').onclick();
+  assert.equal(ui.scoreFor(row),.83);assert.equal(ui.scoreFor({...row,eventId:'b'.repeat(64)}),undefined);
+  field('search').value='unsubmitted edit';field('search').dispatchEvent(new Event('input'));assert.equal(ui.query(),'a bicycle');assert.equal(ui.scoreFor(row),.83);
+  field('ai-show-all').onclick();assert.equal(ui.scoreFor(row),undefined);field('ai-show-all').onclick();assert.equal(ui.scoreFor(row),.83);
+  field('ai-error').textContent='Search failed';assert.equal(ui.scoreFor(row),undefined);field('ai-error').textContent='';
+  field('ai-model').onchange();assert.equal(ui.scoreFor(row),undefined);assert.equal(ui.query(),'');
+  field('search-mode').onclick();assert.equal(ui.scoreFor(row),undefined);
 });

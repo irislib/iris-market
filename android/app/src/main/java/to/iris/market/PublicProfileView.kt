@@ -36,7 +36,7 @@ import org.json.JSONObject
     }
     DisposableEffect(author) {
         val openedAuthor=author
-        onDispose { model.command(JSONObject().put("type","close_profile").put("author",openedAuthor)) }
+        onDispose { model.command(JSONObject().put("type","cancel_profile_followers").put("author",openedAuthor)); model.command(JSONObject().put("type","close_profile").put("author",openedAuthor)) }
     }
     val profile=state.profile?.takeIf { it.person.author==author }
     val person=profile?.person ?: state.people[author] ?: PublicPerson.unnamed(author)
@@ -70,9 +70,13 @@ import org.json.JSONObject
                 if(!profile?.about.isNullOrBlank()) Text(profile!!.about,style=MaterialTheme.typography.bodyMedium)
                 profile?.website?.let { url -> TextButton(onClick={runCatching{uri.openUri(url)}}) { Text(url,maxLines=2) } }
                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),horizontalArrangement=Arrangement.spacedBy(6.dp)) {
-                    val labels=listOf("Listings",profile?.let{"Known ${it.known.size}"}?:"Known",profile?.let{"Following ${it.followingCount}"}?:"Following",profile?.let{"Followers ${it.followers.size}+"}?:"Followers")
+                    val labels=listOf("Listings",profile?.let{"Known ${it.known.size}"}?:"Known",profile?.let{"Following ${it.followingCount}"}?:"Following",profile?.takeIf{it.followersLoaded}?.let{"Followers ${it.followers.size}"}?:"Followers")
                     labels.forEachIndexed { index,label ->
-                        FilterChip(selected=selection==index,onClick={selection=index},label={Text(label,style=MaterialTheme.typography.labelSmall)})
+                        FilterChip(selected=selection==index,onClick={
+                            if(selection==3 && index!=3) model.command(JSONObject().put("type","cancel_profile_followers").put("author",author))
+                            selection=index
+                            if(index==3 && profile?.followersLoaded!=true && profile?.followersLoading!=true) model.command(JSONObject().put("type","load_profile_followers").put("author",author))
+                        },label={Text(label,style=MaterialTheme.typography.labelSmall)})
                     }
                 }
             }
@@ -98,13 +102,17 @@ import org.json.JSONObject
                 }
             }
         } else {
-            if(profile==null || profile.loading || profile.error!=null || !profile.graphLoaded) item(span={GridItemSpan(maxLineSpan)}) {
+            if(selection==3 && profile?.followersLoading==true) item(span={GridItemSpan(maxLineSpan)}) { LinearProgressIndicator(Modifier.fillMaxWidth()) }
+            if(selection==3 && profile?.followersError!=null) item(span={GridItemSpan(maxLineSpan)}) {
+                Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) { Text(profile.followersError,color=Muted,modifier=Modifier.weight(1f)); TextButton(onClick={model.command(JSONObject().put("type","load_profile_followers").put("author",author))}){Text("Retry")} }
+            }
+            if(selection!=3 && (profile==null || profile.loading || profile.error!=null || !profile.graphLoaded)) item(span={GridItemSpan(maxLineSpan)}) {
                 Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
                     Text(if(profile==null || profile.loading) "Loading connections…" else if(state.demo && profile.error!=null) profile.error else "Some connections are unavailable.",color=Muted,style=MaterialTheme.typography.bodySmall,modifier=Modifier.weight(1f))
                     if(profile!=null && !profile.loading && !state.demo) TextButton(onClick={model.command(JSONObject().put("type","load_profile").put("author",author))}) { Text("Retry") }
                 }
             }
-            if(people.isEmpty() && profile!=null && !profile.loading) item(span={GridItemSpan(maxLineSpan)}) {
+            if(people.isEmpty() && profile!=null && !(if(selection==3) profile.followersLoading else profile.loading)) item(span={GridItemSpan(maxLineSpan)}) {
                 Text("No connections to show.",color=Muted,style=MaterialTheme.typography.bodyMedium)
             }
             items(people,key={it.author},span={GridItemSpan(maxLineSpan)}) { connection ->

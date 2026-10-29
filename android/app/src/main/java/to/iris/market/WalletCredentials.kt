@@ -8,7 +8,7 @@ import java.security.SecureRandom
 object WalletCredentials {
     class Material(val baseDirectory: File, val owner: String, val device: String, val seed: String)
     @Synchronized fun loadOrCreate(application: Application, owner: String, device: String): Material {
-        require(validHex(owner,64) && validHex(device,64)) { "This account could not open its wallet." }
+        require(validHex(owner,64) && validHex(device,64)) { "This profile could not open its wallet." }
         val base=File(application.noBackupFilesDir,"market-wallets")
         val directory=File(File(base,owner),device)
         val record=SecureRecord(application)

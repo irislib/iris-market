@@ -40,7 +40,7 @@ struct AuthorProfileView: View {
                         HStack(spacing: 18) {
                             connectionControl("Known", count: profile.followedByKnown.count, value: "known")
                             connectionControl("Following", count: profile.followingCount, value: "following")
-                            connectionControl("Followers", count: profile.followers.count, value: "followers")
+                            connectionControl("Followers", count: profile.followersLoaded == true ? profile.followers.count : nil, value: "followers")
                         }
                         if let selection {
                             if !profile.loading && (!profile.graphContextLoaded || profile.error != nil) {
@@ -51,9 +51,9 @@ struct AuthorProfileView: View {
                                 }
                             }
                             let people = selection == "following" ? profile.following : selection == "followers" ? profile.followers : profile.followedByKnown
-                            if people.isEmpty { Text(profile.loading ? "Loading…" : "No connections to show.").font(.subheadline).foregroundStyle(MarketTheme.muted).padding(.vertical, 12) }
+                            if people.isEmpty { Text((selection == "followers" ? profile.followersLoading == true : profile.loading) ? "Loading…" : "No connections to show.").font(.subheadline).foregroundStyle(MarketTheme.muted).padding(.vertical, 12) }
                             ForEach(people) { person in
-                                Button { history.append(author); author = person.author; self.selection = nil } label: {
+                                Button { history.append(author); switchAuthor(person.author) } label: {
                                     UserRow(person: person, subtitle: person.connection.description)
                                 }.buttonStyle(.plain)
                             }
@@ -78,18 +78,26 @@ struct AuthorProfileView: View {
                 }.padding(23)
             }.background(MarketTheme.paper).navigationTitle("Profile").marketInlineTitle()
                 .toolbar {
-                    ToolbarItem(placement: .cancellationAction) { if !history.isEmpty { Button("Back") { author = history.removeLast(); selection = nil } } }
+                    ToolbarItem(placement: .cancellationAction) { if !history.isEmpty { Button("Back") { switchAuthor(history.removeLast()) } } }
                     ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
                 }
                 .sheet(item: $selectedListing) { listing in ListingDetailView(listing: listing).marketSheetScope() }
                 .task(id: author) { store.command(["type": "load_profile", "author": author]) }
-                .onDisappear { store.command(["type": "close_profile", "author": author]) }
+                .onDisappear { cancelFollowers(); store.command(["type": "close_profile", "author": author]) }
         }
     }
+    private func loadFollowers() { store.command(["type": "load_profile_followers", "author": author]) }
+    private func cancelFollowers() { store.command(["type": "cancel_profile_followers", "author": author]) }
+    private func switchAuthor(_ next: String) { cancelFollowers(); selection = nil; author = next }
     private func loadMore() { store.command(["type": "load_more_profile_listings", "author": author]) }
-    private func connectionControl(_ label: String, count: Int, value: String) -> some View {
-        Button { selection = selection == value ? nil : value } label: {
-            HStack(spacing: 4) { Text("\(count)").fontWeight(.semibold); Text(label) }
+    private func connectionControl(_ label: String, count: Int?, value: String) -> some View {
+        Button {
+            let next = selection == value ? nil : value
+            if selection == "followers" && next != "followers" { cancelFollowers() }
+            selection = next
+            if next == "followers", profile?.followersLoaded != true, profile?.followersLoading != true { loadFollowers() }
+        } label: {
+            HStack(spacing: 4) { if let count { Text("\(count)").fontWeight(.semibold) }; Text(label) }
                 .font(.caption).foregroundStyle(selection == value ? MarketTheme.green : MarketTheme.muted)
         }.buttonStyle(.plain).accessibilityIdentifier("profile\(label)")
             .accessibilityAddTraits(selection == value ? .isSelected : [])

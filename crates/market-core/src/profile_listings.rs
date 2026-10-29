@@ -53,11 +53,14 @@ impl Feed {
         store: &Store,
         owner: &str,
         proxy: &crate::model::ImageProxySettings,
+        rates: &crate::rates::RateBook,
+        currency: &str,
     ) -> Result<Page> {
         let mut listings = store.listings_for_author(owner, &self.author, listing::now())?;
         let more_cached = listings.len() > self.limit;
         listings.truncate(self.limit);
         for listing in &mut listings {
+            crate::rates::project(listing, rates, currency, listing::now());
             listing.image_url = listing
                 .image_url
                 .as_deref()
@@ -287,6 +290,8 @@ mod tests {
             currency: "EUR".into(),
             location: String::new(),
             category: "Other".into(),
+            tags: Vec::new(),
+            service_areas: None,
             image_url: None,
             expires_at: None,
         };

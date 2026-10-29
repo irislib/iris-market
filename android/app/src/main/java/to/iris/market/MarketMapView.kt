@@ -3,19 +3,66 @@ package to.iris.market
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.net.Uri
+import android.net.http.SslError
+import android.view.View
 import android.webkit.JavascriptInterface
+import android.webkit.SslErrorHandler
+import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.webkit.WebSettings
 import androidx.compose.runtime.*
+import androidx.compose.foundation.layout.*
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
 import org.json.JSONArray
 import org.json.JSONObject
+
+private open class MapPageClient(private val failed: MutableState<Boolean>) : WebViewClient() {
+    override fun onPageStarted(view: WebView?, url: String?, icon: android.graphics.Bitmap?) {
+        failed.value = false
+        view?.visibility = View.INVISIBLE
+    }
+    override fun onPageCommitVisible(view: WebView?, url: String?) {
+        if (!failed.value && trustedMap(url)) view?.visibility = View.VISIBLE
+    }
+    private fun unavailable(view: WebView?) {
+        view?.stopLoading()
+        view?.visibility = View.INVISIBLE
+        failed.value = true
+    }
+    override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
+        if (request?.isForMainFrame == true) unavailable(view)
+    }
+    override fun onReceivedHttpError(view: WebView?, request: WebResourceRequest?, errorResponse: WebResourceResponse?) {
+        if (request?.isForMainFrame == true) unavailable(view)
+    }
+    override fun onReceivedSslError(view: WebView?, handler: SslErrorHandler?, error: SslError?) {
+        handler?.cancel()
+        unavailable(view)
+    }
+}
+
+@Composable private fun MapFrame(modifier: Modifier, failed: Boolean, retry: () -> Unit, content: @Composable () -> Unit) {
+    Box(modifier) {
+        content()
+        if (failed) Surface(Modifier.matchParentSize(), color = MaterialTheme.colorScheme.surface) {
+            Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("Map unavailable", style = MaterialTheme.typography.bodyMedium)
+                OutlinedButton(onClick = retry) { Text("Retry") }
+            }
+        }
+    }
+}
 
 private fun trustedMap(url: String?): Boolean = runCatching {
     val uri=Uri.parse(url ?: return false)
@@ -37,9 +84,19 @@ private class MapBridge {
         val view=web ?: return
         if(!loaded || !trustedMap(view.url)) return
         val array=JSONArray()
-        listings.forEach { l -> l.coordinates?.takeIf { it.size==2 && it.all(Double::isFinite) }?.let { coords ->
-            array.put(JSONObject().put("id",l.id).put("title",l.title).put("coordinates",JSONArray(coords)))
-        } }
+        var areaBytes = 0
+        listings.take(1000).forEach { listing ->
+            val row = JSONObject().put("id", listing.id).put("title", listing.title.take(160))
+            listing.coordinates?.takeIf { it.size == 2 && it.all(Double::isFinite) && kotlin.math.abs(it[0]) <= 180 && kotlin.math.abs(it[1]) <= 90 }
+                ?.let { row.put("coordinates", JSONArray(it)) }
+            listing.serviceAreas?.let { raw ->
+                val size = raw.toByteArray(Charsets.UTF_8).size
+                if (size <= 32832 && areaBytes + size <= 1048576) runCatching { JSONObject(raw) }.getOrNull()?.let { areas ->
+                    row.put("serviceAreas", areas); areaBytes += size
+                }
+            }
+            if (row.has("coordinates") || row.has("serviceAreas")) array.put(row)
+        }
         val script="window.marketMap?.setListings($array);window.marketMap?.setDark($dark);"
         if(script==lastPayload) return
         lastPayload=script;view.evaluateJavascript(script,null)
@@ -50,17 +107,19 @@ private class MapBridge {
     val context=LocalContext.current
     val dark=MaterialTheme.colorScheme.background.luminance()<.5f
     val bridge=remember { MapBridge() }
+    val failed=remember { mutableStateOf(false) }
     val callback by rememberUpdatedState(onSelect)
     DisposableEffect(bridge) {onDispose {bridge.web?.apply {stopLoading();removeJavascriptInterface("MarketMapBridge");destroy()};bridge.web=null}}
-    AndroidView(modifier=modifier,factory={
+    MapFrame(modifier,failed.value,{bridge.web?.reload()}) {
+    AndroidView(modifier=Modifier.fillMaxSize(),factory={
         WebView(context).apply {
             settings.javaScriptEnabled=true;settings.domStorageEnabled=true
             settings.allowFileAccess=false;settings.allowContentAccess=false
             settings.mixedContentMode=WebSettings.MIXED_CONTENT_NEVER_ALLOW
             settings.javaScriptCanOpenWindowsAutomatically=false
             addJavascriptInterface(bridge,"MarketMapBridge")
-            webViewClient=object:WebViewClient() {
-                override fun onPageStarted(view:WebView?,url:String?,icon:android.graphics.Bitmap?) {bridge.navigated()}
+            webViewClient=object:MapPageClient(failed) {
+                override fun onPageStarted(view:WebView?,url:String?,icon:android.graphics.Bitmap?) {super.onPageStarted(view,url,icon);bridge.navigated()}
                 override fun shouldOverrideUrlLoading(view:WebView?,request:WebResourceRequest?):Boolean {
                     val url=request?.url?.toString()
                     if(request?.isForMainFrame==true && trustedMap(url)) return false
@@ -72,6 +131,7 @@ private class MapBridge {
             loadUrl("https://market.iris.to/native-map?native=1&cache=512&theme=${if(dark) "dark" else "light"}")
         }
     },update={bridge.listings=listings;bridge.dark=dark;bridge.onSelect={callback(it)};bridge.send()})
+    }
 }
 
 private fun trustedShipmentMap(url: String?): Boolean = trustedMap(url) && runCatching {
@@ -102,22 +162,25 @@ private class ShipmentBridge {
     val context = LocalContext.current
     val dark = MaterialTheme.colorScheme.background.luminance() < .5f
     val bridge = remember { ShipmentBridge() }
+    val failed = remember { mutableStateOf(false) }
     DisposableEffect(bridge) {
         onDispose { bridge.shipment = null; bridge.web?.apply { stopLoading(); removeJavascriptInterface("MarketMapBridge"); destroy() }; bridge.web = null }
     }
-    AndroidView(modifier = modifier, factory = {
+    MapFrame(modifier, failed.value, { bridge.web?.reload() }) {
+    AndroidView(modifier = Modifier.fillMaxSize(), factory = {
         WebView(context).apply {
             settings.javaScriptEnabled = true; settings.domStorageEnabled = true
             settings.allowFileAccess = false; settings.allowContentAccess = false
             settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
             settings.javaScriptCanOpenWindowsAutomatically = false
             addJavascriptInterface(bridge, "MarketMapBridge")
-            webViewClient = object : WebViewClient() {
-                override fun onPageStarted(view: WebView?, url: String?, icon: android.graphics.Bitmap?) { bridge.navigated() }
+            webViewClient = object : MapPageClient(failed) {
+                override fun onPageStarted(view: WebView?, url: String?, icon: android.graphics.Bitmap?) { super.onPageStarted(view,url,icon); bridge.navigated() }
                 override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean = request?.isForMainFrame != true || !trustedShipmentMap(request.url.toString())
             }
             bridge.web = this; bridge.shipment = shipment; bridge.dark = dark
             loadUrl("https://market.iris.to/native-map?native=1&mode=shipment&cache=512&theme=${if (dark) "dark" else "light"}")
         }
     }, update = { bridge.shipment = shipment; bridge.dark = dark; bridge.send() })
+    }
 }

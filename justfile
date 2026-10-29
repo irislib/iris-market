@@ -12,4 +12,4 @@ android:
     ./scripts/android-build
 
 cli:
-    cargo build --locked -p iris-market-cli
+    cargo build --locked -p iris-market

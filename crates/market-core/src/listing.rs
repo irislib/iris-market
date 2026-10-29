@@ -3,6 +3,7 @@ use anyhow::{Context, Result, bail};
 use nostr::{Event, EventBuilder, JsonUtil, Keys, Kind, Tag, Timestamp};
 
 pub const LISTING_KIND: u16 = 30402;
+pub const REQUEST_TOPIC: &str = "market:request";
 pub fn now() -> u64 {
     Timestamp::now().as_secs()
 }
@@ -19,7 +20,24 @@ fn field(event: &Event, name: &str) -> Result<Option<String>> {
     Ok(values.first().and_then(|t| t.as_slice().get(1)).cloned())
 }
 
+fn normalized_tag(value: &str) -> Option<String> {
+    let value = value.trim().trim_start_matches('#').to_lowercase();
+    (!value.is_empty()
+        && value.chars().count() <= 60
+        && value
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_')))
+    .then_some(value)
+}
+
 pub fn validate(d: &Draft) -> Result<()> {
+    if let Some(areas) = &d.service_areas {
+        crate::service_area::validate(&areas.pickup)?;
+        crate::service_area::validate(&areas.destination)?;
+    }
+    if d.tags.len() > 24 || d.tags.iter().any(|tag| normalized_tag(tag).is_none()) {
+        bail!("Use up to 24 short topic tags");
+    }
     if d.title.trim().is_empty() || d.title.chars().count() > 160 {
         bail!("Add a title of up to 160 characters");
     }
@@ -79,6 +97,22 @@ pub fn build(
         ],
         vec!["client".into(), "Iris Market".into()],
     ];
+    let mut topics = std::collections::HashSet::new();
+    if let Some(category) = normalized_tag(&d.category) {
+        topics.insert(category);
+    }
+    for topic in &d.tags {
+        if let Some(topic) = normalized_tag(topic)
+            && topics.insert(topic.clone())
+        {
+            tags.push(vec!["t".into(), topic]);
+        }
+    }
+    // A portable Nostr #t index alongside the authoritative legacy market field.
+    // The reserved marker is not a user topic and is omitted by normalized_tag.
+    if d.side == "request" {
+        tags.push(vec!["t".into(), REQUEST_TOPIC.into()]);
+    }
     if !d.price.is_empty() {
         tags.push(vec![
             "price".into(),
@@ -92,13 +126,18 @@ pub fn build(
     if let Some(expiry) = d.expires_at {
         tags.push(vec!["expiration".into(), expiry.to_string()]);
     }
+    if let Some(areas) = &d.service_areas {
+        tags.extend(crate::service_area::to_tags(areas)?);
+    }
     let tags: Result<Vec<Tag>, _> = tags.into_iter().map(Tag::parse).collect();
-    Ok(
-        EventBuilder::new(Kind::Custom(LISTING_KIND), d.description.clone())
-            .tags(tags?)
-            .custom_created_at(Timestamp::from(created_at))
-            .sign_with_keys(keys)?,
-    )
+    let event = EventBuilder::new(Kind::Custom(LISTING_KIND), d.description.clone())
+        .tags(tags?)
+        .custom_created_at(Timestamp::from(created_at))
+        .sign_with_keys(keys)?;
+    if event.as_json().len() > 65536 {
+        bail!("Listing is too large");
+    }
+    Ok(event)
 }
 
 pub fn parse(event: &Event, at: u64) -> Result<Listing> {
@@ -125,10 +164,37 @@ pub fn parse(event: &Event, at: u64) -> Result<Listing> {
         .and_then(|t| t.as_slice().get(2))
         .cloned()
         .unwrap_or_else(|| "EUR".into());
+    let mut seen_topics = std::collections::HashSet::new();
+    let topics = event
+        .tags
+        .iter()
+        .filter_map(|tag| {
+            let parts = tag.as_slice();
+            if parts.first().is_some_and(|kind| kind == "t") {
+                parts.get(1).and_then(|value| normalized_tag(value))
+            } else {
+                None
+            }
+        })
+        .filter(|topic| seen_topics.insert(topic.clone()))
+        .take(24)
+        .collect();
     let draft = Draft {
         title: field(event, "title")?.context("Listing has no title")?,
         description: event.content.clone(),
-        side: field(event, "market")?.unwrap_or_else(|| "offer".into()),
+        side: field(event, "market")?.unwrap_or_else(|| {
+            if event.tags.iter().any(|tag| {
+                tag.as_slice().first().is_some_and(|name| name == "t")
+                    && tag
+                        .as_slice()
+                        .get(1)
+                        .is_some_and(|value| value == REQUEST_TOPIC)
+            }) {
+                "request".into()
+            } else {
+                "offer".into()
+            }
+        }),
         price,
         currency,
         location: field(event, "location")?.unwrap_or_default(),
@@ -140,6 +206,14 @@ pub fn parse(event: &Event, at: u64) -> Result<Listing> {
             .and_then(|t| t.as_slice().get(1))
             .cloned()
             .unwrap_or_else(|| "Other".into()),
+        tags: topics,
+        service_areas: crate::service_area::parse_tags(
+            &event
+                .tags
+                .iter()
+                .map(|tag| tag.as_slice().to_vec())
+                .collect::<Vec<_>>(),
+        ),
         image_url: event
             .tags
             .iter()
@@ -164,8 +238,11 @@ pub fn parse(event: &Event, at: u64) -> Result<Listing> {
         side: draft.side,
         price: draft.price,
         currency: draft.currency,
+        display_price: None,
         location: draft.location,
         category: draft.category,
+        tags: draft.tags,
+        service_areas: draft.service_areas,
         image_url: draft.image_url,
         created_at: event.created_at.as_secs(),
         expires_at: draft.expires_at,
@@ -180,7 +257,7 @@ pub fn parse(event: &Event, at: u64) -> Result<Listing> {
                 .iter()
                 .filter_map(|tag| {
                     let parts = tag.as_slice();
-                    (parts.first().is_some_and(|v| v == "g"))
+                    (parts.len() == 2 && parts.first().is_some_and(|v| v == "g"))
                         .then(|| parts.get(1))
                         .flatten()
                         .filter(|v| crate::geo::decode(v).is_some())
@@ -202,6 +279,8 @@ pub fn draft_from(l: &Listing) -> Draft {
         currency: l.currency.clone(),
         location: l.location.clone(),
         category: l.category.clone(),
+        tags: l.tags.clone(),
+        service_areas: l.service_areas.clone(),
         image_url: l.image_url.clone(),
         expires_at: l.expires_at,
     }

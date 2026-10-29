@@ -5,7 +5,7 @@ import { createPublicIndex } from './public-index.ts';
 import { GRAPH_BOOTSTRAP } from './graph-bootstrap.ts';
 
 /** This runtime contains PUBLIC market data only. NDR uses its own private transport. */
-const PUBLIC_KINDS = new Set([0, 3, 5, 7368, 30402, 30405, 30406, 30064, 30078]);
+const PUBLIC_KINDS = new Set([0, 3, 5, 7368, 30402, 30405, 30406, 31555, 30064, 30078]);
 export interface PublicEventRuntime {
   query(filters: Filter[], options?: RuntimeQueryOptions): Promise<RuntimeQueryResult>;
   subscribe(filters: Filter[], handlers: RuntimeSubscriptionHandlers): RuntimeSubscription;

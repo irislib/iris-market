@@ -59,7 +59,7 @@ struct MarketEmptyState: View {
         VStack(spacing: 14) {
             Image(systemName: symbol).font(.system(size: 32, weight: .light)).foregroundStyle(MarketTheme.green)
                 .frame(width: 82, height: 82).background(MarketTheme.mint.opacity(0.5), in: RoundedRectangle(cornerRadius: 27))
-            Text(title).font(.system(size: 24, weight: .semibold, design: .serif)).foregroundStyle(MarketTheme.ink)
+            Text(title).font(.system(size: 24, weight: .semibold)).foregroundStyle(MarketTheme.ink)
             Text(description).font(.system(size: 15)).foregroundStyle(MarketTheme.muted).multilineTextAlignment(.center).lineSpacing(4).frame(maxWidth: 280)
         }.frame(maxWidth: .infinity).padding(.vertical, 48).padding(.horizontal, 24)
     }

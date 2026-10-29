@@ -1,4 +1,5 @@
 import type { MapViewport } from './map/index.ts'
+import {serviceAreaContains,type ServiceAreas} from './service-area.ts'
 export type NearbyPoint = readonly [longitude: number, latitude: number]
 export const NEARBY_KM = 50
 export const NEARBY_LABEL = `Within ${NEARBY_KM} km`
@@ -14,6 +15,10 @@ export function isNearby(coordinates: readonly number[] | null | undefined, cent
   const rad=Math.PI/180,[lng,lat]=coordinates,[originLng,originLat]=centre
   const a=Math.sin((lat-originLat)*rad/2)**2+Math.cos(lat*rad)*Math.cos(originLat*rad)*Math.sin((lng-originLng)*rad/2)**2
   return 6371*2*Math.atan2(Math.sqrt(Math.min(1,a)),Math.sqrt(Math.max(0,1-a)))<=NEARBY_KM
+}
+/** Services must actually cover the chosen pickup point; discovery cells are only hints. */
+export function listingMatchesNearby(listing:{coordinates?:readonly number[]|null;serviceAreas?:ServiceAreas|null},centre:NearbyPoint):boolean {
+  return listing.serviceAreas?serviceAreaContains(listing.serviceAreas.pickup,centre):isNearby(listing.coordinates,centre)
 }
 export function nearbyViewport([longitude,latitude]:NearbyPoint):MapViewport {
   const latitudeDelta=NEARBY_KM/111.195,longitudeDelta=Math.min(180,latitudeDelta/Math.max(.00001,Math.cos(latitude*Math.PI/180)))

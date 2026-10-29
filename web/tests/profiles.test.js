@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { finalizeEvent, getPublicKey } from 'nostr-tools/pure'
 import { SocialGraph } from 'nostr-social-graph'
-import { DEFAULT_SOCIAL_GRAPH_ROOT, PROFILE_LIMITS, parseProfileEvent, parseFollowEvent, verifyProfileRecord, queryProfileRecords, socialConnection, loadProfile, loadCurationContext, clearProfileCache, cacheProfileMetadata, readProfileMetadata } from '../src/profiles.ts'
+import { DEFAULT_SOCIAL_GRAPH_ROOT, PROFILE_LIMITS, parseProfileEvent, parseFollowEvent, verifyProfileRecord, queryProfileRecords, socialConnection, loadProfile, loadProfileFollowers, subscribeProfileMetadata, loadCurationContext, clearProfileCache, cacheProfileMetadata, readProfileMetadata } from '../src/profiles.ts'
 
 const now = 1700000000
 const secrets = Array.from({ length: 20 }, (_, i) => new Uint8Array(32).fill(i + 1))
@@ -112,7 +112,7 @@ test('default visitor context queries the established Sirius Business root, neve
   closed(Socket)
 })
 
-test('profile combines public metadata, mutual follows and refreshed observed followers', async () => {
+test('Known is graph-only; explicit Followers checks bounded candidates against latest lists', async () => {
   clearProfileCache()
   const records = [follows(0, [keys[1], keys[2]]), follows(1, [keys[2]]), follows(2, [keys[0]]), follows(3, [keys[2]], now - 10), follows(3, [], now), follows(4, [keys[2]]), metadata(2, { name: 'Seller' }), metadata(1, { name: 'Friend' }), metadata(4, { name: 'Follower' })]
   const Socket = scriptedSocket(filters => records.filter(event => filters.some(filter => matches(event, filter))))
@@ -122,8 +122,12 @@ test('profile combines public metadata, mutual follows and refreshed observed fo
   assert.equal(result.following.total, 1)
   assert.equal(result.relation.distance, 1)
   assert.equal(result.followedByKnown[0].pubkey, keys[1])
-  assert(result.followers.items.some(person => person.pubkey === keys[4]))
-  assert(!result.followers.items.some(person => person.pubkey === keys[3]))
+  assert.equal(result.followers.loaded,false)
+  assert(!Socket.sockets.flatMap(socket=>socket.sent.filter(frame=>frame[0]==='REQ').flatMap(frame=>frame.slice(2))).some(filter=>filter['#p']), 'opening the profile never requests inbound followers')
+  const followers=await loadProfileFollowers(keys[2],options(Socket))
+  assert.equal(followers.loaded,true)
+  assert(followers.items.some(person => person.pubkey === keys[4]))
+  assert(!followers.items.some(person => person.pubkey === keys[3]))
   assert.equal(result.followers.complete, false)
   assert.equal(result.coverage.partial, true)
   const requests = Socket.sockets.flatMap(socket => socket.sent.filter(frame => frame[0] === 'REQ').flatMap(frame => frame.slice(2)))
@@ -262,3 +266,29 @@ test('second-hop lookup favors snapshot paths to requested listing authors withi
   assert.equal(request[2].authors[0], contributor)
   assert.equal(context.coverage.secondHopRequested, PROFILE_LIMITS.secondHop)
 })
+
+
+test('shared worker metadata is cached and announced before history completes',async()=>{
+  clearProfileCache();const relays=['wss://arrivals.example'],changes=[];let handlers,closed=0,settled=false;
+  const stop=subscribeProfileMetadata(profile=>changes.push(profile),{relays});
+  const runtime={subscribe(filters,next){handlers=next;return{close(){closed++}};},query(){assert.fail('Do not duplicate the live subscription with a finite query');}};
+  const result=queryProfileRecords([{kinds:[0],authors:[keys[1]],limit:1}],{relays,runtime,now:()=>now,timeoutMs:1000}).then(value=>{settled=true;return value;});
+  handlers.onEvent(metadata(1,{name:'Early name',picture:'https://example.com/avatar.png'}));
+  assert.equal(readProfileMetadata(keys[1],{relays}).name,'Early name');assert.equal(changes.length,1);assert.equal(settled,false);
+  handlers.onEvent({...metadata(1,{name:'Forged'},now+1),content:'forged'});assert.equal(changes.length,1);
+  handlers.onEose({sources:[{id:'relay',complete:true}],complete:true,reason:'eose'});
+  // A delayed cache admission after EOSE still updates the same view.
+  handlers.onEvent(metadata(1,{name:'Later name'},now+1));assert.equal(changes.at(-1).name,'Later name');
+  assert.equal((await result).events[0].content,'{"name":"Later name"}');assert.equal(closed,1);stop();
+});
+
+test('shared profile presentation restores signed name and avatar before any worker or relay starts',()=>{
+  const previous=Object.getOwnPropertyDescriptor(globalThis,'window');let stored=null;
+  Object.defineProperty(globalThis,'window',{value:{localStorage:{getItem:()=>stored,setItem:(_key,value)=>{stored=value}}},configurable:true});
+  const relays=['wss://startup-heads.example'],event=metadata(0,{name:'Remembered',picture:'https://example.com/remembered.png'});
+  try{
+    clearProfileCache();cacheProfileMetadata(event,{relays,now});clearProfileCache();
+    assert(stored);const restored=readProfileMetadata(keys[0],{relays});
+    assert.equal(restored.name,'Remembered');assert.equal(restored.pictureUrl,'https://example.com/remembered.png');assert.equal(restored.eventId,event.id);
+  }finally{clearProfileCache();if(previous)Object.defineProperty(globalThis,'window',previous);else delete globalThis.window;}
+});

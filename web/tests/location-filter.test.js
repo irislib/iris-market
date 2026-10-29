@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import {currentPosition,nearbyPoint,isNearby,nearbyViewport} from '../src/location-filter.ts'
+import {currentPosition,nearbyPoint,isNearby,nearbyViewport,listingMatchesNearby} from '../src/location-filter.ts'
 
 test('nearby location keeps a coarse in-memory point and rejects unusable fixes',()=>{
  assert.deepEqual(nearbyPoint({longitude:24.938765,latitude:60.169876,accuracy:120}),[24.94,60.17])
@@ -22,3 +22,10 @@ test('one-shot permission is requested only on explicit invocation and uses low 
  await assert.rejects(currentPosition({getCurrentPosition(resolve,reject){reject({code:3})}}),/too long/)
  await assert.rejects(currentPosition(undefined),/unavailable/)
 })
+
+test('nearby transport matches exact pickup coverage rather than indexing-cell centres',()=>{
+ const pickup={type:'Polygon',coordinates:[[[24,60],[25,60],[25,61],[24,61],[24,60]]]},destination={type:'Polygon',coordinates:[[[25,60],[26,60],[26,61],[25,61],[25,60]]]};
+ assert(listingMatchesNearby({serviceAreas:{pickup,destination}},[24.5,60.5]));
+ assert(!listingMatchesNearby({serviceAreas:{pickup,destination},coordinates:[25.5,60.5]},[25.5,60.5]));
+ assert(listingMatchesNearby({coordinates:[24.94,60.17]},[24.94,60.17]));
+});

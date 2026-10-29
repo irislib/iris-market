@@ -1,6 +1,6 @@
 import { element as domElement } from './dom.ts';
 import { npubEncode } from 'nostr-tools/nip19'
-import { loadProfile, readProfileMetadata, DEFAULT_SOCIAL_GRAPH_ROOT, DEFAULT_SOCIAL_GRAPH_LABEL } from './profiles.ts'
+import { loadProfile, loadProfileFollowers, readProfileMetadata, subscribeProfileMetadata, DEFAULT_SOCIAL_GRAPH_ROOT, DEFAULT_SOCIAL_GRAPH_LABEL } from './profiles.ts'
 import { normalizePublicKey } from './social.ts'
 import { createAvatar, createUserRow } from './people.ts'
 import { profileURL } from './routes.ts'
@@ -26,8 +26,9 @@ interface ProfileOptions {
   onContextChange?:(key:string)=>void;onAuthorListings?:(key:string)=>void;onMessage?:(key:string)=>void;
   onNavigate?:(key:string)=>void;onClose?:()=>void;renderListings?:(key:string,host:HTMLElement)=>void|(()=>void);
   queryReviews?:ReviewQuery;getReviewAccount?:()=>ReviewAccount;publishReview?:PublishReview;onReviewSignIn?:()=>void;
+  loadFollowers?:typeof loadProfileFollowers;
 }
-export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCIAL_GRAPH_ROOT, isPreview = () => false, onContextChange = () => {}, onAuthorListings = () => {}, onMessage = () => {}, onNavigate = () => {}, onClose = () => {}, renderListings, queryReviews, getReviewAccount, publishReview, onReviewSignIn }: ProfileOptions) {
+export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCIAL_GRAPH_ROOT, isPreview = () => false, onContextChange = () => {}, onAuthorListings = () => {}, onMessage = () => {}, onNavigate = () => {}, onClose = () => {}, renderListings, queryReviews, getReviewAccount, publishReview, onReviewSignIn, loadFollowers=loadProfileFollowers }: ProfileOptions) {
   const container = page ?? element('section', undefined, 'profile-page')
   container.setAttribute('aria-labelledby', 'public-profile-title')
   container.hidden = true
@@ -36,11 +37,14 @@ export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCI
   back.setAttribute('aria-label', 'Back from profile')
   back.onclick = () => close({notify:true})
   const body = element('div', undefined, 'profile-content')
+  const identityHost = element('div', undefined, 'profile-heading')
   const status = element('p', '', 'profile-status muted')
   status.setAttribute('role', 'status')
   container.replaceChildren(body, status)
   if (!page) document.body.append(container)
   let controller:AbortController|undefined, generation = 0, currentKey:string|undefined, destroyed = false
+  let unsubscribeMetadata:(()=>void)|undefined,followersController:AbortController|undefined,followersGeneration=0,followersLoading=false,followersError=''
+  let followers:Awaited<ReturnType<typeof loadProfileFollowers>>|undefined,followersTab:HTMLButtonElement|undefined
   let listingCleanup:(()=>void)|undefined, listingsActive=false, selectedView='listings'
   let reviews:ReturnType<typeof setupProfileReviews>|undefined, reviewSummaryButton:HTMLButtonElement|undefined, reviewTab:HTMLButtonElement|undefined
   const listingHost=element('div',undefined,'profile-listings')
@@ -48,18 +52,35 @@ export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCI
   panel.id='profile-list-panel';panel.setAttribute('role','tabpanel')
   const stopListings=()=>{listingCleanup?.();listingCleanup=undefined;listingsActive=false}
   type ProfileData=Awaited<ReturnType<typeof loadProfile>>
+  let currentData:ProfileData|undefined
   type ProfileView={id:string;label:string;people?:{pubkey:string}[];empty?:string;note?:string}
   const connectionViews=(data?:ProfileData):ProfileView[]=>[
     {id:'known',label:data?`Known ${data.followedByKnown.length}`:'Known',people:data?.followedByKnown,empty:'No known followers found.',note:data?`Followed by people ${data.contextLabel} follows. Only ${data.coverage.secondHopLoaded} of ${data.coverage.directFollows ?? '?'} follow lists were loaded.`:undefined},
     {id:'following',label:data?`Following ${data.following.total ?? '—'}`:'Following',people:data?.following.items,empty:data?.following.total===null?'Follow list unavailable.':'This public list is empty.',note:data?.following.truncated?`Showing the first ${data.following.items.length} of ${data.following.total} follows.`:'Latest signed follow list observed on your servers.'},
-    {id:'followers',label:data?`Followers ${data.followers.observedCount}`:'Followers',people:data?.followers.items,empty:'No followers found.',note:'Observed followers only. Servers can omit records; this is not a total follower count.'},
+    {id:'followers',label:followers?`Followers ${followers.observedCount}`:'Followers',people:followers?.items,empty:'No followers found.',note:'Observed followers only. Servers can omit records; this is not a total follower count.'},
   ]
+  const stopFollowers=()=>{followersController?.abort();followersController=undefined;followersGeneration++;followersLoading=false}
+  const renderFollowers=()=>{
+    if(followersTab)followersTab.textContent=followers?`Followers ${followers.observedCount}`:'Followers'
+    if(selectedView!=='followers')return
+    if(followers){panel.replaceChildren(peopleList(followers.items,'No followers found.'));return}
+    const note=element('p',followersError||'Loading followers…','muted small');note.setAttribute('role','status');panel.replaceChildren(note)
+    if(followersError){const retry=element('button','Try again','text-button');retry.onclick=()=>void requestFollowers();panel.append(retry)}
+  }
+  const requestFollowers=async()=>{
+    if(followers||followersLoading||!currentKey||isPreview())return
+    const owner=currentKey,run=generation,request=++followersGeneration,abort=new AbortController();followersController=abort;followersLoading=true;followersError='';renderFollowers()
+    try{const value=await loadFollowers(owner,{relays:getRelays(),signal:abort.signal});if(run!==generation||request!==followersGeneration||abort.signal.aborted||destroyed)return;followers=value}
+    catch(error){if(run!==generation||request!==followersGeneration||abort.signal.aborted||destroyed)return;followersError='Could not load followers.'}
+    finally{if(run===generation&&request===followersGeneration&&!destroyed){followersLoading=false;followersController=undefined;renderFollowers()}}
+  }
   const renderSections=(data?:ProfileData)=>{
     const tabs=element('div',undefined,'profile-tabs')
     tabs.setAttribute('role','tablist');tabs.setAttribute('aria-label','Profile')
     const views:ProfileView[]=[{id:'listings',label:'Listings'},{id:'reviews',label:'Reviews'},...connectionViews(data)]
     const select=(view:ProfileView,button:HTMLButtonElement)=>{
       selectedView=view.id
+      if(view.id!=='followers')stopFollowers()
       for(const tab of tabs.children){tab.setAttribute('aria-selected',String(tab===button));(tab as HTMLElement).tabIndex=tab===button?0:-1}
       panel.setAttribute('aria-labelledby',button.id)
       if(view.id==='listings'){
@@ -74,13 +95,15 @@ export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCI
         panel.replaceChildren(reviews.element)
       }else{
         stopListings()
-        panel.replaceChildren(view.people?peopleList(view.people,view.empty):element('p','Loading connections…','muted small'))
+        if(view.id==='followers')renderFollowers()
+        else panel.replaceChildren(view.people?peopleList(view.people,view.empty):element('p','Loading connections…','muted small'))
       }
     }
     for(const view of views){
       const tab=element('button',view.label);tab.id=`profile-tab-${view.id}`;tab.setAttribute('role','tab');tab.setAttribute('aria-controls',panel.id)
-      tab.onclick=()=>select(view,tab)
+      tab.onclick=()=>{select(view,tab);if(view.id==='followers')void requestFollowers()}
       if(view.id==='reviews')reviewTab=tab
+      if(view.id==='followers')followersTab=tab
       tab.onkeydown=event=>{
         if(!['ArrowRight','ArrowLeft','Home','End'].includes(event.key))return
         event.preventDefault();const current=[...tabs.children].indexOf(tab),total=views.length
@@ -95,7 +118,7 @@ export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCI
   }
 
   function close({notify=false}: {notify?:boolean} = {}) {
-    controller?.abort(); stopListings(); reviews?.close(); reviews=undefined; reviewTab=undefined; reviewSummaryButton=undefined; generation++; currentKey=undefined; container.hidden=true
+    controller?.abort();unsubscribeMetadata?.();unsubscribeMetadata=undefined;stopFollowers();followers=undefined;followersTab=undefined;currentData=undefined;stopListings(); reviews?.close(); reviews=undefined; reviewTab=undefined; reviewSummaryButton=undefined; generation++; currentKey=undefined; container.hidden=true
     if (notify && !destroyed) onClose()
   }
   const peopleList = (people, emptyText) => {
@@ -119,14 +142,14 @@ export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCI
     reviewSummaryButton.onclick=()=>reviewTab?.click()
     heading.append(reviewSummaryButton)
     identity.append(back, createAvatar(profile.pubkey, {size:76}), heading)
-    body.append(identity)
-    if (profile.about) body.append(element('p', profile.about, 'profile-about'))
+    identityHost.append(identity)
+    if (profile.about) identityHost.append(element('p', profile.about, 'profile-about'))
     if (profile.website) {
       const link = element('a', new URL(profile.website).hostname, 'profile-website')
       link.href = profile.website; link.target = '_blank'; link.rel = 'noopener noreferrer'
-      body.append(link)
+      identityHost.append(link)
     }
-    if (profile.nip05) body.append(element('p', `${profile.nip05} · Self-declared address`, 'profile-address muted small'))
+    if (profile.nip05) identityHost.append(element('p', `${profile.nip05} · Self-declared address`, 'profile-address muted small'))
   }
   const renderActions = (profile:PublicProfile) => {
     const actions = element('div', undefined, 'profile-actions')
@@ -141,12 +164,12 @@ export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCI
   }
   const renderCached = (key:string) => {
     const profile=readProfileMetadata(key,{relays:getRelays()})
-    body.replaceChildren(); renderIdentity(profile); renderActions(profile); renderSections()
+    body.replaceChildren(identityHost);identityHost.replaceChildren();renderIdentity(profile); renderActions(profile); renderSections()
     return profile.eventId
   }
   const render = data => {
     const profile = data.profile
-    body.replaceChildren(); renderIdentity(profile,data.relation)
+    body.replaceChildren(identityHost);identityHost.replaceChildren();renderIdentity(profile,data.relation)
     const connection = element('div', undefined, 'profile-connection')
     const connectionText = data.relation.distance === 1 ? `Followed by ${data.contextLabel}` : data.followedByKnown.length ? `Followed by ${data.followedByKnown.length} known ${data.followedByKnown.length === 1 ? 'person' : 'people'}` : ''
     if(connectionText) connection.append(element('p',connectionText))
@@ -192,27 +215,24 @@ export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCI
     if (navigate) onNavigate(key)
     // A router may synchronously reopen this profile without navigation.
     if (generation!==beforeNavigate || destroyed) return
-    controller?.abort(); stopListings(); reviews?.close(); reviewTab=undefined; reviewSummaryButton=undefined; selectedView='listings'; controller = new AbortController(); const run = ++generation
+    controller?.abort();unsubscribeMetadata?.();unsubscribeMetadata=undefined;stopFollowers();followers=undefined;followersError='';followersTab=undefined;currentData=undefined;stopListings(); reviews?.close(); reviewTab=undefined; reviewSummaryButton=undefined; selectedView='listings'; controller = new AbortController(); const run = ++generation
     currentKey = key; container.hidden=false; container.scrollTop=0
     reviews=setupProfileReviews({target:key,query:queryReviews,getAccount:getReviewAccount,publish:publishReview,preview:isPreview(),onSignIn:onReviewSignIn,onProfile:pubkey=>void open(pubkey),onSummary:value=>{if(run===generation&&reviewSummaryButton)reviewSummaryButton.textContent=value.label}})
-    let displayed=renderCached(key)
+    const displayed=renderCached(key)
     if (isPreview()) { status.textContent = 'Profiles are available in live mode.'; return }
     status.textContent = displayed ? 'Loading connections…' : 'Loading profile…'
-    // loadProfile hydrates metadata before its bounded graph lookup completes.
-    // Surface that cache progress without issuing a duplicate metadata query.
-    const progress=setInterval(()=>{
-      if(run!==generation || destroyed)return
-      const cached=readProfileMetadata(key,{relays:getRelays()})
-      if(cached.eventId!==displayed){displayed=renderCached(key);status.textContent='Loading connections…'}
-    },200)
-    const stopProgress=()=>clearInterval(progress)
-    controller.signal.addEventListener('abort',stopProgress,{once:true})
+    // Metadata is useful immediately, even while graph discovery is pending.
+    // Updating only the identity keeps listing cards and active forms mounted.
+    unsubscribeMetadata=subscribeProfileMetadata(profile=>{
+      if(run!==generation||destroyed||profile.pubkey!==currentKey)return
+      if(currentData)currentData={...currentData,profile}
+      identityHost.replaceChildren();renderIdentity(profile,currentData?.relation)
+    },{relays:getRelays()})
     try {
       const data = await loadProfile(key, { relays: getRelays(), contextPubkey: getContext() || DEFAULT_SOCIAL_GRAPH_ROOT, signal: controller.signal })
       if (run !== generation || destroyed) return
-      render(data)
+      currentData={...data,profile:readProfileMetadata(key,{relays:getRelays()})};render(currentData)
     } catch (error) { if (run === generation && error.name !== 'AbortError') status.textContent = error.message || 'Could not load this profile.' }
-    finally { stopProgress() }
   }
   return { open, openReviews(pubkey:string){void open(pubkey);reviewTab?.click()}, close, refreshReviews(){reviews?.refresh()}, destroy() { destroyed = true; close(); container.replaceChildren(); if(!page)container.remove() } }
 }

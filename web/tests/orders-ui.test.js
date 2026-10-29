@@ -7,6 +7,8 @@ class Element extends EventTarget {
   remove(){if(this.parent)this.parent.children=this.parent.children.filter(child=>child!==this);this.parent=undefined;}
   replaceChildren(...children){for(const child of [...this.children])child.remove();this.append(...children);}
   setAttribute(name,value){this.attributes.set(name,String(value));}
+  getAttribute(name){return this.attributes.get(name)??null;}
+  removeAttribute(name){this.attributes.delete(name);}
   querySelectorAll(selector){return this.children.flatMap(child=>[...(matches(child,selector)?[child]:[]),...child.querySelectorAll(selector)]);}
   querySelector(selector){return this.querySelectorAll(selector)[0]??null;}
   click(){if(!this.disabled)return this.onclick?.();}

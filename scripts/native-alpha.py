@@ -41,6 +41,11 @@ def private_path_remaps(environment):
 
 def release_environment(environment):
     result = dict(environment)
+    # An empty override also disables wrappers inherited from Cargo config files.
+    # Release inputs must execute the verified compiler directly, without a
+    # host-wide compiler cache or an unrecorded wrapper executable.
+    result['RUSTC_WRAPPER'] = ''
+    result['RUSTC_WORKSPACE_WRAPPER'] = ''
     # Encoded flags avoid shell splitting when a legitimate source path has spaces.
     flags = (result.get('CARGO_ENCODED_RUSTFLAGS', '').split('\x1f') if result.get('CARGO_ENCODED_RUSTFLAGS')
              else shlex.split(result.get('RUSTFLAGS', '')))

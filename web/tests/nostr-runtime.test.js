@@ -158,3 +158,9 @@ test('closing the actual relay client during pending initialization cancels prom
     assert(workers[0].terminated);assert.deepEqual(workers[0].messages.map(message=>message.type),['init']);assert.equal(workers.length,1);
   }finally{runtime.close();if(previousErrorEvent===undefined)delete globalThis.ErrorEvent;else globalThis.ErrorEvent=previousErrorEvent;}
 });
+
+// Product recommendations are public; private payment/chat payloads remain excluded.
+test('public runtime admits signed product recommendations',async()=>{
+ const recommendation=event(31555,'Useful item'),{runtime}=fixture({query:async()=>({...completion,events:[recommendation]})});
+ try{const result=await runtime.query([{kinds:[31555],'#a':['30402:'+recommendation.pubkey+':item']}]);assert.equal(result.events[0].id,recommendation.id);}finally{runtime.close();}
+});

@@ -108,6 +108,8 @@ fn two_profiles_publish_discover_and_exchange_private_enquiries_over_internet_tr
         currency: "EUR".into(),
         location: "Test neighbourhood".into(),
         category: "Other".into(),
+        tags: Vec::new(),
+        service_areas: None,
         image_url: None,
         expires_at: None,
     };
@@ -170,4 +172,155 @@ fn two_profiles_publish_discover_and_exchange_private_enquiries_over_internet_tr
     bob.shutdown();
     server.abort();
     runtime.shutdown_background();
+}
+
+#[test]
+fn buying_explicitly_backfills_legacy_requests_beyond_latest_three_hundred() {
+    use iris_market_core::listing;
+    use nostr::{EventBuilder, Keys, Timestamp};
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let listener = runtime.block_on(TcpListener::bind("127.0.0.1:0")).unwrap();
+    let relay = format!("ws://{}", listener.local_addr().unwrap());
+    let seller = Keys::generate();
+    let now = listing::now();
+    let mut draft:Draft=serde_json::from_value(json!({"title":"Older request","description":"A signed public fixture","side":"request","currency":"EUR"})).unwrap();
+    let indexed = listing::build(&seller, &draft, "legacy-request", now - 400, false).unwrap();
+    assert!(
+        indexed
+            .tags
+            .iter()
+            .any(|tag| tag.as_slice() == ["t", listing::REQUEST_TOPIC])
+    );
+    let legacy = EventBuilder::new(indexed.kind, indexed.content.clone())
+        .tags(
+            indexed
+                .tags
+                .iter()
+                .filter(|tag| {
+                    tag.as_slice()
+                        .get(1)
+                        .is_none_or(|value| value != listing::REQUEST_TOPIC)
+                })
+                .cloned(),
+        )
+        .custom_created_at(Timestamp::from(now - 400))
+        .sign_with_keys(&seller)
+        .unwrap();
+    draft.side = "offer".into();
+    draft.title = "Newer offer".into();
+    let mut events = vec![legacy.clone()];
+    for n in 0..302 {
+        events.push(
+            listing::build(&seller, &draft, &format!("offer-{n}"), now - 302 + n, false).unwrap(),
+        );
+    }
+    events.sort_by_key(|event| std::cmp::Reverse(event.created_at));
+    let frames = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let log = frames.clone();
+    let server = runtime.spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let events = events.clone();
+            let log = log.clone();
+            tokio::spawn(async move {
+                let Ok(mut socket) = accept_async(stream).await else {
+                    return;
+                };
+                while let Some(Ok(message)) = socket.next().await {
+                    if let Message::Ping(bytes) = message {
+                        let _ = socket.send(Message::Pong(bytes)).await;
+                        continue;
+                    }
+                    let Message::Text(text) = message else {
+                        continue;
+                    };
+                    let Ok(frame) = serde_json::from_str::<Value>(&text) else {
+                        continue;
+                    };
+                    log.lock().unwrap().push(frame.clone());
+                    if frame[0] == "REQ" {
+                        let sub = frame[1].as_str().unwrap();
+                        for raw in &frame.as_array().unwrap()[2..] {
+                            let filter: Filter = serde_json::from_value(raw.clone()).unwrap();
+                            let limit = raw["limit"].as_u64().unwrap_or(300) as usize;
+                            for event in events
+                                .iter()
+                                .filter(|event| filter.match_event(event, Default::default()))
+                                .take(limit)
+                            {
+                                if socket
+                                    .send(Message::Text(
+                                        json!(["EVENT", sub, event]).to_string().into(),
+                                    ))
+                                    .await
+                                    .is_err()
+                                {
+                                    return;
+                                }
+                            }
+                        }
+                        if socket
+                            .send(Message::Text(json!(["EOSE", sub]).to_string().into()))
+                            .await
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                }
+            });
+        }
+    });
+    let dir = tempfile::tempdir().unwrap();
+    Store::open(&dir.path().join("market.sqlite"))
+        .unwrap()
+        .save_settings(&Settings {
+            relays: vec![relay],
+            ..Default::default()
+        })
+        .unwrap();
+    let app = Market::open(dir.path(), &iris_market_core::generate_secret_key(), false).unwrap();
+    wait_until(|| {
+        snapshot(&app)["listings"]
+            .as_array()
+            .is_some_and(|items| items.len() == 300)
+    });
+    assert!(
+        !snapshot(&app)["listings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|listing| listing["side"] == "request")
+    );
+    app.command(r#"{"type":"set_filter","query":"","side":"request"}"#)
+        .unwrap();
+    wait_until(|| {
+        snapshot(&app)["listings"].as_array().is_some_and(|items| {
+            items
+                .iter()
+                .any(|listing| listing["title"] == "Older request")
+        })
+    });
+    let frames = frames.lock().unwrap();
+    let filters: Vec<_> = frames
+        .iter()
+        .filter(|frame| frame[0] == "REQ")
+        .flat_map(|frame| frame.as_array().unwrap()[2..].iter())
+        .filter(|filter| filter["kinds"] == json!([30402]))
+        .collect();
+    assert!(
+        filters
+            .iter()
+            .any(|filter| filter["#t"] == json!([listing::REQUEST_TOPIC]))
+    );
+    assert!(filters.iter().any(|filter| filter.get("until").is_some()));
+    assert!(
+        filters.len() <= 7,
+        "one subscription, one latest query and at most five Buying reads"
+    );
+    app.shutdown();
+    server.abort();
 }

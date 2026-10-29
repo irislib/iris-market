@@ -2,6 +2,8 @@
 // Reviews are public statements by their signer, never purchase verification.
 import {verifyEvent} from 'nostr-tools/pure';
 import type {Event,EventTemplate,Filter,UnsignedEvent,VerifiedEvent} from 'nostr-tools';
+export {PRODUCT_REVIEW_KIND,PRODUCT_REVIEW_LIMITS,productReviewTarget,parseProductReview,productReviewsFromEvents,productReviewSummary,loadProductReviews} from './product-reviews.ts';
+export type {ProductReview} from './product-reviews.ts';
 
 export const REVIEW_KIND=7368;
 export const REVIEW_LIMITS=Object.freeze({reviews:128,events:512,eventBytes:8192,queryBytes:1024*1024,timeoutMs:6000,body:3000});

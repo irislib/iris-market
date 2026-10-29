@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "root": "336f319763657d6b0e65a5b5876719e8c8dcdcf9396852be71ee26b73368b29b",
+  "source": {
+    "url": "https://github.com/irislib/iris-nostr/releases/download/v0.1.0/social-graph.bin",
+    "sourceCommit": "945e04c6b60b217145015ebd775a84b8b71ef681",
+    "byteLength": 50440164,
+    "sha256": "dcb5b683d3a8bc7482a22468840257187ac2510362075669a756686ea94f90b7",
+    "capturedAt": "2026-10-29",
+    "origin": "https://graph-api.iris.to/social-graph",
+    "verifiedEvents": false
+  },
+  "projection": {
+    "library": "nostr-social-graph@2.0.4",
+    "ownerDistance": 2,
+    "maxNodes": 40000,
+    "maxEdges": 250000,
+    "byteLength": 1563994,
+    "sha256": "df349a23122993183b9b9d2d056b7c655a984bdc86bc72f747202ad772de4d8f",
+    "users": 31187,
+    "follows": 195484,
+    "mutes": 4149,
+    "rootFollows": 2,
+    "usersWithinTwoHops": 411,
+    "recipe": "scripts/project-social-graph.ts",
+    "recipeSha256": "d797a92e276d150158289fdd41f6f78e515dc439babd9ea8a9b74d0e44a71bdc",
+    "note": "Canonicalize duplicate IDs by public key before traversal. Latest timestamp wins; tied latest follows conflict rejects, tied latest mutes union. Retain complete follow and mute lists for owners at distance0..2 and their target identities."
+  },
+  "use": "Public discovery only; unsigned aggregate does not authorize trust badges.",
+  "publishedArtifact": {
+    "url": "https://github.com/mmalmi/nostr-social-graph/releases/download/v3.0.1/socialGraph.bin",
+    "sourceCommit": "4bc0ddfd6abaec563a52ecd7dd5c70d86df1eeef",
+    "byteLength": 1563994,
+    "sha256": "df349a23122993183b9b9d2d056b7c655a984bdc86bc72f747202ad772de4d8f"
+  }
+}

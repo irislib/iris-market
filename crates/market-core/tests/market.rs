@@ -20,6 +20,8 @@ fn draft() -> Draft {
         currency: "EUR".into(),
         location: "Helsinki".into(),
         category: "Photography".into(),
+        tags: Vec::new(),
+        service_areas: None,
         image_url: None,
         expires_at: None,
     }
@@ -211,6 +213,8 @@ fn configurable_model_produces_a_yes_no_decision_without_removing_the_listing() 
     settings.ai.curate_feed = true;
     app.command(&json!({"type":"set_settings","settings":settings}).to_string())
         .unwrap();
+    app.command(r#"{"type":"set_filter","query":"bicycles","side":"all","ai_search":true}"#)
+        .unwrap();
     let raw = app
         .command(r#"{"type":"curate","api_key":"private-test-key"}"#)
         .unwrap();
@@ -401,6 +405,169 @@ fn public_profile_listings_are_cached_immediately_and_independent_of_browse_filt
     assert!(
         serde_json::from_str::<Value>(&app.snapshot().unwrap()).unwrap()["profile_listings"]
             .is_null()
+    );
+    app.shutdown();
+}
+
+#[test]
+fn saved_items_do_not_follow_browse_query_or_side_and_still_obey_winners() {
+    let dir = tempfile::tempdir().unwrap();
+    offline(dir.path());
+    let keys = Keys::generate();
+    let app = Market::open(dir.path(), &keys.secret_key().to_secret_hex(), false).unwrap();
+    let event = listing::build(&keys, &draft(), "saved", listing::now(), false).unwrap();
+    app.ingest_event(&event).unwrap();
+    let id = format!("{}:saved", keys.public_key().to_hex());
+    app.command(&json!({"type":"save","id":id}).to_string())
+        .unwrap();
+    let state: Value = serde_json::from_str(
+        &app.command(r#"{"type":"set_filter","query":"does not match","side":"request"}"#)
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(state["listings"].as_array().unwrap().is_empty());
+    assert_eq!(state["saved_listings"][0]["id"], id);
+    assert_eq!(state["saved_count"], 1);
+    assert!(!state["people"][keys.public_key().to_hex()].is_null());
+    let closed = listing::build(&keys, &draft(), "saved", listing::now() + 1, true).unwrap();
+    app.ingest_event(&closed).unwrap();
+    let state: Value = serde_json::from_str(&app.snapshot().unwrap()).unwrap();
+    assert!(state["saved_listings"].as_array().unwrap().is_empty());
+    assert_eq!(state["saved_count"], 0);
+}
+
+#[test]
+fn fresh_name_commits_locally_queues_and_restores_without_relay_ack() {
+    let dir = tempfile::tempdir().unwrap();
+    offline(dir.path());
+    let secret = iris_market_core::generate_secret_key();
+    let app = Market::open_fresh(dir.path(), &secret).unwrap();
+    let state: Value = serde_json::from_str(&app.snapshot().unwrap()).unwrap();
+    assert_eq!(state["profile_name_required"], true);
+    let state: Value = serde_json::from_str(
+        &app.command(r#"{"type":"update_profile","name":"Taylor"}"#)
+            .unwrap(),
+    )
+    .unwrap();
+    let owner = state["public_key"].as_str().unwrap();
+    assert_eq!(state["people"][owner]["name"], "Taylor");
+    assert_eq!(state["profile_name_required"], false);
+    let store = Store::open(&dir.path().join("market.sqlite")).unwrap();
+    let metadata = store.profile_metadata(owner).unwrap().unwrap();
+    metadata.verify().unwrap();
+    assert!(
+        store
+            .pending()
+            .unwrap()
+            .iter()
+            .any(|event| event.id == metadata.id)
+    );
+    drop(store);
+    app.shutdown();
+    let restored = Market::open(dir.path(), &secret, false).unwrap();
+    let state: Value = serde_json::from_str(&restored.snapshot().unwrap()).unwrap();
+    assert_eq!(state["people"][owner]["name"], "Taylor");
+    assert_eq!(state["profile_name_required"], false);
+}
+
+#[test]
+fn imported_name_edit_preserves_signed_metadata_and_does_not_require_signup() {
+    let dir = tempfile::tempdir().unwrap();
+    offline(dir.path());
+    let keys = Keys::generate();
+    let metadata = nostr::EventBuilder::new(nostr::Kind::Metadata, r#"{"name":"Old","about":"Original description","website":"https://example.com","custom":{"preserve":true}}"#).sign_with_keys(&keys).unwrap();
+    let cache = iris_market_core::public_cache::PublicEventCache::open(
+        &dir.path().join("public-events.sqlite"),
+    )
+    .unwrap();
+    cache.ingest(&metadata).unwrap();
+    drop(cache);
+    let app = Market::open(dir.path(), &keys.secret_key().to_secret_hex(), false).unwrap();
+    let state: Value = serde_json::from_str(&app.snapshot().unwrap()).unwrap();
+    assert_eq!(state["profile_name_required"], false);
+    app.command(r#"{"type":"update_profile","name":"New"}"#)
+        .unwrap();
+    let store = Store::open(&dir.path().join("market.sqlite")).unwrap();
+    let current = store
+        .profile_metadata(&keys.public_key().to_hex())
+        .unwrap()
+        .unwrap();
+    let value: Value = serde_json::from_str(&current.content).unwrap();
+    assert_eq!(value["name"], "New");
+    assert_eq!(value["about"], "Original description");
+    assert_eq!(value["custom"]["preserve"], true);
+    assert_eq!(value["website"], "https://example.com");
+    assert!(current.created_at > metadata.created_at);
+}
+
+#[test]
+fn ai_configuration_provenance_preserves_explicit_off_and_legacy_missing_block() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("market.sqlite");
+    let store = Store::open(&path).unwrap();
+    assert!(!store.ai_configured().unwrap());
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute(
+            "INSERT INTO preferences VALUES ('settings', ?1)",
+            [r#"{"relays":[]}"#],
+        )
+        .unwrap();
+    assert!(!store.ai_configured().unwrap());
+    store.save_settings(&Settings::default()).unwrap();
+    assert!(store.ai_configured().unwrap());
+    assert!(!store.settings().unwrap().ai.enabled);
+}
+
+#[test]
+fn display_currency_projects_browse_saved_and_author_without_mutating_signed_price() {
+    let dir = tempfile::tempdir().unwrap();
+    offline(dir.path());
+    let store = Store::open(&dir.path().join("market.sqlite")).unwrap();
+    let now = listing::now();
+    let book = iris_market_core::rates::RateBook::from_cache(
+        &json!({"rates":{
+            "EUR":{"value":60000.0,"source":"Coinbase","updated_at":now},
+            "USD":{"value":66000.0,"source":"Coinbase","updated_at":now}
+        }})
+        .to_string(),
+        now,
+    )
+    .unwrap();
+    store.save_exchange_rates(&book).unwrap();
+    let app = Market::open(dir.path(), &iris_market_core::generate_secret_key(), false).unwrap();
+    let seller = Keys::generate();
+    let mut d = draft();
+    d.currency = "USD".into();
+    d.price = "66".into();
+    let event = listing::build(&seller, &d, "conversion", now, false).unwrap();
+    app.ingest_event(&event).unwrap();
+    let id = format!("{}:conversion", seller.public_key().to_hex());
+    let state: Value = serde_json::from_str(
+        &app.command(&json!({"type":"save","id":id}).to_string())
+            .unwrap(),
+    )
+    .unwrap();
+    for key in ["listings", "saved_listings"] {
+        assert_eq!(state[key][0]["price"], "66");
+        assert_eq!(state[key][0]["currency"], "USD");
+        assert!((state[key][0]["display_price"]["amount"].as_f64().unwrap() - 60.0).abs() < 1e-9);
+        assert_eq!(state[key][0]["display_price"]["currency"], "EUR");
+    }
+    app.command(&json!({"type":"load_profile","author":seller.public_key().to_hex()}).to_string())
+        .unwrap();
+    let state: Value = serde_json::from_str(&app.snapshot().unwrap()).unwrap();
+    assert_eq!(
+        state["profile_listings"]["listings"][0]["display_price"]["currency"],
+        "EUR"
+    );
+    assert_eq!(state["exchange_rates"]["status"], "fresh");
+    assert_eq!(store.event(&id).unwrap(), event);
+    let mut settings = store.settings().unwrap();
+    settings.currency = "INVALID".into();
+    assert!(
+        app.command(&json!({"type":"set_settings","settings":settings}).to_string())
+            .is_err()
     );
     app.shutdown();
 }

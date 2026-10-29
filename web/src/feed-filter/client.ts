@@ -1,5 +1,6 @@
 import type { FeedModelInfo, ClassificationResult, FeedDecision, FilterRequest, FilterResult, ProgressHandler, WorkerResponse } from './types.ts'
 import { assetUrl } from '../asset-url.ts'
+import {DecisionCache,decisionCacheKey} from './decision-cache.ts'
 /*! Adapted from Iris client's src/lib/feed-filter/client.ts (MIT, Copyright 2024 Martti Malmi).
  * Upstream pilot snapshot SHA256: e25beb76a39d334d1e53159f8fa7abde84fdbc9fd27f3310d4a788018dbce09f.
  * License: ./LICENSE. Explicit loading, bounded caching, and cancellation for Iris Market. */
@@ -14,14 +15,14 @@ export class FeedFilterClient {
   serial: number
   generation: number
   pending: Map<number, { resolve: (value: FilterResult) => void; reject: (reason?: unknown) => void; progress?: ProgressHandler; timer: ReturnType<typeof setTimeout>; unlisten: () => void }>
-  cache: Map<string, Readonly<FeedDecision>>
+  cache: DecisionCache
   queue: Promise<unknown>
   queued: number
   idleTimer: ReturnType<typeof setTimeout> | null
-  constructor({ WorkerImpl = globalThis.Worker, workerUrl = assetUrl('feed-filter.worker.js') } = {}) {
+  constructor({ WorkerImpl = globalThis.Worker, workerUrl = assetUrl('feed-filter.worker.js'), decisionCache=new DecisionCache() } = {}) {
     this.Worker = WorkerImpl; this.workerUrl = workerUrl
     this.worker = null; this.info = null; this.serial = 0; this.generation = 0
-    this.pending = new Map(); this.cache = new Map(); this.queue = Promise.resolve(); this.queued = 0; this.idleTimer = null
+    this.pending = new Map(); this.cache = decisionCache; this.queue = Promise.resolve(); this.queued = 0; this.idleTimer = null
   }
   exclusive<T>(run: () => Promise<T>): Promise<T> {
     if (this.queued >= 64) return Promise.reject(new Error('Too many listings are waiting for local filtering.'))
@@ -70,28 +71,30 @@ export class FeedFilterClient {
   load(modelId: string, device = 'auto', onProgress?: ProgressHandler) {
     try { validateModel(modelId, device) } catch (error) { return Promise.reject(error) }
     return this.exclusive(async () => {
-      this.info = null; this.cache.clear()
+      this.info = null; const generation=this.generation
       const result = await this.request({ type: 'load', model: modelId, device }, onProgress, 600000)
+      if(generation!==this.generation)throw new Error('Local filter stopped.')
       this.info = Object.freeze({ ...result, model: modelId, revision: FEED_MODELS[modelId].revision })
       return this.info
     })
   }
-  classify(condition: string, listingText: string, { signal }: { signal?: AbortSignal } = {}) {
+  classify(condition: string, listingText: string, { signal, eventId }: { signal?: AbortSignal; eventId?: string } = {}) {
     try { validateInput(condition, listingText) } catch (error) { return Promise.reject(error) }
     const content = listingText.slice(0, MAX_LISTING_LENGTH)
     const clipped = listingText.length > MAX_LISTING_LENGTH
     return this.exclusive(async () => {
       if (signal?.aborted) throw new DOMException('Local filtering cancelled.', 'AbortError')
       if (!this.info || !this.worker) throw new Error('Load a local model first.')
-      const key = JSON.stringify([FILTER_VERSION, this.info.model, this.info.revision, this.info.device, condition.trim(), content, clipped])
+      const generation=this.generation,info=this.info
+      const key=decisionCacheKey({filterVersion:FILTER_VERSION,model:info.model,revision:info.revision,device:info.device,dtype:FEED_MODELS[info.model].dtype,condition:condition.trim(),content,truncated:clipped,eventId})
       const cached = this.cache.get(key)
       if (cached) return { ...cached, cached: true }
       const result = await this.request({ type: 'classify', condition: condition.trim(), content }, undefined, 60000, signal)
+      if(signal?.aborted||generation!==this.generation||this.info!==info)throw new DOMException('Local filtering cancelled.','AbortError')
       if (!Number.isFinite(result?.score) || result.score < 0 || result.score > 1) {
         this.dispose(); throw new Error('The local model returned an invalid score.')
       }
       const decision = Object.freeze({ ...result, show: result.score >= 0.5, truncated: clipped || !!result.truncated })
-      if (this.cache.size >= 256) this.cache.delete(this.cache.keys().next().value)
       this.cache.set(key, decision)
       return { ...decision, cached: false }
     })
@@ -103,7 +106,7 @@ export class FeedFilterClient {
       this.worker.onmessage = this.worker.onerror = this.worker.onmessageerror = null
       this.worker.terminate(); this.worker = null
     }
-    this.info = null; this.cache.clear()
+    this.info = null; void this.cache.flush()
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer); pending.unlisten(); pending.reject(new Error(message))
     }

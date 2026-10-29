@@ -1,14 +1,21 @@
 [package]
-name = "iris-market-cli"
+name = "iris-market"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
+description = "Iris Market command-line client and MCP server"
+repository = "https://github.com/irislib/iris-market"
+homepage = "https://market.iris.to"
+readme = "README.md"
+keywords = ["marketplace", "nostr", "iris", "cli", "mcp"]
+categories = ["command-line-utilities"]
 
 [[bin]]
 name = "iris-market"
 path = "src/main.rs"
 
 [dependencies]
-iris-market-core = { path = "../market-core" }
+iris-market-core = { version = "=0.1.0", path = "../market-core" }
 serde_json.workspace = true
 anyhow.workspace = true

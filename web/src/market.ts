@@ -3,8 +3,9 @@ import { locationFromTags, MAX_GEOHASH_QUERY_VALUES } from './map/geohash.ts'
 import { queryPublicIndex } from './nostr-runtime.ts'
 import type { Filter } from 'nostr-tools'
 import type { RuntimeQueryOptions } from 'nostr-pubsub'
-import { SeenTags, observedMarketTags } from './seen-tags.ts'
+import { SeenTags, observedMarketTags, TAG_LIMITS } from './seen-tags.ts'
 import {publicListingCache,type PublicListingCache} from './offline-listings.ts'
+import {parseServiceAreas} from './service-area.ts'
 
 export const DEFAULT_RELAYS = Object.freeze(['wss://temp.iris.to', 'wss://vault.iris.to', 'wss://relay.damus.io', 'wss://relay.snort.social', 'wss://relay.primal.net', 'wss://nos.lol'])
 export const LISTING_KIND = 30402
@@ -51,11 +52,11 @@ export function parseEvent(input: NostrEvent, { now = seconds() } = {}) {
   const title = singleton(event, 'title')
   if (typeof title !== 'string' || !title.trim() || length(title) > 160) fail('Invalid listing title')
   if (bytes(event.content) > 12000) fail('Description is too long')
-  const side = singleton(event, 'market') ?? 'offer'
+  const side = singleton(event, 'market') ?? (event.tags.some(tag=>tag[0]==='t'&&tag[1]==='market:request')?'request':'offer')
   if (side !== 'offer' && side !== 'request') fail('Invalid listing type')
   const location = singleton(event, 'location') ?? ''
   const geo = locationFromTags(event.tags)
-  const tags = event.tags.filter(tag => tag[0] === 't' && typeof tag[1] === 'string').map(tag => tag[1])
+  const tags = event.tags.filter(tag => tag[0] === 't' && typeof tag[1] === 'string' && !tag[1].startsWith('market:')).map(tag => tag[1])
   const category = tags[0] ?? 'Other'
   if (length(location) > 160 || length(category) > 60) fail('Location or category is too long')
   const price = singleton(event, 'price') ?? ''
@@ -79,11 +80,14 @@ export function parseEvent(input: NostrEvent, { now = seconds() } = {}) {
   }
   const status = singleton(event, 'status') ?? 'active'
   if (status !== 'active' && status !== 'sold') fail('Invalid listing status')
+  const originalTags = Object.freeze(event.tags.map(tag => Object.freeze([...tag])))
+  const rawEvent = Object.freeze({ id: event.id, pubkey: event.pubkey, created_at: event.created_at, kind: event.kind, tags: originalTags, content: event.content, sig: event.sig })
   return Object.freeze({
-    id: `${event.pubkey}:${identifier}`, eventId: event.id, author: event.pubkey,
+    rawEvent, id: `${event.pubkey}:${identifier}`, eventId: event.id, author: event.pubkey,
     identifier, title, description: event.content, price, currency, location,
     geohash: geo?.geohash ?? null, coordinates: geo?.coordinates ?? null, locationBounds: geo?.bounds ?? null,
-    category, tags: Object.freeze(tags), originalTags: Object.freeze(event.tags.map(tag => Object.freeze([...tag]))), imageUrl, side, createdAt: event.created_at, expiration, status,
+    serviceAreas: parseServiceAreas(event.tags),
+    category, tags: Object.freeze(tags), originalTags, imageUrl, side, createdAt: event.created_at, expiration, status,
   })
 }
 
@@ -162,7 +166,8 @@ export interface MarketPagination { loading: boolean; exhausted: boolean; limite
 export interface MarketStatus { state: 'closed' | 'empty' | 'live' | 'connecting' | 'offline'; connected: number; total: number; message: string }
 interface RelayHistory { initialOldest: number | null; cursor: number | null; started: boolean; exhausted: boolean; limited: boolean; requests: number }
 interface HistoryPage { error?: string; limited?: boolean; count?: number; oldest?: number | null }
-interface HistoryOptions { tags?:readonly string[];signal?:AbortSignal;pageSize?:number;maxRequests?:number;rounds?:number;timeoutMs?:number;budget?:{bytes:number;max:number} }
+interface HistoryOptions { tags?:readonly string[];signal?:AbortSignal;pageSize?:number;maxRequests?:number;rounds?:number;timeoutMs?:number;budget?:{bytes:number;max:number};requestBudget?:{count:number;max:number} }
+interface QueryTagPlan {tags:readonly string[];history:Map<string,RelayHistory>;indexHistory:RelayHistory}
 export interface QueryCandidates {loading:boolean;added:number;hasMore:boolean;error:string;limited:boolean}
 interface RelayConnection {
   url: string; attempt: number; socket: WebSocket | null; failed: boolean; ready: boolean; subscription: string
@@ -243,8 +248,9 @@ export class MarketRelayClient {
   indexBytes = 0
   tagCatalogue: SeenTags
   queryTags:readonly string[]=[]
-  queryHistory=new Map<string,RelayHistory>()
-  queryIndexHistory:RelayHistory={initialOldest:null,cursor:null,started:false,exhausted:false,limited:false,requests:0}
+  queryPlans:QueryTagPlan[]=[]
+  queryExtraTags:readonly string[]=[]
+  queryRequestBudget={count:0,max:32}
   queryController=new AbortController()
   queryPromise:Promise<QueryCandidates>|null=null
   queryBudget={bytes:0,max:8*1024*1024}
@@ -324,7 +330,7 @@ export class MarketRelayClient {
   parseIncoming(event:NostrEvent):MarketListing {
     const listing=parseEvent(event,{now:this.now()});this.tagCatalogue.observe(event,this.now())
     this.offlineCache?.save(event)
-    if(this.running&&this.queryText&&!this.queryTags.length&&this.tagSelectionTimer===null)this.tagSelectionTimer=setTimeout(()=>{
+    if(this.running&&this.queryText&&this.queryTags.length<TAG_LIMITS.queryTags&&this.tagSelectionTimer===null)this.tagSelectionTimer=setTimeout(()=>{
       this.tagSelectionTimer=null;if(this.running)this.searchTags(this.queryText)
     },24)
     return listing
@@ -343,25 +349,43 @@ export class MarketRelayClient {
   }
 
   /** Broaden candidate retrieval without using the query as a title predicate. */
-  searchTags(query:string):readonly string[] {
-    this.queryText=typeof query==='string'&&query.length<=2000?query:''
-    return this.setQueryTags(this.tagCatalogue.select(query))
+  searchTags(query:string,extraTags?:readonly string[]):readonly string[] {
+    const text=typeof query==='string'&&query.length<=TAG_LIMITS.queryChars?query:'',changed=text!==this.queryText
+    if(changed)this.queryExtraTags=[]
+    this.queryText=text
+    if(extraTags!==undefined)this.queryExtraTags=Array.isArray(extraTags)?extraTags.slice(0,TAG_LIMITS.queryTags).filter(tag=>typeof tag==='string'&&tag.length<=60):[]
+    const proposed=this.tagCatalogue.select(text,TAG_LIMITS.queryTags,this.queryExtraTags)
+    // New observations can fill unused slots, but do not repeatedly reshuffle
+    // a running search or replenish its finite request/byte budgets.
+    const selected=!changed&&extraTags===undefined?[...new Set([...this.queryTags,...proposed])].slice(0,TAG_LIMITS.queryTags):proposed
+    return this.applyQueryTags(selected,changed)
   }
 
   setQueryTags(tags:readonly string[]):readonly string[] {
     const selected=feedTags(tags).filter(tag=>this.tagCatalogue.has(tag))
+    this.queryText='';this.queryExtraTags=[]
+    return this.applyQueryTags(selected,true)
+  }
+
+  private applyQueryTags(tags:readonly string[],reset:boolean):readonly string[] {
+    const selected=feedTags(tags)
     if(JSON.stringify(selected)===JSON.stringify(this.queryTags))return this.queryTags
     this.queryController.abort();this.queryController=new AbortController();this.queryPromise=null
-    this.queryTags=Object.freeze(selected);this.queryAdded=0;this.queryError='';this.queryBudget={bytes:0,max:8*1024*1024}
-    this.queryHistory=new Map(this.relays.map(url=>[url,{initialOldest:null,cursor:null,started:false,exhausted:false,limited:false,requests:0}]))
-    this.queryIndexHistory={initialOldest:null,cursor:null,started:false,exhausted:!this.indexQuery,limited:false,requests:0}
+    this.queryTags=Object.freeze(selected);this.queryAdded=0;this.queryError=''
+    if(reset){this.queryBudget={bytes:0,max:8*1024*1024};this.queryRequestBudget={count:0,max:32}}
+    const previous=reset?[]:this.queryPlans,newHistory=():RelayHistory=>({initialOldest:null,cursor:null,started:false,exhausted:false,limited:false,requests:0})
+    // Give the direct phrase its own response limit. A broad related tag must
+    // not crowd exact matches out of a combined OR query.
+    this.queryPlans=[selected.slice(0,1),selected.slice(1)].filter(group=>group.length).map(group=>previous.find(plan=>JSON.stringify(plan.tags)===JSON.stringify(group))??{
+      tags:Object.freeze(group),history:new Map(this.relays.map(url=>[url,newHistory()])),indexHistory:{...newHistory(),exhausted:!this.indexQuery},
+    })
     if(this.running&&selected.length)void this.loadQueryCandidates()
     return this.queryTags
   }
 
   queryPagination():QueryCandidates {
-    const histories=[...this.queryHistory.values(),this.queryIndexHistory]
-    const full=this.records.size>=this.maxRecords||this.queryBudget.bytes>=this.queryBudget.max
+    const histories=this.queryPlans.flatMap(plan=>[...plan.history.values(),plan.indexHistory])
+    const full=this.records.size>=this.maxRecords||this.queryBudget.bytes>=this.queryBudget.max||this.queryRequestBudget.count>=this.queryRequestBudget.max
     const limited=full||histories.some(item=>item.limited)
     return{loading:!!this.queryPromise,added:this.queryAdded,error:this.queryError,limited,
       hasMore:!!this.queryTags.length&&this.hasInventoryQuery&&!full&&histories.some(item=>!item.exhausted&&!item.limited)}
@@ -371,15 +395,14 @@ export class MarketRelayClient {
   loadQueryCandidates():Promise<QueryCandidates> {
     if(this.queryPromise)return this.queryPromise
     if(!this.running||!this.queryPagination().hasMore)return Promise.resolve(this.queryPagination())
-    const tags=this.queryTags,controller=this.queryController,budget=this.queryBudget,before=this.records.size
-    const options:HistoryOptions={tags,signal:controller.signal,pageSize:80,maxRequests:8,rounds:2,timeoutMs:3500,budget}
-    const histories=this.queryHistory,indexHistory=this.queryIndexHistory
+    const plans=this.queryPlans,controller=this.queryController,budget=this.queryBudget,requestBudget=this.queryRequestBudget,before=this.records.size
+    const options:HistoryOptions={signal:controller.signal,pageSize:80,maxRequests:8,rounds:2,timeoutMs:3500,budget,requestBudget}
     this.queryError='';this.queryAdded=0
     this.queryPromise=Promise.resolve().then(async()=>{
-      const results=await Promise.all([
-        ...[...histories].filter(([,item])=>!item.exhausted&&!item.limited).map(([url,item])=>this.loadOlderFrom(url,item,options)),
-        ...(this.indexQuery&&!indexHistory.exhausted&&!indexHistory.limited?[this.loadQueryIndex(tags,indexHistory,controller.signal,budget)]:[]),
-      ])
+      const results=await Promise.all(plans.flatMap(({tags,history,indexHistory})=>[
+        ...[...history].filter(([,item])=>!item.exhausted&&!item.limited).map(([url,item])=>this.loadOlderFrom(url,item,{...options,tags})),
+        ...(this.indexQuery&&!indexHistory.exhausted&&!indexHistory.limited?[this.loadQueryIndex(tags,indexHistory,controller.signal,budget,requestBudget)]:[]),
+      ]))
       if(controller!==this.queryController)return
       this.queryAdded=Math.max(0,this.records.size-before)
       if(results.some(result=>result.error))this.queryError='Some matching listings could not be loaded.'
@@ -389,7 +412,9 @@ export class MarketRelayClient {
     return this.queryPromise
   }
 
-  async loadQueryIndex(tags:readonly string[],history:RelayHistory,signal:AbortSignal,budget:{bytes:number;max:number}):Promise<HistoryPage> {
+  async loadQueryIndex(tags:readonly string[],history:RelayHistory,signal:AbortSignal,budget:{bytes:number;max:number},requestBudget:{count:number;max:number}):Promise<HistoryPage> {
+    if(requestBudget.count>=requestBudget.max){history.limited=true;return{limited:true}}
+    requestBudget.count++
     if(++history.requests>4){history.limited=true;return{limited:true}}
     const until=history.cursor??this.now(),limit=120
     let timer:ReturnType<typeof setTimeout>,abort:()=>void
@@ -627,6 +652,7 @@ export class MarketRelayClient {
     for (let round = 0; round < (options.rounds??4) && this.running&&!options.signal?.aborted; round++) {
       if (this.records.size >= this.maxRecords) return { limited: true }
       if (history.requests >= (options.maxRequests??MAX_HISTORY_REQUESTS)) { history.limited = true; return { limited: true } }
+      if(options.requestBudget){if(options.requestBudget.count>=options.requestBudget.max){history.limited=true;return{limited:true}}options.requestBudget.count++}
       const until = history.cursor
       history.requests++
       const page = await this.readHistory(url, until, limit,options)

@@ -109,7 +109,7 @@ import org.json.JSONObject
         }
         OutlinedButton(onClick={signIn=true},enabled=!state.demo) {Icon(Icons.Filled.Login,null);Spacer(Modifier.width(8.dp));Text("Sign in")}
         if(!state.demo&&!state.canSign) Text("Sign in with your profile key to publish listings.",color=Muted,style=MaterialTheme.typography.bodySmall)
-        TextButton(onClick=openProfile) { Icon(Icons.Filled.AccountCircle,null);Spacer(Modifier.width(8.dp));Text("Public profile") }
+        TextButton(onClick=openProfile) { Icon(Icons.Filled.AccountCircle,null);Spacer(Modifier.width(8.dp));Text("My listings") }
         Column {
             Text("Appearance",fontWeight=FontWeight.Medium)
             Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
@@ -119,12 +119,17 @@ import org.json.JSONObject
                 }
             }
         }
+        val localModel by model.localModelState.collectAsState()
         if(ai.optBoolean("enabled")) Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(enabled=!busy&&!state.demo,onClick={model.ai("curate")},shape=CircleShape){Text("Curate listings")}
-            TextButton(enabled=!busy&&!state.demo,onClick={model.ai("check_ai")}){Text("Test connection")}
+            if(ai.optString("provider")=="litert" && localModel.phase in setOf(LocalModelPhase.VERIFYING,LocalModelPhase.LOADING,LocalModelPhase.REVIEWING)) {
+                TextButton(onClick=model::cancelLocalAI){Text("Stop")}
+            } else TextButton(enabled=!busy&&!state.demo,onClick={model.ai("check_ai")}){Text(if(ai.optString("provider")=="litert") "Check model" else "Test connection")}
+        }
+        if(ai.optString("provider")=="litert" && localModel.phase==LocalModelPhase.REVIEWING) {
+            Text("Reviewing ${localModel.reviewed} of ${localModel.total}",color=Muted,style=MaterialTheme.typography.bodySmall)
         }
         Row(Modifier.fillMaxWidth().padding(vertical=7.dp),verticalAlignment=Alignment.CenterVertically) {
-            Icon(Icons.Filled.Bookmark,null,tint=Forest);Spacer(Modifier.width(12.dp));Text("Saved listings",Modifier.weight(1f));Text(state.savedCount.toString(),fontWeight=FontWeight.SemiBold)
+            Icon(Icons.Filled.Favorite,null,tint=Forest);Spacer(Modifier.width(12.dp));Text("Saved listings",Modifier.weight(1f));Text(state.savedCount.toString(),fontWeight=FontWeight.SemiBold)
         }
         HorizontalDivider(color=Line)
         Row(Modifier.fillMaxWidth().clickable(onClick=settings).padding(vertical=10.dp),verticalAlignment=Alignment.CenterVertically) {

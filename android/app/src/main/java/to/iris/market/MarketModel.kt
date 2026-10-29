@@ -30,14 +30,21 @@ data class Listing(
     val id: String, val author: String, val title: String, val description: String, val side: String,
     val price: String, val currency: String, val location: String, val category: String,
     val imageUrl: String?, val saved: Boolean, val mine: Boolean, val status: String,
-    val delivery: String, val relevance: String?, val relevanceShow: Boolean?, val coordinates: List<Double>? = null
+    val delivery: String, val relevance: String?, val relevanceShow: Boolean?, val coordinates: List<Double>? = null,
+    val serviceAreas: String? = null, val priceDisplay: PriceDisplay? = null
 ) {
-    val displayPrice: String get() = when {
-        price.isBlank() -> "Let's talk"
-        currency == "EUR" -> "€$price"
-        currency == "USD" -> "$$price"
-        currency == "GBP" -> "£$price"
-        else -> "$price $currency"
+    val displayPrice: String get() {
+        if (price.isBlank()) return "Let's talk"
+        val amount = priceDisplay?.amount ?: price.toDoubleOrNull() ?: return "$price $currency"
+        if (!amount.isFinite()) return "$price $currency"
+        if (amount == 0.0) return "Free"
+        val code = (priceDisplay?.currency ?: currency).uppercase()
+        val suffix = if(priceDisplay?.stale == true) " · older rate" else ""
+        if (code in setOf("SAT", "SATS", "BTC")) {
+            val formatter = java.text.NumberFormat.getNumberInstance().apply { maximumFractionDigits = if(code=="BTC") 8 else 0 }
+            return "${formatter.format(amount)} ${if(code=="BTC") "BTC" else "sats"}$suffix"
+        }
+        return runCatching { java.text.NumberFormat.getCurrencyInstance().apply { this.currency = java.util.Currency.getInstance(code) }.format(amount) }.getOrDefault("$amount $code") + suffix
     }
     companion object {
         fun parse(l: JSONObject) = Listing(l.getString("id"), l.optString("author"), l.getString("title"), l.optString("description"),
@@ -47,10 +54,13 @@ data class Listing(
             l.optString("delivery"), l.optJSONObject("relevance")?.optional("reason"),
             l.optJSONObject("relevance")?.let { decision ->
                 if (decision.has("show") && !decision.isNull("show")) decision.optBoolean("show") else null
-            }, l.optJSONArray("coordinates")?.let { a -> if (a.length()==2) listOf(a.optDouble(0),a.optDouble(1)).takeIf { values -> values.all { it.isFinite() } } else null })
+            }, l.optJSONArray("coordinates")?.let { a -> if (a.length()==2) listOf(a.optDouble(0),a.optDouble(1)).takeIf { values -> values.all { it.isFinite() } } else null },
+            l.optJSONObject("service_areas")?.toString()?.takeIf { it.toByteArray(Charsets.UTF_8).size <= 32832 },
+            l.optJSONObject("display_price")?.let { d -> PriceDisplay(d.optDouble("amount"),d.optString("currency"),d.optBoolean("approximate"),d.optBoolean("stale")) })
     }
 
 }
+data class PriceDisplay(val amount: Double, val currency: String, val approximate: Boolean, val stale: Boolean)
 data class Message(val id: String, val text: String, val mine: Boolean, val orderId: String? = null, val cashu: CashuPayment? = null)
 data class Conversation(val id: String, val name: String, val messages: List<Message>)
 data class MarketSnapshot(
@@ -61,7 +71,9 @@ data class MarketSnapshot(
     val invite: String? = null, val aiSearch: Boolean = false, val sort: String = "suggested",
     val orders: List<MarketOrder> = emptyList(), val liveLocationSupported: Boolean = false,
     val people: Map<String, PublicPerson> = emptyMap(), val profile: PublicProfile? = null, val graphContextLoaded: Boolean = false,
-    val profileListings: ProfileListings? = null
+    val profileListings: ProfileListings? = null,
+    val localCuration: LocalCurationBatch? = null,
+    val aiMessage: String? = null, val savedListings: List<Listing>? = null, val aiConfigured: Boolean = true, val profileNameRequired: Boolean = false
 ) {
     companion object {
         fun parse(raw: String): MarketSnapshot {
@@ -70,10 +82,12 @@ data class MarketSnapshot(
             val cs = o.optJSONArray("conversations") ?: JSONArray()
             return MarketSnapshot(
                 publicKey = o.optString("public_key"), canSign = o.optBoolean("can_sign"), messagingReady = o.optBoolean("messaging_ready"), demo = o.optBoolean("demo"),
-                status = o.optString("status", "Ready"), error = o.optional("error"),
+                status = o.optString("status", "Ready"), error = o.optional("error"), aiMessage = o.optional("ai_message"),
                 query = o.optString("query"), side = o.optString("side", "offer"),
                 listings = (0 until ls.length()).map { Listing.parse(ls.getJSONObject(it)) }, savedCount = o.optInt("saved_count"),
                 settings = (o.optJSONObject("settings") ?: JSONObject()).toString(),
+                savedListings = o.optJSONArray("saved_listings")?.let { a -> (0 until a.length()).map { Listing.parse(a.getJSONObject(it)) } },
+                aiConfigured = o.optBoolean("ai_configured",true), profileNameRequired = o.optBoolean("profile_name_required"),
                 conversations = (0 until cs.length()).map { i ->
                     val c = cs.getJSONObject(i); val ms = c.optJSONArray("messages") ?: JSONArray()
                     Conversation(c.getString("id"), c.optString("name", "Conversation"),
@@ -84,7 +98,14 @@ data class MarketSnapshot(
                 orders = o.optJSONArray("orders")?.let { a -> (0 until a.length()).map { MarketOrder.parse(a.getJSONObject(it)) } } ?: emptyList(),
                 people = o.optJSONObject("people")?.let { people -> people.keys().asSequence().associateWith { PublicPerson.parse(people.getJSONObject(it)) } } ?: emptyMap(),
                 profile = o.optJSONObject("profile")?.let(PublicProfile::parse), graphContextLoaded = o.optBoolean("graph_context_loaded"),
-                profileListings = o.optJSONObject("profile_listings")?.let(ProfileListings::parse)
+                profileListings = o.optJSONObject("profile_listings")?.let(ProfileListings::parse),
+                localCuration = o.optJSONObject("local_curation")?.let { batch ->
+                    val candidates = batch.getJSONArray("candidates")
+                    require(candidates.length() <= 24)
+                    LocalCurationBatch(batch.getString("id"), batch.getString("interests"),
+                        (0 until candidates.length()).map { index -> val candidate = candidates.getJSONObject(index)
+                            LocalCurationCandidate(candidate.getString("event_id"), Listing.parse(candidate.getJSONObject("listing"))) })
+                }
             )
         }
     }
@@ -146,6 +167,15 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
     private val linking = MutableStateFlow<String?>(null)
     val deviceLinkUrl = linking.asStateFlow()
     private var linkJob: Job? = null
+    private val localModel = LocalModel(application, viewModelScope)
+    val localModelState = localModel.state
+    private var localCurationJob: Job? = null
+    @Volatile var aiPreferencesEditing = false
+
+    fun downloadLocalModel() { if (!state.value.demo) localModel.download() }
+    fun cancelLocalModelDownload() = localModel.cancelDownload()
+    fun deleteLocalModel() { if (!state.value.demo) localModel.delete() }
+    fun cancelLocalAI() { localCurationJob?.cancel() }
 
     init {
         viewModelScope.launch(Dispatchers.IO) {
@@ -167,7 +197,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
         }}
         val owner=if(preview) "" else secure.get("active-account")
         val saved=if(owner.isBlank()) "" else secure.get("account-$owner")
-        check(owner.isBlank() || saved.isNotBlank()) { "Active account credentials are unavailable" }
+        check(owner.isBlank() || saved.isNotBlank()) { "This profile’s sign-in details are unavailable" }
         val base=File(application.filesDir,if(preview) "preview" else "market")
         if(saved.isNotBlank()) {
             val bundle=JSONObject(saved)
@@ -182,8 +212,33 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
         }
         core?.command(JSONObject().put("type", "set_filter").put("query", "").put("side", "offer").put("ai_search", false).toString())
         refreshSnapshot()
+        if (!preview) {
+            val ai = JSONObject(state.value.settings).optJSONObject("ai") ?: JSONObject()
+            val originalEndpoint = ai.optString("base_url")
+            val originalProvider = ai.optString("provider", "compatible")
+            val legacy = secure.get("ai-$originalProvider")
+            val capture = "ai-legacy-endpoint-$originalProvider"
+            if (legacy.isNotBlank() && secure.get(capture).isBlank()) secure.put(capture, originalEndpoint)
+            if (legacy.isNotBlank() && secure.get(capture) == originalEndpoint && originalEndpoint.isNotBlank()) {
+                val slot = NativePreferences.keySlot(originalProvider, originalEndpoint)
+                if (secure.get(slot).isBlank()) secure.put(slot, legacy)
+            }
+            val initialGeneration = accountGeneration
+            viewModelScope.launch(Dispatchers.IO) {
+                val installed = localModel.verifyInstalled()
+                mutex.withLock {
+                    if (installed && accountGeneration == initialGeneration && !state.value.aiConfigured && !aiPreferencesEditing) {
+                        val settings = JSONObject(state.value.settings)
+                        settings.put("ai", JSONObject().put("enabled", true).put("provider", "litert").put("base_url", "").put("model", LocalModelManifest.ID).put("interests", "").put("curate_feed", false))
+                        core?.command(JSONObject().put("type", "set_settings").put("settings", settings).toString())
+                        refreshSnapshot()
+                    }
+                }
+            }
+        }
     }
     fun signIn(secret: String, done:()->Unit) {
+        cancelLocalAI()
         if(preview||working.value)return
         viewModelScope.launch {
             working.value=true;alert.value=null
@@ -270,12 +325,13 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
         }
     }
     fun closeDeviceLink() {linkJob?.cancel();linkJob=null;linking.value=null}
-    fun setActive(value: Boolean) { active = value }
+    fun setActive(value: Boolean) { active = value; if (!value) cancelLocalAI() }
     private fun refreshSnapshot() { core?.let { mutable.value = MarketSnapshot.parse(it.snapshot()) } }
     fun dismissNotice() { alert.value = null }
     fun command(request: JSONObject, onSuccess: (() -> Unit)? = null) = submit(request, onSuccess, null)
     fun orderCommand(request: JSONObject, onSuccess: () -> Unit = {}, onError: (String) -> Unit) = submit(request, onSuccess, onError)
     private fun submit(request: JSONObject, onSuccess: (() -> Unit)?, onError: ((String) -> Unit)?) {
+        if (request.optString("type") in setOf("set_filter", "set_settings")) cancelLocalAI()
         viewModelScope.launch {
             operationCount += 1; working.value = true
             try {
@@ -299,18 +355,87 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
     fun save(id: String) = command(JSONObject().put("type", "save").put("id", id))
     fun action(type: String) = command(JSONObject().put("type", type))
     fun ai(type: String) {
+        val provider = JSONObject(state.value.settings).optJSONObject("ai")?.optString("provider", "compatible") ?: "compatible"
+        if (provider == "litert") { runLocalCuration(checkOnly = type == "check_ai"); return }
         viewModelScope.launch {
+            operationCount += 1; working.value = true
             try {
-                val provider = JSONObject(state.value.settings).optJSONObject("ai")?.optString("provider", "compatible") ?: "compatible"
-                val key = withContext(Dispatchers.IO) { secure.get("ai-$provider") }
-                command(JSONObject().put("type", type).put("api_key", key))
-            } catch (_: Exception) { alert.value = "Could not unlock the saved provider key." }
+                withContext(Dispatchers.IO) { mutex.withLock {
+                    val app = core ?: error("Not ready")
+                    val settings = JSONObject(MarketSnapshot.parse(app.snapshot()).settings).getJSONObject("ai")
+                    check(settings.optString("provider") == provider) { "Provider changed" }
+                    val key = secure.get(NativePreferences.keySlot(provider, settings.optString("base_url")))
+                    mutable.value = MarketSnapshot.parse(app.command(JSONObject().put("type", type).put("api_key", key).toString()))
+                } }
+            } catch (e: CancellationException) { throw e }
+            catch (_: Exception) { alert.value = "Could not test this provider. Check its settings and try again." }
+            finally { operationCount -= 1; working.value = operationCount > 0 }
+        }
+    }
+
+    private fun runLocalCuration(checkOnly: Boolean) {
+        if (state.value.demo || localCurationJob?.isActive == true) return
+        val previous = localCurationJob
+        localCurationJob = viewModelScope.launch {
+            previous?.join()
+            if (!localModelState.value.available) { alert.value = "Download the on-device model in Settings first."; return@launch }
+            operationCount += 1; working.value = true
+            var batchId: String? = null
+            var generation = -1L
+            try {
+                val batch = withContext(Dispatchers.IO) { mutex.withLock {
+                    generation = accountGeneration
+                    if (checkOnly) LocalCurationBatch("", "wooden dining table", listOf(
+                        LocalCurationCandidate("local-check-table", Listing("local-check-table","","Oak dining table",
+                            "Solid oak dining table, seats six.","offer","80","EUR","","furniture",null,false,false,"active","",null,null)),
+                        LocalCurationCandidate("local-check-shoes", Listing("local-check-shoes","","Running shoes",
+                            "A pair of used running shoes, size 42.","offer","20","EUR","","clothing",null,false,false,"active","",null,null))
+                    )) else {
+                        val app = core ?: error("Not ready")
+                        mutable.value = MarketSnapshot.parse(app.command(JSONObject().put("type", "begin_local_curation").toString()))
+                        state.value.localCuration ?: error("Could not prepare listings")
+                    }
+                } }
+                batchId = batch.id.takeIf { it.isNotEmpty() }
+                if (!checkOnly && batch.candidates.isEmpty()) { alert.value = "No more listings to review."; return@launch }
+                val checkStarted = System.nanoTime()
+                val decisions = withTimeout(270_000) { localModel.classify(batch) }
+                ensureActive()
+                withContext(Dispatchers.IO) { mutex.withLock {
+                    check(accountGeneration == generation) { "Profile changed" }
+                    if (!checkOnly) {
+                        val rows = JSONArray(decisions.map { decision -> JSONObject().put("event_id", decision.eventId)
+                            .put("show", decision.show).put("reason", decision.reason) })
+                        val request = JSONObject().put("type", "apply_local_curation").put("id", batch.id).put("decisions", rows)
+                        mutable.value = MarketSnapshot.parse((core ?: error("Not ready")).command(request.toString()))
+                        batchId = null
+                    }
+                } }
+                if (checkOnly) alert.value = if (decisions.map { it.show } == listOf(true,false)) "Search check passed · %.1f s".format((System.nanoTime()-checkStarted)/1_000_000_000.0)
+                    else "The model missed the search check. Listings remain visible."
+            } catch (e: TimeoutCancellationException) {
+                alert.value = "The model took too long. Listings remain visible."
+            } catch (e: CancellationException) { throw e }
+            catch (_: Exception) { alert.value = "The on-device model could not finish. Listings remain visible." }
+            catch (_: LinkageError) { alert.value = "This model could not load on this device. Listings remain visible." }
+            catch (_: OutOfMemoryError) { alert.value = "Not enough memory for this model. Listings remain visible." }
+            finally {
+                val id = batchId
+                try {
+                    if (id != null) withContext(NonCancellable + Dispatchers.IO) { mutex.withLock {
+                        if (accountGeneration == generation) runCatching {
+                            core?.command(JSONObject().put("type", "cancel_local_curation").put("id", id).toString())
+                            refreshSnapshot()
+                        }
+                    } }
+                } finally { operationCount -= 1; working.value = operationCount > 0 }
+            }
         }
     }
     fun saveSettings(settings: JSONObject, provider: String, apiKey: String, replaceKey: Boolean, done: () -> Unit) {
         viewModelScope.launch {
             try {
-                if (replaceKey) withContext(Dispatchers.IO) { secure.put("ai-$provider", apiKey) }
+                if (replaceKey) withContext(Dispatchers.IO) { secure.put(NativePreferences.keySlot(provider, settings.getJSONObject("ai").optString("base_url")), apiKey) }
                 command(JSONObject().put("type", "set_settings").put("settings", settings), done)
             } catch (_: Exception) { alert.value = "Could not securely save your provider key." }
         }
@@ -344,12 +469,12 @@ data class PublicPerson(val author: String, val name: String, val pictureUrl: St
     }
 }
 data class PublicProfile(val person: PublicPerson, val about: String, val website: String?, val following: List<PublicPerson>, val followingCount: Int,
-    val followers: List<PublicPerson>, val known: List<PublicPerson>, val graphLabel: String, val graphLoaded: Boolean, val coverage: String, val loading: Boolean, val error: String?) {
+    val followers: List<PublicPerson>, val known: List<PublicPerson>, val graphLabel: String, val graphLoaded: Boolean, val coverage: String, val loading: Boolean, val error: String?, val followersLoaded: Boolean = false, val followersLoading: Boolean = false, val followersError: String? = null) {
     companion object {
         fun parse(o: JSONObject): PublicProfile {
             fun people(key: String): List<PublicPerson> { val a = o.optJSONArray(key) ?: return emptyList(); return (0 until a.length()).map { PublicPerson.parse(a.getJSONObject(it)) } }
             return PublicProfile(PublicPerson.parse(o.getJSONObject("person")),o.optString("about"),o.optional("website"),people("following"),o.optInt("following_count"),
-                people("followers"),people("followed_by_known"),o.optString("graph_label"),o.optBoolean("graph_context_loaded"),o.optString("coverage"),o.optBoolean("loading"),o.optional("error"))
+                people("followers"),people("followed_by_known"),o.optString("graph_label"),o.optBoolean("graph_context_loaded"),o.optString("coverage"),o.optBoolean("loading"),o.optional("error"),o.optBoolean("followers_loaded"),o.optBoolean("followers_loading"),o.optional("followers_error"))
         }
     }
 }

@@ -20,8 +20,8 @@ struct ListingDetailView: View {
                         else { ListingPlaceholder(category: current.category) }
                     }.frame(height: 285).clipped().clipShape(RoundedRectangle(cornerRadius: 28))
                     HStack { Text(current.side == "request" ? "BUYING" : current.category.uppercased()).font(.system(size: 10, weight: .bold)).tracking(1.5).foregroundStyle(MarketTheme.green); Spacer(); Text(current.delivery == "queued" ? "Waiting to send" : current.delivery == "failed" ? "Not sent" : "").font(.caption).foregroundStyle(MarketTheme.muted) }
-                    Text(current.title).font(.system(size: 32, weight: .medium, design: .serif)).tracking(-0.7).foregroundStyle(MarketTheme.ink)
-                    HStack { Text(current.formattedPrice).font(.system(size: 28, weight: .semibold, design: .rounded)); Spacer(); Label(current.location.isEmpty ? "Anywhere" : current.location, systemImage: "mappin.circle.fill").font(.system(size: 13)).foregroundStyle(MarketTheme.muted) }.foregroundStyle(MarketTheme.ink)
+                    Text(current.title).font(.system(size: 32, weight: .medium)).tracking(-0.7).foregroundStyle(MarketTheme.ink)
+                    HStack { Text(current.formattedPrice).font(.system(size: 28, weight: .semibold)); Spacer(); Label(current.location.isEmpty ? "Anywhere" : current.location, systemImage: "mappin.circle.fill").font(.system(size: 13)).foregroundStyle(MarketTheme.muted) }.foregroundStyle(MarketTheme.ink)
                     Button { authorProfile = true } label: {
                         UserRow(person: store.snapshot.people[current.author] ?? .unnamed(current.author))
                     }.accessibilityIdentifier("listingAuthor")
@@ -85,7 +85,7 @@ struct NewListingView: View {
                 }
                 Section {
                     if store.demo { Label("Preview mode: publishing is turned off.", systemImage: "eye").font(.system(size: 13)).foregroundStyle(MarketTheme.muted) }
-                    else if !store.snapshot.canSign { Text("Sign in with your account key to publish listings.").font(.system(size: 13)).foregroundStyle(MarketTheme.muted) }
+                    else if !store.snapshot.canSign { Text("Sign in with your profile’s secret key to publish listings.").font(.system(size: 13)).foregroundStyle(MarketTheme.muted) }
                     else { Text("Your listing will be public, and people can contact you privately. Keep exact addresses and private contact details out of your listing.").font(.system(size: 13)).foregroundStyle(MarketTheme.muted) }
                     MarketInlineError()
                     Button { publish() } label: { HStack { Spacer(); if store.busy { ProgressView() } else { Text("Publish listing").fontWeight(.semibold) }; Spacer() }.padding(.vertical, 8) }

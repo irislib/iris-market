@@ -12,7 +12,7 @@ import { CACHE_OPTIONS, DEFAULT_CACHE_MIB } from './map/config.ts'
 export const DEFAULT_PUBLIC_INDEX_REFS = Object.freeze([
   'npub1yscmnnadrmvape0mvgzfx9uyl267klnhzy8znsr6ysl8wtxngpqsnx6dm0/nostr-event-index',
 ])
-const INDEX_KINDS = new Set([0, 3, 5, 7368, 30402, 30405, 30406])
+const INDEX_KINDS = new Set([0, 3, 5, 7368, 30402, 30405, 30406, 31555])
 const ROOT_KINDS = [30064, 30078]
 const MAX_QUERY_BYTES = 16 * 1024 * 1024
 type RootQuery = (filters: Filter[], options?: RuntimeQueryOptions) => Promise<{events:Event[]}>

@@ -33,6 +33,79 @@ impl Store {
         raw.map(|v| serde_json::from_str(&v).context("Read settings"))
             .unwrap_or_else(|| Ok(Settings::default()))
     }
+    /// Existing explicit Off is a choice too; never infer intent from default values.
+    pub fn ai_configured(&self) -> Result<bool> {
+        let raw: Option<String> = self
+            .db
+            .query_row(
+                "SELECT value FROM preferences WHERE key='settings'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(raw
+            .map(|raw| {
+                serde_json::from_str::<serde_json::Value>(&raw)
+                    .map(|value| value.get("ai").is_some())
+            })
+            .transpose()?
+            .unwrap_or(false))
+    }
+    pub fn profile_metadata(&self, owner: &str) -> Result<Option<Event>> {
+        let raw: Option<String> = self
+            .db
+            .query_row(
+                "SELECT value FROM preferences WHERE key=?1",
+                [format!("profile-metadata:{owner}")],
+                |r| r.get(0),
+            )
+            .optional()?;
+        raw.map(|raw| {
+            let event = Event::from_json(raw)?;
+            event.verify()?;
+            anyhow::ensure!(
+                event.kind == nostr::Kind::Metadata && event.pubkey.to_hex() == owner,
+                "Invalid local profile metadata"
+            );
+            Ok(event)
+        })
+        .transpose()
+    }
+    /// Local name and exact publication intent commit together before network work.
+    pub fn queue_profile_metadata(&mut self, event: &Event) -> Result<()> {
+        event.verify()?;
+        anyhow::ensure!(
+            event.kind == nostr::Kind::Metadata,
+            "Expected profile metadata"
+        );
+        let tx = self.db.transaction()?;
+        tx.execute(
+            "INSERT OR REPLACE INTO preferences VALUES (?1,?2)",
+            params![
+                format!("profile-metadata:{}", event.pubkey.to_hex()),
+                event.as_json()
+            ],
+        )?;
+        tx.execute(
+            "INSERT OR REPLACE INTO outbox VALUES (?1,?2)",
+            params![event.id.to_hex(), event.as_json()],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+    pub fn exchange_rates(&self) -> Result<crate::rates::RateBook> {
+        let raw: Option<String> = self.db.query_row("SELECT value FROM preferences WHERE key='exchange_rates' AND length(value)<=262144", [], |row| row.get(0)).optional()?;
+        raw.map(|raw| crate::rates::RateBook::from_cache(&raw, crate::listing::now()))
+            .unwrap_or_else(|| Ok(crate::rates::RateBook::default()))
+    }
+    pub fn save_exchange_rates(&self, book: &crate::rates::RateBook) -> Result<()> {
+        let raw = book.cache_json()?;
+        self.db.execute(
+            "INSERT OR REPLACE INTO preferences VALUES ('exchange_rates', ?1)",
+            [raw],
+        )?;
+        Ok(())
+    }
     pub fn save_settings(&self, settings: &Settings) -> Result<()> {
         self.db.execute(
             "INSERT OR REPLACE INTO preferences VALUES ('settings', ?1)",
@@ -186,6 +259,19 @@ impl Store {
             "INSERT OR REPLACE INTO relevance VALUES (?1,?2,?3)",
             params![coordinate, event_id, serde_json::to_string(decision)?],
         )?;
+        Ok(())
+    }
+    /// A platform response is one batch. A write failure must not persist only
+    /// the first few decisions and hide some listings after an interrupted run.
+    pub fn relevance_batch(&mut self, decisions: &[(String, String, Relevance)]) -> Result<()> {
+        let tx = self.db.transaction()?;
+        for (coordinate, event_id, decision) in decisions {
+            tx.execute(
+                "INSERT OR REPLACE INTO relevance VALUES (?1,?2,?3)",
+                params![coordinate, event_id, serde_json::to_string(decision)?],
+            )?;
+        }
+        tx.commit()?;
         Ok(())
     }
 }

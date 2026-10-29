@@ -184,7 +184,7 @@ impl Messaging {
             .as_ref()
             .is_some_and(|keys| keys.public_key() != owner)
         {
-            return Err("The account key does not match this account".into());
+            return Err("The profile key does not match this profile".into());
         }
         // The existing key remains the at-rest key for legacy profiles. New
         // accounts use their stable device key, independent of owner signing.
@@ -192,14 +192,14 @@ impl Messaging {
         let owner_binding = "market/account-owner-v1";
         match store.get(owner_binding).map_err(storage_error)? {
             Some(stored) if stored != owner.to_hex() => {
-                return Err("Existing conversations belong to a different account".into());
+                return Err("Existing conversations belong to a different profile".into());
             }
             Some(_) => {}
             None => {
                 if owner != device_keys.public_key()
                     && !store.list("").map_err(storage_error)?.is_empty()
                 {
-                    return Err("Existing conversations belong to a different account".into());
+                    return Err("Existing conversations belong to a different profile".into());
                 }
                 store
                     .put(owner_binding, owner.to_hex())
@@ -223,7 +223,7 @@ impl Messaging {
         };
         if let Some(event) = authorization {
             if event.pubkey != owner {
-                return Err("Device authorization belongs to a different account".into());
+                return Err("Device authorization belongs to a different profile".into());
             }
             this.ingest_authorization(event)?;
         }
@@ -245,7 +245,7 @@ impl Messaging {
     ) -> MessagingResult<()> {
         self.require_authorization()?;
         if owner != self.owner {
-            return Err("Device link belongs to a different account".into());
+            return Err("Device link belongs to a different profile".into());
         }
         self.transaction(|this| {
             match this

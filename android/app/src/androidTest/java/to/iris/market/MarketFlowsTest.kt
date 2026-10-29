@@ -1,7 +1,10 @@
 package to.iris.market
 
 import android.content.Intent
+import androidx.test.platform.app.InstrumentationRegistry
+import org.junit.Assume.assumeTrue
 import androidx.compose.ui.test.*
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
@@ -22,6 +25,17 @@ class MarketFlowsTest {
         compose.onNodeWithText("Everything").assertDoesNotExist()
     }
     @After fun close() { activity.close() }
+    private fun capture(name: String) {
+        compose.waitForIdle()
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val directory = java.io.File(instrumentation.targetContext.getExternalFilesDir(null), "native-evidence").apply { mkdirs() }
+        val bitmap = checkNotNull(instrumentation.uiAutomation.takeScreenshot()) { "Could not capture native screen" }
+        try {
+            java.io.File(directory, "$name.png").outputStream().use { output ->
+                check(bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, output))
+            }
+        } finally { bitmap.recycle() }
+    }
 
     @Test fun searchAndSavedListingStayUsable() {
         compose.onNodeWithText("Preview").assertIsDisplayed()
@@ -35,6 +49,8 @@ class MarketFlowsTest {
         compose.onNodeWithContentDescription("Unsave A little more green").performClick()
         compose.onNodeWithText("Browse").performClick()
         compose.onNode(hasSetTextAction()).performTextInput("nothing-will-match-this-phrase")
+        compose.onNodeWithText("A little more green").assertExists()
+        compose.onNode(hasSetTextAction()).performImeAction()
         compose.waitUntil(5_000) { compose.onAllNodesWithText("No matches").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithContentDescription("Clear search").performClick()
         compose.waitUntil(5_000) { compose.onAllNodesWithText("A little more green").fetchSemanticsNodes().isNotEmpty() }
@@ -43,7 +59,13 @@ class MarketFlowsTest {
         compose.onNodeWithText("Buying").performClick().assertIsSelected()
         compose.waitUntil(5_000) { compose.onAllNodesWithText("A ride across town").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("A little more green").assertDoesNotExist()
+        capture("buying-request")
+        if(compose.onAllNodesWithContentDescription("Unsave A ride across town").fetchSemanticsNodes().isNotEmpty()) compose.onNodeWithContentDescription("Unsave A ride across town").performClick()
+        compose.onNodeWithContentDescription("Save A ride across town").performClick()
         compose.onNodeWithText("Saved").performClick()
+        compose.onNodeWithText("A ride across town").assertIsDisplayed()
+        capture("saved-buying-request")
+        compose.onNodeWithContentDescription("Unsave A ride across town").performClick()
         compose.onNodeWithText("Browse").performClick()
         compose.waitUntil(5_000) { compose.onAllNodesWithText("A little more green").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("Selling").assertIsSelected()
@@ -74,13 +96,22 @@ class MarketFlowsTest {
         compose.onNodeWithText("Dark").assertIsSelected()
         compose.onNodeWithText("Light").performClick().assertIsSelected()
         compose.onNodeWithText("System").performClick().assertIsSelected()
-        compose.onNodeWithText("Settings").performClick()
-        compose.onNodeWithText("When you ask for curation, selected public listing text and your interests are sent to this provider. Private conversations are never included.").assertExists()
-        compose.onNodeWithText("Interests").performScrollTo().performTextReplacement("Used furniture and useful weekend work")
-        compose.onNodeWithText("Save settings").performScrollTo().performClick()
-        compose.waitForIdle()
-        compose.onNodeWithText("Settings").performClick()
-        compose.onNodeWithText("Used furniture and useful weekend work").performScrollTo().assertExists()
+        compose.onNode(hasText("Settings") and hasClickAction()).performClick()
+        compose.onNodeWithText("Interests").assertDoesNotExist()
+        compose.onNodeWithText("Save settings").assertDoesNotExist()
+        val providerLabels = NativePreferences.providers.map { it.label }
+        val providerButton = providerLabels.map { hasText(it) }.reduce { left, right -> left or right }
+        compose.onNode(providerButton).performScrollTo().performClick()
+        compose.onAllNodesWithText("Groq · free quota").onLast().performClick()
+        compose.onNode(SemanticsMatcher.keyIsDefined(SemanticsActions.Dismiss)).performSemanticsAction(SemanticsActions.Dismiss) { dismiss -> dismiss() }
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("Settings").fetchSemanticsNodes().size == 1 }
+        compose.onNode(hasText("Settings") and hasClickAction()).performClick()
+        compose.onNodeWithText("Groq · free quota").assertExists()
+        capture("provider-autosaved")
+        compose.onNode(providerButton).performScrollTo().performClick()
+        compose.onAllNodesWithText("On device · Gemma 4").onLast().performClick()
+        compose.onNode(SemanticsMatcher.keyIsDefined(SemanticsActions.Dismiss)).performSemanticsAction(SemanticsActions.Dismiss) { dismiss -> dismiss() }
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("Settings").fetchSemanticsNodes().size == 1 }
     }
     @Test fun profileAndSharedSearchKeepPreviewOffline() {
         compose.onNodeWithText("A little more green").performClick()
@@ -94,4 +125,17 @@ class MarketFlowsTest {
         compose.onNodeWithContentDescription("Show map").assertIsNotEnabled()
         compose.onNodeWithContentDescription("AI search").performClick()
     }
+    @Test fun freshProfileNameEntryDoesNotWaitForRelay() {
+        assumeTrue(InstrumentationRegistry.getArguments().getString("freshProfile") == "1")
+        activity.close()
+        activity=ActivityScenario.launch(Intent(ApplicationProvider.getApplicationContext(),MainActivity::class.java).putExtra("demo",false).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        compose.waitUntil(10_000) { compose.onAllNodesWithText("What should we call you?").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("Your name").performTextInput("Kind Lantern")
+        compose.onNodeWithText("Continue").performClick()
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("What should we call you?").fetchSemanticsNodes().isEmpty() }
+        activity.recreate()
+        compose.waitUntil(10_000) { compose.onAllNodesWithText("Browse").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("What should we call you?").assertDoesNotExist()
+    }
+
 }

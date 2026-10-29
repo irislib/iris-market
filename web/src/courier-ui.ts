@@ -1,14 +1,17 @@
 import {element} from './dom.ts';
 import type {OrderView} from './orders.ts';
+import {setupServiceAreaPicker} from './service-area-ui.ts';
+import {validateServiceArea} from './service-area.ts';
+import type {ServiceAreas} from './service-area.ts';
 
 export type CourierType = 'parcel' | 'passenger' | 'both';
 type CourierSection = 'work' | 'jobs' | 'service';
 export interface CourierListing {
   id:string; author:string; title:string; side:string; category?:string; tags?:readonly string[];
-  location?:string; price?:string|number; currency?:string; status?:string; expiration?:number|null; createdAt?:number;
+  location?:string; price?:string|number; currency?:string; status?:string; expiration?:number|null; createdAt?:number; serviceAreas?:ServiceAreas|null;
 }
 export interface CourierServiceDraft {
-  side:'offer'; category:'transport'; title:string; description:string; location:string; price:''; tags:string[];
+  side:'offer'; category:'transport'; title:string; description:string; location:string; price:''; tags:string[]; serviceAreas:ServiceAreas;
 }
 export interface CourierFeedOptions {
   getListings:()=>readonly CourierListing[];
@@ -27,6 +30,7 @@ interface CourierWorkspaceOptions extends CourierFeedOptions {
   onSignIn:()=>void;
   isPreview?:()=>boolean;
   storage?:Pick<Storage,'getItem'|'setItem'>;
+  createAreaPicker?:typeof setupServiceAreaPicker;
 }
 const preferenceKey='market-courier-type-v1';
 const clean=(value:string)=>value.normalize('NFKC').trim().toLowerCase();
@@ -51,11 +55,14 @@ export function courierListings(listings:readonly CourierListing[], {type='parce
       &&!!kind&&(type==='both'||kind==='both'||kind===type)&&(!place||clean(listing.location??'').includes(place));
   }).sort((a,b)=>(b.createdAt??0)-(a.createdAt??0)||a.id.localeCompare(b.id));
 }
-export function courierServiceDraft(type:CourierType, area:string):CourierServiceDraft {
+export function courierServiceDraft(type:CourierType, area:string,serviceAreas?:ServiceAreas):CourierServiceDraft {
   const location=area.trim();
-  if(!validType(type)||!location||Array.from(location).length>160||/[\u0000-\u001f\u007f]/.test(location))throw new Error('Enter a city or service area.');
-  const title=type==='parcel'?'Parcel delivery':type==='passenger'?'Passenger rides':'Parcel delivery and passenger rides';
-  return {side:'offer',category:'transport',title,description:`${title} in ${location}.`,location,price:'',tags:['courier',...(type!=='passenger'?['parcel']:[]),...(type!=='parcel'?['passenger']:[])]};
+  if(!validType(type)||Array.from(location).length>160||/[\u0000-\u001f\u007f]/.test(location))throw new Error('Enter a valid area name.');
+  if(!serviceAreas?.pickup)throw new Error('Choose a pickup area.');
+  if(!serviceAreas.destination)throw new Error('Choose a destination area.');
+  const checked={pickup:validateServiceArea(serviceAreas.pickup),destination:validateServiceArea(serviceAreas.destination)};
+  const title=type==='parcel'?'Deliveries':type==='passenger'?'Rides':'Deliveries and rides';
+  return {side:'offer',category:'transport',title,description:`${title}${location?` in ${location}`:''}.`,location,price:'',tags:['courier',...(type!=='passenger'?['parcel']:[]),...(type!=='parcel'?['passenger']:[])],serviceAreas:checked};
 }
 export function courierJobs(orders:readonly OrderView[], owner?:string):OrderView[] {
   if(!owner)return[];
@@ -71,20 +78,21 @@ export function orderReviewParticipants(order:OrderView,owner?:string):Array<{pu
 }
 
 /** A view of existing public listings and private jobs; opening it never announces availability or starts GPS. */
-export function setupCourierWorkspace({getListings,getOwner,getOrders,renderOrder,onListing,onAnnounce,onEditListing,renderListing,onReviews,onSignIn,isPreview=()=>false,loadMore,pagination=()=>({}),storage=browserStorage()}:CourierWorkspaceOptions) {
-  const root=element('section',undefined,'courier-workspace'),tabs=element('nav',undefined,'orders-tabs courier-tabs');tabs.setAttribute('aria-label','Courier');
+export function setupCourierWorkspace({getListings,getOwner,getOrders,renderOrder,onListing,onAnnounce,onEditListing,renderListing,onReviews,onSignIn,isPreview=()=>false,loadMore,pagination=()=>({}),storage=browserStorage(),createAreaPicker=setupServiceAreaPicker}:CourierWorkspaceOptions) {
+  const root=element('section',undefined,'courier-workspace'),tabs=element('nav',undefined,'orders-tabs courier-tabs');tabs.setAttribute('aria-label','Transport');
   const controls=element('form',undefined,'courier-controls'),types=element('div',undefined,'segments courier-types');types.setAttribute('role','radiogroup');types.setAttribute('aria-label','Transport type');
   const areaLabel=element('label',undefined,'courier-area'),caption=element('span','Area'),area=element('input');area.type='search';area.maxLength=160;area.placeholder='City or area';area.autocomplete='off';areaLabel.append(caption,area);
-  const submit=element('button','Apply','button secondary');submit.type='submit';controls.append(types,areaLabel,submit);
   const content=element('div',undefined,'courier-content'),notice=element('p','','error small');notice.setAttribute('role','alert');
+  const areaPicker=createAreaPicker({onChange:()=>{notice.textContent='';}});
+  const submit=element('button','Apply','button secondary');submit.type='submit';controls.append(types,areaLabel,areaPicker.element,submit);
   const more=element('button','Load more','button secondary courier-more');more.type='button';more.hidden=true;
   root.append(tabs,controls,notice,content,more);
-  let section:CourierSection='work',type:CourierType='parcel',filterArea='',limit=24,loading=false,destroyed=false,generation=0,previousOwner=getOwner();
+  let section:CourierSection='work',type:CourierType='parcel',filterArea='',limit=24,loading=false,destroyed=false,visible=true,generation=0,previousOwner=getOwner();
   try{const saved=storage?.getItem(preferenceKey);if(validType(saved))type=saved;}catch{/* Session preferences still work. */}
   const buttons=new Map<CourierType,HTMLButtonElement>();
   function paintTypes(){for(const [key,button] of buttons){button.setAttribute('aria-checked',String(type===key));button.classList.toggle('selected',type===key);button.tabIndex=type===key?0:-1;}}
   function chooseType(value:CourierType){type=value;limit=24;try{storage?.setItem(preferenceKey,value);}catch{}paintTypes();refresh();}
-  for(const [key,label] of [['parcel','Parcel'],['passenger','Passenger'],['both','Both']] as const){
+  for(const [key,label] of [['parcel','Deliveries'],['passenger','Rides'],['both','Both']] as const){
     const button=element('button',label);button.type='button';button.setAttribute('role','radio');button.onclick=()=>chooseType(key);
     button.onkeydown=event=>{if(!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End'].includes(event.key))return;event.preventDefault();const keys:CourierType[]=['parcel','passenger','both'],index=keys.indexOf(key),next=event.key==='Home'?0:event.key==='End'?2:(index+(['ArrowRight','ArrowDown'].includes(event.key)?1:2))%3;chooseType(keys[next]);buttons.get(keys[next])?.focus();};
     buttons.set(key,button);types.append(button);
@@ -96,7 +104,7 @@ export function setupCourierWorkspace({getListings,getOwner,getOrders,renderOrde
   controls.onsubmit=event=>{
     event.preventDefault();notice.textContent='';
     if(section==='work'){filterArea=area.value.trim();limit=24;refresh();return;}
-    if(section==='service'&&!isPreview())try{onAnnounce(courierServiceDraft(type,area.value));}catch(cause){notice.textContent=cause.message||'Could not open the listing editor.';}
+    if(section==='service'&&!isPreview())try{onAnnounce(courierServiceDraft(type,area.value,areaPicker.validate()));}catch(cause){notice.textContent=cause.message||'Could not open the listing editor.';}
   };
   function card(listing:CourierListing):HTMLElement {
     if(renderListing)return renderListing(listing);
@@ -107,21 +115,21 @@ export function setupCourierWorkspace({getListings,getOwner,getOrders,renderOrde
   function refresh(){
     if(destroyed)return;
     const owner=getOwner();
-    if(owner!==previousOwner){previousOwner=owner;area.value='';filterArea='';limit=24;notice.textContent='';generation++;}
+    if(owner!==previousOwner){previousOwner=owner;area.value='';filterArea='';areaPicker.setValue(null);limit=24;notice.textContent='';generation++;}
     for(const [key,button] of tabButtons)button.setAttribute('aria-pressed',String(section===key));
-    paintTypes();controls.hidden=section==='jobs';caption.textContent=section==='service'?'Service area':'Area';area.required=section==='service';area.type=section==='service'?'text':'search';submit.textContent=section==='service'?'Offer service':'Apply';submit.disabled=section==='service'&&isPreview();
+    paintTypes();controls.hidden=section==='jobs';caption.textContent=section==='service'?'Area name (optional)':'Area';area.required=false;area.type=section==='service'?'text':'search';submit.textContent=section==='service'?'Offer service':'Apply';submit.disabled=section==='service'&&isPreview();
+    if(section==='service'&&visible&&!isPreview())void areaPicker.show();else areaPicker.hide();
     content.replaceChildren();more.hidden=true;
     if(section==='jobs'){
       if(!owner){const signin=element('button','Sign in to see your jobs','button primary');signin.type='button';signin.onclick=onSignIn;content.append(signin);return;}
       const jobs=courierJobs(getOrders(),owner),list=element('div',undefined,'orders-list');
-      if(!jobs.length)list.append(element('h3','No jobs yet'),element('p','Deliveries assigned to you appear here.','small muted'));
+      if(!jobs.length)list.append(element('h3','No jobs yet'),element('p','Deliveries and rides assigned to you appear here.','small muted'));
       else for(const order of jobs)list.append(renderOrder(order));
       content.append(list);return;
     }
     if(isPreview()){content.append(element('p','Switch to the live market to find work or offer a service.','muted'));return;}
     const rows=courierListings(getListings(),{type,area:section==='work'?filterArea:'',side:section==='service'?'offer':'request',owner});
     if(section==='service'){
-      content.append(element('p','Your service listing and service area will be public.','small muted'));
       if(owner){const reviews=element('button','My reviews','text-button');reviews.type='button';reviews.onclick=()=>onReviews(owner);content.append(reviews);}
       if(rows.length){content.append(element('h3','Your listings'));const list=element('div',undefined,'courier-services');for(const listing of rows){const row=element('div',undefined,'courier-service');row.append(card(listing));if(onEditListing){const edit=element('button','Edit listing','text-button');edit.type='button';edit.onclick=()=>onEditListing(listing);row.append(edit);}list.append(row);}content.append(list);}
       return;
@@ -141,5 +149,5 @@ export function setupCourierWorkspace({getListings,getOwner,getOrders,renderOrde
     finally{loading=false;if(!destroyed)refresh();}
   };
   refresh();
-  return {element:root,refresh,destroy(){destroyed=true;generation++;root.replaceChildren();}};
+  return {element:root,refresh,show(){visible=true;refresh();},hide(){visible=false;areaPicker.hide();},destroy(){destroyed=true;generation++;void areaPicker.destroy();root.replaceChildren();}};
 }

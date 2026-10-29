@@ -53,10 +53,10 @@ final class MarketUITests: XCTestCase {
         XCTAssertFalse(app.buttons["Accept invitation"].isEnabled)
         capture("14-private-invitation")
         app.buttons["Done"].tap()
-        app.buttons["tabAccount"].tap()
-        XCTAssertTrue(app.staticTexts["Account"].waitForExistence(timeout: 5))
+        app.buttons["tabProfile"].tap()
+        XCTAssertTrue(app.staticTexts["Profile"].waitForExistence(timeout: 5))
         app.buttons["aiSettingsRow"].tap()
-        XCTAssertTrue(app.navigationBars["AI settings"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["AI search"].waitForExistence(timeout: 5))
         capture("06-ai-settings")
         app.buttons["Done"].tap()
         let appearance = app.segmentedControls["appearancePicker"]
@@ -70,10 +70,10 @@ final class MarketUITests: XCTestCase {
         app.terminate()
         app.launch()
         XCTAssertTrue(app.staticTexts["Listings"].waitForExistence(timeout: 15))
-        app.buttons["tabAccount"].tap()
+        app.buttons["tabProfile"].tap()
         XCTAssertTrue(app.segmentedControls["appearancePicker"].buttons["Dark"].isSelected)
         app.buttons["aiSettingsRow"].tap()
-        XCTAssertTrue(app.navigationBars["AI settings"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["AI search"].waitForExistence(timeout: 5))
         capture("12-ai-settings-dark")
         app.buttons["Done"].tap()
         app.segmentedControls["appearancePicker"].buttons["Light"].tap()
@@ -90,44 +90,22 @@ final class MarketUITests: XCTestCase {
         XCTAssertEqual(control.value as? String, expected)
     }
 
-    func testValidationErrorAndCurationPreferences() throws {
-        app.buttons["tabAccount"].tap()
+    func testProviderPreferencesAutosaveWithoutCurationControls() throws {
+        app.buttons["tabProfile"].tap()
         app.buttons["aiSettingsRow"].tap()
-        XCTAssertTrue(app.switches["enableAI"].waitForExistence(timeout: 5))
-        // Reset the preview's saved model so this validation check is repeatable.
-        for _ in 0..<4 where !app.textFields["aiModel"].isHittable { app.swipeUp() }
-        let modelField = app.textFields["aiModel"]
-        if let existing = modelField.value as? String, existing != modelField.placeholderValue, !existing.isEmpty {
-            modelField.tap()
-            modelField.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: existing.count) + "\n")
-        }
-        for _ in 0..<4 where !app.switches["enableAI"].isHittable { app.swipeDown() }
-        setSwitch("enableAI", enabled: true)
-        for _ in 0..<4 where !app.buttons["saveAISettings"].isHittable || app.buttons["saveAISettings"].frame.maxY > app.frame.maxY - 80 { app.swipeUp() }
-        app.buttons["saveAISettings"].tap()
-        XCTAssertTrue(app.staticTexts["Choose a model before enabling AI"].firstMatch.waitForExistence(timeout: 5))
-        capture("08-validation-error")
-        if app.alerts.firstMatch.exists { app.alerts.firstMatch.buttons["OK"].tap() }
-        for _ in 0..<4 where !app.textFields["aiModel"].isHittable { app.swipeDown() }
-        app.textFields["aiModel"].tap()
-        app.textFields["aiModel"].typeText("local-preview-model\n")
-        for _ in 0..<4 where !app.switches["curateFeed"].isHittable { app.swipeUp() }
-        setSwitch("curateFeed", enabled: true)
-        for _ in 0..<3 where !app.buttons["saveAISettings"].isHittable || app.buttons["saveAISettings"].frame.maxY > app.frame.maxY - 80 { app.swipeUp() }
-        app.buttons["saveAISettings"].tap()
-        XCTAssertTrue(app.staticTexts["Preferences saved"].waitForExistence(timeout: 5))
-        capture("09-curation-preferences")
+        XCTAssertTrue(app.navigationBars["AI search"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["Save settings"].exists)
+        XCTAssertFalse(app.textFields["Interests"].exists)
+        let provider = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Provider")).firstMatch
+        XCTAssertTrue(provider.waitForExistence(timeout: 5)); provider.tap()
+        app.buttons["Groq · free quota"].tap()
         app.buttons["Done"].tap()
-        app.buttons["tabExplore"].tap()
-        XCTAssertTrue(app.buttons["aiSearchToggle"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons.matching(identifier: "listingOpen").firstMatch.exists)
-        // Unknown relevance remains visible. Preview makes no provider calls.
-        app.buttons["tabAccount"].tap()
         app.buttons["aiSettingsRow"].tap()
-        setSwitch("enableAI", enabled: false)
-        for _ in 0..<4 where !app.buttons["saveAISettings"].isHittable || app.buttons["saveAISettings"].frame.maxY > app.frame.maxY - 80 { app.swipeUp() }
-        app.buttons["saveAISettings"].tap()
-        XCTAssertTrue(app.staticTexts["Preferences saved"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Groq")).firstMatch.waitForExistence(timeout: 5))
+        capture("09-provider-autosaved")
+        app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Provider")).firstMatch.tap()
+        app.buttons["Apple on-device"].tap()
+        app.buttons["Done"].tap()
     }
 
     func testPublicProfilePreviewAndSharedSearchControls() throws {
@@ -149,7 +127,13 @@ final class MarketUITests: XCTestCase {
         ai.tap()
         XCTAssertEqual(ai.value as? String, "On")
         XCTAssertTrue(app.textFields["marketSearch"].exists)
-        XCTAssertFalse(app.buttons["runAISearch"].isEnabled)
+        let searchAction = app.buttons["runAISearch"]
+        if searchAction.label == "Choose model" {
+            XCTAssertTrue(searchAction.isEnabled)
+        } else {
+            XCTAssertEqual(searchAction.label, "Search")
+            XCTAssertFalse(searchAction.isEnabled)
+        }
         capture("16-shared-search")
         ai.tap()
     }
@@ -191,8 +175,8 @@ final class MarketUITests: XCTestCase {
     func testLocalSignInDoesNotWaitForRelay() throws {
         guard ProcessInfo.processInfo.environment["MARKET_LOCAL_SIGNIN_UI_TEST"] == "1" else { throw XCTSkip("Needs the isolated silent local relay") }
         app.terminate(); app.launchArguments = []; app.launch()
-        XCTAssertTrue(app.buttons["tabAccount"].waitForExistence(timeout: 10))
-        app.buttons["tabAccount"].tap()
+        XCTAssertTrue(app.buttons["tabProfile"].waitForExistence(timeout: 10))
+        app.buttons["tabProfile"].tap()
         app.buttons["Sign in"].tap()
         let key = app.secureTextFields["accountSecret"]
         XCTAssertTrue(key.waitForExistence(timeout: 5))
@@ -266,6 +250,8 @@ final class MarketUITests: XCTestCase {
         XCTAssertTrue(search.waitForExistence(timeout: 5))
         search.tap()
         search.typeText("no-such-preview-listing-783")
+        XCTAssertFalse(app.staticTexts["No results"].exists)
+        search.typeText("\n")
         XCTAssertTrue(app.staticTexts["No results"].waitForExistence(timeout: 8))
         app.buttons["Clear search"].tap()
         app.buttons["filterBuying"].tap()
@@ -273,9 +259,29 @@ final class MarketUITests: XCTestCase {
         XCTAssertTrue(app.buttons["filterBuying"].isSelected)
         XCTAssertFalse(app.staticTexts["A little more green"].exists)
         capture("07-requests")
+        let requestSave = app.buttons["Save A ride across town"]
+        let requestUnsave = app.buttons["Unsave A ride across town"]
+        if requestUnsave.exists { requestUnsave.tap() }
+        XCTAssertTrue(requestSave.waitForExistence(timeout: 5)); requestSave.tap()
         app.buttons["tabSaved"].tap()
+        XCTAssertTrue(app.staticTexts["A ride across town"].waitForExistence(timeout: 5))
+        app.buttons["Unsave A ride across town"].tap()
         app.buttons["tabExplore"].tap()
         XCTAssertTrue(app.staticTexts["A little more green"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["filterSelling"].isSelected)
     }
+    /// Release owner supplies an empty isolated store and a silent local relay.
+    func testFreshProfileNameEntryIsLocalFirst() throws {
+        guard ProcessInfo.processInfo.environment["MARKET_FRESH_PROFILE_UI_TEST"] == "1" else { throw XCTSkip("Needs an isolated fresh-profile store") }
+        app.terminate(); app.launchArguments = []; app.launch()
+        XCTAssertTrue(app.textFields["profileName"].waitForExistence(timeout: 10))
+        app.textFields["profileName"].tap(); app.textFields["profileName"].typeText("Kind Lantern")
+        app.buttons["completeProfileName"].tap()
+        XCTAssertTrue(app.buttons["tabProfile"].waitForExistence(timeout: 5))
+        app.terminate(); app.launch()
+        XCTAssertTrue(app.buttons["tabProfile"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.textFields["profileName"].exists)
+        capture("fresh-profile-name-persisted")
+    }
+
 }

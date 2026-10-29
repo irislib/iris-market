@@ -15,10 +15,15 @@ struct MarketSnapshot: Decodable {
     var people: [String: MarketPerson] = [:]
     var profile: PublicMarketProfile?
     var profileListings: ProfileListingPage?
+    var localCuration: LocalCurationBatch?
     var graphContextLoaded = false
     var revision: UInt64 = 0
     var listings: [MarketListing] = []
     var savedCount: Int = 0
+    var savedListings: [MarketListing]?
+    var aiMessage: String?
+    var aiConfigured: Bool?
+    var profileNameRequired: Bool?
     var settings: MarketSettings = .init()
     var conversations: [MarketConversation] = []
     var orders: [MarketOrder] = []
@@ -44,26 +49,73 @@ struct MarketListing: Decodable, Identifiable, Hashable {
     let mine: Bool
     let delivery: String
     let coordinates: [Double]?
+    let serviceAreas: MarketServiceAreas?
+    let displayPrice: MarketDisplayPrice?
     let relevance: Relevance?
     struct Relevance: Decodable, Hashable { let show: Bool; let reason: String }
     var formattedPrice: String {
         guard !price.isEmpty else { return side == "request" ? "Make an offer" : "Ask for price" }
-        if price == "0" { return "Free" }
-        return currency == "EUR" ? "€\(price)" : "\(price) \(currency)"
+        guard let amount = displayPrice?.amount ?? Double(price), amount.isFinite else { return "\(price) \(currency)" }
+        if amount == 0 { return "Free" }
+        let code = (displayPrice?.currency ?? currency).uppercased()
+        let formatter = NumberFormatter()
+        if ["SAT", "SATS", "BTC"].contains(code) {
+            formatter.numberStyle = .decimal; formatter.maximumFractionDigits = code == "BTC" ? 8 : 0
+            return "\(formatter.string(from: NSNumber(value: amount)) ?? String(amount)) \(code == "BTC" ? "BTC" : "sats")\(displayPrice?.stale == true ? " · older rate" : "")"
+        }
+        formatter.numberStyle = .currency; formatter.currencyCode = code
+        return "\(formatter.string(from: NSNumber(value: amount)) ?? "\(amount) \(code)")\(displayPrice?.stale == true ? " · older rate" : "")"
+    }
+}
+
+struct MarketDisplayPrice: Decodable, Hashable {
+    let amount: Double
+    let currency: String
+    let approximate: Bool
+    let source: String?
+    let updatedAt: Int64?
+    let stale: Bool
+}
+
+/// Public, signed coverage geometry. This projection has no identity or private shipment fields.
+struct MarketServiceAreas: Codable, Hashable {
+    let pickup: MarketAreaGeometry
+    let destination: MarketAreaGeometry
+}
+enum MarketAreaGeometry: Codable, Hashable {
+    case polygon([[[Double]]])
+    case multiPolygon([[[[Double]]]])
+    private enum CodingKeys: String, CodingKey { case type, coordinates }
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        switch try values.decode(String.self, forKey: .type) {
+        case "Polygon": self = .polygon(try values.decode([[[Double]]].self, forKey: .coordinates))
+        case "MultiPolygon": self = .multiPolygon(try values.decode([[[[Double]]]].self, forKey: .coordinates))
+        default: throw DecodingError.dataCorruptedError(forKey: .type, in: values, debugDescription: "Invalid service area")
+        }
+    }
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .polygon(let rings): try values.encode("Polygon", forKey: .type); try values.encode(rings, forKey: .coordinates)
+        case .multiPolygon(let polygons): try values.encode("MultiPolygon", forKey: .type); try values.encode(polygons, forKey: .coordinates)
+        }
     }
 }
 
 struct MarketSettings: Codable, Equatable {
-    var relays: [String] = ["wss://relay.damus.io", "wss://nos.lol", "wss://relay.primal.net"]
+    var relays: [String] = ["wss://temp.iris.to", "wss://vault.iris.to", "wss://relay.damus.io", "wss://relay.snort.social", "wss://relay.primal.net", "wss://nos.lol"]
     var ai: AISettings = .init()
     var imageProxy: ImageProxySettings = .init()
+    var currency = "EUR"
     init() {}
-    private enum CodingKeys: String, CodingKey { case relays, ai, imageProxy }
+    private enum CodingKeys: String, CodingKey { case relays, ai, imageProxy, currency }
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         relays = try values.decodeIfPresent([String].self, forKey: .relays) ?? relays
         ai = try values.decodeIfPresent(AISettings.self, forKey: .ai) ?? ai
         imageProxy = try values.decodeIfPresent(ImageProxySettings.self, forKey: .imageProxy) ?? imageProxy
+        currency = try values.decodeIfPresent(String.self, forKey: .currency) ?? currency
     }
 }
 struct ImageProxySettings: Codable, Equatable {
@@ -135,6 +187,9 @@ struct PublicMarketProfile: Decodable {
     let followingCount: Int
     let followingLoaded: Bool
     let followers: [MarketPerson]
+    let followersLoaded: Bool?
+    let followersLoading: Bool?
+    let followersError: String?
     let followedByKnown: [MarketPerson]
     let graphRoot: String
     let graphLabel: String
@@ -150,4 +205,11 @@ struct ProfileListingPage: Decodable {
     let loading: Bool
     let canLoadMore: Bool
     let error: String?
+}
+
+struct LocalCurationBatch: Decodable {
+    let id: String
+    let interests: String
+    let candidates: [Candidate]
+    struct Candidate: Decodable { let listing: MarketListing; let eventId: String }
 }

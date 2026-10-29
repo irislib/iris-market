@@ -19,7 +19,7 @@ export function decodeGeohash(value: unknown): GeohashCell | null {
 
 /** A pin describes the published cell's centre, never an inferred street address. */
 export function locationFromTags(tags: readonly (readonly string[])[]): GeohashCell | null {
-  const cells = tags.filter(tag => tag[0] === 'g').map(tag => decodeGeohash(tag[1])).filter(Boolean)
+  const cells = tags.filter(tag => tag[0] === 'g' && !['pickup','destination'].includes(tag[2])).map(tag => decodeGeohash(tag[1])).filter(Boolean)
   cells.sort((a, b) => b.geohash.length - a.geohash.length || a.geohash.localeCompare(b.geohash))
   return cells[0] ?? null
 }

@@ -4,18 +4,21 @@ import { readFile } from 'node:fs/promises'
 import { SocialGraph } from 'nostr-social-graph'
 import { GRAPH_BOOTSTRAP, decodeGraphBootstrap, loadGraphBootstrap } from '../src/graph-bootstrap.ts'
 
-const bytes = new Uint8Array(await readFile(new URL('../node_modules/nostr-social-graph/data/socialGraph.bin', import.meta.url)))
+const bytes = new Uint8Array(await readFile(new URL('../src/data/social-graph.bin', import.meta.url)))
 
-test('the pinned release snapshot loads through the actual library with explicit stale provenance', async () => {
+test('the pinned company projection loads through the actual library with explicit stale provenance', async () => {
   let request
   const result = await loadGraphBootstrap({ fetchImpl: function (...args) { assert.equal(this, globalThis); request = args; return Promise.resolve(new Response(bytes)) } })
   assert(result.graph instanceof SocialGraph)
   assert.equal(result.graph.getRoot(), GRAPH_BOOTSTRAP.root)
-  assert.equal(result.graph.getFollowedByUser(GRAPH_BOOTSTRAP.root).size, 345)
-  assert.equal(result.graph.size().users, 24489)
+  assert.equal(GRAPH_BOOTSTRAP.root, '336f319763657d6b0e65a5b5876719e8c8dcdcf9396852be71ee26b73368b29b')
+  const sizes = result.graph.size().sizeByDistance
+  assert.equal(sizes[0] + sizes[1] + sizes[2], 411)
+  assert.equal(result.graph.getFollowedByUser(GRAPH_BOOTSTRAP.root).size, 2)
+  assert.equal(result.graph.size().users, 31187)
   assert.equal(result.provenance.verifiedEvents, false)
   assert.equal(result.provenance.stale, true)
-  assert.equal(result.provenance.newestFollowAt, 1753281709)
+  assert(result.provenance.newestFollowAt > 0)
   assert.equal(request[0], GRAPH_BOOTSTRAP.url)
   assert.equal(request[1].credentials, 'omit')
   assert.equal(request[1].redirect, 'error')

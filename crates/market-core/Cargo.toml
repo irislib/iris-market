@@ -3,12 +3,21 @@ name = "iris-market-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
+description = "Marketplace listings, profiles, private messaging and orders for Iris Market"
+repository = "https://github.com/irislib/iris-market"
+homepage = "https://market.iris.to"
+readme = "README.md"
+keywords = ["marketplace", "nostr", "iris", "protocol"]
+categories = ["network-programming"]
 
 [features]
 default = []
 cashu-wallet = ["dep:cashu-service", "dep:zeroize"]
 
 [dependencies]
+async-trait = "=0.1.92"
+chrono = { version = "=0.4.45", default-features = false, features = ["std"] }
 anyhow.workspace = true
 cashu-service = { package = "nvpn-cashu-service", version = "=0.4.10", default-features = false, features = ["wallet"], optional = true }
 cashu = { version = "=0.18.0", default-features = false }

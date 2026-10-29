@@ -78,3 +78,10 @@ test('dispose aborts work and cannot emit or select another context afterward',a
   controller.setIdentity(alice);await turn();controller.dispose();const count=changes.length
   pending.resolve(context(alice,3));controller.observe(context(alice,3));controller.setIdentity(bob);controller.selectContext(custom);await turn();assert.equal(changes.length,count)
 })
+
+test('the corrected company default preserves an explicitly selected personal context', async () => {
+  assert.equal(GRAPH_BOOTSTRAP.root, '336f319763657d6b0e65a5b5876719e8c8dcdcf9396852be71ee26b73368b29b')
+  const controller = createSocialRootController({ initialContext: '4523be58d395b1b196a9b8c82b038b6895cb02b683d0c253a955068dba1facd0', loadContext: async () => context(alice, 0) })
+  controller.setIdentity(alice); await turn()
+  assert.equal(controller.state().root, '4523be58d395b1b196a9b8c82b038b6895cb02b683d0c253a955068dba1facd0'); assert.equal(controller.state().source, 'override'); controller.dispose()
+})

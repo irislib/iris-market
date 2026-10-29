@@ -10,16 +10,20 @@ struct ProfileView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 25) {
-                Text("Account").font(.system(size: 30, weight: .medium, design: .serif)).tracking(-1).foregroundStyle(MarketTheme.ink)
+                Text("Profile").font(.system(size: 30, weight: .medium)).tracking(-1).foregroundStyle(MarketTheme.ink)
                 VStack(spacing: 0) {
                     profileRow("Sign in", symbol: "person.crop.circle.badge.checkmark") { signIn = true }.disabled(store.demo)
                     Divider().padding(.leading, 61)
-                    profileRow("Public profile", symbol: "person.crop.circle.fill") { publicProfile = true }
+                    profileRow("My listings", symbol: "person.crop.circle.fill") { publicProfile = true }
                     Divider().padding(.leading, 61)
                     profileRow("AI settings", subtitle: store.snapshot.settings.ai.enabled ? "Enabled" : "Disabled", symbol: "sparkles") { aiSettings = true }.accessibilityIdentifier("aiSettingsRow")
                     Divider().padding(.leading, 61)
-                    profileRow("Connections & account", symbol: "point.3.connected.trianglepath.dotted") { connectionSettings = true }
+                    profileRow("Connections & profile", symbol: "point.3.connected.trianglepath.dotted") { connectionSettings = true }
                 }.background(MarketTheme.surface.opacity(0.75), in: RoundedRectangle(cornerRadius: 23))
+                Picker("Display currency", selection: Binding(get: { store.snapshot.settings.currency }, set: { value in
+                    var settings = store.snapshot.settings; settings.currency = value
+                    store.saveSettings(settings, key: "", replaceKey: false)
+                })) { ForEach(nativeCurrencyOptions, id: \.self) { Text($0).tag($0) } }.pickerStyle(.menu)
                 VStack(alignment: .leading, spacing: 14) {
                     Label("Appearance", systemImage: "circle.lefthalf.filled").font(.system(size: 14, weight: .semibold)).foregroundStyle(MarketTheme.ink)
                     Picker("Appearance", selection: $appearance) {
@@ -49,37 +53,97 @@ struct AISettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @State var settings: MarketSettings
     @State private var apiKey = ""
-    @State private var saved = false
-    @FocusState private var modelFocused: Bool
+    @State private var replaceKey = false
+    @State private var presetID = "custom"
+    @State private var customModel = false
+    @State private var original: MarketSettings?
+    @State private var initialized = false
+    @State private var owner = ""
+    @State private var autosave: Task<Void, Never>?
+    private var preset: NativeAIProvider { NativeAIProvider.presets.first { $0.id == presetID }! }
+    private var local: Bool { settings.ai.provider == "apple" }
+    private var canSave: Bool {
+        if !settings.ai.enabled || local { return true }
+        guard let url = URL(string: settings.ai.baseUrl), ["https", "http"].contains(url.scheme ?? ""), url.host != nil else { return false }
+        return !settings.ai.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
     var body: some View {
         NavigationStack {
             Form {
                 Section {
-                    Toggle("Enable AI", isOn: $settings.ai.enabled).accessibilityIdentifier("enableAI")
-                } footer: { Text("When you use AI, selected public listing text and your interests are sent to the provider below. Private conversations are never sent. Your API key stays in this device’s secure storage.") }
-                Section("Provider") {
-                    Picker("Provider", selection: $settings.ai.provider) { Text("OpenAI compatible").tag("compatible"); Text("Ollama").tag("ollama"); Text("Anthropic").tag("anthropic") }.accessibilityIdentifier("aiProvider")
-                    TextField("Endpoint URL", text: $settings.ai.baseUrl, prompt: Text("Endpoint URL").foregroundColor(MarketTheme.muted)).marketNoAutocapitalization().autocorrectionDisabled().marketURLKeyboard().accessibilityIdentifier("aiEndpoint")
-                    TextField("Model name", text: $settings.ai.model, prompt: Text("Model name").foregroundColor(MarketTheme.muted)).focused($modelFocused).submitLabel(.done).onSubmit { modelFocused = false }.marketNoAutocapitalization().autocorrectionDisabled().accessibilityIdentifier("aiModel")
-                    SecureField("API key (if required)", text: $apiKey, prompt: Text("API key (if required)").foregroundColor(MarketTheme.muted)).marketNoAutocapitalization().autocorrectionDisabled().accessibilityIdentifier("aiAPIKey")
+                    Toggle("AI search", isOn: $settings.ai.enabled)
+                    Picker("Provider", selection: $presetID) {
+                        ForEach(NativeAIProvider.presets.filter { ["apple", "systemone"].contains($0.id) }) { Text($0.label).tag($0.id) }
+                        Section("Other providers") { ForEach(NativeAIProvider.presets.filter { !["apple", "systemone"].contains($0.id) }) { Text($0.label).tag($0.id) } }
+                    }.pickerStyle(.menu)
+                    if local {
+                        if let reason = OnDeviceAI.unavailableReason { Text(reason).font(.caption).foregroundStyle(MarketTheme.muted) }
+                    } else {
+                        if presetID == "custom" || presetID == "ollama" {
+                            TextField("Service URL", text: $settings.ai.baseUrl).marketNoAutocapitalization().autocorrectionDisabled().marketURLKeyboard()
+                        }
+                        if !preset.models.isEmpty {
+                            Picker("Model", selection: Binding(get: { customModel ? "__custom" : settings.ai.model }, set: { value in customModel = value == "__custom"; if !customModel { settings.ai.model = value } })) {
+                                ForEach(preset.models, id: \.id) { Text($0.label).tag($0.id) }
+                                Text("Custom model").tag("__custom")
+                            }.pickerStyle(.menu)
+                        }
+                        if customModel || preset.models.isEmpty { TextField("Model name", text: $settings.ai.model).marketNoAutocapitalization().autocorrectionDisabled() }
+                        if settings.ai.provider != "ollama" {
+                            SecureField("API key", text: Binding(get: { apiKey }, set: { apiKey = $0; replaceKey = true; scheduleSave() })).marketNoAutocapitalization().autocorrectionDisabled()
+                            if let value = preset.keyURL, let url = URL(string: value) { Link(presetID == "systemone" ? "Service details" : "Get an API key", destination: url) }
+                        }
+                        Text(settings.ai.provider == "ollama" ? "Sends your search and public listing text to your Ollama server. Install the selected model on that server first." : "Sends your search and public listing text to this provider.").font(.caption).foregroundStyle(MarketTheme.muted)
+                        if let value = preset.infoURL, let url = URL(string: value) { Link(presetID == "gemini" ? "Provider terms" : "Models and usage", destination: url).font(.caption) }
+                    }
+                    Button(local ? "Check model" : "Test connection") {
+                        save { if $0 { store.runAI(type: "check_ai") } }
+                    }.disabled(store.busy || !settings.ai.enabled || !canSave || (local && OnDeviceAI.unavailableReason != nil))
+                    if let progress = store.localAIProgress { HStack { ProgressView(); Text(progress).font(.caption); Spacer(); Button("Stop") { store.cancelLocalAI() } } }
+                    if let status = store.localAIStatus { Text(status).font(.caption).foregroundStyle(MarketTheme.muted) }
+                    if let message = store.snapshot.aiMessage { Text(message).font(.caption).foregroundStyle(MarketTheme.muted) }
+                    MarketInlineError()
                 }
-                Section {
-                    TextField("Interests and location (optional)", text: $settings.ai.interests, prompt: Text("Interests and location (optional)").foregroundColor(MarketTheme.muted), axis: .vertical).lineLimit(3...6).accessibilityIdentifier("aiInterests")
-                    Toggle("Curate listings", isOn: $settings.ai.curateFeed).accessibilityIdentifier("curateFeed")
-                } header: { Text("Interests") } footer: { Text("Filter listings by your interests. If AI is unavailable, listings stay visible.") }
-                Section {
-                    Button { save(test: false) } label: { HStack { Spacer(); Text("Save preferences").fontWeight(.semibold); Spacer() }.padding(.vertical, 6) }.accessibilityIdentifier("saveAISettings")
-                    Button { save(test: true) } label: { Label("Save & test connection", systemImage: "checkmark.circle") }.disabled(store.demo || !settings.ai.enabled || settings.ai.model.isEmpty || store.busy)
-                    if saved { Label("Preferences saved", systemImage: "checkmark.circle.fill").foregroundStyle(MarketTheme.green).font(.system(size: 13)) }
-                    if let issue = store.alert { Text(issue).font(.system(size: 13)).foregroundStyle(.red).accessibilityIdentifier("settingsError") }
+            }.scrollContentBackground(.hidden).background(MarketTheme.paper).navigationTitle("AI search").marketInlineTitle()
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { save(); dismiss() } } }
+                .onAppear {
+                    owner = store.snapshot.publicKey; store.aiPreferencesEditing = true
+                    presetID = NativeAIProvider.matching(settings.ai).id
+                    customModel = !preset.models.contains { $0.id == settings.ai.model }
+                    loadKey(); original = settings; initialized = true
                 }
-            }.scrollContentBackground(.hidden).background(MarketTheme.paper).navigationTitle("AI settings").marketInlineTitle()
-                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
-                .onAppear { loadKey() }.onChange(of: settings.ai.provider) { _ in loadKey() }.onChange(of: settings.ai.baseUrl) { _ in loadKey() }
+                .onChange(of: presetID) { value in
+                    guard initialized, let choice = NativeAIProvider.presets.first(where: { $0.id == value }) else { return }
+                    settings.ai.provider = choice.provider; settings.ai.baseUrl = choice.endpoint
+                    settings.ai.model = choice.models.first?.id ?? ""; customModel = choice.models.isEmpty
+                    loadKey(); scheduleSave()
+                }
+                .onChange(of: settings.ai.baseUrl) { _ in if initialized { loadKey() } }
+                .onChange(of: settings) { _ in if initialized { scheduleSave() } }
+                .onDisappear { autosave?.cancel(); save(); store.aiPreferencesEditing = false }
         }
     }
-    private func loadKey() { guard !store.demo else { return }; do { apiKey = try SecureStore.read(SecureStore.aiAccount(settings.ai)) ?? "" } catch { store.alert = error.localizedDescription } }
-    private func save(test: Bool) { store.saveSettings(settings, key: apiKey) { success in saved = success; if success && test { store.runAI(type: "check_ai") } } }
+    private func loadKey() {
+        replaceKey = false
+        apiKey = store.demo ? "" : ((try? SecureStore.read(SecureStore.aiAccount(settings.ai))) ?? "")
+    }
+    private func scheduleSave() {
+        autosave?.cancel()
+        autosave = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 650_000_000)
+            guard !Task.isCancelled else { return }; save()
+        }
+    }
+    private func save(completion: ((Bool) -> Void)? = nil) {
+        autosave?.cancel()
+        guard initialized, canSave, owner == store.snapshot.publicKey else { completion?(false); return }
+        guard settings != original || replaceKey else { completion?(true); return }
+        settings.ai.interests = ""; settings.ai.curateFeed = false
+        let replacing = replaceKey; replaceKey = false
+        store.saveSettings(settings, key: apiKey, replaceKey: replacing) { success in
+            if success { original = settings }; completion?(success)
+        }
+    }
 }
 
 struct ConnectionSettingsView: View {
@@ -90,9 +154,9 @@ struct ConnectionSettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Your account") {
-                    LabeledContent("Identity", value: store.demo ? "Preview account" : "Stored securely on this device")
-                    Button { MarketPlatform.copyToClipboard(store.snapshot.publicKey) } label: { Label("Copy account ID", systemImage: "doc.on.doc") }
+                Section("Your profile") {
+                    LabeledContent("Identity", value: store.demo ? "Preview profile" : "Stored securely on this device")
+                    Button { MarketPlatform.copyToClipboard(store.snapshot.publicKey) } label: { Label("Copy profile ID", systemImage: "doc.on.doc") }
                 }
                 Section("Photos") {
                     Toggle("Use image proxy", isOn: $settings.imageProxy.enabled)
@@ -110,7 +174,7 @@ struct ConnectionSettingsView: View {
                         if let error = profile.error { Text(error).font(.caption).foregroundStyle(.red) }
                     }
                 }
-                Section { TextField("One server URL per line", text: $servers, prompt: Text("One server URL per line").foregroundColor(MarketTheme.muted), axis: .vertical).lineLimit(4...8).font(.system(size: 13, design: .monospaced)).marketNoAutocapitalization().autocorrectionDisabled() } header: { Text("Message servers") } footer: { Text("These servers help your app discover and share public listings over the internet. Nearby device exchange is planned for a later version.") }
+                Section { TextField("One server URL per line", text: $servers, prompt: Text("One server URL per line").foregroundColor(MarketTheme.muted), axis: .vertical).lineLimit(4...8).font(.system(size: 13)).marketNoAutocapitalization().autocorrectionDisabled() } header: { Text("Message servers") } footer: { Text("These servers help your app discover and share public listings over the internet. Nearby device exchange is planned for a later version.") }
                 Section {
                     MarketInlineError()
                     Button("Save connections") {

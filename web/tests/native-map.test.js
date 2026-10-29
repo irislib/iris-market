@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { cleanShipmentProjection, createNativeMapController } from '../src/native-map.ts';
+import { cleanNativeListings, cleanShipmentProjection, createNativeMapController } from '../src/native-map.ts';
+import { serviceAreaCircle } from '../src/service-area.ts';
 
 const route = () => ({ stops: [
   { id: 'pickup', label: 'Pickup', address: 'Shop', coordinates: [24.94, 60.17], status: 'completed' },
@@ -84,4 +85,29 @@ test('listing mode remains separate and preserves valid marker interaction data'
   await control.attach(map);
   assert.deepEqual(map.calls[0],['listings',[{id:'listing',title:'Chair',coordinates:[24,60]}]]);
   assert(!map.calls.some(call=>call[0]==='shipment'));await control.close();
+});
+
+test('native public areas are bounded validated projections, without inferred point pins or private fields', () => {
+  const area = structuredClone(serviceAreaCircle([24.94,60.17],5)), areas = {pickup:area,destination:structuredClone(area)};
+  const input = {id:'courier',title:'Parcel service',serviceAreas:areas,author:'not-forwarded',token:'not-forwarded'};
+  const rows = cleanNativeListings([input]);
+  assert.deepEqual(Object.keys(rows[0]),['id','title','serviceAreas']);
+  assert.deepEqual(rows[0].serviceAreas,areas);assert.equal(rows[0].coordinates,undefined);
+  input.serviceAreas.pickup.coordinates[0][0][0]=0;
+  assert.notEqual(rows[0].serviceAreas.pickup.coordinates[0][0][0],0);
+  const validArea = rows[0].serviceAreas.pickup;
+  for (const bad of [{pickup:validArea},{pickup:validArea,destination:validArea,token:'private'},{pickup:{...validArea,owner:'private'},destination:validArea},null]) {
+    assert.deepEqual(cleanNativeListings([{id:'bad',title:'Bad',serviceAreas:bad}]),[]);
+    assert.deepEqual(cleanNativeListings([{id:'point',title:'Point',coordinates:[24,60],serviceAreas:bad}]),[{id:'point',title:'Point',coordinates:[24,60]}]);
+  }
+});
+
+test('native area projection has a whole-message geometry budget and never enters shipment mode', async () => {
+  const area=serviceAreaCircle([24.94,60.17],5),serviceAreas={pickup:area,destination:area};
+  const rows=cleanNativeListings(Array.from({length:1000},(_,i)=>({id:String(i),title:'Courier',serviceAreas})));
+  assert(rows.length>0 && rows.length<1000);
+  assert(rows.reduce((bytes,row)=>bytes+JSON.stringify(row.serviceAreas).length,0)<=1048576);
+  const control=createNativeMapController({shipmentMode:true}), map=renderer();
+  assert.equal(control.api.setListings,undefined);await control.attach(map);
+  assert(!map.calls.some(([kind])=>kind==='listings'));await control.close();
 });

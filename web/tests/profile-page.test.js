@@ -46,6 +46,31 @@ test('profile page renders cached identity and actions before relay replies with
   await pending;profiles.destroy();
 });
 
+test('metadata arrivals update the open identity without waiting for graph replies or remounting listings',async()=>{
+  const page=new Element('main');let mounts=0;const card=new Element('article');card.textContent='Existing listing';
+  const profiles=setupProfiles({page,getRelays:()=>relays,renderListings(_key,host){mounts++;host.append(card);}});
+  const pending=profiles.open(keys[0],{navigate:false});
+  cacheProfileMetadata(finalizeEvent({kind:0,created_at:Math.floor(Date.now()/1000)+1,tags:[],content:JSON.stringify({name:'Alice arrived'})},secrets[0]),{relays});
+  assert(find(page,'Alice arrived'));assert.equal(find(page,'Existing listing'),card);assert.equal(mounts,1);
+  profiles.close();
+  cacheProfileMetadata(finalizeEvent({kind:0,created_at:Math.floor(Date.now()/1000)+2,tags:[],content:JSON.stringify({name:'Alice after close'})},secrets[0]),{relays});
+  assert(!find(page,'Alice after close'),'a closed profile unsubscribes from metadata');
+  await pending;profiles.destroy();
+});
+
+test('inbound followers start only on explicit selection and stale work cannot cross profiles',async()=>{
+  const page=new Element('main'),requests=[];
+  const profiles=setupProfiles({page,getRelays:()=>relays,getContext:()=>keys[0],loadFollowers:(key,{signal})=>new Promise(resolve=>requests.push({key,signal,resolve}))});
+  const first=profiles.open(keys[0],{navigate:false});await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(requests.length,0,'opening a profile cannot crawl inbound follow lists');
+  find(page,'Followers').click();await new Promise(resolve=>setImmediate(resolve));assert.equal(requests.length,1);
+  find(page,'Followers').click();await new Promise(resolve=>setImmediate(resolve));assert.equal(requests.length,1,'repeated clicks share the pending lookup');
+  const stale=requests[0],second=profiles.open(keys[1],{navigate:false});await new Promise(resolve=>setImmediate(resolve));assert.equal(stale.signal.aborted,true);
+  stale.resolve({items:[],observedCount:0,complete:false,loaded:true,warnings:[]});await new Promise(resolve=>setImmediate(resolve));
+  assert(find(page,'Bob'));assert(find(page,'Followers'));assert(!find(page,'Followers 0'));assert.equal(requests.length,1);
+  profiles.close();await Promise.all([first,second]);profiles.destroy();
+});
+
 test('router navigation callback can reopen silently, and programmatic close does not notify',async()=>{
   const page=new Element('main');let calls=0,closed=0,nested;
   const profiles=setupProfiles({page,getRelays:()=>relays,getContext:()=>keys[0],onNavigate(key){calls++;nested=profiles.open(key,{navigate:false});},onClose(){closed++;}});

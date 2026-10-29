@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { createListingInteractions, createListingOverlay, listingFeatures, mapViewport } from '../src/map/index.ts'
+import { createListingInteractions, createListingOverlay, listingFeatures, listingAreaFeatures, listingMapBounds, listingIntersectsViewport, mapViewport } from '../src/map/index.ts'
 import { GeoJSONVT } from '@maplibre/geojson-vt'
 import { GeoJSONWrapper, fromVectorTileJs } from '@maplibre/vt-pbf'
 import { VectorTile } from '@mapbox/vector-tile'
@@ -30,7 +30,7 @@ function fixture(items = [listing('a'), listing('b', [25, 60.2])]) {
     zoom: 5, features: [], getCanvas: () => canvas, getLayer: () => true, getSource: () => source,
     getZoom() { return this.zoom }, getMaxZoom: () => 18, getBounds: () => bounds, getCenter: () => [25, 60.5],
     on: (name, fn) => handlers.set(name, fn), off: (name, fn) => { if (handlers.get(name) === fn) handlers.delete(name) },
-    queryRenderedFeatures(point, { layers }) { assert.deepEqual(layers, ['market-cluster-count', 'market-clusters', 'market-pins']); return this.features },
+    queryRenderedFeatures(point, { layers }) { assert.deepEqual(layers, ['market-cluster-count', 'market-clusters', 'market-pins', 'market-service-area-outline', 'market-service-area-fill']); return this.features },
     easeTo: value => eases.push(value),
     setFeatureState: (target, state) => featureStates.push({ target, state }),
   }
@@ -103,8 +103,8 @@ test('late cluster results cannot act after listings change or map closes', asyn
 })
 
 test('unchanged overlays do not rebuild the clustering index', () => {
-  const handlers = new Map(), layers = new Set(); let source, writes = 0
-  const map = { on: (name, fn) => handlers.set(name, fn), off() {}, getSource: () => source, addSource(id, options) { source = { ...options, setData() { writes++ } } }, getLayer: id => layers.has(id), addLayer: layer => layers.add(layer.id), setPaintProperty() {} }
+  const handlers = new Map(), layers = new Set(), sources=new Map(); let writes = 0
+  const map = { on: (name, fn) => handlers.set(name, fn), off() {}, getSource: id => sources.get(id), addSource(id, options) { sources.set(id,{ ...options, setData() { writes++ } }) }, getLayer: id => layers.has(id), addLayer: layer => layers.add(layer.id), setPaintProperty() {} }
   const overlay = createListingOverlay(map, [listing('a')]); handlers.get('style.load')(); overlay.setListings([listing('a')]); handlers.get('load')()
   assert.equal(writes, 0); overlay.setListings([listing('b')]); assert.equal(writes, 1); overlay.destroy()
 })
@@ -136,7 +136,7 @@ test('canonical pin identities survive actual vector-tile integer coercion witho
   const features=Array.from({length:decoded.length},(_,i)=>decoded.feature(i))
   assert.deepEqual(features.map(feature=>feature.id),[0,0,123,123])
   let options;const handlers=new Map()
-  const overlay=createListingOverlay({on:(name,fn)=>handlers.set(name,fn),off(){},getSource(){},addSource(_id,value){options=value},getLayer(){},addLayer(){},setPaintProperty(){}},items)
+  const overlay=createListingOverlay({on:(name,fn)=>handlers.set(name,fn),off(){},getSource(){},addSource(id,value){if(id==='market-listings')options=value},getLayer(){},addLayer(){},setPaintProperty(){}},items)
   handlers.get('style.load')();assert.equal(options.promoteId,'id')
   assert.deepEqual(features.map(feature=>feature.properties[options.promoteId]),items.map(item=>item.id))
   const f=fixture(items)
@@ -188,4 +188,56 @@ test('listing layer paint uses a modest hover expansion for pins and clusters', 
     assert.ok(expression[2] > expression[3] && expression[2] <= expression[3] * 1.15)
   }
   overlay.destroy()
+})
+
+const areaBox=(w,s,e,n)=>({type:'Polygon',coordinates:[[[w,s],[e,s],[e,n],[w,n],[w,s]]]})
+const areaListing=(id, pickup=areaBox(24,60,26,61), destination=areaBox(30,60,31,61))=>({id,title:`Area ${id}`,serviceAreas:{pickup,destination}})
+const areaHit=(item,role='pickup')=>({...listingAreaFeatures([item]).features.find(f=>f.properties.role===role),source:'market-service-areas',layer:{id:'market-service-area-fill'}})
+
+test('service areas have separate stable identities and fit bounds without fictional pins',()=>{
+  const item=areaListing('same:id'),features=listingAreaFeatures([item,item]).features
+  assert.equal(features.length,2);assert.equal(listingFeatures([item]).features.length,0)
+  assert.equal(new Set(features.map(f=>f.properties.featureKey)).size,2)
+  assert(features.every(f=>f.properties.id===item.id))
+  assert.deepEqual(listingMapBounds([item,listing('actual-point',[10,50])]),[10,50,31,61])
+  assert.equal(listingAreaFeatures([{...item,serviceAreas:{pickup:item.serviceAreas.pickup,destination:{type:'Point',coordinates:[0,0]}}}]).features.length,0)
+})
+
+test('area and point hits for one listing open one choice anchored at the area click',async()=>{
+  const item=areaListing('same:id'),f=fixture([item,item])
+  f.map.features=[areaHit(item),areaHit(item,'destination'),pin({...item,coordinates:[25,60.5]})]
+  f.handlers.get('click')({point:{x:20,y:20},lngLat:{lng:25.4,lat:60.4}});await tick()
+  assert.deepEqual(f.popups[0].coordinates,[25.4,60.4]);assert.equal(f.popups[0].content.children[1].children.length,1)
+  f.popups[0].content.children[1].children[0].onclick();assert.deepEqual(f.selected,[item]);f.api.destroy()
+})
+
+test('area hover never changes point feature state and switches only the front role',()=>{
+  const item=areaListing('same:id'),f=fixture([item]),pickup=areaHit(item),destination=areaHit(item,'destination')
+  f.hover([pickup,destination]);f.hover([destination,pickup]);f.hover([pin({...item,coordinates:[25,60.5]})])
+  assert.deepEqual(f.featureStates.map(({target,state})=>[target.source,target.id,state.hover]),[
+    ['market-service-areas',pickup.properties.featureKey,true],['market-service-areas',pickup.properties.featureKey,false],
+    ['market-service-areas',destination.properties.featureKey,true],['market-service-areas',destination.properties.featureKey,false],
+    ['market-listings',item.id,true]])
+  f.api.destroy()
+})
+
+test('keyboard choices include intersecting areas but exclude a viewport wholly inside a hole',()=>{
+  const containing=areaListing('containing',areaBox(20,55,30,65),areaBox(40,10,41,11))
+  const crossing=areaListing('crossing',areaBox(10,60.2,40,60.8),areaBox(40,10,41,11))
+  const hole=areaListing('hole',{type:'Polygon',coordinates:[areaBox(20,55,30,65).coordinates[0],areaBox(23,59,27,62).coordinates[0]]},areaBox(40,10,41,11))
+  const f=fixture([containing,crossing,hole,containing])
+  f.canvas.listeners.get('keydown')({target:f.canvas,key:'Enter',preventDefault(){}})
+  const choices=f.popups[0].content.children[1].children
+  assert.deepEqual(choices.map(c=>c.textContent),['Area containing','Area crossing'])
+  const edge=areaListing('date-line-edge',areaBox(179.6,10,179.9,11),areaBox(178,10,179,11))
+  assert.equal(listingIntersectsViewport(edge,{west:179.5,east:-179.5,south:9,north:12,zoom:5}),true)
+  assert.equal(listingIntersectsViewport(edge,{west:-10,east:10,south:9,north:12,zoom:5}),false)
+  f.api.destroy()
+})
+
+test('invalidating a changed area closes its popup and resets only its own hover',async()=>{
+  const item=areaListing('area'),f=fixture([item]);f.hover([areaHit(item)]);await f.click([areaHit(item)])
+  f.api.invalidate();assert.equal(f.popups[0].removed,true)
+  assert.deepEqual(f.featureStates.at(-1),{target:{source:'market-service-areas',id:areaHit(item).properties.featureKey},state:{hover:false}})
+  f.api.destroy()
 })

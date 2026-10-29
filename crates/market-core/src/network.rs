@@ -1,6 +1,6 @@
 use crate::{State, listing};
 use anyhow::{Result, bail};
-use nostr::{Filter, Kind};
+use nostr::{Filter, JsonUtil, Kind, Timestamp};
 use nostr_pubsub::{EventBus, NostrEventSubscriber, QueryOptions};
 use nostr_pubsub_relay::RelayEventBus;
 use std::{
@@ -97,12 +97,18 @@ pub(crate) async fn run(state: Arc<Mutex<State>>, notify: Arc<Notify>, stopped: 
             }
         }
         let mut metadata_queried = std::collections::HashSet::new();
+        let mut buying_request = 0;
         loop {
             if stopped.load(Ordering::Acquire) {
                 break;
             }
             if state.lock().unwrap().settings.relays != relays {
                 break;
+            }
+            let request = state.lock().unwrap().buying_request;
+            if request != buying_request {
+                buying_request = request;
+                backfill_buying(&bus, &state, &relays, request, &stopped).await;
             }
             // These are authors of the public marketplace feed, never inbox peers.
             let authors = {
@@ -121,7 +127,7 @@ pub(crate) async fn run(state: Arc<Mutex<State>>, notify: Arc<Notify>, stopped: 
                     .query(
                         vec![
                             Filter::new()
-                                .kind(Kind::Metadata)
+                                .kinds([Kind::Metadata, Kind::EventDeletion])
                                 .authors(authors.clone())
                                 .limit(128),
                         ],
@@ -132,8 +138,10 @@ pub(crate) async fn run(state: Arc<Mutex<State>>, notify: Arc<Notify>, stopped: 
                 let mut s = state.lock().unwrap();
                 for received in report.events {
                     let event = received.event.into_event();
-                    if event.kind == Kind::Metadata && authors.contains(&event.pubkey) {
-                        let _ = s.profiles.ingest(event);
+                    if matches!(event.kind, Kind::Metadata | Kind::EventDeletion)
+                        && authors.contains(&event.pubkey)
+                    {
+                        let _ = s.profiles.ingest_public(event);
                     }
                 }
                 s.revision += 1;
@@ -175,10 +183,90 @@ pub(crate) async fn run(state: Arc<Mutex<State>>, notify: Arc<Notify>, stopped: 
                 .into();
                 s.revision += 1;
             }
+            if state.lock().unwrap().buying_request != buying_request {
+                continue;
+            }
             tokio::select! { _=notify.notified()=>{}, _=tokio::time::sleep(Duration::from_secs(20))=>{} }
         }
         drop(subscription);
         bus.client().shutdown().await;
+    }
+}
+
+/// An explicit Buying refresh retrieves indexed requests, then a finite legacy
+/// lookback. It never sends a user's search text or imports unsigned fixtures.
+async fn backfill_buying(
+    bus: &RelayEventBus,
+    state: &Arc<Mutex<State>>,
+    relays: &[String],
+    request: u64,
+    stopped: &AtomicBool,
+) {
+    let mut until = None;
+    let mut bytes = 0usize;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(12);
+    for page in 0..5 {
+        {
+            let s = state.lock().unwrap();
+            if stopped.load(Ordering::Acquire)
+                || s.settings.relays != relays
+                || s.buying_request != request
+                || s.side != "request"
+            {
+                return;
+            }
+        }
+        let mut filter = Filter::new()
+            .kind(Kind::Custom(listing::LISTING_KIND))
+            .limit(300);
+        if page == 0 {
+            filter = filter.hashtag(listing::REQUEST_TOPIC);
+        }
+        if let Some(cursor) = until {
+            filter = filter.until(Timestamp::from(cursor));
+        }
+        let Ok(Ok(report)) = tokio::time::timeout_at(
+            deadline,
+            bus.query(vec![filter], QueryOptions { limit: Some(300) }),
+        )
+        .await
+        else {
+            return;
+        };
+        let count = report.events.len();
+        let mut oldest = None;
+        let mut s = state.lock().unwrap();
+        if s.settings.relays != relays || s.buying_request != request || s.side != "request" {
+            return;
+        }
+        for received in report.events.into_iter().take(300) {
+            let event = received.event.as_event();
+            bytes = bytes.saturating_add(event.as_json().len());
+            if bytes > 8 * 1024 * 1024 {
+                return;
+            }
+            oldest = Some(oldest.map_or(event.created_at.as_secs(), |at: u64| {
+                at.min(event.created_at.as_secs())
+            }));
+            if let Ok(true) = s.store.ingest(event, listing::now(), false) {
+                s.revision += 1;
+            }
+        }
+        if page == 0 {
+            continue;
+        }
+        if count < 300 {
+            return;
+        }
+        let Some(oldest) = oldest else {
+            return;
+        };
+        // Inclusive boundary preserves same-second records. Stop if a relay's
+        // dense second prevents progress, rather than skip unseen revisions.
+        if until.is_some_and(|previous| oldest >= previous) {
+            return;
+        }
+        until = Some(oldest);
     }
 }
 

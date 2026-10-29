@@ -4,9 +4,17 @@ import { DEFAULT_RELAYS } from './market.ts';
 import { readProfileMetadata, watchProfileMetadata, type SocialConnection } from './profiles.ts';
 let getRelays = () => DEFAULT_RELAYS, isPreview = () => false, onChange = () => {}, pending = new Set<string>(), attempted = new Map<string,number>(), queued = false, generation = 0;
 let relationshipFor: (key:string)=>SocialConnection|undefined = () => undefined, makeRelationshipBadge: (relation:SocialConnection)=>HTMLElement|null = () => null;
-const watches = new Set<ReturnType<typeof watchProfileMetadata>>();
-interface PeopleOptions { getRelays:()=>string[]; isPreview:()=>boolean; onChange?:()=>void; relationshipFor?:(key:string)=>SocialConnection|undefined; makeRelationshipBadge?:(relation:SocialConnection)=>HTMLElement|null }
-export function setupPeople(options:PeopleOptions) { getRelays = options.getRelays; isPreview = options.isPreview; onChange = options.onChange || (() => {}); relationshipFor = options.relationshipFor || (() => undefined); makeRelationshipBadge = options.makeRelationshipBadge || (() => null); }
+const watches = new Set<ReturnType<typeof watchProfileMetadata>>(), activeKeys=new Set<string>();
+let watchMetadata=watchProfileMetadata,bootstrapGeneration=-1,bootstrapController:AbortController|undefined;
+type BootstrapOptions={relays:readonly string[];signal:AbortSignal;onProgress:()=>void};
+const defaultBootstrap=async(options:BootstrapOptions)=>{const module=await import('./profile-bootstrap.ts');await module.seedProfileMetadata(options);};
+let loadBootstrap=defaultBootstrap;
+function seedProfiles(){
+  if(isPreview()||bootstrapGeneration===generation)return;const run=generation;bootstrapGeneration=run;bootstrapController=new AbortController();
+  void loadBootstrap({relays:getRelays(),signal:bootstrapController.signal,onProgress:()=>{if(run===generation){refreshPeople();onChange();}}}).catch(()=>{/* Live metadata remains available if startup hints cannot load. */});
+}
+interface PeopleOptions { getRelays:()=>string[]; isPreview:()=>boolean; onChange?:()=>void; relationshipFor?:(key:string)=>SocialConnection|undefined; makeRelationshipBadge?:(relation:SocialConnection)=>HTMLElement|null; watchMetadata?:typeof watchProfileMetadata;loadBootstrap?:(options:BootstrapOptions)=>Promise<void> }
+export function setupPeople(options:PeopleOptions) { resetPeople();watchMetadata=options.watchMetadata??watchProfileMetadata;loadBootstrap=options.loadBootstrap??defaultBootstrap;getRelays = options.getRelays; isPreview = options.isPreview; onChange = options.onChange || (() => {}); relationshipFor = options.relationshipFor || (() => undefined); makeRelationshipBadge = options.makeRelationshipBadge || (() => null);seedProfiles(); }
 export const personFor = key => readProfileMetadata(key, { relays: getRelays() });
 export const nameFor = key => personFor(key).name;
 const identicon = key => `data:image/svg+xml,${encodeURIComponent(minidenticon(key, 65, 55))}`;
@@ -43,10 +51,11 @@ function paintRelationship(row:HTMLElement) {
   const badge = makeRelationshipBadge(relation);
   if (badge) { badge.dataset.personRelationship = ''; row.append(badge); }
 }
-export function resetPeople() { generation++; pending.clear(); attempted.clear(); queued = false; for (const watch of watches) watch.close(); watches.clear(); }
+export function resetPeople() { generation++;bootstrapController?.abort();bootstrapController=undefined; pending.clear(); attempted.clear();activeKeys.clear(); queued = false; for (const watch of watches) watch.close(); watches.clear(); }
 export function warmProfiles(keys) {
   if (isPreview()) return;
-  for (const key of keys) if (/^[0-9a-f]{64}$/.test(key) && Date.now() - (attempted.get(key) || 0) > 300000 && pending.size < 512) pending.add(key);
+  seedProfiles();
+  for (const key of keys) if (/^[0-9a-f]{64}$/.test(key) && !activeKeys.has(key) && Date.now() - (attempted.get(key) || 0) > (personFor(key).metadataFound?300000:30000) && pending.size < 512) pending.add(key);
   schedule();
 }
 function schedule() {
@@ -57,13 +66,13 @@ function schedule() {
 function drain(run:number) {
   while (pending.size && watches.size < 8 && generation === run) {
     const batch = [...pending].slice(0, 64);
-    for (const key of batch) { pending.delete(key); attempted.set(key, Date.now()); }
+    for (const key of batch) { pending.delete(key); activeKeys.add(key);attempted.set(key, Date.now()); }
     while (attempted.size > 512) attempted.delete(attempted.keys().next().value);
-    let watch:ReturnType<typeof watchProfileMetadata>;
-    watch = watchProfileMetadata(batch, { relays:getRelays(), onChange() {
+    let watch:ReturnType<typeof watchProfileMetadata>,closed=false;
+    watch = watchMetadata(batch, { relays:getRelays(), onChange() {
       if (generation === run) { refreshPeople(); onChange(); }
-    }, onClose() { watches.delete(watch); if (generation === run) schedule(); } });
-    watches.add(watch);
+    }, onClose() { closed=true;watches.delete(watch);if(generation===run){for(const key of batch)activeKeys.delete(key);schedule();} } });
+    if(!closed)watches.add(watch);
   }
 }
 window.addEventListener('pagehide', resetPeople);

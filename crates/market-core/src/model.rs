@@ -14,6 +14,14 @@ pub struct Draft {
     #[serde(default)]
     pub category: String,
     #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(
+        default,
+        alias = "serviceAreas",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub service_areas: Option<crate::service_area::ServiceAreas>,
+    #[serde(default)]
     pub image_url: Option<String>,
     #[serde(default)]
     pub expires_at: Option<u64>,
@@ -37,8 +45,14 @@ pub struct Listing {
     pub side: String,
     pub price: String,
     pub currency: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_price: Option<crate::rates::DisplayPrice>,
     pub location: String,
     pub category: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_areas: Option<crate::service_area::ServiceAreas>,
     pub image_url: Option<String>,
     pub created_at: u64,
     pub expires_at: Option<u64>,
@@ -95,17 +109,22 @@ pub struct Settings {
     pub relays: Vec<String>,
     pub ai: AiSettings,
     pub image_proxy: ImageProxySettings,
+    pub currency: String,
 }
 impl Default for Settings {
     fn default() -> Self {
         Self {
             relays: vec![
+                "wss://temp.iris.to".into(),
+                "wss://vault.iris.to".into(),
                 "wss://relay.damus.io".into(),
-                "wss://nos.lol".into(),
+                "wss://relay.snort.social".into(),
                 "wss://relay.primal.net".into(),
+                "wss://nos.lol".into(),
             ],
             ai: AiSettings::default(),
             image_proxy: ImageProxySettings::default(),
+            currency: eur(),
         }
     }
 }
@@ -131,8 +150,12 @@ pub struct Conversation {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Snapshot {
+    pub exchange_rates: crate::rates::RateSnapshot,
+    pub local_curation: Option<crate::local_ai::Batch>,
     pub public_key: String,
     pub can_sign: bool,
+    pub ai_configured: bool,
+    pub profile_name_required: bool,
     pub messaging_ready: bool,
     pub live_location_supported: bool,
     pub demo: bool,
@@ -146,6 +169,7 @@ pub struct Snapshot {
     pub revision: u64,
     pub listings: Vec<Listing>,
     pub saved_count: usize,
+    pub saved_listings: Vec<Listing>,
     pub settings: Settings,
     pub conversations: Vec<Conversation>,
     pub orders: Vec<crate::orders::OrderView>,
@@ -181,6 +205,15 @@ pub enum Command {
         author: String,
     },
     LoadContext,
+    LoadProfileFollowers {
+        author: String,
+    },
+    CancelProfileFollowers {
+        author: String,
+    },
+    UpdateProfile {
+        name: String,
+    },
     LoadMoreProfileListings {
         author: String,
     },
@@ -189,6 +222,14 @@ pub enum Command {
     },
     SetSettings {
         settings: Settings,
+    },
+    BeginLocalCuration,
+    ApplyLocalCuration {
+        id: String,
+        decisions: Vec<crate::local_ai::Decision>,
+    },
+    CancelLocalCuration {
+        id: String,
     },
     Curate {
         #[serde(default)]

@@ -1,6 +1,6 @@
 import { verifyEvent, type Event } from 'nostr-tools/pure'
 
-export const TAG_LIMITS=Object.freeze({tags:512,events:2048,perEvent:16,authors:64,pairs:2048,queryTags:8,queryChars:2000})
+export const TAG_LIMITS=Object.freeze({tags:512,events:2048,perEvent:16,authors:64,pairs:2048,queryTags:8,queryChars:2000,literalTags:4,typoTags:2})
 const generic=new Set(['nostr','market','marketplace','forsale','for sale','sale','sell','selling','buy','buying','offer','request','bitcoin','sats'])
 const families=[
   ['electronics','electronic','tech','technology','device','devices','gadget','gadgets','computer','computers','laptop','laptops','macbook','desktop','phone','phones','iphone','smartphone','smartphones','tablet','tablets','ipad','camera','cameras','headphones','audio','speaker','speakers','monitor','monitors','console','gaming','elektroniikka','tietokone','puhelin'],
@@ -12,6 +12,21 @@ const normal=(value:string)=>value.normalize('NFKC').toLowerCase().replace(/^#+/
 const compare=(a:string,b:string)=>a<b?-1:a>b?1:0
 const tokens=(value:string)=>normal(value).split(/[^\p{L}\p{N}]+/u).filter(Boolean)
 const phrase=(query:string,term:string)=>` ${query} `.includes(` ${term} `)
+const stopWords=new Set(['a','an','the','and','or','for','with','to','in','on','at','of','from','by','near','under','over','around','is','are','my','me','i','want','looking','find','show','please','that','can','ja','tai','alle','yli'])
+/** Literal retrieval needs no previously observed inventory or model response. */
+export function literalSearchTags(query:string):string[]{
+  if(typeof query!=='string'||query.length>TAG_LIMITS.queryChars)return[]
+  const words=tokens(query),text=words.join(' ')
+  const valid=(tag:string)=>!!tag&&Array.from(tag).length<=60
+  return [...new Set([...(valid(text)?[text]:[]),...words.filter(word=>valid(word)&&word.length>1&&!/^\d+$/.test(word)&&!stopWords.has(word))])].slice(0,TAG_LIMITS.literalTags)
+}
+function oneEdit(a:string,b:string):boolean {
+  const left=Array.from(a),right=Array.from(b)
+  if(Math.abs(left.length-right.length)>1)return false
+  let i=0,j=0,edits=0
+  while(i<left.length&&j<right.length){if(left[i]===right[j]){i++;j++;continue}if(++edits>1)return false;if(left.length>=right.length)i++;if(right.length>=left.length)j++}
+  return edits+(i<left.length||j<right.length?1:0)===1
+}
 interface Tag {spellings:Map<string,Set<string>>;authors:Set<string>}
 
 /** Ephemeral, bounded public evidence. No queries, identities or browsing history are persisted. */
@@ -27,7 +42,7 @@ export class SeenTags {
       this.events.add(event.id);if(this.events.size>TAG_LIMITS.events)this.events.delete(this.events.values().next().value)
       const selected=new Map<string,string>()
       for(const tag of event.tags){
-        if(tag[0]!=='t'||typeof tag[1]!=='string'||tag[1].length>60||/[\p{C}]/u.test(tag[1]))continue
+        if(tag[0]!=='t'||typeof tag[1]!=='string'||tag[1].startsWith('market:')||tag[1].length>60||/[\p{C}]/u.test(tag[1]))continue
         const key=normal(tag[1]);if(!key||/^\d+$/.test(key)||generic.has(key)||selected.has(key))continue
         if(selected.size>=TAG_LIMITS.perEvent)break
         selected.set(key,tag[1])
@@ -54,16 +69,18 @@ export class SeenTags {
   has(spelling:string):boolean{return this.tags.get(normal(spelling))?.spellings.has(spelling)??false}
   entries(){return [...this.tags].map(([key,entry])=>({tag:key,authors:entry.authors.size,spellings:[...entry.spellings.keys()].sort(compare)})).sort((a,b)=>b.authors-a.authors||compare(a.tag,b.tag))}
   stats(){return{tags:this.tags.size,events:this.events.size,pairs:this.pairs.size}}
-  select(query:string,limit=TAG_LIMITS.queryTags):string[]{
+  select(query:string,limit=TAG_LIMITS.queryTags,extraTags:readonly string[]=[]):string[]{
     if(typeof query!=='string'||query.length>TAG_LIMITS.queryChars||!Number.isInteger(limit)||limit<1||limit>TAG_LIMITS.queryTags)return[]
     const words=tokens(query),text=words.join(' ');if(!text)return[]
+    const literal=literalSearchTags(query).slice(0,limit),requested=new Set(Array.isArray(extraTags)?extraTags.slice(0,TAG_LIMITS.queryTags).filter(tag=>typeof tag==='string'&&tag.length<=60).map(normal):[])
     const groups=families.filter(group=>group.some(term=>phrase(text,normal(term))))
-    const scored=new Map<string,number>()
+    const scored=new Map<string,number>(),typos=new Set<string>()
     for(const [tag] of this.tags){
       const parts=tokens(tag),clean=parts.join(' ')
       const direct=phrase(text,clean)||parts.some(word=>word.length>=3&&words.includes(word))
       const related=groups.some(group=>group.some(term=>phrase(clean,normal(term))))
-      if(direct||related)scored.set(tag,direct?100:60)
+      if(direct||related||requested.has(tag))scored.set(tag,direct?100:requested.has(tag)?90:60)
+      else if(clean.length>=5&&[text,...words].some(word=>word.length>=5&&oneEdit(word,clean))){scored.set(tag,50);typos.add(tag)}
     }
     // At most two weaker expansions, backed by two distinct authors, avoid a
     // single merchant's broad tag list turning every search into all inventory.
@@ -71,12 +88,18 @@ export class SeenTags {
     for(const [pair,authors] of this.pairs){
       if(authors.size<2)continue
       const [a,b]=pair.split('\0')
-      if(scored.has(a)&&!scored.has(b))adjacent.set(b,Math.max(adjacent.get(b)??0,authors.size))
-      if(scored.has(b)&&!scored.has(a))adjacent.set(a,Math.max(adjacent.get(a)??0,authors.size))
+      if((scored.get(a)??0)>=60&&!scored.has(b))adjacent.set(b,Math.max(adjacent.get(b)??0,authors.size))
+      if((scored.get(b)??0)>=60&&!scored.has(a))adjacent.set(a,Math.max(adjacent.get(a)??0,authors.size))
     }
     for(const [tag,count] of [...adjacent].sort((a,b)=>b[1]-a[1]||compare(a[0],b[0])).slice(0,2))scored.set(tag,20+Math.min(20,count))
-    const candidates=[...scored].flatMap(([key,score])=>[...this.tags.get(key)!.spellings].map(([tag,authors])=>({tag,score,authors:authors.size})))
-    return candidates.sort((a,b)=>b.score-a.score||b.authors-a.authors||compare(a.tag,b.tag)).slice(0,limit).map(item=>item.tag)
+    const candidates=[...scored].flatMap(([key,score])=>[...this.tags.get(key)!.spellings].map(([tag,authors])=>({tag,score,authors:authors.size,typo:typos.has(key)})))
+    const selected=[...literal];let typoCount=0
+    for(const item of candidates.sort((a,b)=>b.score-a.score||b.authors-a.authors||compare(a.tag,b.tag))){
+      if(selected.length>=limit)break
+      if(selected.includes(item.tag)||item.typo&&typoCount>=TAG_LIMITS.typoTags)continue
+      selected.push(item.tag);if(item.typo)typoCount++
+    }
+    return selected
   }
 }
 

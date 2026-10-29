@@ -73,7 +73,7 @@ export function setupOrders({ account, isPreview = () => false, onProfile = () =
     clearTimeout(stopped.timeout);
     if (publish && state.status === 'ready' && state.ownerPubkey === stopped.owner) void account.messaging.updateOrder(stopped.orderId, { location: null }).catch(() => {});
   }
-  function changeView(next) { if (next !== 'detail') stopLocation(); view = next; error = ''; if (next !== 'detail') dropMap(); }
+  function changeView(next) { if(next!=='history')courierUI?.hide();if (next !== 'detail') stopLocation(); view = next; error = ''; if (next !== 'detail') dropMap(); }
   function showHistory() { changeView('history'); selected = undefined; render(); if(dialog.open)onNavigate(undefined,tab); }
   function showDetail(order) {
     if (selected !== order.id) { stopLocation(); dropMap(); }
@@ -92,7 +92,7 @@ export function setupOrders({ account, isPreview = () => false, onProfile = () =
   }
   function renderTabs() {
     tabs.hidden = view !== 'history'||!!courier&&tab==='deliveries'; tabs.replaceChildren();
-    for (const [key, label] of [['purchases', 'Purchases'], ['sales', 'Sales'], ['deliveries', 'Courier'], ['archived', 'Archived']]) {
+    for (const [key, label] of [['purchases', 'Purchases'], ['sales', 'Sales'], ['deliveries', 'Transport'], ['archived', 'Archived']]) {
       const button = node('button', label); button.type = 'button'; button.setAttribute('aria-pressed', String(tab === key));
       button.onclick = () => { tab = key; error = ''; render(); if(dialog.open)onNavigate(undefined,tab); }; tabs.append(button);
     }
@@ -102,7 +102,7 @@ export function setupOrders({ account, isPreview = () => false, onProfile = () =
       .sort((a, b) => b.updatedAt - a.updatedAt);
   }
   function renderHistory() {
-    if(tab==='deliveries'&&courierUI){courierUI.refresh();body.append(courierUI.element);return;}
+    if(tab==='deliveries'&&courierUI){body.append(courierUI.element);courierUI.show();return;}
     const rows = filteredOrders();
     if (!rows.length) {
       const empty = node('div', undefined, 'orders-empty');
@@ -294,7 +294,8 @@ export function setupOrders({ account, isPreview = () => false, onProfile = () =
   function render() {
     if (destroyed) return;
     syncUnread();
-    heading.textContent = view === 'review' ? 'Request an order' : view === 'route' ? 'Delivery details' : view === 'detail' ? 'Order details' : tab==='deliveries'?'Courier':'Orders';
+    if(view!=='history'||tab!=='deliveries')courierUI?.hide();
+    heading.textContent = view === 'review' ? 'Request an order' : view === 'route' ? 'Delivery details' : view === 'detail' ? 'Order details' : tab==='deliveries'?'Transport':'Orders';
     back.hidden = view === 'history'; failure.textContent = error; renderTabs();
     const scrollTop = dialog.scrollTop; body.replaceChildren();
     if (view === 'review') renderReview(); else if (view === 'detail') renderDetail(); else if (view === 'route') renderRoute(); else renderHistory();
@@ -312,7 +313,7 @@ export function setupOrders({ account, isPreview = () => false, onProfile = () =
     // Preserve typing while private updates arrive in the background.
     if (dialog.open && !['review', 'route'].includes(view)) render();
   }
-  dialog.addEventListener('close', () => { stopLocation(); dropMap(); syncUnread(); });
+  dialog.addEventListener('close', () => { courierUI?.hide();stopLocation(); dropMap(); syncUnread(); });
   const hidden = () => { syncUnread(); if (document.visibilityState === 'hidden') { stopLocation(); if (dialog.open && view === 'detail') render(); } };
   const focused=()=>{syncUnread();if(dialog.open&&view==='history')render();};
   const uncovered=()=>queueMicrotask(focused);

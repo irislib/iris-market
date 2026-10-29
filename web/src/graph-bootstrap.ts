@@ -1,17 +1,17 @@
 import { assetUrl } from './asset-url.ts'
 import { SocialGraph } from 'nostr-social-graph'
 
-// The installed release tarball is integrity-pinned in package-lock.json. The
-// separate digest below also pins the exact public snapshot shipped to browsers.
+// Deterministic bounded projection of the pinned Iris Nostr company graph.
+// Source and regeneration recipe: data/social-graph.provenance.json.
 export const GRAPH_BOOTSTRAP = Object.freeze({
-  root: '4523be58d395b1b196a9b8c82b038b6895cb02b683d0c253a955068dba1facd0',
+  root: '336f319763657d6b0e65a5b5876719e8c8dcdcf9396852be71ee26b73368b29b',
   url: './social-graph.bin',
   package: 'nostr-social-graph@2.0.4',
-  packagePath: 'node_modules/nostr-social-graph/data/socialGraph.bin',
-  byteLength: 1_182_110,
-  sha256: '6d6ce09dfcc587e4de377a40ced50221568d674705d7e909182390e8edd58d1c',
-  maxUsers: 25_000,
-  maxEdges: 150_000,
+  packagePath: 'src/data/social-graph.bin',
+  byteLength: 1_563_994,
+  sha256: 'df349a23122993183b9b9d2d056b7c655a984bdc86bc72f747202ad772de4d8f',
+  maxUsers: 40_000,
+  maxEdges: 250_000,
 })
 
 export interface GraphBootstrapOptions { root?: string; signal?: AbortSignal }

@@ -29,6 +29,8 @@ test('geohash pins are cell centres, invalid strings ignored, most specific tag 
   assert.deepEqual(locationFromTags([['location', 'Tokyo'], ['g', 'ud'], ['g', 'ud9wr']]), cell)
   for (const input of ['', 'Helsinki', '../u6', 'u60sc!', 'u'.repeat(13), null]) assert.equal(decodeGeohash(input), null)
   assert.equal(locationFromTags([['location', 'Helsinki'], ['g', 'invalid!']]), null)
+  assert.equal(locationFromTags([['g','ud9wr','pickup'],['g','ud9','destination']]),null)
+  assert.deepEqual(locationFromTags([['g','ud9wr','pickup'],['g','ud9','destination'],['g','u6']]),decodeGeohash('u6'))
 })
 
 test('only known immutable roots and relative map asset paths are permitted', () => {
@@ -195,4 +197,24 @@ test('theme replacement restores the latest listings and pin colors exactly once
   overlay.setListings([helsinkiPin])
   map.emit('style.load')
   assert.equal(map.updates, updates)
+})
+
+test('service-area sources update and survive theme replacement without producing point pins',()=>{
+  const area=(w,s,e,n)=>({type:'Polygon',coordinates:[[[w,s],[e,s],[e,n],[w,n],[w,s]]]})
+  const first={id:'courier',title:'Courier',serviceAreas:{pickup:area(24,60,25,61),destination:area(23,61,24,62)}}
+  const changed={...first,serviceAreas:{...first.serviceAreas,destination:area(22,62,23,63)}}
+  const map=overlayMap(),overlay=createListingOverlay(map,[first]);map.emit('style.load')
+  assert.equal(map.getSource('market-listings').data.features.length,0)
+  assert.equal(map.getSource('market-service-areas').promoteId,'featureKey')
+  assert.equal(map.getSource('market-service-areas').data.features.length,2)
+  const unchanged=map.updates;overlay.setListings([first]);assert.equal(map.updates,unchanged)
+  overlay.setListings([changed]);assert.equal(map.updates,unchanged+1)
+  assert.deepEqual(map.getSource('market-service-areas').data.features[1].geometry,changed.serviceAreas.destination)
+  const light=map.getLayer('market-service-area-fill').paint['fill-color']
+  overlay.beginStyleChange(true);map.resetStyle();overlay.setListings([changed]);map.emit('style.load')
+  assert.equal(map.getSource('market-service-areas').data.features.length,2)
+  assert.notDeepEqual(map.getLayer('market-service-area-fill').paint['fill-color'],light)
+  const restored=map.updates;map.emit('load');assert.equal(map.updates,restored)
+  overlay.setListings([]);assert.equal(map.getSource('market-service-areas').data.features.length,0)
+  overlay.destroy()
 })

@@ -12,7 +12,7 @@ struct OrdersView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                Text("Orders").font(.system(size: 30, weight: .medium, design: .serif)).tracking(-1)
+                Text("Orders").font(.system(size: 30, weight: .medium)).tracking(-1)
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         ForEach(MarketOrderList.allCases, id: \.self) { value in
@@ -69,8 +69,8 @@ struct OrderReviewView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 23) {
-                    Text(listing.title).font(.system(size: 30, weight: .medium, design: .serif))
-                    Text(listing.formattedPrice).font(.system(size: 26, weight: .semibold, design: .rounded))
+                    Text(listing.title).font(.system(size: 30, weight: .medium))
+                    Text(listing.formattedPrice).font(.system(size: 26, weight: .semibold))
                     UserRow(person: store.snapshot.people[listing.author] ?? .unnamed(listing.author))
                     Stepper("Quantity: \(quantity)", value: $quantity, in: 1...999).accessibilityIdentifier("orderQuantity")
                     TextField("Note · optional", text: $note, axis: .vertical).lineLimit(3...6).padding(16).background(MarketTheme.surface, in: RoundedRectangle(cornerRadius: 16)).accessibilityIdentifier("orderNote")
@@ -82,7 +82,7 @@ struct OrderReviewView: View {
                             if success { dismiss(); onRequested() }
                         }
                     } label: { if store.busy { ProgressView() } else { Text("Request order") } }
-                        .buttonStyle(PrimaryButton()).disabled(store.demo || store.busy || !store.snapshot.messagingReady).accessibilityIdentifier("requestOrder")
+                        .buttonStyle(PrimaryButton()).disabled(store.demo || store.busy || !store.snapshot.canSign).accessibilityIdentifier("requestOrder")
                 }.padding(24)
             }.background(MarketTheme.paper).foregroundStyle(MarketTheme.ink).navigationTitle("Review order").marketInlineTitle()
                 .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
@@ -102,7 +102,7 @@ struct OrderDetailView: View {
         NavigationStack {
             ScrollView {
                 if let order { detail(order) }
-                else { MarketEmptyState(symbol: "shippingbox.fill", title: "Order unavailable", description: "This order is not available for this account.") }
+                else { MarketEmptyState(symbol: "shippingbox.fill", title: "Order unavailable", description: "This order is not available for this profile.") }
             }.background(MarketTheme.paper).foregroundStyle(MarketTheme.ink).navigationTitle("Order").marketInlineTitle()
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
                 .sheet(isPresented: $editingRoute) { if let order { OrderRouteEditor(order: order).marketSheetScope() } }
@@ -119,9 +119,9 @@ struct OrderDetailView: View {
         let participant = seller || order.buyer == store.snapshot.publicKey
         let other = seller ? order.buyer : order.seller
         VStack(alignment: .leading, spacing: 21) {
-            Text(order.title.isEmpty ? "Order" : order.title).font(.system(size: 30, weight: .medium, design: .serif))
+            Text(order.title.isEmpty ? "Order" : order.title).font(.system(size: 30, weight: .medium))
             HStack { Text(order.statusLabel).fontWeight(.semibold); Spacer(); Text(Date(timeIntervalSince1970: Double(order.createdAt)), format: .dateTime.day().month()).foregroundStyle(MarketTheme.muted) }.font(.system(size: 13))
-            ForEach(order.items) { item in Text("\(item.quantity) × \(item.formattedPrice)").font(.system(size: 22, weight: .semibold, design: .rounded)) }
+            ForEach(order.items) { item in Text("\(item.quantity) × \(item.formattedPrice)").font(.system(size: 22, weight: .semibold)) }
             Button { profile = OrderSelection(id: other) } label: { UserRow(person: store.snapshot.people[other] ?? .unnamed(other), subtitle: seller ? "Buyer" : "Seller") }.buttonStyle(.plain)
             if !order.note.isEmpty { Text(order.note).font(.system(size: 15)).lineSpacing(4) }
             if order.sync == "queued" { Text("Waiting to send").font(.system(size: 12)).foregroundStyle(MarketTheme.muted) }
@@ -133,7 +133,7 @@ struct OrderDetailView: View {
             }
             Divider().overlay(MarketTheme.line)
             HStack {
-                Text("Delivery").font(.system(size: 21, weight: .semibold, design: .serif)); Spacer()
+                Text("Delivery").font(.system(size: 21, weight: .semibold)); Spacer()
                 if seller && !order.terminal && order.status != "requested" { Button("Edit route") { editingRoute = true }.font(.system(size: 13, weight: .semibold)) }
             }
             if !order.terminal, let eta = order.shipment.eta { Text("Expected \(Date(timeIntervalSince1970: Double(eta)).formatted(date: .abbreviated, time: .shortened))").font(.system(size: 13)).foregroundStyle(MarketTheme.muted) }

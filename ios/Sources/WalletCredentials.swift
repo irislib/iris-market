@@ -17,7 +17,7 @@ enum WalletCredentials {
         case invalidIdentity, missingRecoveryKey, invalidRecoveryKey, secureWrite
         var errorDescription: String? {
             switch self {
-            case .invalidIdentity: return "This account could not open its wallet."
+            case .invalidIdentity: return "This profile could not open its wallet."
             case .missingRecoveryKey: return "This wallet needs its recovery key. Its existing funds were preserved."
             case .invalidRecoveryKey: return "The saved wallet recovery key is not valid."
             case .secureWrite: return "The wallet recovery key could not be saved securely."

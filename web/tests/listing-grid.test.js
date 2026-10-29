@@ -2,16 +2,27 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ListingWindow, setupListingGrid } from '../src/listing-grid.ts';
 const items = n => Array.from({length:n}, (_,id) => ({id:String(id),title:String(id)}));
-function streamingGrid(t, loadOlder) {
+function streamingGrid(t, loadOlder, olderState=()=>({hasMore:true})) {
   const saved=Object.getOwnPropertyDescriptor(globalThis,'window');
   globalThis.window={scrollY:0,addEventListener(){},removeEventListener(){}};
   const grid={children:[],setAttribute(){},insertBefore(node,anchor){node.remove();this.children.splice(anchor?this.children.indexOf(anchor):this.children.length,0,node);}};
-  const button={};
-  const view=setupListingGrid({grid,controls:{},button,status:{},cardKey:item=>item.id,olderState:()=>({hasMore:true}),loadOlder,
+  const button={},controls={},status={};
+  const view=setupListingGrid({grid,controls,button,status,cardKey:item=>item.id,olderState,loadOlder,
     makeCard:()=>({dataset:{},remove(){const index=grid.children.indexOf(this);if(index>=0)grid.children.splice(index,1);}})});
   t.after(()=>{view.dispose();if(saved)Object.defineProperty(globalThis,'window',saved);else delete globalThis.window;});
-  return {grid,button,view};
+  return {grid,button,controls,status,view};
 }
+test('existing listings retain an ordinary load-more control after a remote failure',async t=>{
+  let requests=0;const remote={hasMore:false,error:'A server is unavailable'};
+  const {grid,button,status,controls,view}=streamingGrid(t,async()=>{requests++;},()=>remote);
+  view.update(items(3),'profile');assert.equal(grid.children.length,3);assert.equal(controls.hidden,false);assert.equal(button.hidden,false);assert.equal(button.textContent,'Load more');assert.equal(status.textContent,'3 listings shown');
+  await button.onclick();assert.equal(requests,1,'an explicit retry remains available');assert.equal(status.textContent,'3 listings shown');
+});
+test('an empty failed feed offers a concise retry, and arriving listings immediately replace the error',t=>{
+  const {button,status,view}=streamingGrid(t,async()=>{},()=>({hasMore:false,error:'Offline'}));
+  view.update([],'profile');assert.equal(button.textContent,'Try again');assert.equal(status.textContent,'Could not load listings.');
+  view.update(items(1),'profile');assert.equal(button.textContent,'Load more');assert.equal(status.textContent,'1 listing shown');
+});
 test('the next window displays every arriving match before loading finishes',async t=>{
   let finish,requests=0;
   const {grid,button,view}=streamingGrid(t,()=>{requests++;return new Promise(resolve=>{finish=resolve;});});

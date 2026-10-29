@@ -1,5 +1,6 @@
 import { createMarketMap, type MapListing } from './map/index.ts';
 import { setupShipmentMap, type Shipment } from './map/shipment.ts';
+import { validateServiceArea, type ServiceAreas } from './service-area.ts';
 
 interface NativeMapBridge { ready(): void; select?(id: string): void }
 export interface NativeMapController {
@@ -49,8 +50,25 @@ export function cleanShipmentProjection(input: unknown, now = Date.now() / 1000)
   return result;
 }
 export function cleanNativeListings(value: unknown): MapListing[] {
-  return Array.isArray(value) ? value.slice(0, 1000).filter(item => item && typeof item.id === 'string' && item.id.length <= 225 && typeof item.title === 'string' && coordinates(item.coordinates))
-    .map(({id, title, coordinates}) => ({id, title: title.slice(0, 160), coordinates: [...coordinates]})) : [];
+  if (!Array.isArray(value)) return [];
+  let areaBytes = 0;
+  const result: MapListing[] = [];
+  for (const item of value.slice(0, 1000)) {
+    if (!plainObject(item) || typeof item.id !== 'string' || !item.id || item.id.length > 225 || typeof item.title !== 'string') continue;
+    const point = coordinates(item.coordinates) ? [...item.coordinates] : undefined;
+    let serviceAreas: ServiceAreas | undefined;
+    try {
+      if (plainObject(item.serviceAreas) && onlyKeys(item.serviceAreas, ['pickup', 'destination'])) {
+        const areas = { pickup: validateServiceArea(item.serviceAreas.pickup), destination: validateServiceArea(item.serviceAreas.destination) };
+        const size = JSON.stringify(areas).length;
+        // Bound the whole bridge projection as well as each shape. Geometry contains only ASCII numbers/type names.
+        if (areaBytes + size <= 1048576) { serviceAreas = areas; areaBytes += size; }
+      }
+    } catch { /* A malformed area never becomes a guessed point. Valid independent point locations may remain. */ }
+    if (!point && !serviceAreas) continue;
+    result.push({ id: item.id, title: item.title.slice(0, 160), ...(point ? { coordinates: point } : {}), ...(serviceAreas ? { serviceAreas } : {}) });
+  }
+  return result;
 }
 
 /** A mode has one input surface. Private shipments cannot enter public listing layers. */

@@ -7,7 +7,7 @@ struct PaymentMessageView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Image(systemName: "wallet.pass.fill").font(.system(size: 25))
-            Text(payment.formattedAmount).font(.system(size: 24, weight: .semibold, design: .rounded))
+            Text(payment.formattedAmount).font(.system(size: 24, weight: .semibold))
             Text(payment.mintLabel).font(.system(size: 13)).foregroundStyle(MarketTheme.muted)
             Text("Not checked").font(.system(size: 12, weight: .medium)).foregroundStyle(MarketTheme.muted)
             Text("Verify and redeem in your wallet.").font(.system(size: 12)).foregroundStyle(MarketTheme.muted)

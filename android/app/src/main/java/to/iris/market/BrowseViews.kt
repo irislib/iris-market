@@ -36,10 +36,11 @@ import org.json.JSONObject
     var showMap by remember { mutableStateOf(false) }
     var sortMenu by remember { mutableStateOf(false) }
     val ai = remember(state.settings) { JSONObject(state.settings).optJSONObject("ai") }
-    val canCurate = aiSearch && ai?.optBoolean("enabled") == true && state.error == null
+    val localModel by model.localModelState.collectAsState()
+    val localInference = localModel.phase in setOf(LocalModelPhase.VERIFYING, LocalModelPhase.LOADING, LocalModelPhase.REVIEWING)
+    val canCurate = ai?.optBoolean("enabled") == true && state.aiSearch && state.error == null
     val hiddenCount = if (canCurate) state.listings.count { it.relevanceShow == false } else 0
     val visibleListings = if (canCurate && !showAll) state.listings.filter { it.relevanceShow != false } else state.listings
-    LaunchedEffect(query, aiSearch) { delay(280); if (query != state.query || aiSearch != state.aiSearch) model.filter(query, state.side, aiSearch) }
     LazyVerticalGrid(columns = GridCells.Fixed(2), horizontalArrangement = Arrangement.spacedBy(14.dp),
         verticalArrangement = Arrangement.spacedBy(18.dp), contentPadding = PaddingValues(start=22.dp,end=22.dp,bottom=90.dp)) {
         item(span = { GridItemSpan(maxLineSpan) }) {
@@ -49,9 +50,9 @@ import org.json.JSONObject
                     Text("Listings", style = MaterialTheme.typography.headlineMedium)
                     Spacer(Modifier.weight(1f))
                     Box {
-                        TextButton(onClick = { sortMenu = true }) { Text(if(state.sort == "newest") "Newest" else "Suggested") }
+                        IconButton(onClick = { sortMenu = true }) { Icon(Icons.Filled.Sort,"Sort listings",tint=Forest) }
                         DropdownMenu(expanded=sortMenu,onDismissRequest={sortMenu=false}) {
-                            listOf("suggested" to "Suggested", "newest" to "Newest").forEach { (value,label) -> DropdownMenuItem(text={Text(label)},onClick={model.command(JSONObject().put("type","set_sort").put("sort",value));sortMenu=false}) }
+                            listOf("suggested" to "Relevance", "newest" to "Newest").forEach { (value,label) -> DropdownMenuItem(text={Text(label)},onClick={model.command(JSONObject().put("type","set_sort").put("sort",value));sortMenu=false}) }
                         }
                     }
                     IconButton(onClick={showMap=!showMap}, enabled=!state.demo) { Icon(if(showMap) Icons.Filled.GridView else Icons.Filled.Map,if(showMap) "Show grid" else "Show map",tint=Forest) }
@@ -62,7 +63,7 @@ import org.json.JSONObject
                     leadingIcon = { Icon(Icons.Filled.Search, null, tint = Forest) },
                     trailingIcon = { Row {
                         IconToggleButton(checked=aiSearch,onCheckedChange={aiSearch=it;showAll=false}) { Icon(Icons.Filled.AutoAwesome,"AI search",tint=if(aiSearch) Forest else Muted) }
-                        if(query.isNotBlank()) IconButton(onClick={query=""}) { Icon(Icons.Filled.Close,"Clear search") }
+                        if(query.isNotBlank()) IconButton(onClick={query="";model.filter("",state.side)}) { Icon(Icons.Filled.Close,"Clear search") }
                     } },
                     keyboardOptions=KeyboardOptions(imeAction=ImeAction.Search), keyboardActions=KeyboardActions(onSearch={if(aiSearch) model.searchAI(query,state.side) else model.filter(query,state.side)}),
                     singleLine = true, shape = RoundedCornerShape(18.dp), modifier = Modifier.fillMaxWidth(),
@@ -70,13 +71,26 @@ import org.json.JSONObject
                         unfocusedContainerColor = White, focusedContainerColor = White))
                 if(aiSearch) Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
                     Text("AI search",Modifier.weight(1f),color=Muted,style=MaterialTheme.typography.labelSmall)
-                    if(busy) CircularProgressIndicator(Modifier.size(18.dp),strokeWidth=2.dp)
+                    if(busy&&!localInference) CircularProgressIndicator(Modifier.size(18.dp),strokeWidth=2.dp)
                     TextButton(enabled=!busy&&!state.demo&&(ai?.optBoolean("enabled")!=true||query.isNotBlank()),onClick={if(ai?.optBoolean("enabled")==true) model.searchAI(query,state.side) else settings()}) { Text(if(ai?.optBoolean("enabled")==true) "Search" else "Choose model") }
+                }
+                if(localInference) Column(Modifier.fillMaxWidth()) {
+                    if(localModel.phase==LocalModelPhase.REVIEWING && localModel.total>0) {
+                        LinearProgressIndicator(progress={localModel.reviewed.toFloat()/localModel.total},modifier=Modifier.fillMaxWidth())
+                    } else LinearProgressIndicator(modifier=Modifier.fillMaxWidth())
+                    Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
+                        Text(when(localModel.phase) {
+                            LocalModelPhase.VERIFYING -> "Checking model"
+                            LocalModelPhase.LOADING -> "Loading model"
+                            else -> "Reviewing ${localModel.reviewed} of ${localModel.total}"
+                        },Modifier.weight(1f),color=Muted,style=MaterialTheme.typography.bodySmall)
+                        TextButton(onClick=model::cancelLocalAI) { Icon(Icons.Filled.Stop,null,Modifier.size(16.dp));Spacer(Modifier.width(6.dp));Text("Stop") }
+                    }
                 }
                 Spacer(Modifier.height(14.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf("offer" to "Selling", "request" to "Buying").forEach { (value,label) ->
-                        FilterChip(selected = state.side == value, onClick = { model.filter(query, value, aiSearch) }, label = { Text(label) },
+                        FilterChip(selected = state.side == value, onClick = { model.filter(state.query, value, state.aiSearch) }, label = { Text(label) },
                             leadingIcon = if (state.side == value) {{ Icon(Icons.Filled.Check, null, Modifier.size(16.dp)) }} else null,
                             shape = CircleShape, colors = FilterChipDefaults.filterChipColors(selectedContainerColor = Action,
                                 selectedLabelColor = OnInk, selectedLeadingIconColor = OnInk), border = FilterChipDefaults.filterChipBorder(
@@ -112,11 +126,11 @@ import org.json.JSONObject
 
 @Composable fun ListingCard(listing: Listing, demo: Boolean, open: () -> Unit, save: () -> Unit) {
     Column(Modifier.fillMaxWidth().clickable(onClick=open)) {
-        Box(Modifier.fillMaxWidth().aspectRatio(1.13f).clip(RoundedCornerShape(20.dp))) {
+        Box(Modifier.fillMaxWidth().aspectRatio(1f).clip(RoundedCornerShape(20.dp))) {
             ListingArt(listing, demo, Modifier.fillMaxSize())
             IconButton(onClick=save, modifier=Modifier.align(Alignment.TopEnd).padding(7.dp).size(34.dp)
                 .background(White.copy(alpha=.92f),CircleShape)) {
-                Icon(if(listing.saved) Icons.Filled.Bookmark else Icons.Filled.BookmarkBorder,
+                Icon(if(listing.saved) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
                     if(listing.saved) "Unsave ${listing.title}" else "Save ${listing.title}", tint=Ink, modifier=Modifier.size(20.dp))
             }
             if(listing.side == "request") Surface(color=Action, shape=CircleShape,
@@ -143,7 +157,7 @@ import org.json.JSONObject
 }
 
 @Composable fun SavedView(state: MarketSnapshot, model: MarketModel, selected: (Listing)->Unit) {
-    val saved = state.listings.filter { it.saved }
+    val saved = state.savedListings ?: state.listings.filter { it.saved }
     LazyVerticalGrid(columns=GridCells.Fixed(2),horizontalArrangement=Arrangement.spacedBy(14.dp),verticalArrangement=Arrangement.spacedBy(20.dp),
         contentPadding=PaddingValues(start=22.dp,end=22.dp,bottom=90.dp)) {
         item(span={GridItemSpan(maxLineSpan)}) {
@@ -152,7 +166,7 @@ import org.json.JSONObject
             }
         }
         if(saved.isEmpty()) item(span={GridItemSpan(maxLineSpan)}) {
-            EmptyView("No saved listings","Tap the bookmark on a listing to keep it here.",Icons.Filled.Bookmark)
+            EmptyView("No saved listings","Tap the heart on a listing to keep it here.",Icons.Filled.Favorite)
         }
         items(saved,key={it.id}) { item -> ListingCard(item,state.demo,{selected(item)},{model.save(item.id)}) }
     }
@@ -179,7 +193,7 @@ import org.json.JSONObject
         Spacer(Modifier.height(14.dp))
         Row(horizontalArrangement=Arrangement.spacedBy(10.dp)) {
             OutlinedButton(onClick={model.save(listing.id)},modifier=Modifier.weight(1f).height(51.dp),shape=RoundedCornerShape(15.dp)) {
-                Icon(if(listing.saved) Icons.Filled.Bookmark else Icons.Filled.BookmarkBorder,null,Modifier.size(18.dp));Spacer(Modifier.width(6.dp))
+                Icon(if(listing.saved) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,null,Modifier.size(18.dp));Spacer(Modifier.width(6.dp))
                 Text(if(listing.saved) "Saved" else "Save")
             }
             Button(enabled=!busy&&!demo&&!listing.mine,onClick={

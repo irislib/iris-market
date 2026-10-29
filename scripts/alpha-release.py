@@ -155,7 +155,7 @@ def build_cli(args):
     if 'apple-darwin' in target:
         environment['MACOSX_DEPLOYMENT_TARGET'] = '14.0'
     cargo = environment.get('CARGO', 'cargo')
-    subprocess.run([cargo, 'build', '--locked', '--release', '-p', 'iris-market-cli', '--target', target], cwd=ROOT, env=environment, check=True)
+    subprocess.run([cargo, 'build', '--locked', '--release', '-p', 'iris-market', '--target', target], cwd=ROOT, env=environment, check=True)
     cache = Path(environment.get('CARGO_TARGET_DIR', ROOT/'target'))
     if not cache.is_absolute(): cache = ROOT/cache
     binary = cache/target/'release'/('iris-market.exe' if target.endswith('windows-msvc') else 'iris-market')

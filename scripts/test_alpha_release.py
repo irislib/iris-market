@@ -74,6 +74,18 @@ class AlphaContract(unittest.TestCase):
         self.assertIn('--remap-path-prefix='+str(home.resolve())+'=/build/home',flags)
         self.assertNotIn('RUSTFLAGS',result)
 
+    def test_native_release_disables_inherited_compiler_wrappers(self):
+        inherited={'RUSTC_WRAPPER':'/host/cache-wrapper','RUSTC_WORKSPACE_WRAPPER':'/host/workspace-wrapper'}
+        result=native.release_environment(inherited)
+        self.assertEqual(result['RUSTC_WRAPPER'],'')
+        self.assertEqual(result['RUSTC_WORKSPACE_WRAPPER'],'')
+        self.assertEqual(inherited['RUSTC_WRAPPER'],'/host/cache-wrapper')
+        # Explicit empties also override wrappers from user Cargo config when
+        # neither variable was set in the process environment.
+        defaults=native.release_environment({})
+        self.assertEqual(defaults['RUSTC_WRAPPER'],'')
+        self.assertEqual(defaults['RUSTC_WORKSPACE_WRAPPER'],'')
+
     def test_macos_packages_signed_archive_product_not_build_product(self):
         stage=self.root/'stage'; cache=self.root/'cache'
         args=SimpleNamespace(platform='macos-arm64',tag=TAG,build_number=1,output=self.root)

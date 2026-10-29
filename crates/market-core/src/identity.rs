@@ -184,7 +184,7 @@ pub async fn register_device(
     relays: &[String],
 ) -> Result<Event> {
     crate::network::validate_relays(relays)?;
-    let owner = Keys::parse(owner_secret).context("Invalid account secret")?;
+    let owner = Keys::parse(owner_secret).context("Invalid profile secret")?;
     let device = Keys::parse(device_secret).context("Invalid device secret")?;
     let previous = fetch_authorization_complete(relays, owner.public_key()).await?;
     let draft = prepare_registration(

@@ -46,6 +46,8 @@ fn author_subscription_streams_signed_winners_before_eose_and_closes_on_navigati
         currency: "EUR".into(),
         location: "Test".into(),
         category: "Other".into(),
+        tags: Vec::new(),
+        service_areas: None,
         image_url: None,
         expires_at: None,
     };
@@ -147,6 +149,21 @@ fn author_subscription_streams_signed_winners_before_eose_and_closes_on_navigati
     );
     assert_eq!(current["query"], "invisible search");
     assert!(current["listings"].as_array().unwrap().is_empty());
+    assert_eq!(current["profile"]["followers_loaded"], false);
+    assert!(
+        !frames.lock().unwrap().iter().any(|frame| frame[0] == "REQ"
+            && frame[2]["#p"] == json!([author_hex])
+            && frame[2]["kinds"] == json!([3])),
+        "Opening a profile must not fetch followers"
+    );
+    app.command(&json!({"type":"load_profile_followers","author":author_hex}).to_string())
+        .unwrap();
+    wait("explicit followers", || {
+        snapshot(&app)["profile"]["followers_loaded"] == true
+    });
+    assert!(frames.lock().unwrap().iter().any(|frame| frame[0] == "REQ"
+        && frame[2]["#p"] == json!([author_hex])
+        && frame[2]["kinds"] == json!([3])));
     let profile_subs = frames
         .lock()
         .unwrap()

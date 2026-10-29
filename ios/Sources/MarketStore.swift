@@ -18,11 +18,18 @@ final class MarketStore: ObservableObject {
     private let enrollmentQueue = DispatchQueue(label: "to.iris.market.enrollment", qos: .utility)
     private var app: MarketApp?
     private var timer: Timer?
+    private var localAITask: Task<Void, Never>?
+    private var localAIRequest = UUID()
+    @Published private(set) var localAIProgress: String?
+    @Published private(set) var localAIStatus: String?
+    var aiPreferencesEditing = false
+    private var initializingLocalAI = false
     let demo: Bool
 
     init(demo: Bool) { self.demo = demo; open() }
     private func open() {
         let demo = self.demo
+        localAIRequest = UUID(); localAITask?.cancel(); localAITask = nil; localAIProgress = nil; localAIStatus = nil
         let previous = app
         app = nil; ready = false; activeOrderID = nil; stopPolling(); accountGeneration += 1
         let generation = accountGeneration
@@ -57,7 +64,7 @@ final class MarketStore: ObservableObject {
                 let snapshot = try MarketJSON.decoder().decode(MarketSnapshot.self, from: Data(initial.utf8))
                 Task { @MainActor in
                     guard let self, self.accountGeneration == generation else { app.shutdown(); return }
-                    self.app = app; self.snapshot = snapshot; self.ready = true; self.startPolling()
+                    self.app = app; self.snapshot = snapshot; self.ready = true; self.startPolling(); self.offerLocalAIDefault()
                 }
             } catch { Task { @MainActor in self?.alert = marketErrorMessage(error) } }
         }
@@ -101,6 +108,7 @@ final class MarketStore: ObservableObject {
         } catch { alert = marketErrorMessage(error); completion?(false) }
     }
     func filter(query: String, side: String, aiSearch: Bool = false, completion: ((Bool) -> Void)? = nil) {
+        if localAIProgress != nil && (query != snapshot.query || side != snapshot.side || aiSearch != snapshot.aiSearch) { cancelLocalAI() }
         command(["type": "set_filter", "query": query, "side": side, "ai_search": aiSearch], completion: completion)
     }
     func searchAI(query: String, side: String) {
@@ -122,18 +130,85 @@ final class MarketStore: ObservableObject {
     func archiveOrder(_ order: MarketOrder, completion: ((Bool) -> Void)? = nil) {
         command(["type": "archive_order", "order_id": order.id, "archived": !order.archived], completion: completion)
     }
-    func saveSettings(_ settings: MarketSettings, key: String, completion: ((Bool) -> Void)? = nil) {
+    func saveSettings(_ settings: MarketSettings, key: String, replaceKey: Bool = true, completion: ((Bool) -> Void)? = nil) {
+        if localAIProgress != nil { cancelLocalAI() }
         do {
-            if !demo {
+            if !demo && replaceKey {
                 if key.isEmpty { try SecureStore.remove(SecureStore.aiAccount(settings.ai)) }
                 else { try SecureStore.write(key, account: SecureStore.aiAccount(settings.ai)) }
             }
             command(["type": "set_settings", "settings": try MarketJSON.object(settings)], completion: completion)
         } catch { alert = marketErrorMessage(error); completion?(false) }
     }
+    private func offerLocalAIDefault() {
+        guard !demo, snapshot.aiConfigured == false, !aiPreferencesEditing, !initializingLocalAI, OnDeviceAI.unavailableReason == nil else { return }
+        initializingLocalAI = true
+        var settings = snapshot.settings
+        settings.ai.enabled = true; settings.ai.provider = "apple"; settings.ai.baseUrl = ""; settings.ai.model = "apple-system"
+        settings.ai.curateFeed = false; settings.ai.interests = ""
+        saveSettings(settings, key: "", replaceKey: false) { [weak self] _ in self?.initializingLocalAI = false }
+    }
     func runAI(type: String) {
+        guard !busy else { return }
+        if snapshot.settings.ai.provider == "apple" { runOnDeviceAI(check: type == "check_ai"); return }
         do { command(["type": type, "api_key": demo ? "" : try SecureStore.read(SecureStore.aiAccount(snapshot.settings.ai)) ?? ""]) }
         catch { alert = marketErrorMessage(error) }
+    }
+    func cancelLocalAI() {
+        localAIRequest = UUID(); localAITask?.cancel(); localAITask = nil; localAIProgress = nil; localAIStatus = nil
+        if let batch = snapshot.localCuration { command(["type": "cancel_local_curation", "id": batch.id]) }
+    }
+    private func runOnDeviceAI(check: Bool) {
+        guard snapshot.settings.ai.enabled else { alert = "Enable AI in settings first."; return }
+        guard localAITask == nil, localAIProgress == nil else { return }
+        if let reason = OnDeviceAI.unavailableReason { alert = reason; return }
+        localAIStatus = nil
+        let request = UUID(); localAIRequest = request
+        if check {
+            let started = Date()
+            localAIProgress = "Testing on-device model…"
+            localAITask = Task { [weak self] in
+                defer { if self?.localAIRequest == request { self?.localAIProgress = nil; self?.localAITask = nil } }
+                do {
+                    let matched = try await OnDeviceAI.matches(interests: "A bicycle", listing: ["title": "City bicycle", "description": "A working bicycle for sale"])
+                    let mismatched = try await OnDeviceAI.matches(interests: "A bicycle", listing: ["title": "Office desk", "description": "Wooden desk for a home office"])
+                    guard let self, !Task.isCancelled, self.localAIRequest == request else { return }
+                    if matched && !mismatched { self.localAIStatus = String(format: "On-device model ready · %.1f s", Date().timeIntervalSince(started)) }
+                    else { self.alert = "The model ran, but did not pass the relevance check." }
+                } catch { if !Task.isCancelled && self?.localAIRequest == request { self?.alert = "The on-device model could not finish. Listings remain visible." } }
+            }
+            return
+        }
+        let generation = accountGeneration
+        localAIProgress = "Preparing listings…"
+        command(["type": "begin_local_curation"]) { [weak self] success in
+            guard let self, self.localAIRequest == request else { return }
+            guard success, let batch = self.snapshot.localCuration else { self.localAIProgress = nil; return }
+            let started = Date()
+            self.localAITask = Task { [weak self] in
+                defer { if self?.localAIRequest == request { self?.localAIProgress = nil; self?.localAITask = nil } }
+                var decisions: [[String: Any]] = []
+                do {
+                    for (index, candidate) in batch.candidates.enumerated() {
+                        try Task.checkCancellation()
+                        guard Date().timeIntervalSince(started) < 240 else { throw OnDeviceAI.Unavailable(message: "This search took too long.") }
+                        guard let self, self.accountGeneration == generation, self.snapshot.localCuration?.id == batch.id else { return }
+                        self.localAIProgress = "Reviewing \(index + 1) of \(batch.candidates.count)…"
+                        let l = candidate.listing
+                        let show = try await OnDeviceAI.matches(interests: batch.interests, listing: ["title": l.title, "description": String(l.description.prefix(2000)), "side": l.side, "price": l.price, "currency": l.currency, "location": l.location, "category": l.category])
+                        decisions.append(["event_id": candidate.eventId, "show": show, "reason": show ? "Matches your search" : "Does not match your search"])
+                    }
+                    guard let self, !Task.isCancelled, self.accountGeneration == generation, self.snapshot.localCuration?.id == batch.id else { return }
+                    self.command(["type": "apply_local_curation", "id": batch.id, "decisions": decisions])
+                } catch {
+                    guard let self, self.accountGeneration == generation else { return }
+                    let wasCancelled = Task.isCancelled
+                    self.command(["type": "cancel_local_curation", "id": batch.id]) { _ in
+                        if !wasCancelled && self.localAIRequest == request { self.alert = "The on-device model could not finish. Listings remain visible." }
+                    }
+                }
+            }
+        }
     }
     func signIn(secret: String, completion: @escaping (Bool) -> Void) {
         guard !demo, !busy else { return }

@@ -18,6 +18,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.delay
+import androidx.compose.ui.platform.LocalUriHandler
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -67,7 +69,7 @@ import org.json.JSONObject
         if(state.demo) Surface(color=Sand,shape=RoundedCornerShape(14.dp)) {
             Text("This is Preview. Switch to your live market to publish a listing.",Modifier.padding(14.dp),style=MaterialTheme.typography.bodySmall)
         } else Text("This listing will be public. Keep personal contact details and exact addresses out of the description.",color=Muted,style=MaterialTheme.typography.bodySmall)
-        if(!state.demo && !state.canSign) Text("Sign in with your account key to publish listings.",color=Muted,style=MaterialTheme.typography.bodySmall)
+        if(!state.demo && !state.canSign) Text("Sign in with your profile’s secret key to publish listings.",color=Muted,style=MaterialTheme.typography.bodySmall)
         Button(enabled=!state.demo && state.canSign && !busy && title.isNotBlank() && description.isNotBlank(),onClick={confirmPublish=true},modifier=Modifier.fillMaxWidth().height(54.dp),shape=RoundedCornerShape(16.dp)) {
             Text(if(busy) "Publishing…" else "Publish listing")
         }
@@ -85,6 +87,7 @@ import org.json.JSONObject
 }
 
 @Composable fun SettingsView(state:MarketSnapshot,model:MarketModel,busy:Boolean,done:()->Unit) {
+    val localModel by model.localModelState.collectAsState()
     val initial=remember { JSONObject(state.settings) }
     val clipboard=LocalClipboardManager.current
     val imageProxy=remember { initial.optJSONObject("image_proxy") ?: JSONObject() }
@@ -95,52 +98,102 @@ import org.json.JSONObject
     var provider by remember { mutableStateOf(ai.optString("provider","compatible")) }
     var endpoint by remember { mutableStateOf(ai.optString("base_url","https://api.openai.com/v1")) }
     var modelName by remember { mutableStateOf(ai.optString("model")) }
-    var interests by remember { mutableStateOf(ai.optString("interests")) }
-    var curate by remember { mutableStateOf(ai.optBoolean("curate_feed")) }
+    var currency by remember { mutableStateOf(initial.optString("currency", "EUR")) }
+    var currencyMenu by remember { mutableStateOf(false) }
+    var presetID by remember { mutableStateOf(NativePreferences.matching(provider, endpoint).id) }
+    val preset = NativePreferences.providers.first { it.id == presetID }
+    var modelMenu by remember { mutableStateOf(false) }
+    var customModel by remember { mutableStateOf(preset.models.none { it.first == modelName }) }
+    val uri = LocalUriHandler.current
     var key by remember { mutableStateOf("") };var replaceKey by remember { mutableStateOf(false) }
     var providerMenu by remember { mutableStateOf(false) };var advanced by remember { mutableStateOf(false) }
     var servers by remember { mutableStateOf((initial.optJSONArray("relays") ?: JSONArray()).let { a -> (0 until a.length()).joinToString("\n"){a.getString(it)} }) }
     val settings={ JSONObject(initial.toString()).put("ai",JSONObject().put("enabled",enabled).put("provider",provider)
-        .put("base_url",endpoint.trim()).put("model",modelName.trim()).put("interests",interests.trim()).put("curate_feed",curate))
+        .put("base_url",if(provider=="litert") "" else endpoint.trim()).put("model",if(provider=="litert") LocalModelManifest.ID else modelName.trim()).put("interests", "").put("curate_feed",false))
+        .put("currency", currency)
         .put("relays",JSONArray(servers.lines().map{it.trim()}.filter{it.isNotEmpty()}))
         .put("image_proxy",JSONObject(imageProxy.toString()).put("enabled",proxyEnabled).put("url",proxyURL.trim())) }
+    val settingsJSON = settings().toString()
+    val originalSettingsJSON = remember { settingsJSON }
+    val owner = remember { state.publicKey }
+    val latestSave by rememberUpdatedState(newValue = { if(owner == model.state.value.publicKey && (settingsJSON != originalSettingsJSON || replaceKey)) model.saveSettings(settings(), provider, key, replaceKey) {} })
+    DisposableEffect(Unit) { model.aiPreferencesEditing = true; onDispose { latestSave(); model.aiPreferencesEditing = false } }
+    LaunchedEffect(settingsJSON, key, replaceKey) { delay(650); if(settingsJSON != originalSettingsJSON || replaceKey) { latestSave(); replaceKey = false } }
     Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).imePadding().padding(horizontal=24.dp).padding(bottom=30.dp),verticalArrangement=Arrangement.spacedBy(14.dp)) {
         Row(verticalAlignment=Alignment.CenterVertically) {
             Icon(Icons.Filled.Settings,null,tint=Forest);Spacer(Modifier.width(10.dp));Text("Settings",style=MaterialTheme.typography.titleLarge,fontWeight=FontWeight.SemiBold)
         }
         Row(verticalAlignment=Alignment.CenterVertically) {
-            Text("Enable AI assistance",modifier=Modifier.weight(1f),fontWeight=FontWeight.Medium)
+            Text("AI search",modifier=Modifier.weight(1f),fontWeight=FontWeight.Medium)
             Switch(checked=enabled,onCheckedChange={enabled=it})
         }
         Surface(color=Mint,shape=RoundedCornerShape(16.dp)) {
-            Text("When you ask for curation, selected public listing text and your interests are sent to this provider. Private conversations are never included.",
+            Text(if(provider=="litert") "Listing searches run on this device. No cloud fallback." else "Sends your search and public listing text to this provider.",
                 Modifier.padding(16.dp),style=MaterialTheme.typography.bodySmall)
         }
         Box {
             OutlinedButton(onClick={providerMenu=true},modifier=Modifier.fillMaxWidth().height(52.dp),shape=RoundedCornerShape(14.dp)) {
-                Text(when(provider){"ollama"->"Ollama";"anthropic"->"Anthropic";else->"OpenAI-compatible"})
+                Text(preset.label)
                 Spacer(Modifier.weight(1f));Icon(Icons.Filled.ExpandMore,null)
             }
             DropdownMenu(expanded=providerMenu,onDismissRequest={providerMenu=false}) {
-                listOf("compatible" to "OpenAI-compatible","ollama" to "Ollama","anthropic" to "Anthropic").forEach { (p,label) ->
-                    DropdownMenuItem(text={Text(label)},onClick={provider=p;providerMenu=false;key="";replaceKey=false
-                        endpoint=when(p){"ollama"->"http://10.0.2.2:11434";"anthropic"->"https://api.anthropic.com/v1";else->"https://api.openai.com/v1"}})
+                NativePreferences.providers.forEach { choice ->
+                    DropdownMenuItem(text={Text(choice.label)},onClick={presetID=choice.id;provider=choice.provider;endpoint=choice.endpoint;modelName=choice.models.firstOrNull()?.first ?: "";customModel=choice.models.isEmpty();providerMenu=false;key="";replaceKey=false})
                 }
             }
         }
-        MarketField(endpoint,{endpoint=it},"Provider address",keyboard=KeyboardType.Uri)
-        MarketField(modelName,{modelName=it},"Model name",hint="Your provider's exact model name")
-        Row(verticalAlignment=Alignment.CenterVertically) {
-            Text("Replace saved API key",modifier=Modifier.weight(1f),style=MaterialTheme.typography.bodyMedium)
-            Switch(checked=replaceKey,onCheckedChange={replaceKey=it})
+        if(provider=="litert") {
+            Text("Gemma 4 E2B",fontWeight=FontWeight.Medium)
+            when(localModel.phase) {
+                LocalModelPhase.ABSENT -> {
+                    Button(enabled=!state.demo,onClick=model::downloadLocalModel) { Icon(Icons.Filled.Download,null);Spacer(Modifier.width(8.dp));Text("Download · ${LocalModelManifest.SIZE_LABEL}") }
+                    Text("Keep the app open during download.",color=Muted,style=MaterialTheme.typography.bodySmall)
+                }
+                LocalModelPhase.DOWNLOADING -> {
+                    LinearProgressIndicator(progress={ (localModel.bytes.toDouble()/LocalModelManifest.BYTES).toFloat() },modifier=Modifier.fillMaxWidth())
+                    Row(verticalAlignment=Alignment.CenterVertically) {
+                        Text("${localModel.bytes*100/LocalModelManifest.BYTES}% · ${localModel.bytes/1_000_000} / ${LocalModelManifest.BYTES/1_000_000} MB",Modifier.weight(1f),style=MaterialTheme.typography.bodySmall)
+                        TextButton(onClick=model::cancelLocalModelDownload) { Text("Cancel") }
+                    }
+                }
+                LocalModelPhase.DOWNLOADED -> Row(verticalAlignment=Alignment.CenterVertically) {
+                    Text("Downloaded · ${LocalModelManifest.SIZE_LABEL}",Modifier.weight(1f),style=MaterialTheme.typography.bodySmall)
+                    TextButton(onClick=model::deleteLocalModel) { Icon(Icons.Filled.Delete,null);Spacer(Modifier.width(6.dp));Text("Delete") }
+                }
+                else -> {
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                    Row(verticalAlignment=Alignment.CenterVertically) {
+                        Text(when(localModel.phase) {
+                            LocalModelPhase.VERIFYING -> "Checking model"
+                            LocalModelPhase.LOADING -> "Loading model"
+                            LocalModelPhase.REVIEWING -> "Reviewing ${localModel.reviewed} of ${localModel.total}"
+                            else -> "Removing model"
+                        },Modifier.weight(1f),style=MaterialTheme.typography.bodySmall)
+                        if(localModel.phase!=LocalModelPhase.DELETING) TextButton(onClick=model::cancelLocalAI) { Text("Stop") }
+                    }
+                }
+            }
+            localModel.error?.let { Text(it,color=MaterialTheme.colorScheme.error,style=MaterialTheme.typography.bodySmall) }
+        } else {
+        if(presetID in listOf("custom", "ollama")) MarketField(endpoint,{endpoint=it;key="";replaceKey=false},"Service URL",keyboard=KeyboardType.Uri)
+        if(preset.models.isNotEmpty()) Box {
+            OutlinedButton(onClick={modelMenu=true}) { Text(if(customModel) "Custom model" else preset.models.firstOrNull { it.first==modelName }?.second ?: modelName) }
+            DropdownMenu(expanded=modelMenu,onDismissRequest={modelMenu=false}) {
+                preset.models.forEach { choice -> DropdownMenuItem(text={Text(choice.second)},onClick={modelName=choice.first;customModel=false;modelMenu=false}) }
+                DropdownMenuItem(text={Text("Custom model")},onClick={customModel=true;modelMenu=false})
+            }
         }
-        if(replaceKey) OutlinedTextField(value=key,onValueChange={key=it},label={Text("API key · optional for local models")},
-            visualTransformation=PasswordVisualTransformation(),modifier=Modifier.fillMaxWidth(),singleLine=true,shape=RoundedCornerShape(14.dp),
-            supportingText={Text("Encrypted on this device. Saving an empty value removes the old key.")})
-        MarketField(interests,{interests=it},"Interests",lines=3,hint="Furniture, electronics, local work")
-        Row(verticalAlignment=Alignment.CenterVertically) {
-            Text("Curate listings",modifier=Modifier.weight(1f),fontWeight=FontWeight.Medium)
-            Switch(checked=curate,onCheckedChange={curate=it},enabled=enabled)
+        if(customModel || preset.models.isEmpty()) MarketField(modelName,{modelName=it},"Model name")
+        if(provider!="ollama") OutlinedTextField(value=key,onValueChange={key=it;replaceKey=true},label={Text("API key")},placeholder={Text("Saved keys stay on this device")},
+            visualTransformation=PasswordVisualTransformation(),modifier=Modifier.fillMaxWidth(),singleLine=true,shape=RoundedCornerShape(14.dp))
+        preset.keyURL?.let { url -> TextButton(onClick={uri.openUri(url)}) { Text(if(presetID=="systemone") "Service details" else "Get an API key") } }
+        preset.infoURL?.let { url -> TextButton(onClick={uri.openUri(url)}) { Text(if(presetID=="gemini") "Provider terms · EEA conditions apply" else "Models and usage") } }
+        }
+        Button(enabled=enabled&&!busy&&(provider!="litert"||localModel.available),onClick={model.saveSettings(settings(),provider,key,replaceKey) { model.ai("check_ai") };replaceKey=false}) { Text(if(provider=="litert") "Check model" else "Test connection") }
+        state.aiMessage?.let { Text(it,color=Muted,style=MaterialTheme.typography.bodySmall) }
+        Box {
+            OutlinedButton(onClick={currencyMenu=true}) { Text("Display currency · $currency") }
+            DropdownMenu(expanded=currencyMenu,onDismissRequest={currencyMenu=false}) { NativePreferences.currencies.forEach { choice -> DropdownMenuItem(text={Text(choice)},onClick={currency=choice;currencyMenu=false}) } }
         }
         HorizontalDivider(color=Line)
         Text("Photos",fontWeight=FontWeight.Medium)
@@ -161,12 +214,10 @@ import org.json.JSONObject
                 profile.error?.let { Text(it,color=MaterialTheme.colorScheme.error,style=MaterialTheme.typography.bodySmall) }
             }
             if(state.publicKey.isNotBlank()) TextButton(onClick={clipboard.setText(AnnotatedString(state.publicKey))}) {
-                Icon(Icons.Filled.ContentCopy,null,Modifier.size(16.dp));Spacer(Modifier.width(7.dp));Text("Copy account ID")
+                Icon(Icons.Filled.ContentCopy,null,Modifier.size(16.dp));Spacer(Modifier.width(7.dp));Text("Copy profile ID")
             }
             Text("Iris Market · 0.1.0",color=Muted,style=MaterialTheme.typography.labelSmall)
         }
-        Button(enabled=!busy,onClick={model.saveSettings(settings(),provider,key,replaceKey,done)},
-            modifier=Modifier.fillMaxWidth().height(54.dp),shape=RoundedCornerShape(16.dp)) { Text("Save settings") }
         if(state.demo) Text("Preview makes no provider or network requests.",color=Muted,style=MaterialTheme.typography.bodySmall)
     }
 }

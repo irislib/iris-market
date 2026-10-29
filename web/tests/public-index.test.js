@@ -78,7 +78,8 @@ test('closing listing view cancels index read and ignores a late response',async
 
 test('profile and follow adapters use verified worker results even without complete relay coverage',async()=>{
   const profile=sign(0,[],now-5,'{"name":"Sam"}'),follows=sign(3,[['p','a'.repeat(64)]],now-4)
-  const runtime={query:async filters=>({events:filters[0].kinds.includes(0)?[profile,{...profile,content:'forged'}]:[follows],complete:false,sources:[],reason:'timeout'})}
+  const result=filters=>({events:filters[0].kinds.includes(0)?[profile,{...profile,content:'forged'}]:[follows],complete:false,sources:[],reason:'timeout'})
+  const runtime={query:async filters=>result(filters),subscribe(filters,handlers){let closed=false;queueMicrotask(()=>{if(closed)return;const value=result(filters);for(const event of value.events)handlers.onEvent(event);handlers.onEose(value)});return{close(){closed=true}}}}
   const profiles=await queryProfileRecords([{kinds:[0],authors:[author]}],{runtime,now:()=>now});assert.equal(profiles.events[0].id,profile.id)
   assert.deepEqual((await fetchFollows(author,{runtime,now:()=>now})).authors,['a'.repeat(64)])
 })

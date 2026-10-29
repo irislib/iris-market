@@ -1,5 +1,11 @@
 // IDs from the static Market shell and its dialog templates.
 interface IdTags {
+  'my-listings-menu': 'button';
+  'your-location-filters': 'div';
+  'your-location-settings': 'div';
+  'has-photos': 'input';
+  'hidden-count': 'p';
+  'restore-hidden': 'button';
   'account-backup': 'button';
   'account-bunker': 'input';
   'account-button': 'button';

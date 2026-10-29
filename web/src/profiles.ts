@@ -20,6 +20,7 @@
 import { verifyEvent, type Event as NostrEvent } from 'nostr-tools/pure'
 import { fallbackIdentityName, getProfileName } from './shared/iris-kit/profile.ts'
 import { SocialGraph } from 'nostr-social-graph'
+import {createProfileHeadCache} from './profile-cache.ts'
 import type { Filter } from 'nostr-tools'
 import { getPublicRuntime, type PublicEventRuntime } from './nostr-runtime.ts'
 import { loadGraphBootstrap } from './graph-bootstrap.ts'
@@ -44,7 +45,7 @@ export interface CurationContext {
 interface ProfileStore { profiles: Map<string, ProfileRecord>; follows: Map<string, FollowRecord>; contexts: Map<string, {result: CurationContext; loadedAt: number}> }
 
 // Established visitor root from iris-client/src/utils/socialGraph.ts.
-export const DEFAULT_SOCIAL_GRAPH_ROOT = '4523be58d395b1b196a9b8c82b038b6895cb02b683d0c253a955068dba1facd0'
+export const DEFAULT_SOCIAL_GRAPH_ROOT = '336f319763657d6b0e65a5b5876719e8c8dcdcf9396852be71ee26b73368b29b'
 export const DEFAULT_SOCIAL_GRAPH_LABEL = 'Sirius Business'
 export const PROFILE_LIMITS = Object.freeze({ follows: 4096, display: 256, secondHop: 32, inbound: 64, metadata: 64, eventBytes: 1024 * 1024, queryBytes: 6 * 1024 * 1024, queryEvents: 512, timeoutMs: 6000, settleGraceMs: 500 })
 const encoder = new TextEncoder()
@@ -53,6 +54,23 @@ const isKey = value => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value)
 const newer = (a, b) => !b || a.created_at > b.created_at || (a.created_at === b.created_at && a.id < b.id)
 const abortError = () => new DOMException('Profile lookup cancelled.', 'AbortError')
 const caches = new Map<string, ProfileStore>()
+const metadataObservers = new Map<string, Set<(profile: PublicProfile) => void>>()
+const relayKey = (relays:readonly string[]) => JSON.stringify(validateRelays(relays))
+let startupHeads:ReturnType<typeof createProfileHeadCache>|undefined,headFlush:ReturnType<typeof setTimeout>|undefined;
+function profileHeads(){
+  if(startupHeads)return startupHeads;
+  try{const storage=globalThis.window?.localStorage;if(storage)startupHeads=createProfileHeadCache({storage,validate:event=>verifyProfileRecord(event)});}catch{/* Memory and shared worker cache still work. */}
+  return startupHeads;
+}
+function rememberProfile(event:NostrEvent){
+  try{if(profileHeads()?.observe(event)&&!headFlush)headFlush=setTimeout(()=>{headFlush=undefined;startupHeads?.flush();},250);}catch{/* Oversized profile heads stay in the worker cache. */}
+}
+
+/** Observe verified cache changes without opening another network subscription. */
+export function subscribeProfileMetadata(listener:(profile:PublicProfile)=>void, {relays=DEFAULT_RELAYS}:{relays?:readonly string[]}={}) {
+  const key=relayKey(relays), listeners=metadataObservers.get(key)??new Set();metadataObservers.set(key,listeners);listeners.add(listener);
+  return ()=>{listeners.delete(listener);if(!listeners.size)metadataObservers.delete(key);};
+}
 
 export function profileLabel(pubkey) {
   return fallbackIdentityName(normalizePublicKey(pubkey))
@@ -108,7 +126,7 @@ export function queryProfileRecords(filters: ProfileFilter[], { relays = DEFAULT
   if (!servers.length || (WebSocketImpl !== undefined && typeof WebSocketImpl !== 'function')) return Promise.reject(new Error('Profile servers are unavailable'))
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 10000) return Promise.reject(new Error('Invalid profile lookup timeout'))
   if (signal?.aborted) return Promise.reject(abortError())
-  if (WebSocketImpl === undefined || runtime) return queryWorkerProfileRecords(filters, runtime ?? getPublicRuntime(servers), { signal, now, timeoutMs })
+  if (WebSocketImpl === undefined || runtime) return queryWorkerProfileRecords(filters, runtime ?? getPublicRuntime(servers), { signal, now, timeoutMs, relays:servers })
   return new Promise<ProfileQueryResult>((resolve, reject) => {
     const connections: ProfileConnection[] = [], winners = new Map<string, NostrEvent>()
     let finished = false, pending = servers.length, completed = 0, bytes = 0, events = 0, limited = false, graceTimer = null
@@ -162,7 +180,7 @@ export function queryProfileRecords(filters: ProfileFilter[], { relays = DEFAULT
           const event = verifyProfileRecord(frame[2], { now: now() })
           if (!filters.some(filter => matches(event, filter))) return
           const coordinate = `${event.kind}:${event.pubkey}`
-          if (newer(event, winners.get(coordinate))) winners.set(coordinate, event)
+          if (newer(event, winners.get(coordinate))) { winners.set(coordinate, event); if(event.kind===0)cacheProfileMetadata(event,{relays:servers,now:now()}); }
         } catch { /* Untrusted or oversized events do not enter the record cache. */ }
       }
       socket.onerror = socket.onclose = () => settle(connection, false)
@@ -170,26 +188,39 @@ export function queryProfileRecords(filters: ProfileFilter[], { relays = DEFAULT
   })
 }
 
-async function queryWorkerProfileRecords(filters:ProfileFilter[], runtime:PublicEventRuntime, {signal,now,timeoutMs}:ProfileQueryOptions):Promise<ProfileQueryResult> {
-  const response=await runtime.query(filters,{signal,deadline:Date.now()+timeoutMs,limit:PROFILE_LIMITS.queryEvents});
-  const winners=new Map<string,NostrEvent>();let size=0,limited=response.events.length>PROFILE_LIMITS.queryEvents;
-  for(const raw of response.events.slice(0,PROFILE_LIMITS.queryEvents)) {
-    size+=encoder.encode(JSON.stringify(raw)).length;
-    if(size>PROFILE_LIMITS.queryBytes){limited=true;break;}
-    try{const event=verifyProfileRecord(raw,{now:now()});if(!filters.some(filter=>matches(event,filter)))continue;
-      const coordinate=`${event.kind}:${event.pubkey}`;if(newer(event,winners.get(coordinate)))winners.set(coordinate,event);
-    }catch{/* Invalid records cannot replace a verified profile. */}
-  }
-  const completed=response.sources.filter(source=>source.complete).length;
-  if(!completed&&!winners.size&&!limited)throw new Error('Could not load public profile records');
-  return{events:[...winners.values()],completed,limited,partial:true};
+async function queryWorkerProfileRecords(filters:ProfileFilter[], runtime:PublicEventRuntime, {signal,now,timeoutMs,relays}:ProfileQueryOptions):Promise<ProfileQueryResult> {
+  // A finite shared subscription streams cache/network metadata immediately.
+  // Awaiting query() would hold usable names until all sources finish history.
+  return new Promise((resolve,reject)=>{
+    const winners=new Map<string,NostrEvent>();let bytes=0,frames=0,limited=false,finished=false,completed=0;
+    let subscription:ReturnType<PublicEventRuntime['subscribe']>|undefined,grace:ReturnType<typeof setTimeout>|undefined;
+    const finish=(error?:Error)=>{if(finished)return;finished=true;clearTimeout(timer);clearTimeout(grace);signal?.removeEventListener('abort',abort);subscription?.close();if(error)reject(error);else resolve({events:[...winners.values()],completed,limited,partial:true});};
+    const abort=()=>finish(abortError());
+    const timer=setTimeout(()=>finish(winners.size||completed?undefined:new Error('Profile lookup timed out')),timeoutMs);
+    signal?.addEventListener('abort',abort,{once:true});
+    if(signal?.aborted){abort();return;}
+    try { subscription=runtime.subscribe(filters,{
+      onEvent(raw){
+        if(finished)return;
+        bytes+=encoder.encode(JSON.stringify(raw)).length;
+        if(++frames>PROFILE_LIMITS.queryEvents||bytes>PROFILE_LIMITS.queryBytes){limited=true;finish();return;}
+        try{
+          const event=verifyProfileRecord(raw,{now:now()});if(!filters.some(filter=>matches(event,filter)))return;
+          const coordinate=`${event.kind}:${event.pubkey}`;if(!newer(event,winners.get(coordinate)))return;
+          winners.set(coordinate,event);if(event.kind===0)cacheProfileMetadata(event,{relays,now:now()});
+        }catch{/* Invalid records cannot replace a verified profile. */}
+      },
+      onEose(status){completed=status.sources.filter(source=>source.complete).length;if(!grace)grace=setTimeout(()=>finish(!completed&&!winners.size?new Error('Could not load public profile records'):undefined),PROFILE_LIMITS.settleGraceMs);},
+      // A failed source must not discard another source's late valid record.
+    });if(finished)subscription.close(); } catch(error){finish(error);}
+  });
 }
 
 function fallback(pubkey: string): PublicProfile {
   return { pubkey, name: profileLabel(pubkey), about: '', pictureUrl: null, website: null, nip05: '', metadataFound: false }
 }
 function storeFor(relays: readonly string[]): ProfileStore {
-  const key = JSON.stringify(validateRelays(relays))
+  const key = relayKey(relays)
   if (!caches.has(key)) {
     if (caches.size >= 3) caches.delete(caches.keys().next().value)
     caches.set(key, { profiles: new Map(), follows: new Map(), contexts: new Map() })
@@ -211,9 +242,21 @@ function ingest(store, events, now) {
       map.set(event.pubkey, event.kind === 0 ? { event, profile: null } : { event, follows: null })
     }
     if (event.kind === 3) store.contexts.clear()
+    else {
+      rememberProfile(event);
+      for(const [key,cached] of caches)if(cached===store)for(const listener of metadataObservers.get(key)??[]) { try{listener(person(store,event.pubkey));}catch{/* A view cannot break cache admission. */} }
+    }
   }
 }
-function person(store: ProfileStore, pubkey: string): PublicProfile { return store.profiles.get(pubkey)?.profile || fallback(pubkey) }
+function person(store: ProfileStore, pubkey: string): PublicProfile {
+  const head=profileHeads()?.read(pubkey);
+  if(head&&newer(head,store.profiles.get(pubkey)?.event)){
+    let profile:PublicProfile|null=null;try{profile=parseProfileEvent(head);}catch{}
+    if(!store.profiles.has(pubkey)&&store.profiles.size>=512)store.profiles.delete(store.profiles.keys().next().value);
+    store.profiles.set(pubkey,{event:head,profile});
+  }
+  return store.profiles.get(pubkey)?.profile || fallback(pubkey);
+}
 
 /** Port of Iris Chat's badge projection; every label states graph evidence, never identity verification. */
 export function socialConnection(graph: SocialGraph | null, contextPubkey: string, target: string): SocialConnection {
@@ -324,21 +367,15 @@ export async function loadProfile(pubkey: string, options: CurationOptions = {})
       return result.events
     } catch (error) { if (error.name === 'AbortError') throw error; warnings.push(error.message); return [] }
   }
-  const [context, inbound] = await Promise.all([
+  const [context] = await Promise.all([
     loadCurationContext(requestOptions),
-    safeQuery([{ kinds: [0, 3], authors: [target], limit: 2 }, { kinds: [3], '#p': [target], limit: PROFILE_LIMITS.inbound }]),
+    safeQuery([{ kinds: [0, 3], authors: [target], limit: 2 }]),
   ])
-  const candidates = [...new Set(inbound.filter(event => event.kind === 3 && event.pubkey !== target && event.tags.some(tag => tag[0] === 'p' && tag[1] === target)).map(event => event.pubkey))].sort().slice(0, PROFILE_LIMITS.inbound)
-  // A #p query alone can return an old follow after a later unfollow. Refresh
-  // candidate authors without #p before claiming they still follow this target.
-  const refreshed = candidates.length ? await safeQuery([{ kinds: [3], authors: candidates, limit: candidates.length }]) : []
-  const refreshedAuthors = new Set(refreshed.filter(event => event.kind === 3).map(event => event.pubkey))
   const followingRecord = store.follows.get(target)
   const following = followingRecord?.follows ? followingRecord : null
   if (followingRecord && !following) warnings.push('This follow list exceeds the supported size.')
-  const followers = candidates.filter(key => refreshedAuthors.has(key) && store.follows.get(key)?.follows?.includes(target))
   const known = context.relationFor(target).knownFollowers
-  const peopleKeys = [...new Set([target, context.contextPubkey, ...known, ...followers, ...(following?.follows || [])])].slice(0, PROFILE_LIMITS.metadata)
+  const peopleKeys = [...new Set([target, context.contextPubkey, ...known, ...(following?.follows || [])])].slice(0, PROFILE_LIMITS.metadata)
   if (peopleKeys.length) await safeQuery([{ kinds: [0], authors: peopleKeys, limit: peopleKeys.length }])
   if (signal?.aborted) throw abortError()
   const rootList = context.lists.get(context.contextPubkey)
@@ -347,12 +384,28 @@ export async function loadProfile(pubkey: string, options: CurationOptions = {})
   return { profile: person(store, target), contextPubkey: context.contextPubkey, contextLabel: context.contextLabel,
     relation: context.relationFor(target), mutualFollowing: contextFollowsTarget === null || targetFollowsContext === null ? null : contextFollowsTarget && targetFollowsContext,
     followsContext: targetFollowsContext, following: { items: (following?.follows || []).slice(0, PROFILE_LIMITS.display).map(key => person(store, key)), total: following?.follows.length ?? null, truncated: (following?.follows.length || 0) > PROFILE_LIMITS.display },
-    followers: { items: followers.map(key => person(store, key)), observedCount: followers.length, complete: false },
-    followedByKnown: known.map(key => person(store, key)), coverage: { ...context.coverage, inboundCandidates: candidates.length, inboundRefreshed: refreshedAuthors.size, warnings: [...context.coverage.warnings, ...warnings] } }
+    followers: { items: [] as PublicProfile[], observedCount: 0, complete: false as const, loaded: false },
+    followedByKnown: known.map(key => person(store, key)), coverage: { ...context.coverage, inboundCandidates: 0, inboundRefreshed: 0, warnings: [...context.coverage.warnings, ...warnings] } }
+}
+
+/** Explicit Followers action only. Known connections never perform an inbound scan. */
+export async function loadProfileFollowers(pubkey:string, options:CurationOptions={}) {
+  const target=normalizePublicKey(pubkey),relays=options.relays||DEFAULT_RELAYS,now=options.now||seconds,store=storeFor(relays);
+  const query=async(filters:ProfileFilter[])=>{const result=await queryProfileRecords(filters,{...options,relays,now});ingest(store,result.events,now());return result.events;};
+  const inbound=await query([{kinds:[3],'#p':[target],limit:PROFILE_LIMITS.inbound}]);
+  const candidates=[...new Set(inbound.filter(event=>event.pubkey!==target&&event.tags.some(tag=>tag[0]==='p'&&tag[1]===target)).map(event=>event.pubkey))].sort().slice(0,PROFILE_LIMITS.inbound);
+  // Refresh without #p: an older follow must not survive a later unfollow.
+  const refreshed=candidates.length?await query([{kinds:[3],authors:candidates,limit:candidates.length}]):[];
+  const authors=new Set(refreshed.map(event=>event.pubkey));
+  const followers=candidates.filter(key=>authors.has(key)&&store.follows.get(key)?.follows?.includes(target));
+  const warnings:string[]=[];
+  if(followers.length)try{await query([{kinds:[0],authors:followers,limit:followers.length}]);}catch(error){if(error.name==='AbortError')throw error;warnings.push('Some names are unavailable.');}
+  if(options.signal?.aborted)throw abortError();
+  return {items:followers.map(key=>person(store,key)),observedCount:followers.length,complete:false as const,loaded:true as const,warnings};
 }
 
 /** Clear only this module's public in-memory cache, useful on explicit identity/relay changes. */
-export function clearProfileCache() { caches.clear() }
+export function clearProfileCache() { caches.clear();clearTimeout(headFlush);headFlush=undefined;startupHeads?.flush();startupHeads=undefined; }
 
 /** Shared, bounded profile hydration; no social-graph expansion for a name/avatar. */
 export function cacheProfileMetadata(input: NostrEvent, { relays = DEFAULT_RELAYS, now = seconds() }: {relays?: readonly string[]; now?: number} = {}) {

@@ -77,11 +77,25 @@ fun MarketAppView(model: MarketModel, appearance: Appearance, changeAppearance: 
     var profileAuthor by remember { mutableStateOf<String?>(null) }
     var posting by remember { mutableStateOf(false) }
     var settings by remember { mutableStateOf(false) }
+    if(state.profileNameRequired && !state.demo) {
+        var profileName by remember(state.publicKey) { mutableStateOf("") }
+        Column(Modifier.fillMaxSize().padding(28.dp),verticalArrangement=Arrangement.Center) {
+            Text("What should we call you?",style=MaterialTheme.typography.headlineMedium)
+            Spacer(Modifier.height(18.dp))
+            Text("Choose a public name for your market profile.",color=Muted)
+            Spacer(Modifier.height(18.dp))
+            MarketField(profileName,{profileName=it},"Your name",hint=NativeProfileNames.name(state.publicKey))
+            Spacer(Modifier.height(24.dp))
+            Button(enabled=!busy,onClick={ model.command(org.json.JSONObject().put("type","update_profile").put("name",profileName.trim().ifEmpty { NativeProfileNames.name(state.publicKey) })) }) { Text("Continue") }
+            notice?.let { Text(it,color=MaterialTheme.colorScheme.error) }
+        }
+        return
+    }
     Scaffold(
         containerColor = Cream,
         bottomBar = {
             NavigationBar(containerColor = Cream, tonalElevation = 0.dp, modifier = Modifier.background(Cream)) {
-                listOf("Browse" to Icons.Filled.Storefront, "Saved" to Icons.Filled.Bookmark,
+                listOf("Browse" to Icons.Filled.Storefront, "Saved" to Icons.Filled.Favorite,
                     "Inbox" to Icons.Filled.ChatBubble, "Orders" to Icons.Filled.ReceiptLong, "You" to Icons.Filled.Person).forEachIndexed { index, (label, icon) ->
                     NavigationBarItem(selected = tab == index, onClick = {
                         if (tab != index) {

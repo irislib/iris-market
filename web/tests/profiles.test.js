@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { finalizeEvent, getPublicKey } from 'nostr-tools/pure'
 import { SocialGraph } from 'nostr-social-graph'
-import { DEFAULT_SOCIAL_GRAPH_ROOT, PROFILE_LIMITS, parseProfileEvent, parseFollowEvent, verifyProfileRecord, queryProfileRecords, socialConnection, loadProfile, loadCurationContext, clearProfileCache, cacheProfileMetadata, readProfileMetadata } from '../src/profiles.js'
+import { DEFAULT_SOCIAL_GRAPH_ROOT, PROFILE_LIMITS, parseProfileEvent, parseFollowEvent, verifyProfileRecord, queryProfileRecords, socialConnection, loadProfile, loadCurationContext, clearProfileCache, cacheProfileMetadata, readProfileMetadata } from '../src/profiles.ts'
 
 const now = 1700000000
 const secrets = Array.from({ length: 20 }, (_, i) => new Uint8Array(32).fill(i + 1))

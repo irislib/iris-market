@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {listingEnquiry} from '../src/listing-actions.js';
+import {listingEnquiry} from '../src/listing-actions.ts';
 test('selling action prepares a purchase enquiry with its exact listing link and does not perform checkout',()=>{
  const result=listingEnquiry({id:'author:desk + 1',title:'Oak desk',side:'offer'},'https://market.iris.to');
  assert.equal(result.label,'Buy');assert.match(result.draft,/I’d like to buy “Oak desk”/);const url=new URL(result.draft.split('\n').at(-1));assert.equal(url.origin,'https://market.iris.to');assert.equal(url.searchParams.get('listing'),'author:desk + 1');assert.equal(url.searchParams.size,1);

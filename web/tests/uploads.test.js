@@ -2,8 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { finalizeEvent, generateSecretKey, verifyEvent } from 'nostr-tools';
 import { MemoryStore, HashTree, nhashDecode, toHex, sha256 } from '@hashtree/core';
-import { createMediaUploader, MAX_UPLOAD_BYTES, UPLOAD_SERVER, MEDIA_SERVER } from '../src/uploads.js';
-import { validateUploadAuthorization } from '../src/upload-auth.js';
+import { createMediaUploader, MAX_UPLOAD_BYTES, UPLOAD_SERVER, MEDIA_SERVER } from '../src/uploads.ts';
+import { validateUploadAuthorization } from '../src/upload-auth.ts';
 
 function memoryStore() {
   const memory = new MemoryStore(), hashes = new Map();

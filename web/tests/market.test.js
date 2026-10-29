@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { finalizeEvent, generateSecretKey } from 'nostr-tools/pure'
-import { parseEvent, applyEvent, visibleListings, validateRelays, MarketRelayClient } from '../src/market.js'
+import { parseEvent, applyEvent, visibleListings, validateRelays, MarketRelayClient } from '../src/market.ts'
 
 const now = 1800000000
 const secret = generateSecretKey()

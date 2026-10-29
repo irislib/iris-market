@@ -2,9 +2,9 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { gzipSync } from 'node:zlib'
-import { pinnedModelAsset, createPinnedModelFetch } from '../src/feed-filter/assets.js'
-import { FEED_MODELS } from '../src/feed-filter/models.js'
-import { RUNTIME, verifyRuntimeResponse } from '../src/feed-filter/runtime.js'
+import { pinnedModelAsset, createPinnedModelFetch } from '../src/feed-filter/assets.ts'
+import { FEED_MODELS } from '../src/feed-filter/models.ts'
+import { RUNTIME, verifyRuntimeResponse } from '../src/feed-filter/runtime.ts'
 const model = FEED_MODELS.deberta
 const pinned = `https://huggingface.co/${model.repo}/resolve/${model.revision}`
 const range = { headers: { Range: 'bytes=0-0' } }

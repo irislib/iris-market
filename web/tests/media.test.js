@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
-import { imageUrl, DEFAULT_IMAGE_SETTINGS, readImageSettings, saveImageSettings } from '../src/media.js';
+import { imageUrl, DEFAULT_IMAGE_SETTINGS, readImageSettings, saveImageSettings } from '../src/media.ts';
 const memory = () => { let value; return { getItem: () => value, setItem: (key, next) => { value = next; } }; };
 
 test('proxy URLs use the exact Iris HMAC, resize, dpr and unpadded source encoding contract', () => {

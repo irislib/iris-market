@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Amount, OutputData, getEncodedToken, getDecodedToken, deserializeProofs } from '@cashu/cashu-ts';
-import { createVault } from '../src/messaging/vault.js';
-import { createCashuWallet, DEFAULT_MINT, normalizeMint } from '../src/wallet/client.js';
-import { encryptBackup, decryptBackup } from '../src/wallet/backup.js';
-import { packPreview, unpackPreview } from '../src/wallet/sdk.js';
+import { createVault } from '../src/messaging/vault.ts';
+import { createCashuWallet, DEFAULT_MINT, normalizeMint } from '../src/wallet/client.ts';
+import { encryptBackup, decryptBackup } from '../src/wallet/backup.ts';
+import { packPreview, unpackPreview } from '../src/wallet/sdk.ts';
 
 const KEYSET = '009a1f293253e41e';
 const POINT = '0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798';

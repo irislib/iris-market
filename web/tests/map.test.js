@@ -1,11 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { sha256, toHex } from '@hashtree/core'
-import { decodeGeohash, locationFromTags } from '../src/map/geohash.js'
-import { MAP_ROOT, GLYPH_ROOT, cacheBytes, validatePath } from '../src/map/config.js'
-import { MapBlockCache, readBounded } from '../src/map/cache.js'
-import { createPmtilesSource } from '../src/map/source.js'
-import { createListingOverlay } from '../src/map/index.js'
+import { decodeGeohash, locationFromTags } from '../src/map/geohash.ts'
+import { MAP_ROOT, GLYPH_ROOT, cacheBytes, validatePath } from '../src/map/config.ts'
+import { MapBlockCache, readBounded } from '../src/map/cache.ts'
+import { createPmtilesSource } from '../src/map/source.ts'
+import { createListingOverlay } from '../src/map/index.ts'
 
 class MemoryStore {
   values = new Map(); evictions = []; closed = false

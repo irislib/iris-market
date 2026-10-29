@@ -2,9 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { finalizeEvent, generateSecretKey, getPublicKey, nip19 } from 'nostr-tools';
 import { AppKeys } from 'nostr-double-ratchet';
-import { createMessaging, canPublishToDevice } from '../src/messaging/client.js';
-import { createVault } from '../src/messaging/vault.js';
-import { prepareSignerAuthorization } from '../src/messaging/authorization.js';
+import { createMessaging, canPublishToDevice } from '../src/messaging/client.ts';
+import { createVault } from '../src/messaging/vault.ts';
+import { prepareSignerAuthorization } from '../src/messaging/authorization.ts';
 
 function memoryBackend() {
   let row;

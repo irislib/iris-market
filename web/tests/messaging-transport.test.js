@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { WebSocketServer } from 'ws';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools';
-import { createPrivateTransport } from '../src/messaging/transport.js';
+import { createPrivateTransport } from '../src/messaging/transport.ts';
 
 const key = generateSecretKey(), owner = getPublicKey(key);
 const event = content => finalizeEvent({ kind: 0, content, tags: [], created_at: 1 }, key);

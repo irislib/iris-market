@@ -2,8 +2,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { AppKeys } from 'nostr-double-ratchet'
 import { finalizeEvent, generateSecretKey, getPublicKey, nip44, verifiedSymbol, verifyEvent } from 'nostr-tools'
-import { RemoteSigner, parseBunkerLink, signerRelayUrls } from '../src/messaging/remote-signer.js'
-import { authorizeSignerDevice, fetchSignerRoster, prepareSignerAuthorization, selectSignerRoster, validateSignerAuthorization } from '../src/messaging/authorization.js'
+import { RemoteSigner, parseBunkerLink, signerRelayUrls } from '../src/messaging/remote-signer.ts'
+import { authorizeSignerDevice, fetchSignerRoster, prepareSignerAuthorization, selectSignerRoster, validateSignerAuthorization } from '../src/messaging/authorization.ts'
 
 const relays = ['wss://signer.example/']
 const ownerSecret = generateSecretKey(), owner = getPublicKey(ownerSecret)

@@ -1,14 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {finalizeEvent,generateSecretKey} from 'nostr-tools/pure';
-import {listingDraft} from '../src/composer.js';
-import {parseEvent} from '../src/market.js';
+import {listingDraft} from '../src/composer.ts';
+import {parseEvent} from '../src/market.ts';
 const values={title:'Desk',description:'Local pickup',price:'100.50',currency:'eur',location:'Helsinki',side:'offer',category:'home'};
 test('web draft signs into the same NIP99 listing shape used by live browsing',()=>{const draft=listingDraft(values,{identifier:'test-listing'});const listing=parseEvent(finalizeEvent(draft,generateSecretKey()));assert.equal(listing.price,'100.50');assert.equal(listing.currency,'EUR');assert.equal(listing.location,'Helsinki');assert.equal(listing.identifier,'test-listing');});
 test('web composer blocks unsafe image links and invalid values before asking a signer',()=>{for(const change of [{price:'-2'},{price:'Infinity'},{image:'http://example.com/a.png'},{image:'https://a:b@example.com/a.png'},{title:''},{side:'sell'},{currency:'<EUR>'}])assert.throws(()=>listingDraft({...values,...change}));});
 
 import {nhashEncode} from '@hashtree/core';
-import {createAttachmentSelection} from '../src/composer.js';
+import {createAttachmentSelection} from '../src/composer.ts';
 const upload=(name='guide.pdf',isImage=false)=>{const hash=new Uint8Array(32).fill(isImage?2:1),sha256=Array.from(hash,x=>x.toString(16).padStart(2,'0')).join('');return{name,isImage,sha256,nhash:nhashEncode({hash}),size:42,mime:isImage?'image/png':'application/pdf',url:`https://cdn.iris.to/${sha256}.${isImage?'png':'pdf'}`};};
 test('public attachments use interoperable Markdown, image tags only for photos and complete Hashtree metadata',()=>{
  const files=[upload('guide [desk].pdf'),upload('desk.png',true)],draft=listingDraft(values,{attachments:files});

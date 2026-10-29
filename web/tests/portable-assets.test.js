@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { assetUrl, deploymentBase, invitationBase, captureInvitation } from '../src/asset-url.js';
-import { FeedFilterClient } from '../src/feed-filter/client.js';
-import { RUNTIME, loadRuntimeBinary } from '../src/feed-filter/runtime.js';
-import { GRAPH_BOOTSTRAP, loadGraphBootstrap } from '../src/graph-bootstrap.js';
+import { assetUrl, deploymentBase, invitationBase, captureInvitation } from '../src/asset-url.ts';
+import { FeedFilterClient } from '../src/feed-filter/client.ts';
+import { RUNTIME, loadRuntimeBinary } from '../src/feed-filter/runtime.ts';
+import { GRAPH_BOOTSTRAP, loadGraphBootstrap } from '../src/graph-bootstrap.ts';
 
 const origin = 'https://gateway.example';
 const prefix = `${origin}/htree/nhash1example/market/`;

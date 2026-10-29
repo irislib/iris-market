@@ -4,12 +4,13 @@
   "version": "0.1.0",
   "type": "module",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.18"
   },
   "scripts": {
-    "build": "node scripts/build.mjs",
+    "build": "npm run check && node scripts/build.mjs",
     "test": "node --test tests/*.test.js",
-    "dev": "node scripts/serve.mjs"
+    "dev": "node scripts/serve.mjs",
+    "check": "tsc --noEmit"
   },
   "dependencies": {
     "@cashu/cashu-ts": "4.13.0",
@@ -28,6 +29,7 @@
   },
   "devDependencies": {
     "esbuild": "0.25.12",
+    "typescript": "5.9.3",
     "wrangler": "4.154.0"
   }
 }

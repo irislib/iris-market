@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { searchCondition, listingSearchText } from '../src/search-condition.js';
+import { searchCondition, listingSearchText } from '../src/search-condition.ts';
 test('ordinary words become topics and longer searches preserve intent',()=>{
  assert.equal(searchCondition('  bicycle  '),'This listing is about bicycle.');
  assert.equal(searchCondition('used chairs under 100 EUR'),'This listing matches this search: used chairs under 100 EUR');

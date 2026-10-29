@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { FeedFilterClient, FEED_MODELS } from '../src/feed-filter/client.js'
-import { validateModel } from '../src/feed-filter/models.js'
+import { FeedFilterClient, FEED_MODELS } from '../src/feed-filter/client.ts'
+import { validateModel } from '../src/feed-filter/models.ts'
 
 class FakeWorker {
   static instances = []

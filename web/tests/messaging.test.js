@@ -2,9 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { finalizeEvent, generateSecretKey, getPublicKey, matchFilters, nip19, verifyEvent } from 'nostr-tools';
 import { AppKeys } from 'nostr-double-ratchet';
-import { createVault } from '../src/messaging/vault.js';
-import { createMessaging, messageProjection, canPublishToDevice } from '../src/messaging/client.js';
-import { createPrivateTransport, verifiedPrivateEvent } from '../src/messaging/transport.js';
+import { createVault } from '../src/messaging/vault.ts';
+import { createMessaging, messageProjection, canPublishToDevice } from '../src/messaging/client.ts';
+import { createPrivateTransport, verifiedPrivateEvent } from '../src/messaging/transport.ts';
 
 function memoryBackend() {
   let row;

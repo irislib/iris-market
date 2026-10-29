@@ -3,8 +3,8 @@ import { mkdir, copyFile, writeFile, readFile, readdir, rm, stat } from 'node:fs
 import { resolve, relative, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
-import { GRAPH_BOOTSTRAP } from '../src/graph-bootstrap.js';
-import { RUNTIME } from '../src/feed-filter/runtime.js';
+import { GRAPH_BOOTSTRAP } from '../src/graph-bootstrap.ts';
+import { RUNTIME } from '../src/feed-filter/runtime.ts';
 
 const root = resolve(import.meta.dirname, '..');
 const maxAssetBytes = 25 * 1024 * 1024;
@@ -63,25 +63,26 @@ async function checkAssetSizes(folder) {
   return largest;
 }
 
-for (const [name, source, entry] of [['web', root, 'src/app.js'], ['site', resolve(root, '../site'), 'app.js']]) {
+for (const [name, source, entry] of [['web', root, 'src/app.ts'], ['site', resolve(root, '../site'), 'app.ts']]) {
   const dest = resolve(source, 'dist');
   await mkdir(dest, { recursive: true });
   const results = [await build({ absWorkingDir: root, entryPoints: [resolve(source, entry)], bundle: true, minify: true, format: 'esm', target: 'es2022', outdir: dest, entryNames: 'app', chunkNames: 'chunks/[name]-[hash]', splitting: true, legalComments: 'eof', metafile: true })];
   for (const file of ['styles.css', 'icon.svg']) await copyFile(resolve(root, file), resolve(dest, file));
-  await copyFile(resolve(root, 'src/theme-init.js'), resolve(dest, 'theme-init.js'));
+  await build({entryPoints:[resolve(root, 'src/theme-init.ts')],outfile:resolve(dest,'theme-init.js'),bundle:true,minify:true,target:'es2022'});
   await copyFile(resolve(source, 'index.html'), resolve(dest, 'index.html'));
   if (name === 'site') for (const file of ['app-light.png', 'app-dark.png']) await copyFile(resolve(source, file), resolve(dest, file));
   if (name === 'web') {
     await copyFile(resolve(root, 'profiles.css'), resolve(dest, 'profiles.css'));
     await copyFile(resolve(root, 'account.css'), resolve(dest, 'account.css'));
     await copyFile(resolve(root, 'wallet.css'), resolve(dest, 'wallet.css'));
+    await copyFile(resolve(root, 'orders.css'), resolve(dest, 'orders.css'));
     const graphBytes = await readFile(resolve(root, GRAPH_BOOTSTRAP.packagePath));
     if (graphBytes.byteLength !== GRAPH_BOOTSTRAP.byteLength || hash(graphBytes) !== GRAPH_BOOTSTRAP.sha256) throw new Error('Unexpected social graph bootstrap payload');
     await writeFile(resolve(dest, 'social-graph.bin'), graphBytes);
     await copyFile(resolve(root, 'native-map.html'), resolve(dest, 'native-map.html'));
     for (const file of ['maplibre-gl.css','maplibre-gl-worker.mjs','maplibre-gl-shared.mjs']) await copyFile(resolve(root, 'node_modules/maplibre-gl/dist', file), resolve(dest, file));
-    results.push(await build({ absWorkingDir: root, entryPoints: [resolve(root, 'src/native-map.js')], bundle: true, minify: true, format: 'esm', target: 'es2022', outfile: resolve(dest, 'native-map.js'), legalComments: 'eof', metafile: true }));
-    results.push(await build({ absWorkingDir: root, entryPoints: [resolve(root, 'src/feed-filter/worker.js')], bundle: true, minify: true, format: 'esm', platform: 'browser', target: 'es2022', outfile: resolve(dest, 'feed-filter.worker.js'), legalComments: 'eof', metafile: true }));
+    results.push(await build({ absWorkingDir: root, entryPoints: [resolve(root, 'src/native-map.ts')], bundle: true, minify: true, format: 'esm', target: 'es2022', outfile: resolve(dest, 'native-map.js'), legalComments: 'eof', metafile: true }));
+    results.push(await build({ absWorkingDir: root, entryPoints: [resolve(root, 'src/feed-filter/worker.ts')], bundle: true, minify: true, format: 'esm', platform: 'browser', target: 'es2022', outfile: resolve(dest, 'feed-filter.worker.js'), legalComments: 'eof', metafile: true }));
     const rawName = RUNTIME.wasm.replace(/\.gz$/, '');
     const binary = await readFile(resolve(root, 'node_modules/onnxruntime-web/dist', rawName));
     if (binary.byteLength !== RUNTIME.byteLength || hash(binary) !== RUNTIME.sha256) throw new Error('The installed ONNX runtime does not match the pinned payload.');
@@ -95,7 +96,7 @@ for (const [name, source, entry] of [['web', root, 'src/app.js'], ['site', resol
     console.log(`runtime: ${binary.length} → ${compressed.length} bytes; SHA256 ${RUNTIME.sha256}`);
   }
   await writeNotices(dest, results, name === 'web');
-  const headers = `/*\n  X-Content-Type-Options: nosniff\n  Referrer-Policy: no-referrer\n  Permissions-Policy: camera=(), microphone=(), geolocation=()\n  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self'; img-src 'self' data: https:; connect-src 'self' wss: https://mint.coinos.io https://upload.iris.to https://api.coinbase.com https://cdn.iris.to https://huggingface.co https://*.huggingface.co https://*.hf.co https://*.xethub.hf.co; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'\n`;
+  const headers = `/*\n  X-Content-Type-Options: nosniff\n  Referrer-Policy: no-referrer\n  Permissions-Policy: camera=(), microphone=(), geolocation=${name === 'web' ? '(self)' : '()'}\n  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self'; img-src 'self' data: https:; connect-src 'self' wss: https://mint.coinos.io https://upload.iris.to https://api.coinbase.com https://cdn.iris.to https://huggingface.co https://*.huggingface.co https://*.hf.co https://*.xethub.hf.co; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'\n`;
   await writeFile(resolve(dest, '_headers'), headers);
   await writeFile(resolve(dest, 'robots.txt'), 'User-agent: *\nAllow: /\n');
   const largest = await checkAssetSizes(dest);

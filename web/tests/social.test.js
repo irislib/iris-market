@@ -2,7 +2,7 @@ import test, { beforeEach, afterEach, mock } from 'node:test'
 import assert from 'node:assert/strict'
 import { finalizeEvent, getPublicKey } from 'nostr-tools/pure'
 import { npubEncode, nsecEncode } from 'nostr-tools/nip19'
-import { fetchFollows, normalizePublicKey } from '../src/social.js'
+import { fetchFollows, normalizePublicKey } from '../src/social.ts'
 
 const now = 1800000000
 // The graph library also checks the real clock when accepting signed lists.

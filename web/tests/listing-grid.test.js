@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ListingWindow, setupListingGrid } from '../src/listing-grid.js';
+import { ListingWindow, setupListingGrid } from '../src/listing-grid.ts';
 const items = n => Array.from({length:n}, (_,id) => ({id:String(id),title:String(id)}));
 test('initial window is bounded; load more retains the first page despite new rankings', () => {
   const view = new ListingWindow(24), all = items(80);

@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { finalizeEvent, generateSecretKey, getPublicKey, verifiedSymbol } from 'nostr-tools'
-import { DEFAULT_CURRENCY, RATE_POLICY, SNORT_RATES, COINBASE_RATES_URL, normalizeCurrency, parseSnortRateEvent, parseCoinbaseRates, fetchCoinbaseRates, setupRates, convert, formatPrice } from '../src/currency.js'
+import { DEFAULT_CURRENCY, RATE_POLICY, SNORT_RATES, COINBASE_RATES_URL, normalizeCurrency, parseSnortRateEvent, parseCoinbaseRates, fetchCoinbaseRates, setupRates, convert, formatPrice } from '../src/currency.ts'
 
 const now = 1_790_000_000
 const body = { data: { currency: 'BTC', rates: { BTC: '1.0', EUR: '90000', USD: '100000', GBP: '80000', JPY: '15000000' } } }

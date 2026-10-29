@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { rankListings } from '../src/ranking.js';
+import { rankListings } from '../src/ranking.ts';
 const now = 10000000;
 const item = (id, author = id, extra = {}) => ({ id, author, title: 'Bicycle', category: 'Transport', createdAt: now, ...extra });
 test('verified relationships help discovery without removing unknown authors', () => {
@@ -27,7 +27,7 @@ test('prices and offer/request side do not buy rank; title relevance can help', 
   assert.deepEqual(rankListings(listings, { now }).map(x => x.id), rankListings(listings.map(x => ({ ...x, price: '1', side: 'offer' })), { now }).map(x => x.id));
 });
 
-import {ListingWindow} from '../src/listing-grid.js';
+import {ListingWindow} from '../src/listing-grid.ts';
 test('bookmarking keeps the current Browse page stable when saved interests change ranking',()=>{
  const listings=Array.from({length:60},(_,i)=>item(String(i).padStart(2,'0'),'author-'+i,{category:i===20?'Home':'Tech',createdAt:now-i*100}));
  const saved=new Set(),view=new ListingWindow(24),before=view.update(rankListings(listings,{saved,now}),'browse');

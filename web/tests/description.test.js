@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {descriptionNodes,safeDescriptionUrl,renderDescription} from '../src/description.js';
+import {descriptionNodes,safeDescriptionUrl,renderDescription} from '../src/description.ts';
 const flatten=nodes=>nodes.flatMap(node=>[node,...flatten(node.children||[])]);
 test('NIP99 descriptions support plain text, paragraphs, headings, lists, emphasis, quotes and code',()=>{
   const nodes=flatten(descriptionNodes('# Desk\n\n**Oak** with *drawers*.\n\n- First\n- Second\n\n> Pickup\n\n```\n<script>literal</script>\n```'));

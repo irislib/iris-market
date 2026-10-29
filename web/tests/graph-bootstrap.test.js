@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { SocialGraph } from 'nostr-social-graph'
-import { GRAPH_BOOTSTRAP, decodeGraphBootstrap, loadGraphBootstrap } from '../src/graph-bootstrap.js'
+import { GRAPH_BOOTSTRAP, decodeGraphBootstrap, loadGraphBootstrap } from '../src/graph-bootstrap.ts'
 
 const bytes = new Uint8Array(await readFile(new URL('../node_modules/nostr-social-graph/data/socialGraph.bin', import.meta.url)))
 

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createChatDrafts} from '../src/chat-drafts.js';
+import {createChatDrafts} from '../src/chat-drafts.ts';
 
 test('purchase enquiry remains a draft through sign-in and does not overwrite typing',()=>{
   const drafts=createChatDrafts();

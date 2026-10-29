@@ -190,7 +190,7 @@ test('a late source failure after a full match window is handled on continuation
   setRows(Array.from({length:24},(_,i)=>({...bicycle,id:`stream-${i}`})));await until(()=>finished);await run;
   assert.equal(ui.pagination().matches,24);assert.equal(ui.searching(),false);
   source.reject(Error('Remaining listings unavailable'));await Promise.resolve();
-  await ui.loadMore();assert.equal(fetches,1);assert.equal(ui.pagination().paused,true);assert.match(field('ai-error').textContent,/Remaining listings unavailable/);
+  await ui.loadMore();assert.equal(fetches,1);assert.equal(ui.pagination().paused,true);assert.equal(field('ai-error').textContent,'');assert.match(ui.pagination().error,/Listings unavailable/);assert.match(field('ai-progress').textContent,/Load more to retry/);assert(client.info,'a source error must not unload the model');
   assert.equal(field('ai-summary-text').textContent,'Search paused · 24 matches');
   field('ai-show-all').onclick();assert.equal(field('ai-summary-text').textContent,'Showing all listings');
 });
@@ -354,4 +354,63 @@ test('an unavailable remembered Browser choice preserves explicit Off',async()=>
   const {ui,field,calls}=fixture({mode:'ai',storage,browserClient:new BrowserFeedFilterClient({getAPI:()=>undefined}),autoPrepare:true});await ui.ready;
   assert.equal(ui.enabled(),false);assert.equal(field('ai-model').value,'browser');assert.equal(calls.length,0);
   assert.equal(storage.getItem(AI_MODE_STORAGE_KEY),'off');
+});
+
+
+test('a relay pagination failure preserves model and decisions and manual retry resumes without reclassification',async()=>{
+  const good={...bicycle,id:'known-match'},bad={...bicycle,id:'known-negative',title:'No match'},next={...bicycle,id:'new-match'};
+  const modelInfo={model:'deberta'};let fetches=0,disposals=0,classified=0,harness;
+  const client={info:modelInfo,load:async()=>{throw Error('must reuse the loaded model');},async classify(_condition,text){classified++;return{score:text.includes('No match')?.1:.9};},dispose(){disposals++;this.info=null;}};
+  harness=fixture({rows:[good,bad],query:'a bicycle',client,fetchMoreCandidates:async()=>{
+    if(++fetches===1)throw Error('Private relay error details');
+    harness.setRows([good,bad,next]);return false;
+  }});
+  await harness.field('search-run').onclick();
+  assert.equal(fetches,1);assert.equal(classified,2);assert.equal(disposals,0);assert.equal(client.info,modelInfo);
+  assert.equal(harness.ui.pagination().paused,true);assert.equal(harness.ui.pagination().hasMore,true);
+  assert.equal(harness.ui.pagination().matches,1);assert.equal(harness.ui.scoreFor(good),.9);assert.equal(harness.ui.scoreFor(bad),.1);
+  assert.equal(harness.ui.isVisible(good),true);assert.equal(harness.ui.isVisible(bad),false);
+  assert.equal(harness.field('ai-error').textContent,'');assert.doesNotMatch(harness.ui.pagination().error,/Private relay/);
+  harness.field('search').value='an unsubmitted edit';await harness.ui.loadMore();
+  assert.equal(fetches,2);assert.equal(classified,3,'known decisions survive the retry');assert.equal(disposals,0);
+  assert.equal(harness.ui.query(),'a bicycle');assert.equal(harness.ui.pagination().matches,2);assert.equal(harness.ui.pagination().target,24);
+  assert.equal(harness.ui.pagination().paused,false);assert.equal(harness.ui.pagination().error,'');assert.equal(harness.ui.pagination().hasMore,false);
+});
+
+test('an actual classification failure still disposes the model and reports an AI error',async()=>{
+  let disposals=0;
+  const client={info:{model:'deberta'},load:async()=>{},classify:async()=>{throw Error('Inference failed');},dispose(){disposals++;this.info=null;}};
+  const {field,ui}=fixture({query:'a bicycle',client});await field('search-run').onclick();
+  assert.equal(disposals,1);assert.equal(client.info,null);assert.equal(ui.pagination().paused,true);
+  assert.match(field('ai-error').textContent,/Inference failed.*Show all/);
+});
+
+test('automatic enabling and a user model switch survive a failed Browser load and refresh',async()=>{
+  const storage=memoryStorage();
+  const browserClient=new BrowserFeedFilterClient({getAPI:()=>({availability:async()=> 'available',create:async()=>{throw Error('Browser preparation timed out');}})});
+  const first=fixture({mode:'text',storage,browserClient,autoPrepare:true});await first.ui.ready;
+  assert.equal(first.ui.enabled(),true);assert.equal(storage.getItem(AI_MODE_STORAGE_KEY),'on','automatic enabling is a durable mode choice');
+  first.field('ai-model').value='browser';first.field('ai-model').onchange();
+  assert.equal(storage.getItem(AI_MODEL_STORAGE_KEY),'browser');assert.equal(storage.getItem(AI_MODE_STORAGE_KEY),'on');
+  await first.field('search-run').onclick();assert.match(first.field('ai-error').textContent,/Browser preparation timed out/);
+  const reloaded=fixture({mode:'text',storage,browserClient:new BrowserFeedFilterClient({getAPI:()=>undefined}),autoPrepare:true});await reloaded.ui.ready;
+  assert.equal(reloaded.ui.enabled(),true);assert.equal(reloaded.field('ai-model').value,'browser');assert.equal(reloaded.calls.length,0);
+});
+
+test('model selection persists current Off instead of enabling AI on reload',async()=>{
+  const storage=memoryStorage({[AI_MODE_STORAGE_KEY]:'off'});
+  const first=fixture({mode:'ai',storage});await first.ui.ready;
+  first.field('ai-model').value='browser';first.field('ai-model').onchange();
+  assert.equal(storage.getItem(AI_MODE_STORAGE_KEY),'off');
+  const reloaded=fixture({mode:'ai',storage,autoPrepare:true,browserClient:new BrowserFeedFilterClient({getAPI:()=>undefined})});await reloaded.ui.ready;
+  assert.equal(reloaded.ui.enabled(),false);assert.equal(reloaded.field('ai-model').value,'browser');assert.equal(reloaded.calls.length,0);
+});
+
+test('a legacy remembered model with a missing mode migrates to On without downloading unavailable Browser AI',async()=>{
+  for(const model of ['browser','deberta']) {
+    const storage=memoryStorage({[AI_MODEL_STORAGE_KEY]:model});
+    const {ui,field,calls}=fixture({mode:'text',storage,autoPrepare:false,browserClient:new BrowserFeedFilterClient({getAPI:()=>undefined})});
+    assert.equal(ui.enabled(),true);assert.equal(field('ai-model').value,model);await ui.ready;
+    assert.equal(storage.getItem(AI_MODE_STORAGE_KEY),'on');assert.equal(calls.length,0);
+  }
 });

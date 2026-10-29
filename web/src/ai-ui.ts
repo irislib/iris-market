@@ -18,13 +18,16 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
   let preparation:{model:string;runtime:typeof client|BrowserFeedFilterClient;promise:Promise<unknown>}|undefined,prepareGeneration=0,downloadFraction:number|undefined;
   const runtime=()=>$('ai-model').value==='browser'?browserClient:client;
   const setEnabled=(active:boolean)=>{$('search-mode').value=active?'ai':'text';$('search-mode').setAttribute('aria-pressed',String(active));};
+  // Older model selection saved no mode, even when automatic preparation had
+  // enabled AI. Restore that choice without overriding an explicit Off.
+  if(preference===null&&['browser','deberta'].includes(preferredModel)){preference='on';writeSetting(AI_MODE_STORAGE_KEY,preference);}
   if(preference==='on'||preference==='off')setEnabled(preference==='on');
   if(preferredModel==='deberta')$('ai-model').value='deberta';
   let browserOption:HTMLOptionElement|undefined;
   if(preferredModel==='browser'){
     browserOption=element('option','Browser model · checking availability');browserOption.value='browser';$('ai-model').append(browserOption);$('ai-model').value='browser';$('ai-model').closest?.('label')?.removeAttribute('hidden');
   }
-  let targetMatches=24,sourceExhausted=false;
+  let targetMatches=24,sourceExhausted=false,sourceError:string|null=null;
   let sourceEpoch=0,sourceRequest:SourceRequest|null=null,wakeCandidates:(()=>void)|null=null;
   const progress=element('progress');progress.id='ai-download-progress';progress.max=1;progress.hidden=true;progress.setAttribute('aria-label','Model download');
   $('ai-options').append(progress);
@@ -54,7 +57,7 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
     $('search-mode').title=preparing?`Preparing AI${downloadFraction===undefined?'':` · ${Math.round(downloadFraction*100)}%`}`:active?'Turn off AI search':'Turn on AI search';
     progress.hidden=phase!=='loading';
     if(active&&!busy&&!$('ai-error').textContent){
-      $('ai-progress').textContent = needsCPU() ? 'Qwen is unavailable in this browser. Use the smaller CPU model.' : submittedQuery&&!candidates.length ? 'Refresh listings or clear filters to search.' : '';
+      $('ai-progress').textContent = sourceError || (needsCPU() ? 'Qwen is unavailable in this browser. Use the smaller CPU model.' : submittedQuery&&!candidates.length ? 'Refresh listings or clear filters to search.' : '');
     }
     $('ai-progress').hidden=busy||!$('ai-progress').textContent;
     if(active)$('search').setAttribute('aria-describedby','ai-progress');else $('search').removeAttribute('aria-describedby');
@@ -100,6 +103,7 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
     });
   }
   function stop({reset=false,unload=true}={}) {
+    sourceError=null;
     generation++;sourceEpoch++;wakeCandidates?.();if(unload){prepareGeneration++;preparation=undefined;downloadFraction=undefined;client.dispose();browserClient.dispose();}phase='idle';paused=!reset;progress.hidden=true;$('ai-progress').textContent='';
     if(reset){scores.clear();submittedQuery='';showAll=false;sourceExhausted=false;targetMatches=24;$('ai-error').textContent='';}
     refresh();onChange();
@@ -113,9 +117,10 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
     const selected=runtime();
     const releaseModel='pin' in selected&&typeof selected.pin==='function'?selected.pin():()=>{};
     wakeCandidates?.();
+    const retrySource=continuation&&!!sourceError;sourceError=null;
     paused=false;
     if(!continuation){sourceEpoch++;submittedQuery=$('search').value.trim();scores.clear();showAll=false;sourceExhausted=false;targetMatches=24;}
-    else targetMatches=matchCount()+24;
+    else if(!retrySource)targetMatches=matchCount()+24;
     $('ai-error').textContent='';
     phase=selected.info?'searching':'loading';onChange();
     if(selected.info&&!submittedQuery){phase='idle';refresh();releaseModel();return;}
@@ -138,7 +143,7 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
           if(sourceRequest?.done){
             const completed=sourceRequest;sourceRequest=null;
             if(completed.epoch===sourceEpoch){
-              if(completed.error)throw completed.error;
+              if(completed.error){paused=true;sourceError='Listings unavailable. Load more to retry.';sourceExhausted=false;break;}
               if(completed.more===false)sourceExhausted=true;
             }
             continue;
@@ -183,7 +188,7 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
   };
   $('search').addEventListener('click',activateBrowser);$('search').addEventListener('keydown',activateBrowser);
   $('search-run').onclick = () => run();
-  $('ai-model').onchange = () => {preferredModel=$('ai-model').value;writeSetting(AI_MODEL_STORAGE_KEY,preferredModel);stop({reset:true});};
+  $('ai-model').onchange = () => {preferredModel=$('ai-model').value;writeSetting(AI_MODEL_STORAGE_KEY,preferredModel);preference=enabled()?'on':'off';writeSetting(AI_MODE_STORAGE_KEY,preference);stop({reset:true});};
   $('ai-threshold').onchange = () => { refresh(); onChange(); };
   $('ai-stop').onclick = () => stop();
   $('ai-unload').onclick = () => {preference='off';writeSetting(AI_MODE_STORAGE_KEY,preference);setEnabled(false);stop({reset:true});};
@@ -198,10 +203,10 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
     }
     if(!autoPrepare||preference==='off'||phase!=='idle'||preferredModel==='browser'&&available==='unavailable')return;
     if(!runtime().info&&(saveData()||$('ai-model').value==='browser'&&available!=='available'))return;
-    try{await prepareModel();if(!closed&&preference!=='off'&&!textSubmitted){setEnabled(true);refresh();onChange();}}
+    try{await prepareModel();if(!closed&&preference!=='off'&&!textSubmitted){preference='on';writeSetting(AI_MODE_STORAGE_KEY,preference);setEnabled(true);refresh();onChange();}}
     catch{/* Background preparation is optional. Explicit Search can retry without blocking Browse. */}
   });
-  const pagination=()=>{const rows=candidates(),remaining=rows.filter(listing=>!scores.has(keyFor(listing))).length;return{hasMore:enabled()&&!!submittedQuery&&!showAll&&(remaining>0||!!fetchMoreCandidates&&!sourceExhausted),loading:phase!=='idle',paused,error:$('ai-error').textContent,remaining,reviewed:rows.length-remaining,matches:matchCount(),target:targetMatches};};
+  const pagination=()=>{const rows=candidates(),remaining=rows.filter(listing=>!scores.has(keyFor(listing))).length;return{hasMore:enabled()&&!!submittedQuery&&!showAll&&(remaining>0||!!fetchMoreCandidates&&!sourceExhausted),loading:phase!=='idle',paused,error:sourceError||$('ai-error').textContent,remaining,reviewed:rows.length-remaining,matches:matchCount(),target:targetMatches};};
   const scoreFor=(listing:SearchListing):number|undefined=>{
     if(!enabled()||showAll||!submittedQuery||$('ai-error').textContent)return undefined;
     const score=scores.get(keyFor(listing));return Number.isFinite(score)?score:undefined;

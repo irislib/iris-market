@@ -1,5 +1,5 @@
 import { byId, element } from './dom.ts';
-import { FeedFilterClient, FEED_MODELS } from './feed-filter/client.ts';
+import { FeedFilterClient } from './feed-filter/client.ts';
 import {BrowserFeedFilterClient} from './feed-filter/browser-client.ts';
 import {planBrowserTags} from './feed-filter/browser-tags.ts';
 import { searchCondition, listingSearchTexts } from './search-condition.ts';
@@ -48,9 +48,9 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
     $('ai-stop').hidden = !busy;
     $('ai-model').disabled = busy;
     $('ai-threshold').disabled = ['qwen35','browser'].includes($('ai-model').value);
-    const query=$('search').value.trim(),download=FEED_MODELS[$('ai-model').value]?.downloadMB;
     $('search-run').disabled = phase==='loading';
-    $('search-run').textContent = !active ? 'Search' : phase==='loading' ? 'Loading model…' : needsCPU() ? 'Use CPU model' : !runtime().info ? $('ai-model').value==='browser' ? 'Use browser AI' : `${query?'Load & search':'Load model'} · ${download} MB` : 'Search with AI';
+    $('search-run').textContent = 'Search';
+    $('search-run').setAttribute('aria-busy',String(phase==='loading'));
     const preparing=!!preparation||phase==='loading';
     $('search-mode').setAttribute('data-loading',String(preparing));$('search-mode').setAttribute('data-indeterminate',String(preparing&&downloadFraction===undefined));
     $('search-mode').setAttribute('aria-busy',String(preparing));$('search-mode').style?.setProperty('--ai-download',String(downloadFraction??0));

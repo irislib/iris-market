@@ -24,34 +24,34 @@ function fixture({rows=[bicycle],query='',gpu=true,client:provided,fetchMoreCand
 
 test('empty AI search explicitly loads the model without classifying any listing',async()=>{
   const {field,calls}=fixture();
-  assert.equal(field('search-run').textContent,'Load model · 87 MB');assert.equal(field('search-run').disabled,false);
+  assert.equal(field('search-run').textContent,'Search');assert.equal(field('search-run').disabled,false);
   assert.equal(field('search').attributes.get('aria-describedby'),'ai-progress');
   await field('search-run').onclick();assert.deepEqual(calls,[['load','deberta','wasm']]);
-  assert.equal(field('search-run').textContent,'Search with AI');assert.doesNotMatch(field('ai-progress').textContent,/ready/i);
+  assert.equal(field('search-run').textContent,'Search');assert.doesNotMatch(field('ai-progress').textContent,/ready/i);
   await field('search-run').onclick();assert.equal(calls.length,1);
 });
 
 test('typing a query enables explicit download and reviews the existing candidates',async()=>{
   const {field,calls,ui}=fixture();field('search').value='bicycle';field('search').dispatchEvent(new Event('input'));
-  assert.equal(field('search-run').disabled,false);assert.equal(field('search-run').textContent,'Load & search · 87 MB');
+  assert.equal(field('search-run').disabled,false);assert.equal(field('search-run').textContent,'Search');
   await field('search-run').onclick();assert.deepEqual(calls[0],['load','deberta','wasm']);assert.equal(calls[1][0],'classify');assert.match(calls[1][1],/bicycle/);
-  assert.equal(field('search-run').textContent,'Search with AI');assert.equal(field('search-run').disabled,false);assert.equal(ui.isVisible(bicycle),true);
+  assert.equal(field('search-run').textContent,'Search');assert.equal(field('search-run').disabled,false);assert.equal(ui.isVisible(bicycle),true);
 });
 
 test('no candidates allows explicit preload, then becomes searchable when listings arrive',async()=>{
   const {field,calls,setRows}=fixture({rows:[],query:'bicycle'});
-  assert.equal(field('search-run').disabled,false);assert.equal(field('search-run').textContent,'Load & search · 87 MB');assert.equal(field('ai-progress').textContent,'');
+  assert.equal(field('search-run').disabled,false);assert.equal(field('search-run').textContent,'Search');assert.equal(field('ai-progress').textContent,'');
   await field('search-run').onclick();assert.equal(calls.filter(call=>call[0]==='classify').length,0);
   assert.equal(field('search-run').disabled,false);assert.doesNotMatch(field('ai-progress').textContent,/ready/i);
-  setRows([bicycle]);assert.equal(field('search-run').disabled,false);assert.equal(field('search-run').textContent,'Search with AI');
+  setRows([bicycle]);assert.equal(field('search-run').disabled,false);assert.equal(field('search-run').textContent,'Search');
   await field('search-run').onclick();assert.equal(calls.filter(call=>call[0]==='load').length,1);assert.equal(calls.filter(call=>call[0]==='classify').length,1);
 });
 
 test('unsupported WebGPU offers an explicit CPU model choice before downloading',async()=>{
   const {field,calls,ui}=fixture({query:'bicycle',gpu:false});field('ai-model').value='qwen35';ui.refresh();
-  assert.equal(field('search-run').textContent,'Use CPU model');assert.match(field('ai-progress').textContent,/unavailable in this browser/);
+  assert.equal(field('search-run').textContent,'Search');assert.match(field('ai-progress').textContent,/unavailable in this browser/);
   await field('search-run').onclick();assert.equal(field('ai-model').value,'deberta');assert.equal(calls.some(call=>call[0]==='load'),false);
-  assert.equal(field('search-run').textContent,'Load & search · 87 MB');
+  assert.equal(field('search-run').textContent,'Search');
 });
 
 test('mode changes refresh candidates and text search never loads a model',async()=>{
@@ -122,7 +122,7 @@ test('submission hides unknowns and infinite-scroll pages collect 24 matches eac
   field('search').value='unsubmitted draft';field('search').dispatchEvent(new Event('input'));await ui.loadMore();
   assert.equal(classified,48);assert.equal(ui.query(),'bicycle');assert.equal(ui.pagination().remaining,5);assert.equal(ui.isVisible(rows[0]),true);
   await ui.loadMore();assert.equal(classified,53);assert.equal(ui.pagination().hasMore,false);assert.equal(ui.pagination().reviewed,53);assert.equal(ui.isVisible(rows[52]),true);
-  assert.equal(field('search-run').textContent,'Search with AI');assert.doesNotMatch(field('ai-summary-text').textContent,/next 12/);
+  assert.equal(field('search-run').textContent,'Search');assert.doesNotMatch(field('ai-summary-text').textContent,/next 12/);
 });
 
 test('sparse matches scan beyond 24 candidates until each matching window is filled',async()=>{

@@ -19,7 +19,10 @@ env.backends.onnx.wasm.wasmPaths = {
 env.backends.onnx.wasm.numThreads = 1
 env.backends.onnx.wasm.proxy = false
 let report: ProgressHandler = () => {}
-env.fetch = createPinnedModelFetch(env.fetch, { onProgress: (message,details) => report(message,details) })
+env.fetch = createPinnedModelFetch(env.fetch, {
+  onProgress: (message,details) => report(message,details),
+  readCache: async request => (await globalThis.caches?.open(env.cacheKey))?.match(request),
+})
 let runtimePromise: Promise<Uint8Array<ArrayBuffer>>
 async function ensureRuntime() {
   if (!runtimePromise) runtimePromise = loadRuntimeBinary(message => report(message)).catch(error => { runtimePromise = undefined; throw error })

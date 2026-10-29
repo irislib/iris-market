@@ -21,13 +21,19 @@ export function pinnedModelAsset(input: RequestInfo | URL, init?: RequestInit, m
   const name = url.pathname.split('/').at(-1)
   const expected = spec.files[name]
   if (name.includes('.onnx') && !expected) throw new Error('The model requested an unpinned weight file.')
-  return { request: isRequest ? new Request(url.href, input) : url.href, spec, expected, metadataOnly }
+  return { request: isRequest ? new Request(url.href, input) : url.href, spec, expected, metadataOnly, tokenizerProbe: Boolean(probe && metadataOnly) }
 }
 
-export function createPinnedModelFetch(fetchImpl: typeof fetch, { onProgress = () => {}, models = FEED_MODELS }: { onProgress?: ProgressHandler; models?: Readonly<Record<string, FeedModelSpec>> } = {}): typeof fetch {
+export function createPinnedModelFetch(fetchImpl: typeof fetch, { onProgress = () => {}, models = FEED_MODELS, readCache }: { onProgress?: ProgressHandler; models?: Readonly<Record<string, FeedModelSpec>>; readCache?: (request: RequestInfo) => Promise<Response | undefined> } = {}): typeof fetch {
   return async (input: RequestInfo | URL, init?: RequestInit) => {
-    const { request, spec, expected, metadataOnly } = pinnedModelAsset(input, init, models)
-    const response = await fetchImpl(request, init)
+    const { request, spec, expected, metadataOnly, tokenizerProbe } = pinnedModelAsset(input, init, models)
+    let response: Response | undefined
+    // Transformers checks the mutable probe key before this adapter pins it.
+    // Recheck only that metadata key in its revision-bound cache for offline use.
+    if (tokenizerProbe && readCache) {
+      try { const cached = await readCache(request); if (cached?.status === 200) response = cached } catch { /* The pinned network request remains available when browser caching is unavailable. */ }
+    }
+    response ??= await fetchImpl(request, init)
     if (!response.ok || !expected) return response
     const maxBytes = Math.ceil(spec.downloadMB * 1.15) * 1000000
     // Range probes inspect metadata only. They are never model bytes or cache entries.

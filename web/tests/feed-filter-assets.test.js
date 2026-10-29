@@ -19,6 +19,43 @@ test('v4 tokenizer metadata probe is rewritten to the immutable revision before 
   assert.equal(pinnedModelAsset(`${pinned}/tokenizer.json`).request, `${pinned}/tokenizer.json`)
 })
 
+test('offline tokenizer probe reads only the exact pinned cache key before any network request', async () => {
+  const lookups = []
+  const fetcher = createPinnedModelFetch(async () => { throw new Error('Network is disabled') }, {
+    readCache: async request => {
+      lookups.push(request instanceof Request ? request.url : String(request))
+      return new Response('{"tokenizer_class":"DebertaV2Tokenizer"}', { headers: { 'content-type': 'application/json' } })
+    },
+  })
+  const request = new Request(`https://huggingface.co/${model.repo}/resolve/main/tokenizer_config.json`, range)
+  assert.equal((await (await fetcher(request)).json()).tokenizer_class, 'DebertaV2Tokenizer')
+  assert.deepEqual(lookups, [`${pinned}/tokenizer_config.json`])
+  await assert.rejects(fetcher(`https://huggingface.co/${model.repo}/resolve/main/tokenizer_config.json`), /unpinned/)
+  await assert.rejects(fetcher(`${pinned.replace(model.revision, '0'.repeat(40))}/tokenizer_config.json`, range), /unpinned/)
+  assert.equal(lookups.length, 1)
+})
+
+test('missing, partial or unavailable metadata cache uses only the pinned network URL', async () => {
+  const requests = []
+  for (const readCache of [async () => undefined, async () => new Response('x', { status: 206 }), async () => { throw new Error('Cache unavailable') }]) {
+    const fetcher = createPinnedModelFetch(async request => {
+      requests.push(String(request))
+      return new Response('x', { status: 206, headers: { 'content-range': 'bytes 0-0/100' } })
+    }, { readCache })
+    assert.equal((await fetcher(`https://huggingface.co/${model.repo}/resolve/main/tokenizer_config.json`, range)).status, 206)
+  }
+  assert.deepEqual(requests, Array(3).fill(`${pinned}/tokenizer_config.json`))
+})
+
+test('the metadata cache adapter cannot serve or bypass integrity checks for model weights', async () => {
+  let lookups = 0
+  const fetcher = createPinnedModelFetch(async () => new Response('corrupt weight'), {
+    readCache: async () => { lookups++; return new Response('unverified cache data') },
+  })
+  await assert.rejects(fetcher(`${pinned}/onnx/model_quantized.onnx`), /integrity/)
+  assert.equal(lookups, 0)
+})
+
 test('mutable full downloads, other assets, repositories and protocols remain blocked', () => {
   for (const [url, init] of [
     [`https://huggingface.co/${model.repo}/resolve/main/tokenizer_config.json`, undefined],

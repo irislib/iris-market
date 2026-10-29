@@ -128,18 +128,16 @@ final class MarketUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Listing"].waitForExistence(timeout: 5))
         app.navigationBars["Listing"].buttons["Done"].tap()
         let ai = app.buttons["aiSearchToggle"]
-        ai.tap()
-        XCTAssertEqual(ai.value as? String, "On")
-        XCTAssertTrue(app.textFields["marketSearch"].exists)
-        let searchAction = app.buttons["runAISearch"]
-        XCTAssertTrue(searchAction.exists)
-        XCTAssertEqual(searchAction.label, "Search with AI")
-        XCTAssertLessThan(abs(searchAction.frame.midY - app.textFields["marketSearch"].frame.midY), 12)
-        capture("16-shared-search")
-        ai.tap()
+        let previous = ai.value as? String
+        ai.press(forDuration: 0.7)
+        XCTAssertTrue(app.navigationBars["AI search"].waitForExistence(timeout: 5))
+        capture("16-sparkle-settings")
+        app.buttons["Done"].tap()
+        XCTAssertEqual(ai.value as? String, previous)
+        XCTAssertFalse(app.buttons["runAISearch"].exists)
     }
 
-    func testCompactAISearchStaysInlineAndTextSearchWaitsForSubmit() throws {
+    func testSparkleLongPressAndKeyboardSearchStayInline() throws {
         let search = app.textFields["marketSearch"]
         search.tap(); search.typeText("no-such-preview-listing-783")
         XCTAssertFalse(app.staticTexts["No results"].exists)
@@ -147,16 +145,55 @@ final class MarketUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["No results"].waitForExistence(timeout: 5))
         app.buttons["Clear search"].tap()
         XCTAssertTrue(app.buttons.matching(identifier: "listingOpen").firstMatch.waitForExistence(timeout: 5))
-        app.buttons["aiSearchToggle"].tap()
-        let action = app.buttons["runAISearch"]
-        XCTAssertTrue(action.waitForExistence(timeout: 5))
-        XCTAssertEqual(action.label, "Search with AI")
-        XCTAssertGreaterThan(action.frame.width, 0)
-        XCTAssertGreaterThanOrEqual(action.frame.minX, 0)
-        XCTAssertLessThanOrEqual(action.frame.maxX, app.frame.width)
-        XCTAssertLessThan(abs(action.frame.midY - search.frame.midY), 12)
-        capture("compact-ai-search-inline")
-        app.buttons["aiSearchToggle"].tap()
+        let sparkle = app.buttons["aiSearchToggle"]
+        XCTAssertGreaterThanOrEqual(sparkle.frame.minX, 0)
+        XCTAssertLessThanOrEqual(sparkle.frame.maxX, app.frame.width)
+        XCTAssertLessThan(abs(sparkle.frame.midY - search.frame.midY), 12)
+        XCTAssertFalse(app.buttons["runAISearch"].exists)
+        let previous = sparkle.value as? String
+        sparkle.press(forDuration: 0.7)
+        XCTAssertTrue(app.navigationBars["AI search"].waitForExistence(timeout: 5))
+        capture("sparkle-long-press-settings")
+        app.buttons["Done"].tap()
+        XCTAssertEqual(sparkle.value as? String, previous, "Long press must not also toggle AI")
+        capture("sparkle-only-search-keyboard-submit")
+    }
+
+    func testUnavailableAppleTapShowsAvailabilityWithoutFalseOn() throws {
+        let sparkle = app.buttons["aiSearchToggle"]
+        sparkle.press(forDuration: 0.7)
+        XCTAssertTrue(app.navigationBars["AI search"].waitForExistence(timeout: 5))
+        app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Provider")).firstMatch.tap()
+        app.buttons["Apple on-device"].tap()
+        let readiness = app.staticTexts["appleAIAvailability"]
+        XCTAssertTrue(readiness.waitForExistence(timeout: 5))
+        let reason = readiness.label
+        XCTAssertFalse(reason.isEmpty)
+        setSwitch("enableAI", enabled: false)
+        app.buttons["Done"].tap()
+        if reason == "Ready on this device" { throw XCTSkip("This runtime has Apple Intelligence; unavailable transition is covered by injected lifecycle checks") }
+        XCTAssertEqual(sparkle.value as? String, "Off")
+        sparkle.tap()
+        XCTAssertTrue(app.navigationBars["AI search"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts["appleAIAvailability"].label, reason)
+        XCTAssertEqual(app.switches["enableAI"].value as? String, "0")
+        capture("apple-unavailable-reason")
+        setSwitch("enableAI", enabled: true)
+        app.buttons["Done"].tap()
+        let onUnavailable = NSPredicate(format: "value == %@", "On, unavailable")
+        expectation(for: onUnavailable, evaluatedWith: sparkle); waitForExpectations(timeout: 5)
+        let search = app.textFields["marketSearch"]
+        search.tap(); search.typeText("no-such-preview-listing-783\n")
+        XCTAssertTrue(app.navigationBars["AI search"].waitForExistence(timeout: 5), "Unavailable On must explain setup instead of running literal search")
+        app.buttons["Done"].tap()
+        XCTAssertTrue(app.buttons.matching(identifier: "listingOpen").firstMatch.exists, "The unavailable AI submit must not replace results with a literal filter")
+        sparkle.tap()
+        expectation(for: NSPredicate(format: "value == %@", "Off"), evaluatedWith: sparkle); waitForExpectations(timeout: 5)
+        sparkle.press(forDuration: 0.7)
+        XCTAssertTrue(app.navigationBars["AI search"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.switches["enableAI"].value as? String, "0", "Normal tap must persist Off even while Apple is unavailable")
+        capture("apple-unavailable-tap-off")
+        app.buttons["Done"].tap()
     }
 
     func testHomePhotosDefaultDoesNotHideSearchOrSavedListings() throws {

@@ -57,10 +57,22 @@ pub(crate) struct State {
     followers_request: u64,
     followers_cancel: Option<Arc<Notify>>,
     local_curation: Option<local_ai::Pending>,
+    remote_ai_cancel: Option<Arc<Notify>>,
     buying_request: u64,
     profile_listings: Option<profile_listings::Feed>,
 }
 impl State {
+    fn cancel_remote_ai(&mut self) {
+        if let Some(cancel) = self.remote_ai_cancel.take() {
+            // Retain a permit if invalidation happens before select starts.
+            cancel.notify_one();
+        }
+    }
+    fn remote_ai_current(&self, cancel: &Arc<Notify>) -> bool {
+        self.remote_ai_cancel
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, cancel))
+    }
     fn snapshot(&mut self) -> Result<Snapshot> {
         self.profiles.refresh_public_cache();
         if let Some(profile) = self.profile.as_mut() {
@@ -376,6 +388,7 @@ impl Market {
             followers_request: 0,
             followers_cancel: None,
             local_curation: None,
+            remote_ai_cancel: None,
             buying_request: 0,
             profile_listings: None,
         };
@@ -497,7 +510,11 @@ impl Market {
                 if query.len() > 300 || !["all", "offer", "request"].contains(&side.as_str()) {
                     bail!("Invalid search");
                 }
+                // Search mode cannot bypass the durable provider opt-in. Native
+                // clients separately gate platform model availability.
+                let ai_search = ai_search && s.settings.ai.enabled;
                 if s.query != query || s.ai_search != ai_search || s.side != side {
+                    s.cancel_remote_ai();
                     s.local_curation = None;
                     s.store.clear_relevance()?;
                     if side == "request" {
@@ -628,10 +645,14 @@ impl Market {
                 rates::validate_currency(&settings.currency)?;
                 let changed_relays = s.settings.relays != settings.relays;
                 s.store.save_settings(&settings)?;
+                s.cancel_remote_ai();
                 s.ai_message = None;
                 s.ai_check += 1;
                 s.ai_configured = true;
                 s.local_curation = None;
+                if !settings.ai.enabled {
+                    s.ai_search = false;
+                }
                 s.settings = settings;
                 s.status = "Settings saved".into();
                 self.notify.notify_one();
@@ -920,7 +941,7 @@ impl Market {
     }
 
     fn curate(&self, key: &str, check: bool) -> Result<()> {
-        let (settings, original_settings, search, candidates, ai_check) = {
+        let (settings, original_settings, search, candidates, ai_check, cancel) = {
             let mut s = self.state.lock().unwrap();
             if check {
                 s.ai_message = None;
@@ -930,6 +951,9 @@ impl Market {
             }
             if s.demo {
                 bail!("Leave Preview to connect an AI provider");
+            }
+            if !check && !s.settings.ai.enabled {
+                bail!("Enable AI in settings first");
             }
             if !check && (!s.ai_search || s.query.trim().is_empty()) {
                 bail!("Type what you are looking for in the search field");
@@ -953,23 +977,36 @@ impl Market {
             if check {
                 ai.enabled = true;
             }
+            s.cancel_remote_ai();
+            let cancel = Arc::new(Notify::new());
+            s.remote_ai_cancel = Some(cancel.clone());
             (
                 ai,
                 s.settings.ai.clone(),
                 (s.query.clone(), s.side.clone(), s.ai_search),
                 candidates,
                 s.ai_check,
+                cancel,
             )
         };
         let runtime = self.runtime.lock().unwrap();
         let runtime = runtime.as_ref().context("App has closed")?;
         if check {
             let started = std::time::Instant::now();
-            let result = runtime.block_on(ai::probe(&settings, key));
+            let result = runtime.block_on(async {
+                tokio::select! { biased; _ = cancel.notified() => None, result = ai::probe(&settings, key) => Some(result) }
+            });
+            let Some(result) = result else {
+                return Ok(());
+            };
             let mut s = self.state.lock().unwrap();
-            if s.settings.ai != original_settings || s.ai_check != ai_check {
+            if s.settings.ai != original_settings
+                || s.ai_check != ai_check
+                || !s.remote_ai_current(&cancel)
+            {
                 return Ok(());
             }
+            s.remote_ai_cancel = None;
             match result {
                 Ok(()) => {
                     let message = format!("Model connected · {} ms", started.elapsed().as_millis());
@@ -995,13 +1032,19 @@ impl Market {
         }
         let mut count = 0;
         for (l, event_id) in candidates {
-            let result = runtime.block_on(ai::classify(&settings, key, &l));
+            let result = runtime.block_on(async {
+                tokio::select! { biased; _ = cancel.notified() => None, result = ai::classify(&settings, key, &l) => Some(result) }
+            });
+            let Some(result) = result else {
+                return Ok(());
+            };
             let mut s = self.state.lock().unwrap();
             // A settings change invalidates in-flight decisions.
             if s.settings.ai != original_settings
                 || (s.query.clone(), s.side.clone(), s.ai_search) != search
+                || !s.remote_ai_current(&cancel)
             {
-                break;
+                return Ok(());
             }
             match result {
                 Ok(decision) => {
@@ -1009,6 +1052,7 @@ impl Market {
                     count += 1;
                 }
                 Err(error) => {
+                    s.remote_ai_cancel = None;
                     s.error = Some(error.to_string());
                     s.status = "Curation paused · all listings remain available".into();
                     s.revision += 1;
@@ -1017,6 +1061,10 @@ impl Market {
             }
         }
         let mut s = self.state.lock().unwrap();
+        if !s.remote_ai_current(&cancel) {
+            return Ok(());
+        }
+        s.remote_ai_cancel = None;
         s.status = format!("Reviewed {count} listings");
         s.error = None;
         s.revision += 1;
@@ -1024,6 +1072,7 @@ impl Market {
     }
     pub fn shutdown(&self) {
         self.stopped.store(true, Ordering::Release);
+        self.state.lock().unwrap().cancel_remote_ai();
         Self::cancel_followers(&mut self.state.lock().unwrap());
         self.notify.notify_waiters();
         if let Some(feed) = self.state.lock().unwrap().profile_listings.as_ref() {

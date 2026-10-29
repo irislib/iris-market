@@ -16,7 +16,7 @@ struct ProfileView: View {
                     Divider().padding(.leading, 61)
                     profileRow("My listings", symbol: "person.crop.circle.fill") { publicProfile = true }
                     Divider().padding(.leading, 61)
-                    profileRow("AI settings", subtitle: store.snapshot.settings.ai.enabled ? "Enabled" : "Disabled", symbol: "sparkles") { aiSettings = true }.accessibilityIdentifier("aiSettingsRow")
+                    profileRow("AI settings", subtitle: store.snapshot.settings.ai.enabled ? (store.aiSearchEnabled ? "Enabled" : "Unavailable") : "Disabled", symbol: "sparkles") { aiSettings = true }.accessibilityIdentifier("aiSettingsRow")
                     Divider().padding(.leading, 61)
                     profileRow("Connections & profile", symbol: "point.3.connected.trianglepath.dotted") { connectionSettings = true }
                 }.background(MarketTheme.surface.opacity(0.75), in: RoundedRectangle(cornerRadius: 23))
@@ -58,6 +58,7 @@ struct AISettingsView: View {
     @State private var customModel = false
     @State private var initialized = false
     @State private var owner = ""
+    @State private var aiIntentEpoch = 0
     @State private var autosave: Task<Void, Never>?
     private var preset: NativeAIProvider { NativeAIProvider.presets.first { $0.id == presetID }! }
     private var local: Bool { settings.ai.provider == "apple" }
@@ -70,13 +71,16 @@ struct AISettingsView: View {
         NavigationStack {
             Form {
                 Section {
-                    Toggle("AI search", isOn: $settings.ai.enabled)
+                    Toggle("AI search", isOn: $settings.ai.enabled).accessibilityIdentifier("enableAI")
                     Picker("Provider", selection: $presetID) {
                         ForEach(NativeAIProvider.presets.filter { ["apple", "systemone"].contains($0.id) }) { Text($0.label).tag($0.id) }
                         Section("Other providers") { ForEach(NativeAIProvider.presets.filter { !["apple", "systemone"].contains($0.id) }) { Text($0.label).tag($0.id) } }
                     }.pickerStyle(.menu)
                     if local {
-                        if let reason = OnDeviceAI.unavailableReason { Text(reason).font(.caption).foregroundStyle(MarketTheme.muted) }
+                        if let reason = store.appleAIUnavailableReason {
+                            if settings.ai.enabled { Text("AI search will be ready when Apple Intelligence is available.").font(.caption).foregroundStyle(MarketTheme.muted) }
+                            Text(reason).font(.caption).foregroundStyle(MarketTheme.muted).accessibilityIdentifier("appleAIAvailability") }
+                        else { Label("Ready on this device", systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(MarketTheme.green).accessibilityIdentifier("appleAIAvailability") }
                     } else {
                         if presetID == "custom" || presetID == "ollama" {
                             TextField("Service URL", text: $settings.ai.baseUrl).marketNoAutocapitalization().autocorrectionDisabled().marketURLKeyboard()
@@ -97,7 +101,7 @@ struct AISettingsView: View {
                     }
                     Button(local ? "Check model" : "Test connection") {
                         save { if $0 { store.runAI(type: "check_ai") } }
-                    }.disabled(store.busy || !settings.ai.enabled || !canSave || (local && OnDeviceAI.unavailableReason != nil))
+                    }.disabled(store.busy || !settings.ai.enabled || !canSave || (store.demo && !local) || (local && store.appleAIUnavailableReason != nil))
                     if let progress = store.localAIProgress { HStack { ProgressView(); Text(progress).font(.caption); Spacer(); Button("Stop") { store.cancelLocalAI() } } }
                     if let status = store.localAIStatus { Text(status).font(.caption).foregroundStyle(MarketTheme.muted) }
                     if let message = store.snapshot.aiMessage { Text(message).font(.caption).foregroundStyle(MarketTheme.muted) }
@@ -106,7 +110,7 @@ struct AISettingsView: View {
             }.scrollContentBackground(.hidden).background(MarketTheme.paper).navigationTitle("AI search").marketInlineTitle()
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { save(); dismiss() } } }
                 .onAppear {
-                    owner = store.snapshot.publicKey; store.aiPreferencesEditing = true
+                    owner = store.snapshot.publicKey; aiIntentEpoch = store.aiIntentEpoch; store.aiPreferencesEditing = true; store.refreshAIAvailability()
                     presetID = NativeAIProvider.matching(settings.ai).id
                     customModel = !preset.models.contains { $0.id == settings.ai.model }
                     loadKey(); saved.reset(settings); initialized = true
@@ -139,10 +143,13 @@ struct AISettingsView: View {
         guard saved.needsSave(settings) else { completion?(true); return }
         settings.ai.interests = ""; settings.ai.curateFeed = false
         let submitted = saved.submit(settings)
-        store.saveSettings(submitted.value, key: apiKey, replaceKey: submitted.replaceKey) { success in
+        var committedEpoch = aiIntentEpoch
+        let scheduledEpoch = store.saveSettings(submitted.value, key: apiKey, replaceKey: submitted.replaceKey, expectedAIIntent: aiIntentEpoch) { success in
             saved.complete(submitted, success: success)
+            if success { aiIntentEpoch = max(aiIntentEpoch, committedEpoch) }
             completion?(success)
         }
+        if let scheduledEpoch { committedEpoch = scheduledEpoch }
     }
 }
 

@@ -1,5 +1,6 @@
 package to.iris.market
 
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -13,13 +14,16 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.toggleableState
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.state.ToggleableState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -33,13 +37,14 @@ import org.json.JSONObject
     selected: (Listing) -> Unit, settings: () -> Unit, photoFilter: Boolean?, changePhotoFilter: (Boolean?) -> Unit) {
     var query by remember { mutableStateOf(state.query) }
     var showAll by remember { mutableStateOf(false) }
-    var aiSearch by remember { mutableStateOf(state.aiSearch) }
     var showMap by remember { mutableStateOf(false) }
     var sortMenu by remember { mutableStateOf(false) }
     var filtersMenu by remember { mutableStateOf(false) }
     val ai = remember(state.settings) { JSONObject(state.settings).optJSONObject("ai") }
     val localModel by model.localModelState.collectAsState()
-    val localInference = localModel.phase in setOf(LocalModelPhase.VERIFYING, LocalModelPhase.LOADING, LocalModelPhase.REVIEWING)
+    val localInference = ai?.optString("provider")=="litert" && localModel.phase in setOf(LocalModelPhase.VERIFYING, LocalModelPhase.LOADING, LocalModelPhase.REVIEWING)
+    val localReady = NativeAIReadiness.localReady(localModel.phase)
+    val aiSearch = NativeAIReadiness.isOn(ai?.optBoolean("enabled")==true,ai?.optString("provider") ?: "",ai?.optString("model") ?: "",ai?.optString("base_url") ?: "",localReady,state.demo)
     val canCurate = ai?.optBoolean("enabled") == true && state.aiSearch && state.error == null
     val hiddenCount = if (canCurate) state.listings.count { it.relevanceShow == false } else 0
     val wantsPhotos = NativePhotoFilter.wantsPhotos(photoFilter,state.query,state.side,showMap)
@@ -67,17 +72,25 @@ import org.json.JSONObject
                 OutlinedTextField(value = query, onValueChange = { query = it }, placeholder = { Text("Search listings") },
                     leadingIcon = { Icon(Icons.Filled.Search, null, tint = Forest) },
                     trailingIcon = { Row(verticalAlignment = Alignment.CenterVertically) {
-                        IconToggleButton(checked=aiSearch,onCheckedChange={aiSearch=it;showAll=false}) { Icon(Icons.Filled.AutoAwesome,"AI search",tint=if(aiSearch) Forest else Muted) }
-                        if(query.isNotBlank()) IconButton(onClick={query="";model.filter("",state.side)},modifier=Modifier.size(36.dp)) { Icon(Icons.Filled.Close,"Clear search") }
-                        if(aiSearch) IconButton(enabled=!busy&&!localInference&&!state.demo&&(ai?.optBoolean("enabled")!=true||query.isNotBlank()),onClick={if(ai?.optBoolean("enabled")==true) model.searchAI(query,state.side) else settings()},modifier=Modifier.size(40.dp).testTag("runAISearch").semantics { contentDescription = "Search with AI" }) {
+                        Box(Modifier.size(48.dp).combinedClickable(enabled=!busy||ai?.optBoolean("enabled")==true,role=Role.Switch,onClick={showAll=false;model.toggleAI(settings)},onLongClick=settings,onLongClickLabel="Open AI settings")
+                            .semantics { contentDescription="AI search";stateDescription=if(ai?.optBoolean("enabled")==true) { if(ai?.optString("provider")=="litert"&&localModel.phase==LocalModelPhase.VERIFYING) "On, checking" else if(aiSearch) "On" else "On, unavailable" } else "Off";toggleableState=if(ai?.optBoolean("enabled")==true) ToggleableState.On else ToggleableState.Off },contentAlignment=Alignment.Center) {
                             if(busy||localInference) CircularProgressIndicator(Modifier.size(20.dp),strokeWidth=2.dp)
-                            else Icon(Icons.Filled.ArrowCircleUp,null,tint=Forest)
+                            else Icon(Icons.Filled.AutoAwesome,null,tint=if(aiSearch) Forest else Muted)
                         }
+                        if(query.isNotBlank()) IconButton(onClick={query="";model.filter("",state.side)},modifier=Modifier.size(36.dp)) { Icon(Icons.Filled.Close,"Clear search") }
                     } },
-                    keyboardOptions=KeyboardOptions(imeAction=ImeAction.Search), keyboardActions=KeyboardActions(onSearch={if(aiSearch) model.searchAI(query,state.side) else model.filter(query,state.side)}),
+                    keyboardOptions=KeyboardOptions(imeAction=ImeAction.Search), keyboardActions=KeyboardActions(onSearch={when(NativeAIReadiness.searchAction(ai?.optBoolean("enabled")==true,aiSearch,busy,localInference,query)) {
+                        NativeAISearchAction.WAIT -> Unit
+                        NativeAISearchAction.SETTINGS -> settings()
+                        NativeAISearchAction.AI -> model.searchAI(query,state.side)
+                        NativeAISearchAction.TEXT -> model.filter(query,state.side)
+                    }}),
                     singleLine = true, shape = RoundedCornerShape(18.dp), modifier = Modifier.fillMaxWidth(),
                     colors = OutlinedTextFieldDefaults.colors(unfocusedBorderColor = Line, focusedBorderColor = Forest,
                         unfocusedContainerColor = White, focusedContainerColor = White))
+                if(ai?.optString("provider")=="litert"&&!localModel.available&&!localInference) {
+                    Text("The on-device model is not ready. Open AI settings to download or check it.",color=Muted,style=MaterialTheme.typography.bodySmall)
+                }
                 if(localInference) Column(Modifier.fillMaxWidth()) {
                     if(localModel.phase==LocalModelPhase.REVIEWING && localModel.total>0) {
                         LinearProgressIndicator(progress={localModel.reviewed.toFloat()/localModel.total},modifier=Modifier.fillMaxWidth())

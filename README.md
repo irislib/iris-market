@@ -212,7 +212,7 @@ The ordinary home feed is photo-first, but does not use an automatic “delightf
 Install the published CLI from [crates.io](https://crates.io/crates/iris-market):
 
 ```sh
-cargo install iris-market --version 0.1.0 --locked
+cargo install iris-market --version 0.1.1 --locked
 ```
 
 The executable is `iris-market`. Source builds use `cargo build --locked -p iris-market`.

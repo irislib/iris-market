@@ -14,6 +14,10 @@ final class MarketStore: ObservableObject {
     private var linkingSecret: String?
     private var linkPolling = false
     private var accountGeneration = 0
+    private let aiIntentGate = NativeAIIntentGate()
+    private let aiPreferenceQueue = DispatchQueue(label: "to.iris.market.ai-preference", qos: .userInitiated)
+    private var operationCount = 0
+    var aiIntentEpoch: Int { aiIntentGate.current }
     private let queue = DispatchQueue(label: "to.iris.market.core", qos: .userInitiated)
     private let enrollmentQueue = DispatchQueue(label: "to.iris.market.enrollment", qos: .utility)
     private var app: MarketApp?
@@ -24,14 +28,76 @@ final class MarketStore: ObservableObject {
     @Published private(set) var localAIStatus: String?
     var aiPreferencesEditing = false
     private var initializingLocalAI = false
+    private var localAIDefault = NativeLocalAIDefault()
+    private let appleAvailability: () -> String?
+    @Published private(set) var appleAIUnavailableReason: String?
     let demo: Bool
 
-    init(demo: Bool) { self.demo = demo; open() }
+    init(demo: Bool, appleAvailability: @escaping () -> String? = { OnDeviceAI.unavailableReason }) {
+        self.demo = demo; self.appleAvailability = appleAvailability
+        self.appleAIUnavailableReason = appleAvailability(); open()
+    }
+    var aiSearchEnabled: Bool {
+        let ai = snapshot.settings.ai
+        return NativeAIReadiness.isOn(enabled: ai.enabled, provider: ai.provider, model: ai.model, endpoint: ai.baseUrl, localAvailable: appleAIUnavailableReason == nil, preview: demo)
+    }
+    var aiSearchStateLabel: String {
+        snapshot.settings.ai.enabled ? (aiSearchEnabled ? "On" : "On, unavailable") : "Off"
+    }
+    private func acceptSnapshot(_ next: MarketSnapshot) {
+        if next.revision >= snapshot.revision { snapshot = next }
+    }
+    func refreshAIAvailability() {
+        appleAIUnavailableReason = appleAvailability()
+        offerLocalAIDefault()
+    }
+    func toggleAI(openSettings: @escaping () -> Void) {
+        guard ready else { return }
+        let ai = snapshot.settings.ai
+        let action = NativeAIReadiness.tapAction(enabled: ai.enabled,
+            ready: NativeAIReadiness.canEnable(provider: ai.provider, model: ai.model, endpoint: ai.baseUrl, localAvailable: appleAIUnavailableReason == nil, preview: demo),
+            localFallback: appleAIUnavailableReason == nil && NativeAIReadiness.canSelectLocalOnTap(provider: ai.provider, model: ai.model, endpoint: ai.baseUrl))
+        if action == .settings { openSettings(); return }
+        if busy && action != .off { return }
+        let enabling = action != .off
+        let epoch = aiIntentGate.advance()
+        if !enabling { cancelLocalAI(); disableAI(epoch: epoch); return }
+        var settings = snapshot.settings
+        if action == .local { settings.ai.provider = "apple"; settings.ai.model = "apple-system"; settings.ai.baseUrl = "" }
+        settings.ai.enabled = enabling
+        saveSettings(settings, key: "", replaceKey: false, expectedAIIntent: epoch) { success in
+            if success { self.filter(query: self.snapshot.query, side: self.snapshot.side, aiSearch: enabling) }
+        }
+    }
+    private func disableAI(epoch: Int) {
+        guard let app else { return }
+        let generation = accountGeneration, gate = aiIntentGate
+        operationCount += 1; busy = true
+        aiPreferenceQueue.async { [weak self] in
+            do {
+                let next = try gate.perform(at: epoch) { () throws -> MarketSnapshot in
+                    let fresh = try MarketJSON.decoder().decode(MarketSnapshot.self, from: Data(try app.snapshot().utf8))
+                    var settings = fresh.settings; settings.ai.enabled = false
+                    let request = String(decoding: try JSONSerialization.data(withJSONObject: ["type": "set_settings", "settings": try MarketJSON.object(settings)]), as: UTF8.self)
+                    return try MarketJSON.decoder().decode(MarketSnapshot.self, from: Data(try app.command(request: request).utf8))
+                }
+                Task { @MainActor in
+                    guard let self, self.accountGeneration == generation else { return }
+                    self.operationCount -= 1; self.busy = self.operationCount > 0
+                    if let next { self.acceptSnapshot(next); if let error = next.error { self.alert = error } }
+                }
+            } catch { Task { @MainActor in
+                guard let self, self.accountGeneration == generation else { return }
+                self.operationCount -= 1; self.busy = self.operationCount > 0; self.alert = marketErrorMessage(error)
+            } }
+        }
+    }
     private func open() {
         let demo = self.demo
         localAIRequest = UUID(); localAITask?.cancel(); localAITask = nil; localAIProgress = nil; localAIStatus = nil
         let previous = app
-        app = nil; ready = false; activeOrderID = nil; stopPolling(); accountGeneration += 1
+        app = nil; ready = false; activeOrderID = nil; stopPolling(); accountGeneration += 1; operationCount = 0; busy = false
+        _ = aiIntentGate.advance()
         let generation = accountGeneration
         queue.async { [weak self] in
             do {
@@ -64,13 +130,15 @@ final class MarketStore: ObservableObject {
                 let snapshot = try MarketJSON.decoder().decode(MarketSnapshot.self, from: Data(initial.utf8))
                 Task { @MainActor in
                     guard let self, self.accountGeneration == generation else { app.shutdown(); return }
-                    self.app = app; self.snapshot = snapshot; self.ready = true; self.startPolling(); self.offerLocalAIDefault()
+                    self.app = app; self.snapshot = snapshot; self.ready = true; self.startPolling()
                 }
             } catch { Task { @MainActor in self?.alert = marketErrorMessage(error) } }
         }
     }
     func startPolling() {
-        guard ready, timer == nil else { return }
+        guard ready else { return }
+        refreshAIAvailability()
+        guard timer == nil else { return }
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refreshSnapshot() }
         }
@@ -82,28 +150,59 @@ final class MarketStore: ObservableObject {
         queue.async { [weak self] in
             do {
                 let next = try MarketJSON.decoder().decode(MarketSnapshot.self, from: Data(try app.snapshot().utf8))
-                Task { @MainActor in if self?.accountGeneration == generation { self?.snapshot = next } }
+                Task { @MainActor in if self?.accountGeneration == generation { self?.acceptSnapshot(next); self?.refreshAIAvailability() } }
             } catch { Task { @MainActor in self?.alert = marketErrorMessage(error) } }
         }
     }
-    func command(_ value: [String: Any], completion: ((Bool) -> Void)? = nil) {
+    func command(_ value: [String: Any], expectedAIIntent: Int? = nil, urgentPreference: Bool = false, completion: ((Bool) -> Void)? = nil) {
         guard let app else { return }
         do {
             let request = String(decoding: try JSONSerialization.data(withJSONObject: value), as: UTF8.self)
             alert = nil
-            busy = true
+            operationCount += 1; busy = true
             let generation = accountGeneration
-            queue.async { [weak self] in
+            let gate = aiIntentGate
+            let epoch = value["type"] as? String == "set_settings" ? (expectedAIIntent ?? gate.current) : nil
+            let inferenceEpoch = ["curate", "check_ai"].contains(value["type"] as? String ?? "") ? gate.current : nil
+            let commandQueue = urgentPreference ? aiPreferenceQueue : queue
+            commandQueue.async { [weak self] in
                 do {
-                    let response = try app.command(request: request)
+                    let response: String
+                    if let epoch {
+                        guard let result = try gate.perform(at: epoch, { () throws -> String in
+                            if var merged = try JSONSerialization.jsonObject(with: Data(request.utf8)) as? [String: Any], var preferences = merged["settings"] as? [String: Any] {
+                                let fresh = try MarketJSON.decoder().decode(MarketSnapshot.self, from: Data(try app.snapshot().utf8))
+                                if expectedAIIntent == nil {
+                                    preferences["ai"] = try MarketJSON.object(fresh.settings.ai)
+                                } else {
+                                    var latest = try MarketJSON.object(fresh.settings) as! [String: Any]
+                                    latest["ai"] = preferences["ai"]; preferences = latest
+                                }
+                                merged["settings"] = preferences
+                                return try app.command(request: String(decoding: try JSONSerialization.data(withJSONObject: merged), as: UTF8.self))
+                            }
+                            return try app.command(request: request)
+                        }) else {
+                            Task { @MainActor in
+                                guard let self, self.accountGeneration == generation else { completion?(false); return }
+                                self.operationCount -= 1; self.busy = self.operationCount > 0; completion?(false)
+                            }; return
+                        }
+                        response = result
+                    } else { response = try app.command(request: request) }
                     let next = try MarketJSON.decoder().decode(MarketSnapshot.self, from: Data(response.utf8))
                     Task { @MainActor in
                         guard self?.accountGeneration == generation else { completion?(false); return }
-                        self?.snapshot = next; self?.busy = false
+                        self?.acceptSnapshot(next); self?.operationCount -= 1; self?.busy = (self?.operationCount ?? 0) > 0
                         if let error = next.error, !error.isEmpty { self?.alert = error; completion?(false) }
                         else { completion?(true) }
                     }
-                } catch { Task { @MainActor in self?.busy = false; self?.alert = marketErrorMessage(error); self?.refreshSnapshot(); completion?(false) } }
+                } catch { Task { @MainActor in
+                    guard let self, self.accountGeneration == generation else { completion?(false); return }
+                    self.operationCount -= 1; self.busy = self.operationCount > 0
+                    if inferenceEpoch == nil || inferenceEpoch == self.aiIntentEpoch { self.alert = marketErrorMessage(error); self.refreshSnapshot() }
+                    completion?(false)
+                } }
             }
         } catch { alert = marketErrorMessage(error); completion?(false) }
     }
@@ -130,23 +229,33 @@ final class MarketStore: ObservableObject {
     func archiveOrder(_ order: MarketOrder, completion: ((Bool) -> Void)? = nil) {
         command(["type": "archive_order", "order_id": order.id, "archived": !order.archived], completion: completion)
     }
-    func saveSettings(_ settings: MarketSettings, key: String, replaceKey: Bool = true, completion: ((Bool) -> Void)? = nil) {
+    @discardableResult
+    func saveSettings(_ settings: MarketSettings, key: String, replaceKey: Bool = true, expectedAIIntent: Int? = nil, completion: ((Bool) -> Void)? = nil) -> Int? {
         if localAIProgress != nil { cancelLocalAI() }
         do {
+            if let expectedAIIntent, expectedAIIntent != aiIntentEpoch { completion?(false); return nil }
             if !demo && replaceKey {
-                if key.isEmpty { try SecureStore.remove(SecureStore.aiAccount(settings.ai)) }
-                else { try SecureStore.write(key, account: SecureStore.aiAccount(settings.ai)) }
+                guard try aiIntentGate.perform(at: expectedAIIntent ?? aiIntentEpoch, { () throws -> Bool in
+                    if key.isEmpty { try SecureStore.remove(SecureStore.aiAccount(settings.ai)) }
+                    else { try SecureStore.write(key, account: SecureStore.aiAccount(settings.ai)) }
+                    return true
+                }) != nil else { completion?(false); return nil }
             }
-            command(["type": "set_settings", "settings": try MarketJSON.object(settings)], completion: completion)
-        } catch { alert = marketErrorMessage(error); completion?(false) }
+            if let expectedAIIntent, expectedAIIntent != aiIntentEpoch { completion?(false); return nil }
+            let turningOff = snapshot.settings.ai.enabled && !settings.ai.enabled
+            let epoch = turningOff ? aiIntentGate.advance() : expectedAIIntent
+            command(["type": "set_settings", "settings": try MarketJSON.object(settings)], expectedAIIntent: epoch, urgentPreference: turningOff, completion: completion)
+            return epoch
+        } catch { alert = marketErrorMessage(error); completion?(false); return nil }
     }
     private func offerLocalAIDefault() {
-        guard !demo, snapshot.aiConfigured == false, !aiPreferencesEditing, !initializingLocalAI, OnDeviceAI.unavailableReason == nil else { return }
+        guard !busy, !initializingLocalAI,
+              localAIDefault.shouldOffer(owner: snapshot.publicKey, configured: snapshot.aiConfigured != false, available: appleAIUnavailableReason == nil, editing: aiPreferencesEditing, preview: demo) else { return }
         initializingLocalAI = true
         var settings = snapshot.settings
         settings.ai.enabled = true; settings.ai.provider = "apple"; settings.ai.baseUrl = ""; settings.ai.model = "apple-system"
         settings.ai.curateFeed = false; settings.ai.interests = ""
-        saveSettings(settings, key: "", replaceKey: false) { [weak self] _ in self?.initializingLocalAI = false }
+        saveSettings(settings, key: "", replaceKey: false, expectedAIIntent: aiIntentEpoch) { [weak self] _ in self?.initializingLocalAI = false }
     }
     func runAI(type: String) {
         guard !busy else { return }

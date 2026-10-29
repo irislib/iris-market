@@ -20,6 +20,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.testTag
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -116,7 +117,8 @@ import org.json.JSONObject
     val settingsJSON = settings().toString()
     val originalSettingsJSON = remember { settingsJSON }
     val owner = remember { state.publicKey }
-    val latestSave by rememberUpdatedState(newValue = { if(owner == model.state.value.publicKey && (settingsJSON != originalSettingsJSON || replaceKey)) model.saveSettings(settings(), provider, key, replaceKey) {} })
+    var aiIntentEpoch by remember { mutableStateOf(model.aiIntentEpoch) }
+    val latestSave by rememberUpdatedState(newValue = { if(owner == model.state.value.publicKey && (settingsJSON != originalSettingsJSON || replaceKey)) model.saveSettings(settings(), provider, key, replaceKey, expectedAIIntent=aiIntentEpoch,onIntentCommitted={committed -> aiIntentEpoch=maxOf(aiIntentEpoch,committed)}) {} })
     DisposableEffect(Unit) { model.aiPreferencesEditing = true; onDispose { latestSave(); model.aiPreferencesEditing = false } }
     LaunchedEffect(settingsJSON, key, replaceKey) { delay(650); if(settingsJSON != originalSettingsJSON || replaceKey) { latestSave(); replaceKey = false } }
     Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).imePadding().padding(horizontal=24.dp).padding(bottom=30.dp),verticalArrangement=Arrangement.spacedBy(14.dp)) {
@@ -125,8 +127,9 @@ import org.json.JSONObject
         }
         Row(verticalAlignment=Alignment.CenterVertically) {
             Text("AI search",modifier=Modifier.weight(1f),fontWeight=FontWeight.Medium)
-            Switch(checked=enabled,onCheckedChange={enabled=it})
+            Switch(checked=enabled,onCheckedChange={enabled=it},modifier=Modifier.testTag("enableAI"))
         }
+        if(state.demo) Text("Preview stays offline. AI search is unavailable here.",color=Muted,style=MaterialTheme.typography.bodySmall)
         Surface(color=Mint,shape=RoundedCornerShape(16.dp)) {
             Text(if(provider=="litert") "Listing searches run on this device. No cloud fallback." else "Sends your search and public listing text to this provider.",
                 Modifier.padding(16.dp),style=MaterialTheme.typography.bodySmall)
@@ -189,7 +192,7 @@ import org.json.JSONObject
         preset.keyURL?.let { url -> TextButton(onClick={uri.openUri(url)}) { Text(if(presetID=="systemone") "Service details" else "Get an API key") } }
         preset.infoURL?.let { url -> TextButton(onClick={uri.openUri(url)}) { Text(if(presetID=="gemini") "Provider terms · EEA conditions apply" else "Models and usage") } }
         }
-        Button(enabled=enabled&&!busy&&(provider!="litert"||localModel.available),onClick={model.saveSettings(settings(),provider,key,replaceKey) { model.ai("check_ai") };replaceKey=false}) { Text(if(provider=="litert") "Check model" else "Test connection") }
+        Button(enabled=enabled&&!busy&&!state.demo&&(provider!="litert"||localModel.available),onClick={model.saveSettings(settings(),provider,key,replaceKey,expectedAIIntent=aiIntentEpoch) { model.ai("check_ai") };replaceKey=false}) { Text(if(provider=="litert") "Check model" else "Test connection") }
         state.aiMessage?.let { Text(it,color=Muted,style=MaterialTheme.typography.bodySmall) }
         Box {
             OutlinedButton(onClick={currencyMenu=true}) { Text("Display currency · $currency") }

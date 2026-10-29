@@ -69,7 +69,6 @@ struct BrowseView: View {
     @State private var query = ""
     @State private var side = "offer"
     @State private var showAllMatches = false
-    @State private var aiSearch = false
     @State private var showMap = false
     @State private var aiSettings = false
     @Binding var photoFilter: Bool?
@@ -89,23 +88,27 @@ struct BrowseView: View {
                     Image(systemName: "magnifyingglass").font(.system(size: 17)).foregroundStyle(MarketTheme.muted)
                     TextField("Search listings", text: $query, prompt: Text("Search listings").foregroundColor(MarketTheme.muted)).font(.system(size: 14)).submitLabel(.search).accessibilityIdentifier("marketSearch")
                         .onSubmit { submitSearch() }
-                    Button { aiSearch.toggle(); showAllMatches = false } label: {
-                        Image(systemName: "sparkles").foregroundStyle(aiSearch ? MarketTheme.green : MarketTheme.muted)
-                    }.accessibilityLabel("AI search").accessibilityValue(aiSearch ? "On" : "Off").accessibilityIdentifier("aiSearchToggle")
+                    Group {
+                        if store.busy || store.localAIProgress != nil { ProgressView().controlSize(.small) }
+                        else { Image(systemName: "sparkles").foregroundStyle(store.aiSearchEnabled ? MarketTheme.green : MarketTheme.muted) }
+                    }.frame(width: 36, height: 40).contentShape(Rectangle())
+                        .gesture(LongPressGesture(minimumDuration: 0.5).exclusively(before: TapGesture()).onEnded { value in
+                            switch value {
+                            case .first: aiSettings = true
+                            case .second: showAllMatches = false; store.toggleAI { aiSettings = true }
+                            }
+                        })
+                        .accessibilityElement(children: .ignore).accessibilityAddTraits(.isButton).accessibilityLabel("AI search")
+                        .accessibilityValue(store.aiSearchStateLabel)
+                        .accessibilityHint("Long press to open AI settings")
+                        .accessibilityAction { store.toggleAI { aiSettings = true } }
+                        .accessibilityAction(named: Text("Open AI settings")) { aiSettings = true }
+                        .accessibilityIdentifier("aiSearchToggle")
                     if !query.isEmpty { Button { query = ""; store.filter(query: "", side: side) } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(MarketTheme.muted) }.accessibilityLabel("Clear search") }
-                    if aiSearch {
-                        Button {
-                            if store.snapshot.settings.ai.enabled { submitSearch() } else { aiSettings = true }
-                        } label: {
-                            ZStack {
-                                if store.busy || store.localAIProgress != nil { ProgressView().controlSize(.small) }
-                                else { Image(systemName: "arrow.up.circle.fill").font(.system(size: 24)).foregroundStyle(MarketTheme.green) }
-                            }.frame(width: 36, height: 40)
-                        }.disabled(store.busy || store.localAIProgress != nil || (store.demo && store.snapshot.settings.ai.provider != "apple") || (store.snapshot.settings.ai.enabled && query.trimmingCharacters(in: .whitespaces).isEmpty))
-                            .accessibilityLabel("Search with AI").accessibilityHint(store.snapshot.settings.ai.enabled ? "" : "Choose an AI model")
-                            .accessibilityIdentifier("runAISearch")
-                    }
                 }.padding(.horizontal, 16).frame(height: 51).background(MarketTheme.surface.opacity(0.82), in: RoundedRectangle(cornerRadius: 16)).overlay(RoundedRectangle(cornerRadius: 16).stroke(MarketTheme.line, lineWidth: 1))
+                if store.snapshot.settings.ai.provider == "apple", let reason = store.appleAIUnavailableReason {
+                    Text(reason).font(.caption).foregroundStyle(MarketTheme.muted).accessibilityIdentifier("appleAIAvailability")
+                }
                 HStack(spacing: 8) {
                     filterChip("Selling", value: "offer", symbol: "tag.fill")
                     filterChip("Buying", value: "request", symbol: "hand.wave.fill")
@@ -162,7 +165,12 @@ struct BrowseView: View {
             .sheet(isPresented: $aiSettings) { AISettingsView(settings: store.snapshot.settings).marketSheetScope() }
     }
     private func submitSearch() {
-        if aiSearch { store.searchAI(query: query, side: side) } else { store.filter(query: query, side: side) }
+        switch NativeAIReadiness.searchAction(intentOn: store.snapshot.settings.ai.enabled, ready: store.aiSearchEnabled, busy: store.busy, inference: store.localAIProgress != nil, query: query) {
+        case .wait: return
+        case .settings: aiSettings = true
+        case .ai: store.searchAI(query: query, side: side)
+        case .text: store.filter(query: query, side: side)
+        }
     }
     private func filterChip(_ label: String, value: String, symbol: String) -> some View {
         Button { side = value; store.filter(query: store.snapshot.query, side: value, aiSearch: store.snapshot.aiSearch) } label: {

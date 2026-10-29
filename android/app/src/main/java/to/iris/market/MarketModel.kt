@@ -10,6 +10,7 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
@@ -73,7 +74,7 @@ data class MarketSnapshot(
     val people: Map<String, PublicPerson> = emptyMap(), val profile: PublicProfile? = null, val graphContextLoaded: Boolean = false,
     val profileListings: ProfileListings? = null,
     val localCuration: LocalCurationBatch? = null,
-    val aiMessage: String? = null, val savedListings: List<Listing>? = null, val aiConfigured: Boolean = true, val profileNameRequired: Boolean = false
+    val revision: Long = 0, val aiMessage: String? = null, val savedListings: List<Listing>? = null, val aiConfigured: Boolean = true, val profileNameRequired: Boolean = false
 ) {
     companion object {
         fun parse(raw: String): MarketSnapshot {
@@ -82,7 +83,7 @@ data class MarketSnapshot(
             val cs = o.optJSONArray("conversations") ?: JSONArray()
             return MarketSnapshot(
                 publicKey = o.optString("public_key"), canSign = o.optBoolean("can_sign"), messagingReady = o.optBoolean("messaging_ready"), demo = o.optBoolean("demo"),
-                status = o.optString("status", "Ready"), error = o.optional("error"), aiMessage = o.optional("ai_message"),
+                status = o.optString("status", "Ready"), error = o.optional("error"), revision = o.optLong("revision"), aiMessage = o.optional("ai_message"),
                 query = o.optString("query"), side = o.optString("side", "offer"),
                 listings = (0 until ls.length()).map { Listing.parse(ls.getJSONObject(it)) }, savedCount = o.optInt("saved_count"),
                 settings = (o.optJSONObject("settings") ?: JSONObject()).toString(),
@@ -154,7 +155,9 @@ class SecureRecord(application: Application) {
 
 class MarketModel(application: Application, private val preview: Boolean) : AndroidViewModel(application) {
     private val secure = SecureRecord(application)
-    private var core: MarketApp? = null
+    @Volatile private var core: MarketApp? = null
+    private val aiIntentGate = NativeAIIntentGate()
+    val aiIntentEpoch: Long get() = aiIntentGate.current
     private val mutex = Mutex()
     private val mutable = MutableStateFlow(MarketSnapshot(demo = preview))
     val state = mutable.asStateFlow()
@@ -164,7 +167,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
     val notice = alert.asStateFlow()
     @Volatile private var active = true
     private var operationCount = 0
-    private var accountGeneration = 0L
+    @Volatile private var accountGeneration = 0L
     private val linking = MutableStateFlow<String?>(null)
     val deviceLinkUrl = linking.asStateFlow()
     private var linkJob: Job? = null
@@ -189,6 +192,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
     }
     private fun openSavedAccount() {
         accountGeneration += 1
+        aiIntentGate.advance()
         core?.shutdown();core?.close();core=null
         val application=getApplication<Application>()
         val name=if(preview) "identity-preview" else "identity"
@@ -212,7 +216,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
             } else MarketApp(base.absolutePath,legacy,preview)
         }
         core?.command(JSONObject().put("type", "set_filter").put("query", "").put("side", "offer").put("ai_search", false).toString())
-        refreshSnapshot()
+        refreshSnapshot(reset = true)
         if (!preview) {
             val ai = JSONObject(state.value.settings).optJSONObject("ai") ?: JSONObject()
             val originalEndpoint = ai.optString("base_url")
@@ -220,14 +224,20 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
             NativeKeyMigration.migrate(originalProvider, originalEndpoint,
                 { endpoint -> NativePreferences.keySlot(originalProvider, endpoint) }, secure::get, secure::contains, secure::put)
             val initialGeneration = accountGeneration
+            val initialAIIntent = aiIntentEpoch
             viewModelScope.launch(Dispatchers.IO) {
                 val installed = localModel.verifyInstalled()
                 mutex.withLock {
                     if (installed && accountGeneration == initialGeneration && !state.value.aiConfigured && !aiPreferencesEditing) {
                         val settings = JSONObject(state.value.settings)
                         settings.put("ai", JSONObject().put("enabled", true).put("provider", "litert").put("base_url", "").put("model", LocalModelManifest.ID).put("interests", "").put("curate_feed", false))
-                        core?.command(JSONObject().put("type", "set_settings").put("settings", settings).toString())
-                        refreshSnapshot()
+                        aiIntentGate.perform(initialAIIntent) {
+                            val app = core ?: return@perform
+                            if(!MarketSnapshot.parse(app.snapshot()).aiConfigured) {
+                                app.command(JSONObject().put("type", "set_settings").put("settings", settings).toString())
+                                refreshSnapshot()
+                            }
+                        }
                     }
                 }
             }
@@ -322,19 +332,35 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
     }
     fun closeDeviceLink() {linkJob?.cancel();linkJob=null;linking.value=null}
     fun setActive(value: Boolean) { active = value; if (!value) cancelLocalAI() }
-    private fun refreshSnapshot() { core?.let { mutable.value = MarketSnapshot.parse(it.snapshot()) } }
+    private fun publishSnapshot(next: MarketSnapshot) {
+        mutable.update { previous -> if(previous.publicKey==next.publicKey&&next.revision<previous.revision) previous else next }
+    }
+    private fun refreshSnapshot(reset: Boolean = false) { core?.let {
+        val next=MarketSnapshot.parse(it.snapshot())
+        if(reset) mutable.value=next else publishSnapshot(next)
+    } }
     fun dismissNotice() { alert.value = null }
     fun command(request: JSONObject, onSuccess: (() -> Unit)? = null) = submit(request, onSuccess, null)
     fun orderCommand(request: JSONObject, onSuccess: () -> Unit = {}, onError: (String) -> Unit) = submit(request, onSuccess, onError)
-    private fun submit(request: JSONObject, onSuccess: (() -> Unit)?, onError: ((String) -> Unit)?) {
+    private fun submit(request: JSONObject, onSuccess: (() -> Unit)?, onError: ((String) -> Unit)?, expectedAIIntent: Long? = null) {
         if (request.optString("type") in setOf("set_filter", "set_settings")) cancelLocalAI()
+        val preferenceEpoch = if(request.optString("type")=="set_settings") expectedAIIntent ?: aiIntentEpoch else null
         viewModelScope.launch {
             operationCount += 1; working.value = true
             try {
                 withContext(Dispatchers.IO) {
                     mutex.withLock {
                         val app = core ?: error("Not ready")
-                        mutable.value = MarketSnapshot.parse(app.command(request.toString()))
+                        if(preferenceEpoch!=null) {
+                            val next=aiIntentGate.perform(preferenceEpoch) {
+                                val commit=JSONObject(request.toString())
+                                val fresh=JSONObject(MarketSnapshot.parse(app.snapshot()).settings)
+                                if(expectedAIIntent==null) commit.getJSONObject("settings").put("ai",fresh.getJSONObject("ai"))
+                                else { fresh.put("ai",commit.getJSONObject("settings").getJSONObject("ai"));commit.put("settings",fresh) }
+                                MarketSnapshot.parse(app.command(commit.toString()))
+                            } ?: throw CancellationException("Superseded AI preference")
+                            publishSnapshot(next)
+                        } else publishSnapshot(MarketSnapshot.parse(app.command(request.toString())))
                     }
                 }
                 onSuccess?.invoke()
@@ -346,6 +372,63 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
             finally { operationCount -= 1; working.value = operationCount > 0 }
         }
     }
+    fun toggleAI(openSettings: () -> Unit) {
+        val ai=JSONObject(state.value.settings).optJSONObject("ai") ?: JSONObject()
+        val action=NativeAIReadiness.tapAction(ai.optBoolean("enabled"),
+            NativeAIReadiness.canEnable(ai.optString("provider"),ai.optString("model"),ai.optString("base_url"),localModelState.value.available,state.value.demo),
+            !state.value.demo&&localModelState.value.available&&NativeAIReadiness.canSelectLocalOnTap(ai.optString("provider"),ai.optString("model"),ai.optString("base_url")))
+        if(action==NativeAITapAction.SETTINGS) { openSettings();return }
+        if(working.value&&action!=NativeAITapAction.OFF) return
+        val epoch=aiIntentGate.advance()
+        if(action==NativeAITapAction.OFF) { disableAI(epoch);return }
+        viewModelScope.launch {
+            operationCount+=1;working.value=true
+            try {
+                withContext(Dispatchers.IO) { mutex.withLock {
+                    val app=core ?: error("Not ready")
+                    val next=aiIntentGate.perform(epoch) {
+                        val current=MarketSnapshot.parse(app.snapshot())
+                        val settings=JSONObject(current.settings)
+                        val selected=settings.getJSONObject("ai")
+                        if(action==NativeAITapAction.LOCAL) {
+                            check(!current.demo&&localModelState.value.available)
+                            selected.put("provider","litert").put("model",LocalModelManifest.ID).put("base_url","")
+                        }
+                        selected.put("enabled",true)
+                        val saved=MarketSnapshot.parse(app.command(JSONObject().put("type","set_settings").put("settings",settings).toString()))
+                        check(saved.error.isNullOrBlank())
+                        MarketSnapshot.parse(app.command(JSONObject().put("type","set_filter").put("query",current.query).put("side",current.side).put("ai_search",true).toString()))
+                    }
+                    if(next!=null) publishSnapshot(next)
+                } }
+            } catch(e:CancellationException){throw e}
+            catch(_:Exception){alert.value="Could not change AI search. Check your AI settings."}
+            finally{operationCount-=1;working.value=operationCount>0}
+        }
+    }
+    private fun disableAI(epoch: Long, requestedAI: JSONObject? = null, done: () -> Unit = {}) {
+        cancelLocalAI()
+        val app=core ?: return
+        val generation=accountGeneration
+        viewModelScope.launch {
+            operationCount+=1;working.value=true
+            try {
+                val next=withContext(Dispatchers.IO) { aiIntentGate.perform(epoch) {
+                    val fresh=MarketSnapshot.parse(app.snapshot())
+                    val settings=JSONObject(fresh.settings)
+                    if(requestedAI!=null) settings.put("ai",JSONObject(requestedAI.toString()))
+                    settings.getJSONObject("ai").put("enabled",false)
+                    MarketSnapshot.parse(app.command(JSONObject().put("type","set_settings").put("settings",settings).toString()))
+                } }
+                if(generation==accountGeneration&&next!=null) {
+                    publishSnapshot(next)
+                    if(next.error.isNullOrBlank()) done() else alert.value=next.error
+                }
+            } catch(e:CancellationException){throw e}
+            catch(_:Exception){if(generation==accountGeneration) alert.value="Could not turn AI search off. Try again."}
+            finally{operationCount-=1;working.value=operationCount>0}
+        }
+    }
     fun filter(query: String, side: String, aiSearch: Boolean = false) = command(JSONObject().put("type", "set_filter").put("query", query).put("side", side).put("ai_search", aiSearch))
     fun searchAI(query: String, side: String) = command(JSONObject().put("type", "set_filter").put("query", query).put("side", side).put("ai_search", true)) { ai("curate") }
     fun save(id: String) = command(JSONObject().put("type", "save").put("id", id))
@@ -353,6 +436,8 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
     fun ai(type: String) {
         val provider = JSONObject(state.value.settings).optJSONObject("ai")?.optString("provider", "compatible") ?: "compatible"
         if (provider == "litert") { runLocalCuration(checkOnly = type == "check_ai"); return }
+        val requestEpoch=aiIntentEpoch
+        val generation=accountGeneration
         viewModelScope.launch {
             operationCount += 1; working.value = true
             try {
@@ -361,10 +446,10 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
                     val settings = JSONObject(MarketSnapshot.parse(app.snapshot()).settings).getJSONObject("ai")
                     check(settings.optString("provider") == provider) { "Provider changed" }
                     val key = secure.get(NativePreferences.keySlot(provider, settings.optString("base_url")))
-                    mutable.value = MarketSnapshot.parse(app.command(JSONObject().put("type", type).put("api_key", key).toString()))
+                    publishSnapshot(MarketSnapshot.parse(app.command(JSONObject().put("type", type).put("api_key", key).toString())))
                 } }
             } catch (e: CancellationException) { throw e }
-            catch (_: Exception) { alert.value = "Could not test this provider. Check its settings and try again." }
+            catch (_: Exception) { if(requestEpoch==aiIntentEpoch&&generation==accountGeneration) alert.value = "Could not test this provider. Check its settings and try again." }
             finally { operationCount -= 1; working.value = operationCount > 0 }
         }
     }
@@ -388,7 +473,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
                             "A pair of used running shoes, size 42.","offer","20","EUR","","clothing",null,false,false,"active","",null,null))
                     )) else {
                         val app = core ?: error("Not ready")
-                        mutable.value = MarketSnapshot.parse(app.command(JSONObject().put("type", "begin_local_curation").toString()))
+                        publishSnapshot(MarketSnapshot.parse(app.command(JSONObject().put("type", "begin_local_curation").toString())))
                         state.value.localCuration ?: error("Could not prepare listings")
                     }
                 } }
@@ -403,7 +488,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
                         val rows = JSONArray(decisions.map { decision -> JSONObject().put("event_id", decision.eventId)
                             .put("show", decision.show).put("reason", decision.reason) })
                         val request = JSONObject().put("type", "apply_local_curation").put("id", batch.id).put("decisions", rows)
-                        mutable.value = MarketSnapshot.parse((core ?: error("Not ready")).command(request.toString()))
+                        publishSnapshot(MarketSnapshot.parse((core ?: error("Not ready")).command(request.toString())))
                         batchId = null
                     }
                 } }
@@ -428,11 +513,23 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
             }
         }
     }
-    fun saveSettings(settings: JSONObject, provider: String, apiKey: String, replaceKey: Boolean, done: () -> Unit) {
+    fun saveSettings(settings: JSONObject, provider: String, apiKey: String, replaceKey: Boolean, expectedAIIntent: Long? = null, onIntentCommitted: (Long) -> Unit = {}, done: () -> Unit) {
         viewModelScope.launch {
             try {
-                if (replaceKey) withContext(Dispatchers.IO) { NativeKeyMigration.replace(provider, NativePreferences.keySlot(provider, settings.getJSONObject("ai").optString("base_url")), apiKey, secure::put) }
-                command(JSONObject().put("type", "set_settings").put("settings", settings), done)
+                if(expectedAIIntent!=null&&expectedAIIntent!=aiIntentEpoch) return@launch
+                if (replaceKey) {
+                    val written=withContext(Dispatchers.IO) { aiIntentGate.perform(expectedAIIntent ?: aiIntentEpoch) {
+                        NativeKeyMigration.replace(provider, NativePreferences.keySlot(provider, settings.getJSONObject("ai").optString("base_url")), apiKey, secure::put)
+                        true
+                    } }
+                    if(written==null) return@launch
+                }
+                if(expectedAIIntent!=null&&expectedAIIntent!=aiIntentEpoch) return@launch
+                val turningOff=JSONObject(state.value.settings).optJSONObject("ai")?.optBoolean("enabled")==true&&!settings.getJSONObject("ai").optBoolean("enabled")
+                val committedEpoch=if(turningOff) aiIntentGate.advance() else expectedAIIntent ?: aiIntentEpoch
+                val committed={onIntentCommitted(committedEpoch);done()}
+                if(turningOff) disableAI(committedEpoch,settings.getJSONObject("ai"),committed)
+                else submit(JSONObject().put("type", "set_settings").put("settings", settings), committed, null, expectedAIIntent)
             } catch (_: Exception) { alert.value = "Could not securely save your provider key." }
         }
     }

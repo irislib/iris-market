@@ -233,6 +233,12 @@ fn ai_search_uses_one_query_without_hiding_unreviewed_candidates() {
     let app =
         iris_market_core::Market::open(dir.path(), &iris_market_core::generate_secret_key(), true)
             .unwrap();
+    let mut settings = Settings::default();
+    settings.ai.enabled = true;
+    settings.ai.provider = "apple".into();
+    settings.ai.model = "apple-system".into();
+    app.command(&json!({"type":"set_settings","settings":settings}).to_string())
+        .unwrap();
     let ordinary: serde_json::Value = serde_json::from_str(
         &app.command(r#"{"type":"set_filter","query":"nonliteral matching request","side":"all"}"#)
             .unwrap(),
@@ -695,4 +701,211 @@ fn connection_probe_has_dedicated_sanitized_result_and_clears_stale_messages() {
     assert!(changed["ai_message"].is_null());
     server.join().unwrap();
     app.shutdown();
+}
+
+#[test]
+fn ai_search_mode_cannot_override_explicit_off_and_disabling_restores_literal_search() {
+    let dir = tempfile::tempdir().unwrap();
+    offline(dir.path());
+    let app = Market::open(dir.path(), &iris_market_core::generate_secret_key(), false).unwrap();
+    let seller = Keys::generate();
+    app.ingest_event(&listing::build(&seller, &draft(), "camera", listing::now(), false).unwrap())
+        .unwrap();
+    let filter = json!({"type":"set_filter","query":"bicycle","side":"all","ai_search":true});
+    let disabled: Value = serde_json::from_str(&app.command(&filter.to_string()).unwrap()).unwrap();
+    assert_eq!(disabled["ai_search"], false);
+    assert_eq!(disabled["settings"]["ai"]["enabled"], false);
+    assert_eq!(disabled["settings"]["ai"]["provider"], "compatible");
+    assert!(
+        disabled["listings"].as_array().unwrap().is_empty(),
+        "disabled AI must retain literal filtering"
+    );
+    assert!(
+        app.command(r#"{"type":"curate"}"#)
+            .unwrap_err()
+            .to_string()
+            .contains("Enable AI")
+    );
+    let mut settings = Settings {
+        relays: vec![],
+        ..Default::default()
+    };
+    settings.ai.provider = "apple".into();
+    settings.ai.model = "apple-system".into();
+    settings.ai.enabled = true;
+    app.command(&json!({"type":"set_settings","settings":settings}).to_string())
+        .unwrap();
+    let active: Value = serde_json::from_str(&app.command(&filter.to_string()).unwrap()).unwrap();
+    assert_eq!(active["ai_search"], true);
+    assert_eq!(
+        active["listings"].as_array().unwrap().len(),
+        1,
+        "enabled AI keeps unreviewed candidates available"
+    );
+    app.command(r#"{"type":"begin_local_curation"}"#).unwrap();
+    settings.ai.enabled = false;
+    let off: Value = serde_json::from_str(
+        &app.command(&json!({"type":"set_settings","settings":settings}).to_string())
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(off["ai_search"], false);
+    assert_eq!(off["query"], "bicycle");
+    assert_eq!(off["settings"]["ai"]["provider"], "apple");
+    assert_eq!(off["settings"]["ai"]["model"], "apple-system");
+    assert!(off["local_curation"].is_null());
+    assert!(off["listings"].as_array().unwrap().is_empty());
+    let settings = Store::open(&dir.path().join("market.sqlite"))
+        .unwrap()
+        .settings()
+        .unwrap();
+    assert!(
+        !settings.ai.enabled,
+        "the explicit choice remains persisted"
+    );
+    app.command(&filter.to_string()).unwrap();
+    let final_state: Value = serde_json::from_str(&app.snapshot().unwrap()).unwrap();
+    assert_eq!(final_state["ai_search"], false);
+    assert_eq!(final_state["settings"]["ai"]["enabled"], false);
+    app.shutdown();
+}
+
+#[test]
+fn off_cancels_delayed_remote_http_and_frees_the_serial_search_queue() {
+    use std::sync::{Arc, mpsc};
+    use std::time::Instant;
+    for operation in ["curate", "check_ai"] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
+        let (started_tx, started_rx) = mpsc::channel();
+        let (closed_tx, closed_rx) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut bytes = Vec::new();
+            let mut buffer = [0; 2048];
+            let (offset, length) = loop {
+                let n = stream.read(&mut buffer).unwrap();
+                assert!(n > 0);
+                bytes.extend_from_slice(&buffer[..n]);
+                assert!(bytes.len() < 16384);
+                if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&bytes[..end]).to_lowercase();
+                    let length: usize = headers
+                        .lines()
+                        .find_map(|line| line.strip_prefix("content-length:"))
+                        .unwrap()
+                        .trim()
+                        .parse()
+                        .unwrap();
+                    break (end + 4, length);
+                }
+            };
+            while bytes.len() < offset + length {
+                let n = stream.read(&mut buffer).unwrap();
+                assert!(n > 0);
+                bytes.extend_from_slice(&buffer[..n]);
+            }
+            started_tx.send(()).unwrap();
+            // Deliberately never send headers until the caller cancels. A mere
+            // stale-result guard cannot release this real HTTP wait promptly.
+            let closed = match stream.read(&mut buffer) {
+                Ok(0) => true,
+                Err(error) => matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::ConnectionAborted
+                        | std::io::ErrorKind::BrokenPipe
+                ),
+                _ => false,
+            };
+            closed_tx.send(closed).unwrap();
+            let late = json!({"choices":[{"message":{"content":"{\"show\":false,\"reason\":\"late result\"}"}}]}).to_string();
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                late.len(),
+                late
+            );
+            listener.set_nonblocking(true).unwrap();
+            assert!(
+                matches!(listener.accept(),Err(error) if error.kind()==std::io::ErrorKind::WouldBlock),
+                "Off must not start another provider request"
+            );
+        });
+        let dir = tempfile::tempdir().unwrap();
+        offline(dir.path());
+        let app = Arc::new(
+            Market::open(dir.path(), &iris_market_core::generate_secret_key(), false).unwrap(),
+        );
+        let seller = Keys::generate();
+        for id in ["camera-one", "camera-two"] {
+            app.ingest_event(
+                &listing::build(&seller, &draft(), id, listing::now(), false).unwrap(),
+            )
+            .unwrap();
+        }
+        let mut settings = Settings {
+            relays: vec![],
+            ..Default::default()
+        };
+        settings.ai.enabled = true;
+        settings.ai.model = "delayed-local-fixture".into();
+        settings.ai.base_url = endpoint;
+        app.command(&json!({"type":"set_settings","settings":settings}).to_string())
+            .unwrap();
+        app.command(r#"{"type":"set_filter","query":"bicycle","side":"all","ai_search":true}"#)
+            .unwrap();
+        let serial_app = app.clone();
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let serial_queue = std::thread::spawn(move || {
+            serial_app
+                .command(&json!({"type":operation,"api_key":"synthetic-test-key"}).to_string())
+                .unwrap();
+            // This represents plain Search queued behind the native blocking
+            // AI call: it must run without waiting for the delayed response.
+            let response = serial_app
+                .command(r#"{"type":"set_filter","query":"camera","side":"all","ai_search":false}"#)
+                .unwrap();
+            finished_tx.send(response).unwrap();
+        });
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let started = Instant::now();
+        settings.ai.enabled = false;
+        app.command(&json!({"type":"set_settings","settings":settings}).to_string())
+            .unwrap();
+        let off_elapsed = started.elapsed();
+        let response = finished_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("Off must cancel HTTP and release the serial queue promptly");
+        assert!(off_elapsed < Duration::from_secs(1));
+        assert!(
+            closed_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            "the loopback provider must observe HTTP transport cancellation, not merely ignored output"
+        );
+        let state: Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(state["settings"]["ai"]["enabled"], false);
+        assert_eq!(state["ai_search"], false);
+        assert_eq!(state["query"], "camera");
+        assert_eq!(state["listings"].as_array().unwrap().len(), 2);
+        assert!(
+            state["listings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|listing| listing["relevance"].is_null())
+        );
+        assert!(state["ai_message"].is_null());
+        assert!(state["error"].is_null());
+        eprintln!(
+            "{operation}: Off={}ms, queue released={}ms, provider observed socket close",
+            off_elapsed.as_millis(),
+            started.elapsed().as_millis()
+        );
+        serial_queue.join().unwrap();
+        server.join().unwrap();
+        app.shutdown();
+    }
 }

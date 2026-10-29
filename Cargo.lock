@@ -1638,7 +1638,7 @@ dependencies = [
 
 [[package]]
 name = "iris-market"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "iris-market-core",
@@ -1647,7 +1647,7 @@ dependencies = [
 
 [[package]]
 name = "iris-market-app"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "iris-market-core",
  "nostr",
@@ -1659,14 +1659,14 @@ dependencies = [
 
 [[package]]
 name = "iris-market-bindgen"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "uniffi",
 ]
 
 [[package]]
 name = "iris-market-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",

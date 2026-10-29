@@ -17,7 +17,7 @@ A general marketplace for things, skills and opportunities. Native iOS, Android 
 - One search field for text or optional AI matching. Browser-local AI can prepare its local model automatically, with inline progress, cancellation and a Show all override. It is experimental; marketplace accuracy is not established.
 - Named CLI commands, a local JSON action interface and MCP stdio tools for search, publication, saved listings, contact, messages and private orders.
 
-This is a development prototype. The browser includes an optional Cashu wallet; shipping guarantees, escrow, automatic earlier-history transfer, group conversations and saved matching watches are not implemented. Native Cashu adapters and secure seed storage are present behind the disabled `cashu-wallet` feature; native wallet compilation and UI acceptance are pending. Native local AI supports Apple’s available system model and an optional Android model download; Android inference on actual model weights remains unverified. No public App Store, APK or CLI binary release is published.
+This is a development prototype. The browser includes an optional Cashu wallet; shipping guarantees, escrow, automatic earlier-history transfer, group conversations and saved matching watches are not implemented. Native Cashu adapters and secure seed storage are present behind the disabled `cashu-wallet` feature; native wallet compilation and UI acceptance are pending. Native local AI supports Apple’s available system model and an optional Android model download; Android inference on actual model weights remains unverified. The CLI source package is published on crates.io. Signed native downloads are being prepared; the existing internal TestFlight build predates these source updates.
 
 Web: [market.iris.to](https://market.iris.to) · [App builds and CLI](https://getmarket.iris.to). Source: [GitHub](https://github.com/irislib/iris-market). Hashtree source: [iris-market](https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/iris-market).
 
@@ -207,7 +207,13 @@ The ordinary home feed is photo-first, but does not use an automatic “delightf
 
 ## Agent tools
 
-The CLI package is `iris-market`, with an `iris-market` executable. Registry installation instructions will be enabled after the first verified crates.io publication; source builds use `cargo build --locked -p iris-market`.
+Install the published CLI from [crates.io](https://crates.io/crates/iris-market):
+
+```sh
+cargo install iris-market --version 0.1.0 --locked
+```
+
+The executable is `iris-market`. Source builds use `cargo build --locked -p iris-market`.
 
 
 The CLI returns JSON and offers named commands alongside the full action API:

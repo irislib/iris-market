@@ -52,3 +52,5 @@ dialog { color:var(--ink); background:var(--bg); border:1px solid var(--line); b
 @media(max-width:380px){.header:has(.header-menu-wrap){gap:10px;padding-left:16px;padding-right:16px}.header:has(.header-menu-wrap) .brand{font-size:20px}.header:has(.header-menu-wrap) .header-actions{gap:4px}.header:has(.header-menu-wrap) .button{padding:9px}}
 
 #filter-form>label:not(:first-child){margin-top:20px}#filter-form>.detail-actions{margin-top:24px}
+
+#detail-content>h1{display:flex;align-items:center;min-height:60px;padding-left:56px}

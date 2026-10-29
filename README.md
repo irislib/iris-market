@@ -17,7 +17,7 @@ A general marketplace for things, skills and opportunities. Native iOS, Android 
 - One search field for text or optional AI matching. Browser-local AI can prepare its local model automatically, with inline progress, cancellation and a Show all override. It is experimental; marketplace accuracy is not established.
 - Named CLI commands, a local JSON action interface and MCP stdio tools for search, publication, saved listings, contact, messages and private orders.
 
-This is a development prototype. The browser includes an optional Cashu wallet; shipping guarantees, escrow, automatic earlier-history transfer, group conversations and saved matching watches are not implemented. Native Cashu adapters and secure seed storage are present behind the disabled `cashu-wallet` feature; native wallet compilation and UI acceptance are pending. Native local AI supports Apple’s available system model and an optional Android model download; Android inference on actual model weights remains unverified. The CLI source package is published on crates.io. Signed native downloads are being prepared; the existing internal TestFlight build predates these source updates.
+This is a development prototype. The browser includes an optional Cashu wallet; shipping guarantees, escrow, automatic earlier-history transfer, group conversations and saved matching watches are not implemented. Native Cashu adapters and secure seed storage are present behind the disabled `cashu-wallet` feature; native wallet compilation and UI acceptance are pending. Native local AI supports Apple’s available system model and an optional Android model download; Android inference on actual model weights remains unverified. The CLI source package is published on crates.io. Signed Android and notarized macOS downloads are available in [v0.1.0-alpha.6](https://github.com/irislib/iris-market/releases/tag/v0.1.0-alpha.6). iOS 0.1.0 (3) is available to the existing internal TestFlight group. The alpha includes the compact search action and photo-only Selling home feed; searches, Saved and profiles can include listings without photos.
 
 Web: [market.iris.to](https://market.iris.to) · [App builds and CLI](https://getmarket.iris.to). Source: [GitHub](https://github.com/irislib/iris-market). Hashtree source: [iris-market](https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/iris-market).
 
@@ -32,7 +32,7 @@ The browser feed below uses real public listings. Native alpha builds share the 
 - `crates/market-cli`: local agent commands and MCP.
 - `ios`, `android`: native presentation, secure credentials and lifecycle.
 - `web`: browser client, Nostr account/signing adapters, private messaging, public profiles, ranking, currency display, Hashtree maps, the native map shell and optional local AI worker.
-- `site`: download/build landing page; it currently links to source instructions rather than released binaries.
+- `site`: landing page with signed native downloads, source instructions and CLI installation.
 - `scripts`: repeatable builds and focused UI checks.
 - `crates/market-app/CONTRACT.md`: native command/state contract.
 

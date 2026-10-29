@@ -65,8 +65,19 @@ struct MarketEmptyState: View {
     }
 }
 struct ListingPlaceholder: View {
+    var category = ""
+    private var symbol: String {
+        ["service", "services", "help", "skills", "jobs", "delivery", "errands"].contains(category.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) ? "briefcase.fill" : "tag.fill"
+    }
     var body: some View {
-        Rectangle().fill(MarketTheme.surface).accessibilityHidden(true)
+        GeometryReader { geometry in
+            ZStack {
+                Rectangle().fill(MarketTheme.surface)
+                Image(systemName: symbol)
+                    .font(.system(size: min(geometry.size.width, geometry.size.height) * 0.24))
+                    .foregroundStyle(Color(white: 0.5).opacity(0.20))
+            }.frame(maxWidth: .infinity, maxHeight: .infinity)
+        }.accessibilityHidden(true)
     }
 }
 

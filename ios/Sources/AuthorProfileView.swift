@@ -8,7 +8,7 @@ struct ConnectionBadge: View {
                 .foregroundColor(badge == "following" ? .blue : badge == "trusted" ? .orange : MarketTheme.muted)
                 .accessibilityLabel(connection.description)
         } else if let distance = connection.followDistance {
-            Text("\(distance) hops").font(.caption2).foregroundStyle(MarketTheme.muted).accessibilityLabel(connection.description)
+            Text("\(distance) away").font(.caption2).foregroundStyle(MarketTheme.muted).accessibilityLabel(connection.description)
         }
     }
 }
@@ -18,7 +18,7 @@ struct AuthorProfileView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var author: String
     @State private var history: [String] = []
-    @State private var selection = "known"
+    @State private var selection: String?
     @State private var selectedListing: MarketListing?
     init(author: String) { _author = State(initialValue: author) }
     private var profile: PublicMarketProfile? { store.snapshot.profile?.person.author == author ? store.snapshot.profile : nil }
@@ -31,48 +31,59 @@ struct AuthorProfileView: View {
                             UserAvatar(person: profile.person, size: 64)
                             VStack(alignment: .leading, spacing: 7) {
                                 UserName(person: profile.person).font(.title2.weight(.semibold))
-                                Text(profile.person.connection.description).font(.caption).foregroundStyle(MarketTheme.muted)
+                                Text(profile.person.connection.followDistance == nil ? "No known connections" : profile.person.connection.description).font(.caption).foregroundStyle(MarketTheme.muted)
                             }
                         }
                         if profile.loading { ProgressView("Loading profile…") }
                         if !profile.about.isEmpty { Text(profile.about).font(.body).textSelection(.enabled) }
                         if let website = profile.website, let url = URL(string: website) { Link(website, destination: url).font(.subheadline).lineLimit(2) }
-                        let authorListings = store.snapshot.listings.filter { $0.author == author }
-                        if !authorListings.isEmpty {
-                            Text("Listings in this feed").font(.headline)
-                            ForEach(authorListings) { listing in Button { selectedListing = listing } label: {
-                                HStack { Text(listing.title).multilineTextAlignment(.leading); Spacer(); Text(listing.formattedPrice).fontWeight(.medium) }.foregroundStyle(MarketTheme.ink).padding(.vertical, 6)
-                            } }
+                        HStack(spacing: 18) {
+                            connectionControl("Known", count: profile.followedByKnown.count, value: "known")
+                            connectionControl("Following", count: profile.followingCount, value: "following")
+                            connectionControl("Followers", count: profile.followers.count, value: "followers")
                         }
-                        Text(profile.graphLabel).font(.caption.weight(.medium)).foregroundStyle(MarketTheme.green)
-                        if !profile.loading && (!profile.graphContextLoaded || profile.error != nil) {
-                            HStack {
-                                Text("Some connections are unavailable.").font(.caption).foregroundStyle(MarketTheme.muted)
-                                Spacer()
-                                Button("Retry") { store.command(["type": "load_profile", "author": author]) }.font(.caption)
+                        if let selection {
+                            if !profile.loading && (!profile.graphContextLoaded || profile.error != nil) {
+                                HStack {
+                                    Text("Some connections are unavailable.").font(.caption).foregroundStyle(MarketTheme.muted)
+                                    Spacer()
+                                    Button("Retry") { store.command(["type": "load_profile", "author": author]) }.font(.caption)
+                                }
                             }
-                        }
-                        Picker("People", selection: $selection) {
-                            Text("Known \(profile.followedByKnown.count)").tag("known")
-                            Text("Following \(profile.followingCount)").tag("following")
-                            Text("Followers \(profile.followers.count)+").tag("followers")
-                        }.pickerStyle(.segmented)
-                        let people = selection == "following" ? profile.following : selection == "followers" ? profile.followers : profile.followedByKnown
-                        if people.isEmpty { Text(profile.loading ? "Loading…" : "No connections to show.").font(.subheadline).foregroundStyle(MarketTheme.muted).padding(.vertical, 20) }
-                        ForEach(people) { person in
-                            Button { history.append(author); author = person.author } label: {
-                                UserRow(person: person, subtitle: person.connection.description)
-                            }.buttonStyle(.plain)
+                            let people = selection == "following" ? profile.following : selection == "followers" ? profile.followers : profile.followedByKnown
+                            if people.isEmpty { Text(profile.loading ? "Loading…" : "No connections to show.").font(.subheadline).foregroundStyle(MarketTheme.muted).padding(.vertical, 12) }
+                            ForEach(people) { person in
+                                Button { history.append(author); author = person.author; self.selection = nil } label: {
+                                    UserRow(person: person, subtitle: person.connection.description)
+                                }.buttonStyle(.plain)
+                            }
+                        } else {
+                            let authorListings = store.snapshot.listings.filter { $0.author == author }
+                            Text("Listings").font(.headline).accessibilityIdentifier("profileListings")
+                            if authorListings.isEmpty { Text("No listings to show yet.").font(.subheadline).foregroundStyle(MarketTheme.muted).padding(.vertical, 12) }
+                            LazyVGrid(columns: [GridItem(.flexible(), spacing: 14), GridItem(.flexible(), spacing: 14)], spacing: 22) {
+                                ForEach(authorListings) { listing in
+                                    ListingCard(listing: listing, open: { selectedListing = listing }, save: { store.save(listing) })
+                                }
+                            }
                         }
                     } else { ProgressView("Loading profile…").frame(maxWidth: .infinity).padding(.vertical, 60) }
                 }.padding(23)
             }.background(MarketTheme.paper).navigationTitle("Profile").marketInlineTitle()
                 .toolbar {
-                    ToolbarItem(placement: .cancellationAction) { if !history.isEmpty { Button("Back") { author = history.removeLast() } } }
+                    ToolbarItem(placement: .cancellationAction) { if !history.isEmpty { Button("Back") { author = history.removeLast(); selection = nil } } }
                     ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
                 }
                 .sheet(item: $selectedListing) { listing in ListingDetailView(listing: listing).marketSheetScope() }
                 .task(id: author) { store.command(["type": "load_profile", "author": author]) }
         }
     }
+    private func connectionControl(_ label: String, count: Int, value: String) -> some View {
+        Button { selection = selection == value ? nil : value } label: {
+            HStack(spacing: 4) { Text("\(count)").fontWeight(.semibold); Text(label) }
+                .font(.caption).foregroundStyle(selection == value ? MarketTheme.green : MarketTheme.muted)
+        }.buttonStyle(.plain).accessibilityIdentifier("profile\(label)")
+            .accessibilityAddTraits(selection == value ? .isSelected : [])
+    }
+
 }

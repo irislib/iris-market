@@ -136,10 +136,15 @@ final class MarketUITests: XCTestCase {
         for _ in 0..<3 where !author.isHittable { app.swipeUp() }
         author.tap()
         XCTAssertTrue(app.navigationBars["Profile"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Profiles are unavailable in offline preview."].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["profileListings"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["Some connections are unavailable."].exists)
+        app.buttons["profileKnown"].tap()
+        XCTAssertTrue(app.staticTexts["Some connections are unavailable."].waitForExistence(timeout: 5))
+        app.buttons["profileKnown"].tap()
         capture("15-profile-preview")
-        app.buttons.matching(identifier: "Done").firstMatch.tap()
-        app.buttons.matching(identifier: "Done").firstMatch.tap()
+        app.navigationBars["Profile"].buttons["Done"].tap()
+        XCTAssertTrue(app.navigationBars["Listing"].waitForExistence(timeout: 5))
+        app.navigationBars["Listing"].buttons["Done"].tap()
         let ai = app.buttons["aiSearchToggle"]
         ai.tap()
         XCTAssertEqual(ai.value as? String, "On")
@@ -147,6 +152,60 @@ final class MarketUITests: XCTestCase {
         XCTAssertFalse(app.buttons["runAISearch"].isEnabled)
         capture("16-shared-search")
         ai.tap()
+    }
+
+    /// Opt-in integration against an isolated local relay; never uses public relay defaults.
+    /// The release owner seeds this dedicated simulator's store before enabling the test.
+    func testLocalRelayOrderJourney() throws {
+        guard ProcessInfo.processInfo.environment["MARKET_LOCAL_ORDER_UI_TEST"] == "1" else { throw XCTSkip("Needs the isolated localhost order fixture") }
+        app.terminate()
+        app.launchArguments = []
+        app.launch()
+        XCTAssertTrue(app.staticTexts["Same-day parcel delivery"].waitForExistence(timeout: 30))
+        XCTAssertFalse(app.staticTexts["PREVIEW"].exists)
+        capture("local-01-native-listing")
+        app.buttons.matching(identifier: "listingOpen").firstMatch.tap()
+        let buy = app.buttons["buyListing"]
+        for _ in 0..<4 where !buy.isHittable { app.swipeUp() }
+        XCTAssertTrue(buy.isEnabled)
+        buy.tap()
+        XCTAssertTrue(app.navigationBars["Review order"].waitForExistence(timeout: 5))
+        capture("local-02-native-review")
+        let request = app.buttons["requestOrder"]
+        for _ in 0..<3 where !request.isHittable { app.swipeUp() }
+        request.tap()
+        XCTAssertTrue(app.staticTexts["Orders"].waitForExistence(timeout: 8))
+        let row = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Same-day parcel delivery")).firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 15))
+        row.tap()
+        XCTAssertTrue(app.navigationBars["Order"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.staticTexts["Accepted"].waitForExistence(timeout: 30))
+        capture("local-03-native-accepted-order")
+        for _ in 0..<4 where !app.staticTexts["Pickup"].isHittable { app.swipeUp() }
+        XCTAssertTrue(app.staticTexts["Pickup"].waitForExistence(timeout: 30))
+        XCTAssertTrue(app.staticTexts["Handoff"].exists)
+        capture("local-04-native-private-route")
+    }
+
+    /// The test owner pre-seeds both account stores with a localhost relay that never replies.
+    func testLocalSignInDoesNotWaitForRelay() throws {
+        guard ProcessInfo.processInfo.environment["MARKET_LOCAL_SIGNIN_UI_TEST"] == "1" else { throw XCTSkip("Needs the isolated silent local relay") }
+        app.terminate(); app.launchArguments = []; app.launch()
+        XCTAssertTrue(app.buttons["tabAccount"].waitForExistence(timeout: 10))
+        app.buttons["tabAccount"].tap()
+        app.buttons["Sign in"].tap()
+        let key = app.secureTextFields["accountSecret"]
+        XCTAssertTrue(key.waitForExistence(timeout: 5))
+        key.tap()
+        // Public test constant, never a production account credential.
+        key.typeText(String(repeating: "1", count: 64))
+        app.buttons["accountSignIn"].tap()
+        let closed = NSPredicate(format: "exists == false")
+        expectation(for: closed, evaluatedWith: app.navigationBars["Sign in"])
+        waitForExpectations(timeout: 5)
+        app.buttons["tabExplore"].tap()
+        XCTAssertTrue(app.textFields["marketSearch"].waitForExistence(timeout: 5))
+        capture("local-signin-ready-with-silent-relay")
     }
 
     func testSearchAndRequestFilter() throws {

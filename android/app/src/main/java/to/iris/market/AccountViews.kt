@@ -23,13 +23,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import org.json.JSONObject
 
-@Composable fun InboxView(state:MarketSnapshot,model:MarketModel,busy:Boolean) {
+@Composable fun InboxView(state:MarketSnapshot,model:MarketModel,busy:Boolean,openOrder:(String)->Unit) {
     var selected by remember { mutableStateOf<String?>(null) }
     var pasted by remember { mutableStateOf("") };var showConnect by remember { mutableStateOf(false) }
     val clipboard=LocalClipboardManager.current
     val conversation=state.conversations.firstOrNull{it.id==selected}
     if(conversation != null) {
-        ConversationView(conversation,state.people[conversation.id] ?: PublicPerson.unnamed(conversation.id),model,busy){selected=null};return
+        ConversationView(conversation,state.people[conversation.id] ?: PublicPerson.unnamed(conversation.id),model,busy,openOrder){selected=null};return
     }
     Column(Modifier.fillMaxSize().padding(horizontal=22.dp)) {
         Row(Modifier.padding(top=15.dp,bottom=8.dp).fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
@@ -65,7 +65,7 @@ import org.json.JSONObject
     }
 }
 
-@Composable fun ConversationView(c:Conversation,person:PublicPerson,model:MarketModel,busy:Boolean,back:()->Unit) {
+@Composable fun ConversationView(c:Conversation,person:PublicPerson,model:MarketModel,busy:Boolean,openOrder:(String)->Unit,back:()->Unit) {
     var message by remember(c.id) { mutableStateOf("") }
     Column(Modifier.fillMaxSize().padding(horizontal=18.dp).imePadding()) {
         Row(verticalAlignment=Alignment.CenterVertically) {
@@ -77,7 +77,10 @@ import org.json.JSONObject
                 Row(Modifier.fillMaxWidth(),horizontalArrangement=if(m.mine) Arrangement.End else Arrangement.Start) {
                     Surface(color=if(m.mine) Action else White,contentColor=if(m.mine) OnInk else Ink,
                         shape=RoundedCornerShape(19.dp),modifier=Modifier.widthIn(max=290.dp)) {
-                        Text(m.text,Modifier.padding(horizontal=15.dp,vertical=12.dp),style=MaterialTheme.typography.bodyLarge)
+                        Column(Modifier.padding(horizontal=15.dp,vertical=12.dp)) {
+                            if(m.cashu != null) PaymentMessage(m.cashu,m.mine) else Text(m.text,style=MaterialTheme.typography.bodyLarge)
+                            m.orderId?.let { id -> TextButton(onClick={openOrder(id)},colors=ButtonDefaults.textButtonColors(contentColor=if(m.mine) OnInk else Ink)) { Text("View order") } }
+                        }
                     }
                 }
             }
@@ -98,14 +101,14 @@ import org.json.JSONObject
     val ai=remember(state.settings){JSONObject(state.settings).optJSONObject("ai")?:JSONObject()}
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal=24.dp).padding(bottom=35.dp),verticalArrangement=Arrangement.spacedBy(16.dp)) {
         Spacer(Modifier.height(7.dp))
-        Text("Account",style=MaterialTheme.typography.headlineMedium)
+        Text("Profile",style=MaterialTheme.typography.headlineMedium)
         Row(verticalAlignment=Alignment.CenterVertically,modifier=Modifier.padding(vertical=10.dp)) {
             UserAvatar(state.people[state.publicKey] ?: PublicPerson.unnamed(state.publicKey),70.dp)
-            Spacer(Modifier.width(17.dp));Column { Text(if(state.demo) "Preview account" else "Your account",style=MaterialTheme.typography.titleLarge,fontWeight=FontWeight.SemiBold)
+            Spacer(Modifier.width(17.dp));Column { Text(if(state.demo) "Preview profile" else "Your profile",style=MaterialTheme.typography.titleLarge,fontWeight=FontWeight.SemiBold)
                 if(state.demo) Text("Sample listings",color=Muted,style=MaterialTheme.typography.bodySmall) }
         }
         OutlinedButton(onClick={signIn=true},enabled=!state.demo) {Icon(Icons.Filled.Login,null);Spacer(Modifier.width(8.dp));Text("Sign in")}
-        if(!state.demo&&!state.canSign) Text("Sign in with your account key to publish listings.",color=Muted,style=MaterialTheme.typography.bodySmall)
+        if(!state.demo&&!state.canSign) Text("Sign in with your profile key to publish listings.",color=Muted,style=MaterialTheme.typography.bodySmall)
         TextButton(onClick=openProfile) { Icon(Icons.Filled.AccountCircle,null);Spacer(Modifier.width(8.dp));Text("Public profile") }
         Column {
             Text("Appearance",fontWeight=FontWeight.Medium)

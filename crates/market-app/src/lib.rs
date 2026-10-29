@@ -38,6 +38,14 @@ impl MarketApp {
                 .map_err(error)?,
         }))
     }
+    /// Caller must use this only for a newly generated key, with a persisted bootstrap intent.
+    #[uniffi::constructor]
+    pub fn fresh_profile(data_dir: String, secret_key: String) -> Result<Arc<Self>, MarketError> {
+        Ok(Arc::new(Self {
+            inner: iris_market_core::Market::open_fresh(Path::new(&data_dir), &secret_key)
+                .map_err(error)?,
+        }))
+    }
     #[uniffi::constructor]
     pub fn with_identity(
         data_dir: String,

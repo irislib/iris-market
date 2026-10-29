@@ -8,12 +8,14 @@ final class MarketStore: ObservableObject {
     @Published private(set) var busy = false
     @Published var alert: String?
     @Published var activeSheetCount = 0
+    @Published var activeOrderID: String?
     @Published private(set) var deviceLinkURL: String?
     private var deviceLink: MarketDeviceLink?
     private var linkingSecret: String?
     private var linkPolling = false
     private var accountGeneration = 0
     private let queue = DispatchQueue(label: "to.iris.market.core", qos: .userInitiated)
+    private let enrollmentQueue = DispatchQueue(label: "to.iris.market.enrollment", qos: .utility)
     private var app: MarketApp?
     private var timer: Timer?
     let demo: Bool
@@ -22,15 +24,20 @@ final class MarketStore: ObservableObject {
     private func open() {
         let demo = self.demo
         let previous = app
-        app = nil; ready = false; stopPolling(); accountGeneration += 1
+        app = nil; ready = false; activeOrderID = nil; stopPolling(); accountGeneration += 1
         let generation = accountGeneration
         queue.async { [weak self] in
             do {
                 previous?.shutdown()
-                let credential = demo ? "preview.identity" : "identity"
+                let credential = "identity"
                 let secret: String
-                if let existing = try SecureStore.read(credential) { secret = existing }
-                else { secret = generateSecretKey(); try SecureStore.write(secret, account: credential) }
+                if demo { secret = generateSecretKey() }
+                else if let existing = try SecureStore.read(credential) { secret = existing }
+                else {
+                    secret = generateSecretKey()
+                    if !demo { try SecureStore.write(try publicKeyForSecret(secret: secret), account: "identity.bootstrap") }
+                    try SecureStore.write(secret, account: credential)
+                }
                 let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
                 let baseFolder = base.appendingPathComponent(demo ? "IrisMarketPreview" : "IrisMarket", isDirectory: true)
                 let app: MarketApp
@@ -41,7 +48,10 @@ final class MarketStore: ObservableObject {
                     app = try MarketApp.withIdentity(dataDir: folder.path, ownerPublicKey: bundle.ownerPublicKey, ownerSecret: bundle.ownerSecret, deviceSecret: bundle.deviceSecret, authorization: bundle.authorization)
                 } else {
                     try FileManager.default.createDirectory(at: baseFolder, withIntermediateDirectories: true)
-                    app = try MarketApp(dataDir: baseFolder.path, secretKey: secret, demo: demo)
+                    if !demo, try SecureStore.read("identity.bootstrap") == publicKeyForSecret(secret: secret) {
+                        app = try MarketApp.freshProfile(dataDir: baseFolder.path, secretKey: secret)
+                        try SecureStore.remove("identity.bootstrap")
+                    } else { app = try MarketApp(dataDir: baseFolder.path, secretKey: secret, demo: demo) }
                 }
                 let initial = try app.command(request: #"{"type":"set_filter","query":"","side":"offer","ai_search":false}"#)
                 let snapshot = try MarketJSON.decoder().decode(MarketSnapshot.self, from: Data(initial.utf8))
@@ -97,21 +107,39 @@ final class MarketStore: ObservableObject {
         filter(query: query, side: side, aiSearch: true) { success in if success { self.runAI(type: "curate") } }
     }
     func save(_ listing: MarketListing) { command(["type": "save", "id": listing.id]) }
+    func requestOrder(_ listing: MarketListing, quantity: Int, note: String, completion: @escaping (Bool) -> Void) {
+        let existing = Set(snapshot.orders.map(\.id))
+        command(["type": "request_order", "listing_id": listing.id, "quantity": quantity, "note": note]) { success in
+            if success {
+                self.activeOrderID = self.snapshot.orders.first { !existing.contains($0.id) && $0.buyer == self.snapshot.publicKey && $0.items.contains { $0.id == listing.id } }?.id
+            }
+            completion(success)
+        }
+    }
+    func updateOrder(_ id: String, patch: [String: Any], completion: ((Bool) -> Void)? = nil) {
+        command(["type": "update_order", "order_id": id, "patch": patch], completion: completion)
+    }
+    func archiveOrder(_ order: MarketOrder, completion: ((Bool) -> Void)? = nil) {
+        command(["type": "archive_order", "order_id": order.id, "archived": !order.archived], completion: completion)
+    }
     func saveSettings(_ settings: MarketSettings, key: String, completion: ((Bool) -> Void)? = nil) {
         do {
-            if key.isEmpty { try SecureStore.remove(SecureStore.aiAccount(settings.ai)) }
-            else { try SecureStore.write(key, account: SecureStore.aiAccount(settings.ai)) }
+            if !demo {
+                if key.isEmpty { try SecureStore.remove(SecureStore.aiAccount(settings.ai)) }
+                else { try SecureStore.write(key, account: SecureStore.aiAccount(settings.ai)) }
+            }
             command(["type": "set_settings", "settings": try MarketJSON.object(settings)], completion: completion)
         } catch { alert = marketErrorMessage(error); completion?(false) }
     }
     func runAI(type: String) {
-        do { command(["type": type, "api_key": try SecureStore.read(SecureStore.aiAccount(snapshot.settings.ai)) ?? ""]) }
+        do { command(["type": type, "api_key": demo ? "" : try SecureStore.read(SecureStore.aiAccount(snapshot.settings.ai)) ?? ""]) }
         catch { alert = marketErrorMessage(error) }
     }
     func signIn(secret: String, completion: @escaping (Bool) -> Void) {
         guard !demo, !busy else { return }
         busy = true; alert = nil
         let relays = snapshot.settings.relays
+        let attempt = accountGeneration
         queue.async { [weak self] in
             do {
                 let owner = try publicKeyForSecret(secret: secret)
@@ -119,11 +147,47 @@ final class MarketStore: ObservableObject {
                 let usesLegacy = try legacy.map { try publicKeyForSecret(secret: $0) == owner } ?? false
                 var bundle = try NativeAccountBundle.load(owner) ?? NativeAccountBundle(ownerPublicKey: owner, ownerSecret: secret, deviceSecret: usesLegacy ? legacy! : generateSecretKey(), authorization: nil, legacy: usesLegacy)
                 bundle.ownerSecret = secret
+                let saved = bundle
                 let servers = String(decoding: try JSONEncoder().encode(relays), as: UTF8.self)
-                bundle.authorization = try registerIdentityDevice(ownerSecret: secret, deviceSecret: bundle.deviceSecret, relaysJson: servers)
-                try bundle.save(); try SecureStore.write(owner, account: "active.account")
-                Task { @MainActor in guard let self else { return }; self.busy = false; self.open(); completion(true) }
-            } catch { Task { @MainActor in self?.busy = false; self?.alert = marketErrorMessage(error); completion(false) } }
+                Task { @MainActor in
+                    guard let self, self.accountGeneration == attempt else { completion(false); return }
+                    do {
+                        // A profile is usable locally before any server replies.
+                        try saved.save(); try SecureStore.write(owner, account: "active.account")
+                        self.busy = false; self.open()
+                        let generation = self.accountGeneration
+                        completion(true)
+                        self.enrollmentQueue.async { [weak self] in
+                            do {
+                                let proof = try registerIdentityDevice(ownerSecret: secret, deviceSecret: saved.deviceSecret, relaysJson: servers)
+                                Task { @MainActor in
+                                    guard let self, self.accountGeneration == generation else { return }
+                                    do {
+                                        guard try SecureStore.read("active.account") == owner,
+                                              var current = try NativeAccountBundle.load(owner),
+                                              current.deviceSecret == saved.deviceSecret else { return }
+                                        current.authorization = proof; try current.save()
+                                        // The core's isolated owner-roster stream verifies the
+                                        // published proof. Never force messagingReady in the UI.
+                                        self.refreshSnapshot()
+                                    } catch { self.alert = "Your profile is ready, but device approval could not be saved. Sign in again to retry." }
+                                }
+                            } catch {
+                                Task { @MainActor in
+                                    guard let self, self.accountGeneration == generation,
+                                          (try? SecureStore.read("active.account")) == owner else { return }
+                                    self.alert = "Your profile is ready. Private messaging is waiting for device approval; sign in again to retry."
+                                }
+                            }
+                        }
+                    } catch { self.busy = false; self.alert = marketErrorMessage(error); completion(false) }
+                }
+            } catch {
+                Task { @MainActor in
+                    guard let self, self.accountGeneration == attempt else { completion(false); return }
+                    self.busy = false; self.alert = marketErrorMessage(error); completion(false)
+                }
+            }
         }
     }
     func beginDeviceLink() {

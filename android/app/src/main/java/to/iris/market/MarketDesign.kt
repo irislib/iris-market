@@ -107,7 +107,11 @@ private val DarkColors = darkColorScheme(
         if (!demo && listing.imageUrl != null) value = withContext(Dispatchers.IO) { loadPhoto(listing.imageUrl) }
     }
     if (photo != null) Image(photo!!.asImageBitmap(), listing.title, modifier, contentScale = ContentScale.Crop)
-    else Box(modifier.background(White))
+    else BoxWithConstraints(modifier.background(White), contentAlignment = Alignment.Center) {
+        val service = listing.category.trim().lowercase() in setOf("service", "services", "help", "skills", "jobs", "delivery", "errands")
+        Icon(if (service) Icons.Default.Work else Icons.Default.LocalOffer, contentDescription = null,
+            modifier = Modifier.size(minOf(maxWidth, maxHeight) * 0.24f), tint = Color.Gray.copy(alpha = 0.20f))
+    }
 }
 
 internal fun loadPhoto(source: String): Bitmap? = runCatching {

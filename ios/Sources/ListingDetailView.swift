@@ -5,18 +5,21 @@ struct ListingDetailView: View {
     @Environment(\.dismiss) private var dismiss
     let listing: MarketListing
     var onContact: (() -> Void)? = nil
+    var onOrder: (() -> Void)? = nil
     @State private var invitation = false
     @State private var authorProfile = false
+    @State private var reviewOrder = false
+    @State private var orderRequested = false
     private var current: MarketListing { store.snapshot.listings.first(where: { $0.id == listing.id }) ?? listing }
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 23) {
                     Group {
-                        if let raw = current.imageUrl, let url = URL(string: raw) { AsyncImage(url: url) { phase in if let image = phase.image { image.resizable().scaledToFill() } else { ListingPlaceholder() } } }
-                        else { ListingPlaceholder() }
+                        if let raw = current.imageUrl, let url = URL(string: raw) { AsyncImage(url: url) { phase in if let image = phase.image { image.resizable().scaledToFill() } else { ListingPlaceholder(category: current.category) } } }
+                        else { ListingPlaceholder(category: current.category) }
                     }.frame(height: 285).clipped().clipShape(RoundedRectangle(cornerRadius: 28))
-                    HStack { Text(current.side == "request" ? "BUYING" : current.category.uppercased()).font(.system(size: 10, weight: .bold)).tracking(1.5).foregroundStyle(MarketTheme.green); Spacer(); Text(current.delivery == "published" ? "" : current.delivery.capitalized).font(.caption).foregroundStyle(MarketTheme.muted) }
+                    HStack { Text(current.side == "request" ? "BUYING" : current.category.uppercased()).font(.system(size: 10, weight: .bold)).tracking(1.5).foregroundStyle(MarketTheme.green); Spacer(); Text(current.delivery == "queued" ? "Waiting to send" : current.delivery == "failed" ? "Not sent" : "").font(.caption).foregroundStyle(MarketTheme.muted) }
                     Text(current.title).font(.system(size: 32, weight: .medium, design: .serif)).tracking(-0.7).foregroundStyle(MarketTheme.ink)
                     HStack { Text(current.formattedPrice).font(.system(size: 28, weight: .semibold, design: .rounded)); Spacer(); Label(current.location.isEmpty ? "Anywhere" : current.location, systemImage: "mappin.circle.fill").font(.system(size: 13)).foregroundStyle(MarketTheme.muted) }.foregroundStyle(MarketTheme.ink)
                     Button { authorProfile = true } label: {
@@ -28,6 +31,10 @@ struct ListingDetailView: View {
                     MarketInlineError()
                     if current.mine {
                         Button { store.command(["type": "close", "id": current.id]) { if $0 { dismiss() } } } label: { Text("Mark as unavailable") }.buttonStyle(PrimaryButton())
+                    } else if current.side == "offer" {
+                        Button { reviewOrder = true } label: { Label("Buy", systemImage: "bag.fill") }
+                            .buttonStyle(PrimaryButton()).disabled(store.demo || store.busy || !store.snapshot.messagingReady).accessibilityIdentifier("buyListing")
+                        if store.demo { Text("Ordering is unavailable in preview mode.").font(.system(size: 12)).foregroundStyle(MarketTheme.muted) }
                     } else {
                         Button {
                             store.command(["type": "contact", "author": current.author, "listing_id": current.id]) { success in
@@ -42,8 +49,9 @@ struct ListingDetailView: View {
                 }.padding(23)
             }.background(MarketTheme.paper)
                 .sheet(isPresented: $authorProfile) { AuthorProfileView(author: current.author).marketSheetScope() }.navigationTitle("Listing").marketInlineTitle()
-                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button { store.save(current) } label: { Image(systemName: current.saved ? "bookmark.fill" : "bookmark") }.accessibilityLabel("Save listing") } }
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button { store.save(current) } label: { Image(systemName: current.saved ? "heart.fill" : "heart") }.accessibilityLabel("Save listing") } }
                 .sheet(isPresented: $invitation) { InvitationView().marketSheetScope() }
+                .sheet(isPresented: $reviewOrder, onDismiss: { if orderRequested { dismiss(); onOrder?() } }) { OrderReviewView(listing: current) { orderRequested = true }.marketSheetScope() }
         }
     }
 }

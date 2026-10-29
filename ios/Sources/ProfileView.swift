@@ -78,7 +78,7 @@ struct AISettingsView: View {
                 .onAppear { loadKey() }.onChange(of: settings.ai.provider) { _ in loadKey() }.onChange(of: settings.ai.baseUrl) { _ in loadKey() }
         }
     }
-    private func loadKey() { do { apiKey = try SecureStore.read(SecureStore.aiAccount(settings.ai)) ?? "" } catch { store.alert = error.localizedDescription } }
+    private func loadKey() { guard !store.demo else { return }; do { apiKey = try SecureStore.read(SecureStore.aiAccount(settings.ai)) ?? "" } catch { store.alert = error.localizedDescription } }
     private func save(test: Bool) { store.saveSettings(settings, key: apiKey) { success in saved = success; if success && test { store.runAI(type: "check_ai") } } }
 }
 

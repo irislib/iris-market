@@ -4,6 +4,7 @@ struct MarketSnapshot: Decodable {
     var publicKey: String = ""
     var canSign = false
     var messagingReady = false
+    var liveLocationSupported = false
     var demo: Bool = false
     var status: String = "Opening your market…"
     var error: String?
@@ -19,6 +20,7 @@ struct MarketSnapshot: Decodable {
     var savedCount: Int = 0
     var settings: MarketSettings = .init()
     var conversations: [MarketConversation] = []
+    var orders: [MarketOrder] = []
     var invite: String?
     static let empty = MarketSnapshot()
 }
@@ -92,6 +94,9 @@ struct MarketMessage: Decodable, Identifiable, Hashable {
     let text: String
     let mine: Bool
     let createdAt: Int64
+    let delivery: String?
+    let orderId: String?
+    let cashu: CashuPayment?
 }
 
 enum MarketJSON {

@@ -16,6 +16,14 @@ enum MarketPlatform {
         #endif
     }
 
+    static func copyPaymentToClipboard(_ token: String) {
+        #if os(macOS)
+        copyToClipboard(token)
+        #else
+        UIPasteboard.general.setItems([["public.utf8-plain-text": token]], options: [.localOnly: true, .expirationDate: Date().addingTimeInterval(120)])
+        #endif
+    }
+
     static func openExternalURL(_ url: URL) {
         #if os(macOS)
         NSWorkspace.shared.open(url)

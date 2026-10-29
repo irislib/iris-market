@@ -21,7 +21,7 @@ struct AccountSignInView: View {
                         SecureField("Secret key", text: $secret).marketNoAutocapitalization().autocorrectionDisabled().textContentType(.password).padding(16).background(MarketTheme.surface, in: RoundedRectangle(cornerRadius: 16)).accessibilityIdentifier("accountSecret")
                         Button { store.signIn(secret: secret.trimmingCharacters(in: .whitespacesAndNewlines)) { success in if success { secret = ""; dismiss() } } } label: {
                             if store.busy { ProgressView() } else { Text("Sign in") }
-                        }.buttonStyle(PrimaryButton(dark: false)).disabled(secret.isEmpty || store.busy || store.demo)
+                        }.buttonStyle(PrimaryButton(dark: false)).disabled(secret.isEmpty || store.busy || store.demo).accessibilityIdentifier("accountSignIn")
                     }
                     MarketInlineError()
                 }.padding(24)

@@ -1,0 +1,66 @@
+{
+  "schema": 1,
+  "gradle": {
+    "version": "9.3.1",
+    "distribution_url": "https://services.gradle.org/distributions/gradle-9.3.1-bin.zip",
+    "distribution_sha256": "b266d5ff6b90eada6dc3b20cb090e3731302e553a27c5d3e4df1f0d76beaff06",
+    "wrapper_jar_sha256": "b3a875ddc1f044746e1b1a55f645584505f4a10438c1afea9f15e92a7c42ec13",
+    "checksum_source": "https://gradle.org/release-checksums/",
+    "java_major": 17
+  },
+  "sdk_metadata_source": "https://dl.google.com/android/repository/repository2-3.xml",
+  "sdk_metadata_sha256_at_review": "d3678697ece7b7c3df6e3eed8363bf3944176931728af251268268a2d0d7d900",
+  "sdk_status": "Pinned SHA-256: complete archives streamed once and matched the reviewed official SHA-1 and exact size; no archive was retained, parsed or executed during pin acquisition.",
+  "sdk_linux": [
+    {
+      "package": "platforms;android-36",
+      "revision": "2",
+      "url": "https://dl.google.com/android/repository/platform-36_r02.zip",
+      "bytes": 65878410,
+      "official_sha1": "2c1a80dd4d9f7d0e6dd336ec603d9b5c55a6f576",
+      "sha256": "37607369a28c5b640b3a7998868d45898ebcb777565a0e85f9acf36f29631d2e",
+      "format": "zip",
+      "source_properties": {
+        "Pkg.Revision": "2",
+        "AndroidVersion.ApiLevel": "36"
+      }
+    },
+    {
+      "package": "build-tools;36.0.0",
+      "url": "https://dl.google.com/android/repository/build-tools_r36_linux.zip",
+      "bytes": 63737259,
+      "official_sha1": "b0b6376977657e8ad9b969bacf4093601da2c6fb",
+      "sha256": "5d9ac77fb6ff43d9da518a337b4fcf8f9097113df531d99ccefe80ef7ce8250b",
+      "format": "zip",
+      "source_properties": {
+        "Pkg.Revision": "36.0.0"
+      }
+    },
+    {
+      "package": "ndk;28.2.13676358",
+      "url": "https://dl.google.com/android/repository/android-ndk-r28c-linux.zip",
+      "bytes": 722261334,
+      "official_sha1": "a7b54a5de87fecd125a17d54f73c446199e72a64",
+      "sha256": "dfb20d396df28ca02a8c708314b814a4d961dc9074f9a161932746f815aa552f",
+      "format": "zip",
+      "source_properties": {
+        "Pkg.Revision": "28.2.13676358"
+      }
+    }
+  ],
+  "jdk": {
+    "version": "17.0.20+8",
+    "url": "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.20%2B8/OpenJDK17U-jdk_x64_linux_hotspot_17.0.20_8.tar.gz",
+    "sha256": "be7668bc030d578b83d6d5ef9221d6d6729bbbca8cf94a7d52e16ac68b5a5a35",
+    "bytes": 193273593,
+    "format": "tar.gz",
+    "root": "jdk-17.0.20+8",
+    "binary": "jdk-17.0.20+8/bin/java",
+    "metadata_source": "https://api.github.com/repos/adoptium/temurin17-binaries/releases/tags/jdk-17.0.20%2B8",
+    "checksum_source": "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.20%2B8/OpenJDK17U-jdk_x64_linux_hotspot_17.0.20_8.tar.gz.sha256.txt"
+  },
+  "external_assumptions": {
+    "host": "Hosted Ubuntu24.04 x64 supplies Python with tarfile.data_filter, a C compiler/linker, shell, Git and CA roots. Host tool versions/digests are recorded, not byte-reproduced.",
+    "qualification": "Archives are pinned before extraction. Market Android release dependencies need strict acquisition and offline replay with reviewed Linux AAPT2/lint checksums before the build; no mutable SDK manager is used."
+  }
+}

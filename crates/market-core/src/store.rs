@@ -122,6 +122,33 @@ impl Store {
         }
         Ok(())
     }
+    pub fn initial_authorization(&self) -> Result<Option<Event>> {
+        let raw: Option<String> = self
+            .db
+            .query_row(
+                "SELECT value FROM preferences WHERE key='initial-owner-authorization'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        raw.map(|raw| Event::from_json(raw).map_err(Into::into))
+            .transpose()
+    }
+    /// One durable transaction preserves both fresh-profile proof and publication intent.
+    pub fn queue_initial_authorization(&mut self, event: &Event) -> Result<()> {
+        event.verify()?;
+        let tx = self.db.transaction()?;
+        tx.execute(
+            "INSERT INTO preferences VALUES ('initial-owner-authorization', ?1)",
+            [event.as_json()],
+        )?;
+        tx.execute(
+            "INSERT INTO outbox VALUES (?1, ?2)",
+            params![event.id.to_hex(), event.as_json()],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
     pub fn queue_event(&self, event: &Event) -> Result<()> {
         event.verify()?;
         self.db.execute(

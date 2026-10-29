@@ -117,6 +117,10 @@ pub struct Message {
     pub mine: bool,
     pub created_at: u64,
     pub delivery: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cashu: Option<crate::messaging::CashuPayment>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Conversation {
@@ -130,6 +134,7 @@ pub struct Snapshot {
     pub public_key: String,
     pub can_sign: bool,
     pub messaging_ready: bool,
+    pub live_location_supported: bool,
     pub demo: bool,
     pub status: String,
     pub error: Option<String>,
@@ -143,6 +148,7 @@ pub struct Snapshot {
     pub saved_count: usize,
     pub settings: Settings,
     pub conversations: Vec<Conversation>,
+    pub orders: Vec<crate::orders::OrderView>,
     pub invite: Option<String>,
     pub profile: Option<crate::profiles::Profile>,
     pub graph_context_loaded: bool,
@@ -197,4 +203,22 @@ pub enum Command {
         peer_id: String,
         text: String,
     },
+    RequestOrder {
+        listing_id: String,
+        #[serde(default = "one")]
+        quantity: u16,
+        #[serde(default)]
+        note: String,
+    },
+    UpdateOrder {
+        order_id: String,
+        patch: serde_json::Value,
+    },
+    ArchiveOrder {
+        order_id: String,
+        archived: bool,
+    },
+}
+fn one() -> u16 {
+    1
 }

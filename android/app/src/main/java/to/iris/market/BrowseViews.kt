@@ -158,7 +158,7 @@ import org.json.JSONObject
     }
 }
 
-@Composable fun ListingDetail(listing: Listing, demo: Boolean, model: MarketModel, busy: Boolean, person: PublicPerson?, openProfile:(String)->Unit, inbox:()->Unit) {
+@Composable fun ListingDetail(listing: Listing, demo: Boolean, model: MarketModel, busy: Boolean, person: PublicPerson?, openProfile:(String)->Unit, buy:()->Unit, inbox:()->Unit) {
     Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal=24.dp).padding(bottom=30.dp)) {
         ListingArt(listing,demo,Modifier.fillMaxWidth().height(245.dp).clip(RoundedCornerShape(24.dp)))
         Spacer(Modifier.height(22.dp))
@@ -175,7 +175,7 @@ import org.json.JSONObject
         Text(listing.description,style=MaterialTheme.typography.bodyLarge)
         Spacer(Modifier.height(24.dp))
         if(demo) Text("Sample listing · Preview stays on this device.",color=Muted,style=MaterialTheme.typography.bodySmall)
-        else if(listing.mine) Text("Your listing · ${listing.delivery.ifBlank { listing.status }}",color=Muted,style=MaterialTheme.typography.bodySmall)
+        else if(listing.mine) Text(if(listing.delivery == "queued") "Your listing · Waiting to send" else if(listing.delivery == "failed") "Your listing · Not sent" else "Your listing",color=Muted,style=MaterialTheme.typography.bodySmall)
         Spacer(Modifier.height(14.dp))
         Row(horizontalArrangement=Arrangement.spacedBy(10.dp)) {
             OutlinedButton(onClick={model.save(listing.id)},modifier=Modifier.weight(1f).height(51.dp),shape=RoundedCornerShape(15.dp)) {
@@ -183,11 +183,14 @@ import org.json.JSONObject
                 Text(if(listing.saved) "Saved" else "Save")
             }
             Button(enabled=!busy&&!demo&&!listing.mine,onClick={
-                model.command(JSONObject().put("type","contact").put("author",listing.author).put("listing_id",listing.id),inbox)
+                if(listing.side=="offer") buy() else model.command(JSONObject().put("type","contact").put("author",listing.author).put("listing_id",listing.id),inbox)
             },modifier=Modifier.weight(1.35f).height(51.dp),shape=RoundedCornerShape(15.dp)) {
-                Text("Private enquiry")
+                Text(if(listing.side=="offer") "Buy" else "Respond")
             }
         }
+        if(!listing.mine && !demo && listing.side=="offer") TextButton(enabled=!busy,onClick={
+            model.command(JSONObject().put("type","contact").put("author",listing.author).put("listing_id",listing.id),inbox)
+        },modifier=Modifier.fillMaxWidth()) { Text("Message") }
         if(listing.mine && !demo) TextButton(enabled=!busy,onClick={model.command(JSONObject().put("type","close").put("id",listing.id))}) { Text("Close listing") }
     }
 }

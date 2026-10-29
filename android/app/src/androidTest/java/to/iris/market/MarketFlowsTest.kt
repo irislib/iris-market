@@ -48,6 +48,17 @@ class MarketFlowsTest {
         compose.waitUntil(5_000) { compose.onAllNodesWithText("A little more green").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("Selling").assertIsSelected()
     }
+    @Test fun orderHistoryHasClearPurchaseSaleDeliveryViews() {
+        compose.onNodeWithText("Orders").performClick()
+        compose.onNodeWithText("Purchases").assertIsSelected()
+        compose.onNodeWithText("No purchases yet").assertIsDisplayed()
+        compose.onNodeWithText("Sales").performClick().assertIsSelected()
+        compose.onNodeWithText("No sales yet").assertIsDisplayed()
+        compose.onNodeWithText("Deliveries").performClick().assertIsSelected()
+        compose.onNodeWithText("Deliveries you handle appear here.").assertIsDisplayed()
+        compose.onNodeWithText("Archived").performScrollTo().performClick().assertIsSelected()
+        compose.onNodeWithText("Nothing archived").assertIsDisplayed()
+    }
     @Test fun creationIsExplicitlyDisabledInPreview() {
         compose.onNodeWithContentDescription("Create listing").performClick()
         compose.onNodeWithText("Title").performTextInput("My reading chair")

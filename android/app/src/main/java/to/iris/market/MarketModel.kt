@@ -40,7 +40,7 @@ data class Listing(
         else -> "$price $currency"
     }
 }
-data class Message(val id: String, val text: String, val mine: Boolean)
+data class Message(val id: String, val text: String, val mine: Boolean, val orderId: String? = null, val cashu: CashuPayment? = null)
 data class Conversation(val id: String, val name: String, val messages: List<Message>)
 data class MarketSnapshot(
     val publicKey: String = "", val canSign: Boolean = false, val messagingReady: Boolean = false, val demo: Boolean = false, val status: String = "Opening your market…",
@@ -48,6 +48,7 @@ data class MarketSnapshot(
     val listings: List<Listing> = emptyList(), val savedCount: Int = 0,
     val settings: String = "{}", val conversations: List<Conversation> = emptyList(),
     val invite: String? = null, val aiSearch: Boolean = false, val sort: String = "suggested",
+    val orders: List<MarketOrder> = emptyList(), val liveLocationSupported: Boolean = false,
     val people: Map<String, PublicPerson> = emptyMap(), val profile: PublicProfile? = null, val graphContextLoaded: Boolean = false
 ) {
     companion object {
@@ -75,8 +76,10 @@ data class MarketSnapshot(
                     val c = cs.getJSONObject(i); val ms = c.optJSONArray("messages") ?: JSONArray()
                     Conversation(c.getString("id"), c.optString("name", "Conversation"),
                         (0 until ms.length()).map { j -> val m = ms.getJSONObject(j)
-                            Message(m.getString("id"), m.optString("text"), m.optBoolean("mine")) })
+                            Message(m.getString("id"), m.optString("text"), m.optBoolean("mine"), m.optional("order_id"), m.optJSONObject("cashu")?.let(CashuPayment::parse)) })
                 }, invite = o.optional("invite"), aiSearch = o.optBoolean("ai_search"), sort = o.optString("sort", "suggested"),
+                liveLocationSupported = o.optBoolean("live_location_supported", false),
+                orders = o.optJSONArray("orders")?.let { a -> (0 until a.length()).map { MarketOrder.parse(a.getJSONObject(it)) } } ?: emptyList(),
                 people = o.optJSONObject("people")?.let { people -> people.keys().asSequence().associateWith { PublicPerson.parse(people.getJSONObject(it)) } } ?: emptyMap(),
                 profile = o.optJSONObject("profile")?.let(PublicProfile::parse), graphContextLoaded = o.optBoolean("graph_context_loaded")
             )
@@ -136,6 +139,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
     val notice = alert.asStateFlow()
     @Volatile private var active = true
     private var operationCount = 0
+    private var accountGeneration = 0L
     private val linking = MutableStateFlow<String?>(null)
     val deviceLinkUrl = linking.asStateFlow()
     private var linkJob: Job? = null
@@ -150,10 +154,14 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
         }
     }
     private fun openSavedAccount() {
+        accountGeneration += 1
         core?.shutdown();core?.close();core=null
         val application=getApplication<Application>()
         val name=if(preview) "identity-preview" else "identity"
-        val legacy=secure.get(name).ifBlank {generateSecretKey().also {secure.put(name,it)}}
+        val legacy=secure.get(name).ifBlank {generateSecretKey().also {
+            if(!preview) secure.put("identity-bootstrap",publicKeyForSecret(it))
+            secure.put(name,it)
+        }}
         val owner=if(preview) "" else secure.get("active-account")
         val saved=if(owner.isBlank()) "" else secure.get("account-$owner")
         check(owner.isBlank() || saved.isNotBlank()) { "Active account credentials are unavailable" }
@@ -163,7 +171,12 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
             val directory=if(bundle.optBoolean("legacy")) base else File(base,"accounts/$owner")
             directory.mkdirs()
             core=MarketApp.withIdentity(directory.absolutePath,owner,bundle.optional("secret"),bundle.getString("device"),bundle.optional("authorization"))
-        } else {base.mkdirs();core=MarketApp(base.absolutePath,legacy,preview)}
+        } else {
+            base.mkdirs()
+            core=if(!preview && secure.get("identity-bootstrap")==publicKeyForSecret(legacy)) {
+                MarketApp.freshProfile(base.absolutePath,legacy).also {secure.put("identity-bootstrap","")}
+            } else MarketApp(base.absolutePath,legacy,preview)
+        }
         core?.command(JSONObject().put("type", "set_filter").put("query", "").put("side", "offer").put("ai_search", false).toString())
         refreshSnapshot()
     }
@@ -172,23 +185,51 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
         viewModelScope.launch {
             working.value=true;alert.value=null
             try {
-                withContext(Dispatchers.IO) {
-                    val owner=publicKeyForSecret(secret)
-                    val prior=secure.get("account-$owner")
-                    val legacy=secure.get("identity")
-                    val usesLegacy=legacy.isNotBlank()&&publicKeyForSecret(legacy)==owner
-                    val bundle=if(prior.isNotBlank()) JSONObject(prior) else JSONObject().put("owner",owner).put("device",if(usesLegacy)legacy else generateSecretKey()).put("legacy",usesLegacy)
-                    bundle.put("secret",secret)
-                    val relays=JSONObject(state.value.settings).getJSONArray("relays").toString()
-                    bundle.put("authorization",registerIdentityDevice(secret,bundle.getString("device"),relays))
-                    mutex.withLock {secure.put("account-$owner",bundle.toString());secure.put("active-account",owner);openSavedAccount()}
+                val saved=withContext(Dispatchers.IO) {
+                    mutex.withLock {
+                        val owner=publicKeyForSecret(secret)
+                        val prior=secure.get("account-$owner")
+                        val legacy=secure.get("identity")
+                        val usesLegacy=legacy.isNotBlank()&&publicKeyForSecret(legacy)==owner
+                        val bundle=if(prior.isNotBlank()) JSONObject(prior) else JSONObject().put("owner",owner).put("device",if(usesLegacy)legacy else generateSecretKey()).put("legacy",usesLegacy)
+                        bundle.put("secret",secret)
+                        val relays=JSONObject(state.value.settings).optJSONArray("relays")?.toString() ?: "[]"
+                        // Durable local identity and core open do not await relay discovery.
+                        secure.put("account-$owner",bundle.toString());secure.put("active-account",owner)
+                        openSavedAccount()
+                        NativeEnrollment(owner,bundle.getString("device"),relays,accountGeneration)
+                    }
                 }
                 done()
+                viewModelScope.launch(Dispatchers.IO) {
+                    try {
+                        // No core mutex is held during the blocking enrollment call.
+                        val proof=registerIdentityDevice(secret,saved.device,saved.relays)
+                        ensureActive()
+                        mutex.withLock {
+                            ensureActive()
+                            if(accountGeneration!=saved.generation || secure.get("active-account")!=saved.owner)return@withLock
+                            val current=JSONObject(secure.get("account-${saved.owner}"))
+                            if(current.getString("device")!=saved.device)return@withLock
+                            current.put("authorization",proof);secure.put("account-${saved.owner}",current.toString())
+                            // Core verifies the published proof on its isolated owner-roster
+                            // stream; the UI never overrides messagingReady.
+                            refreshSnapshot()
+                        }
+                    } catch(e:CancellationException) {throw e}
+                    catch(_:Exception) {
+                        mutex.withLock {
+                            if(isActive && accountGeneration==saved.generation && runCatching {secure.get("active-account")}.getOrNull()==saved.owner)
+                                alert.value="Your profile is ready. Private messaging is waiting for device approval; sign in again to retry."
+                        }
+                    }
+                }
             } catch(e:CancellationException) {throw e}
-            catch(_:Exception) {alert.value="Sign-in failed. Check the key and connection, then try again."}
-            finally {working.value=false}
+            catch(_:Exception) {alert.value="Could not save this profile. Check the key and try again."}
+            finally {working.value=operationCount>0}
         }
     }
+    private data class NativeEnrollment(val owner:String,val device:String,val relays:String,val generation:Long)
     fun beginDeviceLink() {
         if(preview||working.value)return
         closeDeviceLink()
@@ -229,7 +270,9 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
     fun setActive(value: Boolean) { active = value }
     private fun refreshSnapshot() { core?.let { mutable.value = MarketSnapshot.parse(it.snapshot()) } }
     fun dismissNotice() { alert.value = null }
-    fun command(request: JSONObject, onSuccess: (() -> Unit)? = null) {
+    fun command(request: JSONObject, onSuccess: (() -> Unit)? = null) = submit(request, onSuccess, null)
+    fun orderCommand(request: JSONObject, onSuccess: () -> Unit = {}, onError: (String) -> Unit) = submit(request, onSuccess, onError)
+    private fun submit(request: JSONObject, onSuccess: (() -> Unit)?, onError: ((String) -> Unit)?) {
         viewModelScope.launch {
             operationCount += 1; working.value = true
             try {
@@ -241,7 +284,10 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
                 }
                 onSuccess?.invoke()
             } catch (e: CancellationException) { throw e }
-            catch (_: Exception) { alert.value = "That didn’t go through. Check your connection and details, then try again." }
+            catch (_: Exception) {
+                val message = "Couldn’t save that change. Check the details and try again."
+                if (onError != null) onError(message) else alert.value = message
+            }
             finally { operationCount -= 1; working.value = operationCount > 0 }
         }
     }

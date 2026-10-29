@@ -29,9 +29,9 @@ import org.json.JSONObject
     connection.badge?.let { badge ->
         Icon(Icons.Filled.Verified, connection.description, Modifier.size(19.dp),
             tint=when(badge) { "following" -> Color(0xFF4387CA); "trusted" -> Color(0xFFD39E32); else -> Muted })
-    } ?: connection.distance?.let { Text("$it hops",color=Muted,style=MaterialTheme.typography.labelSmall) }
+    } ?: connection.distance?.let { Text("$it away",color=Muted,style=MaterialTheme.typography.labelSmall) }
 }
-@Composable fun PublicProfileView(initialAuthor: String, state: MarketSnapshot, model: MarketModel, openListing:(Listing)->Unit, close:()->Unit) {
+@Composable fun PublicProfileView(initialAuthor: String, state: MarketSnapshot, model: MarketModel, openListing:(Listing)->Unit, message:(String)->Unit = {}, close:()->Unit) {
     var author by remember(initialAuthor) { mutableStateOf(initialAuthor) }
     var history by remember { mutableStateOf(emptyList<String>()) }
     var selection by remember { mutableIntStateOf(0) }
@@ -53,6 +53,7 @@ import org.json.JSONObject
                     Text(profile.person.connection.description,color=Muted,style=MaterialTheme.typography.bodySmall)
                 }
             }
+            if(!state.demo && author!=state.publicKey) OutlinedButton(onClick={message(author)}) { Icon(Icons.Filled.ChatBubble,null); Spacer(Modifier.width(8.dp)); Text("Message") }
             if(profile.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
             if(profile.about.isNotBlank()) Text(profile.about,style=MaterialTheme.typography.bodyMedium)
             profile.website?.let { url -> TextButton(onClick={runCatching{uri.openUri(url)}}) { Text(url,maxLines=2) } }

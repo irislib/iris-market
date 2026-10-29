@@ -3,13 +3,18 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 skip_rust=false
 bootstrap=false
+offline=false
 for arg in "$@"; do
   case "$arg" in
     --skip-rust) skip_rust=true ;;
+    --offline) offline=true ;;
     --bootstrap-locks) bootstrap=true ;;
-    *) echo "Usage: scripts/android-build [--skip-rust] [--bootstrap-locks]" >&2; exit 2 ;;
+    *) echo "Usage: scripts/android-build [--skip-rust] [--offline] [--bootstrap-locks]" >&2; exit 2 ;;
   esac
 done
+if [[ "$offline" == true ]]; then export CARGO_NET_OFFLINE=true; fi
+gradle_network=()
+if [[ "$offline" == true ]]; then gradle_network+=(--offline); fi
 sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}}"
 ndk="$sdk/ndk/28.2.13676358"
 target="${CARGO_TARGET_DIR:-$root/target}"
@@ -55,11 +60,11 @@ mkdir -p "$root/android/app/build/generated/jniLibs/arm64-v8a"
 cp "$lib" "$root/android/app/build/generated/jniLibs/arm64-v8a/"
 cd "$root/android"
 if [[ "$bootstrap" == true ]]; then
-  ANDROID_HOME="$sdk" ./gradlew --no-daemon --max-workers=2 --write-locks --write-verification-metadata sha256 :app:assembleDebug :app:assembleDebugAndroidTest
+  ANDROID_HOME="$sdk" ./gradlew "${gradle_network[@]}" --no-daemon --max-workers=2 --write-locks --write-verification-metadata sha256 :app:assembleDebug :app:assembleDebugAndroidTest
 else
   if [[ ! -f app/gradle.lockfile || ! -f gradle/verification-metadata.xml ]]; then
     echo 'Missing dependency locks/checksums. The release owner must bootstrap and review them before a normal build.' >&2
     exit 1
   fi
-  ANDROID_HOME="$sdk" ./gradlew --no-daemon --max-workers=2 --dependency-verification strict :app:assembleDebug :app:assembleDebugAndroidTest
+  ANDROID_HOME="$sdk" ./gradlew "${gradle_network[@]}" --no-daemon --max-workers=2 --dependency-verification strict :app:assembleDebug :app:assembleDebugAndroidTest
 fi

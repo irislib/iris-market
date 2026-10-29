@@ -3,10 +3,12 @@ use std::{
     io::Write,
     path::PathBuf,
     process::{Command, Stdio},
+    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 struct Fixture(PathBuf);
+static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 impl Fixture {
     fn new() -> Self {
         let suffix = SystemTime::now()
@@ -14,8 +16,9 @@ impl Fixture {
             .unwrap()
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "iris-market-cli-test-{}-{suffix}",
-            std::process::id()
+            "iris-market-cli-test-{}-{suffix}-{}",
+            std::process::id(),
+            FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir(&path).unwrap();
         Self(path)
@@ -43,7 +46,7 @@ fn help_tools_and_preview_need_no_credentials_or_live_profile() {
             .as_array()
             .unwrap()
             .len(),
-        5
+        9
     );
     let dir = Fixture::new();
     let output = cli().arg("preview").arg(&dir.0).output().unwrap();
@@ -195,4 +198,63 @@ fn named_offline_flows_report_durable_queues_and_keep_private_results_scoped() {
     assert_eq!(closed["delivery"], "unconfirmed");
     let found = offline_command(&alice, &alice_key, "search", &["--wait", "0"], None);
     assert!(found["listings"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn orders_are_local_first_restorable_archivable_and_scoped() {
+    let fixture = Fixture::new();
+    let seller = offline_profile(&fixture, "seller");
+    let buyer = offline_profile(&fixture, "buyer");
+    let seller_key = iris_market_core::generate_secret_key();
+    let buyer_key = iris_market_core::generate_secret_key();
+    let published = offline_command(
+        &seller,
+        &seller_key,
+        "publish",
+        &["-", "--wait", "0"],
+        Some(
+            r#"{"title":"Parcel delivery","description":"Local courier","side":"offer","price":"12","currency":"EUR"}"#,
+        ),
+    );
+    let listing_id = published["listing"]["id"].as_str().unwrap();
+    let seller_store = iris_market_core::store::Store::open(&seller.join("market.sqlite")).unwrap();
+    let event = seller_store.event(listing_id).unwrap();
+    drop(seller_store);
+    let mut buyer_store =
+        iris_market_core::store::Store::open(&buyer.join("market.sqlite")).unwrap();
+    buyer_store
+        .ingest(&event, iris_market_core::listing::now(), false)
+        .unwrap();
+    drop(buyer_store);
+    let requested = offline_command(
+        &buyer,
+        &buyer_key,
+        "order-request",
+        &[listing_id, "-"],
+        Some(r#"{"quantity":2,"note":"Ring once"}"#),
+    );
+    assert_eq!(requested["order"]["status"], "requested");
+    assert_eq!(requested["order"]["sync"], "queued");
+    assert_eq!(requested["order"]["items"][0]["quantity"], 2);
+    assert!(requested.get("conversations").is_none());
+    assert_eq!(requested["live_location_supported"], false);
+    let id = requested["order"]["id"].as_str().unwrap();
+    let restored = offline_command(&buyer, &buyer_key, "orders", &[], None);
+    assert_eq!(restored["orders"][0]["id"], id);
+    assert_eq!(restored["orders"][0]["sync"], "queued");
+    let archived = offline_command(&buyer, &buyer_key, "order-archive", &[id], None);
+    assert_eq!(archived["order"]["archived"], true);
+    let restored = offline_command(&buyer, &buyer_key, "order-restore", &[id], None);
+    assert_eq!(restored["order"]["archived"], false);
+    let cancelled = offline_command(
+        &buyer,
+        &buyer_key,
+        "order-update",
+        &[id, "-"],
+        Some(r#"{"status":"cancelled"}"#),
+    );
+    assert_eq!(cancelled["order"]["status"], "cancelled");
+    let search = offline_command(&buyer, &buyer_key, "search", &["--wait", "0"], None);
+    assert!(!search.to_string().contains("Ring once"));
+    assert!(search.get("orders").is_none());
 }

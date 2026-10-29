@@ -35,7 +35,7 @@ struct MarketMapView: MarketMapRepresentable {
         web.underPageBackgroundColor = .clear
         context.coordinator.web = web
         context.coordinator.update(listings: listings, dark: scheme == .dark, onSelect: onSelect)
-        web.load(URLRequest(url: URL(string: "https://market.iris.to/native-map.html?native=1&cache=512&theme=\(scheme == .dark ? "dark" : "light")")!))
+        web.load(URLRequest(url: URL(string: "https://market.iris.to/native-map?native=1&cache=512&theme=\(scheme == .dark ? "dark" : "light")")!))
         return web
     }
     private func updateWebView(context: Context) {
@@ -53,7 +53,7 @@ struct MarketMapView: MarketMapRepresentable {
         private var callback: ((MarketListing) -> Void)?
         private var lastPayload = ""
         func update(listings: [MarketListing], dark: Bool, onSelect: @escaping (MarketListing) -> Void) { self.listings = listings; self.dark = dark; callback = onSelect }
-        private func trusted(_ url: URL?) -> Bool { url?.scheme == "https" && url?.host == "market.iris.to" && url?.port == nil && url?.path == "/native-map.html" }
+        private func trusted(_ url: URL?) -> Bool { url?.scheme == "https" && url?.host == "market.iris.to" && url?.port == nil && url?.user == nil && url?.password == nil && ["/native-map", "/native-map.html"].contains(url?.path ?? "") }
         func send() {
             guard ready, let web, trusted(web.url) else { return }
             let markers: [[String: Any]] = listings.compactMap { listing in

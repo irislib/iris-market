@@ -14,7 +14,11 @@ fn tools() -> Value {
      {"name":"market_publish","description":"Publish an offer or request publicly and enable private enquiries. Confirm the exact listing with the user before calling.","inputSchema":{"type":"object","properties":{"draft":{"type":"object","properties":{"title":{"type":"string"},"description":{"type":"string"},"side":{"type":"string","enum":["offer","request"]},"price":{"type":"string"},"currency":{"type":"string"},"location":{"type":"string"},"category":{"type":"string"},"image_url":{"type":["string","null"]}},"required":["title","description","side"]}},"required":["draft"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"openWorldHint":true}},
      {"name":"market_save","description":"Toggle a local bookmark for a listing.","inputSchema":{"type":"object","properties":{"id":{"type":"string"}},"required":["id"],"additionalProperties":false}},
      {"name":"market_contact","description":"Start a private ratcheted conversation with the verified listing author. Requires user authorisation to contact that person.","inputSchema":{"type":"object","properties":{"author":{"type":"string"},"listing_id":{"type":"string"}},"required":["author","listing_id"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"openWorldHint":true}},
-     {"name":"market_send_message","description":"Send a private message in an existing conversation. Obtain user authorisation before contacting someone.","inputSchema":{"type":"object","properties":{"peer_id":{"type":"string"},"text":{"type":"string"}},"required":["peer_id","text"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"openWorldHint":true}}
+     {"name":"market_send_message","description":"Send a private message in an existing conversation. Obtain user authorisation before contacting someone.","inputSchema":{"type":"object","properties":{"peer_id":{"type":"string"},"text":{"type":"string"}},"required":["peer_id","text"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"openWorldHint":true}},
+     {"name":"market_orders","description":"Read this profile's private orders, including archived orders and delivery details. Does not return the private inbox or wallet.","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"annotations":{"readOnlyHint":true}},
+     {"name":"market_request_order","description":"Save a private order request and queue encrypted delivery to the listing seller. Use when the user has chosen the listing and authorised the request. This does not pay for it.","inputSchema":{"type":"object","properties":{"listing_id":{"type":"string"},"quantity":{"type":"integer","minimum":1,"maximum":999,"default":1},"note":{"type":"string","maxLength":2000}},"required":["listing_id"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"openWorldHint":true}},
+     {"name":"market_update_order","description":"Save an authorised private order update: status, seller shipment route, assigned courier stop progress, or location:null to stop sharing. Updates queue encrypted delivery; native live location sending is unavailable.","inputSchema":{"type":"object","properties":{"order_id":{"type":"string"},"patch":{"type":"object","description":"Shared camelCase order patch: {status}, {shipment:{stops,trackingUrl?,eta?}}, {stopId,status}, or {location:null}."}},"required":["order_id","patch"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"openWorldHint":true}},
+     {"name":"market_archive_order","description":"Archive or restore an order locally. Does not cancel it or notify anyone.","inputSchema":{"type":"object","properties":{"order_id":{"type":"string"},"archived":{"type":"boolean"}},"required":["order_id","archived"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"openWorldHint":false}}
     ])
 }
 fn mcp(app: &iris_market_core::Market, request: Value) -> Option<Value> {
@@ -36,6 +40,10 @@ fn mcp(app: &iris_market_core::Market, request: Value) -> Option<Value> {
                 Some("market_save") => "save",
                 Some("market_contact") => "contact",
                 Some("market_send_message") => "send_message",
+                Some("market_orders") => "orders",
+                Some("market_request_order") => "request_order",
+                Some("market_update_order") => "update_order",
+                Some("market_archive_order") => "archive_order",
                 _ => "",
             };
             if action.is_empty() {
@@ -46,12 +54,43 @@ fn mcp(app: &iris_market_core::Market, request: Value) -> Option<Value> {
                     args.entry("query").or_insert(json!(""));
                     args.entry("side").or_insert(json!("all"));
                 }
-                match app.command(&Value::Object(args).to_string()) {
+                let before = if action == "request_order" {
+                    snapshot(app).unwrap_or_default()
+                } else {
+                    Value::Null
+                };
+                let response = if action == "orders" {
+                    app.snapshot()
+                } else {
+                    app.command(&Value::Object(args.clone()).to_string())
+                };
+                match response {
                     Ok(state) => {
                         // Search never exposes private inbox history to a listing-discovery tool.
                         let text = if action == "set_filter" {
                             let s: Value = serde_json::from_str(&state).unwrap_or_default();
                             json!({"listings":s["listings"],"status":s["status"]}).to_string()
+                        } else if action == "orders" {
+                            let s: Value = serde_json::from_str(&state).unwrap_or_default();
+                            order_results(&s).to_string()
+                        } else if action == "request_order" {
+                            let s: Value = serde_json::from_str(&state).unwrap_or_default();
+                            selected_order_result(
+                                &s,
+                                new_order(
+                                    &before,
+                                    &s,
+                                    args["listing_id"].as_str().unwrap_or_default(),
+                                ),
+                            )
+                            .to_string()
+                        } else if matches!(action, "update_order" | "archive_order") {
+                            let s: Value = serde_json::from_str(&state).unwrap_or_default();
+                            selected_order_result(
+                                &s,
+                                order(&s, args["order_id"].as_str().unwrap_or_default()),
+                            )
+                            .to_string()
                         } else {
                             let s: Value = serde_json::from_str(&state).unwrap_or_default();
                             json!({"status":s["status"],"error":s["error"]}).to_string()
@@ -124,6 +163,58 @@ fn action(mode: &Mode, stdin: &mut impl Read) -> Result<Option<Value>> {
             }
             json!({"type":"send_message","peer_id":peer,"text":text})
         }
+        Mode::OrderRequest { id, source } => {
+            let options: Value = if let Some(source) = source {
+                serde_json::from_str(&input(source, true, stdin)?)
+                    .map_err(|_| anyhow::anyhow!("Invalid order request JSON"))?
+            } else {
+                json!({})
+            };
+            let object = options
+                .as_object()
+                .context("Order request must be a JSON object")?;
+            if object
+                .keys()
+                .any(|key| !["quantity", "note"].contains(&key.as_str()))
+            {
+                bail!("Order request accepts quantity and note");
+            }
+            let quantity = match object.get("quantity") {
+                None => 1,
+                Some(value) => value
+                    .as_u64()
+                    .filter(|v| (1..=999).contains(v))
+                    .context("Choose a quantity between 1 and 999")?,
+            };
+            let note = match object.get("note") {
+                None => "",
+                Some(value) => value.as_str().context("Order note must be text")?,
+            };
+            if note.chars().count() > 2000 {
+                bail!("Order note must be up to 2000 characters");
+            }
+            json!({"type":"request_order","listing_id":id,"quantity":quantity,"note":note})
+        }
+        Mode::OrderUpdate { id, source } => {
+            let patch: Value = serde_json::from_str(&input(source, true, stdin)?)
+                .map_err(|_| anyhow::anyhow!("Invalid order update JSON"))?;
+            let object = patch
+                .as_object()
+                .context("Order update must be a JSON object")?;
+            let single = object.len() == 1
+                && object
+                    .keys()
+                    .any(|key| ["status", "shipment", "location"].contains(&key.as_str()));
+            let stop =
+                object.len() == 2 && object.contains_key("stopId") && object.contains_key("status");
+            if !single && !stop {
+                bail!("Use a status, shipment, stopId/status, or location order update");
+            }
+            json!({"type":"update_order","order_id":id,"patch":patch})
+        }
+        Mode::OrderArchive { id, archived } => {
+            json!({"type":"archive_order","order_id":id,"archived":archived})
+        }
         Mode::Command { request } => {
             let value: Value = serde_json::from_str(&input(request, false, stdin)?)
                 .map_err(|_| anyhow::anyhow!("Invalid action JSON"))?;
@@ -168,6 +259,25 @@ fn published_listing<'a>(before: &Value, after: &'a Value) -> Option<&'a Value> 
 
 fn public_results(state: &Value) -> Value {
     json!({"listings":state["listings"],"status":state["status"],"error":state["error"]})
+}
+
+fn order<'a>(state: &'a Value, id: &str) -> Option<&'a Value> {
+    rows(state, "orders").iter().find(|row| row["id"] == id)
+}
+fn new_order<'a>(before: &Value, after: &'a Value, listing_id: &str) -> Option<&'a Value> {
+    rows(after, "orders").iter().find(|row| {
+        row["buyer"] == after["public_key"]
+            && row["items"][0]["id"] == listing_id
+            && !rows(before, "orders")
+                .iter()
+                .any(|old| old["id"] == row["id"])
+    })
+}
+fn order_results(state: &Value) -> Value {
+    json!({"orders":state["orders"],"live_location_supported":state["live_location_supported"],"status":state["status"],"error":state["error"]})
+}
+fn selected_order_result(state: &Value, order: Option<&Value>) -> Value {
+    json!({"order":order,"live_location_supported":state["live_location_supported"],"status":state["status"],"error":state["error"],"note":"queued means saved locally; sent means relay acknowledgement, not recipient receipt or payment. Pending updates resume when this profile is opened."})
 }
 
 fn result(mode: &Mode, before: &Value, state: &Value) -> Value {
@@ -230,6 +340,13 @@ fn result(mode: &Mode, before: &Value, state: &Value) -> Value {
                 "sent means relay acknowledgement, not recipient receipt. Pending work resumes when this profile is opened."
             );
         }
+        Mode::Orders => return order_results(state),
+        Mode::OrderRequest { id, .. } => {
+            return selected_order_result(state, new_order(before, state, id));
+        }
+        Mode::OrderUpdate { id, .. } | Mode::OrderArchive { id, .. } => {
+            return selected_order_result(state, order(state, id));
+        }
         Mode::Serve | Mode::Mcp => {}
     }
     output
@@ -267,6 +384,12 @@ fn wait_after(
             }
             Mode::Send { peer, .. } => {
                 last_message(&state, peer).is_some_and(|row| row["delivery"] == "sent")
+            }
+            Mode::OrderRequest { id, .. } => {
+                new_order(before, &state, id).is_some_and(|row| row["sync"] == "sent")
+            }
+            Mode::OrderUpdate { id, .. } => {
+                order(&state, id).is_some_and(|row| row["sync"] == "sent")
             }
             _ => false,
         };
@@ -348,14 +471,22 @@ fn run(invocation: Invocation) -> Result<()> {
             io::stdout().flush()?;
         }
     } else {
-        if let Mode::Save { id } | Mode::Close { id } | Mode::Contact { id, .. } = &mode {
+        if let Mode::Save { id }
+        | Mode::Close { id }
+        | Mode::Contact { id, .. }
+        | Mode::OrderRequest { id, .. } = &mode
+        {
             wait_for_listing(&app, id, deadline)?;
         }
         let before = snapshot(&app)?;
         if let Some(request) = request {
             app.command(&request.to_string())?;
         }
-        let state = if demo || matches!(mode, Mode::Invite | Mode::Save { .. }) {
+        let state = if demo
+            || matches!(
+                mode,
+                Mode::Invite | Mode::Save { .. } | Mode::OrderArchive { .. }
+            ) {
             snapshot(&app)?
         } else {
             wait_after(&app, &mode, &before, deadline)?
@@ -381,7 +512,7 @@ mod tests {
     use super::*;
     #[test]
     fn discovery_and_notifications_do_not_require_side_effects() {
-        assert_eq!(tools().as_array().unwrap().len(), 5);
+        assert_eq!(tools().as_array().unwrap().len(), 9);
         assert!(tools()[0]["annotations"]["readOnlyHint"].as_bool().unwrap());
     }
     #[test]
@@ -457,6 +588,103 @@ mod tests {
             .unwrap_err()
             .to_string()
                 == "Invalid draft JSON"
+        );
+    }
+    #[test]
+    fn order_input_is_bounded_validated_and_uses_core_commands() {
+        let request = action(
+            &Mode::OrderRequest {
+                id: "listing".into(),
+                source: None,
+            },
+            &mut &b""[..],
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            request,
+            json!({"type":"request_order","listing_id":"listing","quantity":1,"note":""})
+        );
+        let request = action(
+            &Mode::OrderRequest {
+                id: "listing".into(),
+                source: Some("-".into()),
+            },
+            &mut &br#"{"quantity":2,"note":"Ring once"}"#[..],
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(request["quantity"], 2);
+        assert_eq!(request["note"], "Ring once");
+        for input in [
+            r#"{"quantity":0}"#,
+            r#"{"quantity":1000}"#,
+            r#"{"quantity":1.5}"#,
+            r#"{"unknown":"secret"}"#,
+            r#"{"note":9}"#,
+        ] {
+            assert!(
+                action(
+                    &Mode::OrderRequest {
+                        id: "listing".into(),
+                        source: Some("-".into())
+                    },
+                    &mut input.as_bytes()
+                )
+                .is_err()
+            );
+        }
+        let patch = action(
+            &Mode::OrderUpdate {
+                id: "order".into(),
+                source: "-".into(),
+            },
+            &mut &br#"{"stopId":"pickup","status":"arrived"}"#[..],
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            patch,
+            json!({"type":"update_order","order_id":"order","patch":{"stopId":"pickup","status":"arrived"}})
+        );
+        assert!(
+            action(
+                &Mode::OrderUpdate {
+                    id: "order".into(),
+                    source: "-".into()
+                },
+                &mut &br#"{"status":"accepted","shipment":{"stops":[]}}"#[..]
+            )
+            .is_err()
+        );
+    }
+    #[test]
+    fn order_projections_never_include_inbox_or_unrelated_orders() {
+        let state = json!({"public_key":"buyer","orders":[{"id":"unrelated","buyer":"other","items":[{"id":"listing"}]},{"id":"requested","buyer":"buyer","items":[{"id":"listing"}],"sync":"queued"}],"live_location_supported":false,"status":"Offline","conversations":[{"text":"private inbox","cashu":{"token":"bearer-token"}}],"invite":"private-invite"});
+        let output = result(
+            &Mode::OrderRequest {
+                id: "listing".into(),
+                source: None,
+            },
+            &json!({"orders":[]}),
+            &state,
+        );
+        assert_eq!(output["order"]["id"], "requested");
+        assert_eq!(output["order"]["sync"], "queued");
+        assert!(!output.to_string().contains("unrelated"));
+        assert!(!output.to_string().contains("bearer-token"));
+        assert!(!output.to_string().contains("private-invite"));
+        let output = result(&Mode::Orders, &Value::Null, &state);
+        assert_eq!(output["orders"].as_array().unwrap().len(), 2);
+        assert!(!output.to_string().contains("private inbox"));
+        assert_eq!(
+            tools()
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|tool| tool["name"] == "market_orders")
+                .unwrap()["annotations"]["readOnlyHint"],
+            true
         );
     }
 }

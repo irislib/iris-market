@@ -8,8 +8,8 @@ struct MarketRootView: View {
     @State private var compose = false
     @State private var selected: MarketListing?
     enum MarketTab: String, CaseIterable {
-        case browse = "Explore", saved = "Saved", inbox = "Inbox", profile = "Account"
-        var symbol: String { switch self { case .browse: return "square.grid.2x2.fill"; case .saved: return "bookmark.fill"; case .inbox: return "bubble.left.and.bubble.right.fill"; case .profile: return "person.crop.circle.fill" } }
+        case browse = "Explore", saved = "Saved", orders = "Orders", inbox = "Inbox", profile = "Account"
+        var symbol: String { switch self { case .browse: return "square.grid.2x2.fill"; case .saved: return "heart.fill"; case .orders: return "shippingbox.fill"; case .inbox: return "bubble.left.and.bubble.right.fill"; case .profile: return "person.crop.circle.fill" } }
     }
     var body: some View {
         VStack(spacing: 0) {
@@ -28,6 +28,7 @@ struct MarketRootView: View {
                 switch tab {
                 case .browse: BrowseView(selected: $selected)
                 case .saved: SavedView(selected: $selected)
+                case .orders: OrdersView()
                 case .inbox: InboxView()
                 case .profile: ProfileView()
                 }
@@ -55,7 +56,7 @@ struct MarketRootView: View {
             }.background(MarketTheme.paper)
         }.background(MarketTheme.paper)
             .sheet(isPresented: $compose) { NewListingView().marketSheetScope() }
-            .sheet(item: $selected) { listing in ListingDetailView(listing: listing, onContact: { tab = .inbox }).marketSheetScope() }
+            .sheet(item: $selected) { listing in ListingDetailView(listing: listing, onContact: { tab = .inbox }, onOrder: { tab = .orders }).marketSheetScope() }
             .alert("Unable to complete action", isPresented: Binding(get: { store.alert != nil && store.activeSheetCount == 0 }, set: { if !$0 { store.alert = nil } })) { Button("OK", role: .cancel) { store.alert = nil } } message: { Text(store.alert ?? "") }
     }
 }
@@ -158,13 +159,13 @@ struct ListingCard: View {
             Button(action: open) {
                 ZStack(alignment: .bottomLeading) {
                     if let urlString = listing.imageUrl, let url = URL(string: urlString) {
-                        AsyncImage(url: url) { phase in if let image = phase.image { image.resizable().scaledToFill() } else { ListingPlaceholder() } }
-                    } else { ListingPlaceholder() }
+                        AsyncImage(url: url) { phase in if let image = phase.image { image.resizable().scaledToFill() } else { ListingPlaceholder(category: listing.category) } }
+                    } else { ListingPlaceholder(category: listing.category) }
                     if listing.side == "request" { Text("BUYING").font(.system(size: 8, weight: .bold)).tracking(0.8).foregroundStyle(MarketTheme.artworkInk).padding(.horizontal, 8).padding(.vertical, 6).background(.white.opacity(0.90), in: Capsule()).padding(10) }
                 }.frame(height: 151).clipped().clipShape(RoundedRectangle(cornerRadius: 19))
             }.buttonStyle(.plain).accessibilityLabel("View \(listing.title)").accessibilityIdentifier("listingOpen")
                 .overlay(alignment: .topTrailing) {
-                    Button(action: save) { Image(systemName: listing.saved ? "bookmark.fill" : "bookmark").font(.system(size: 13, weight: .medium)).foregroundStyle(MarketTheme.artworkInk).frame(width: 32, height: 32).background(.white.opacity(0.91), in: Circle()) }.padding(9)
+                    Button(action: save) { Image(systemName: listing.saved ? "heart.fill" : "heart").font(.system(size: 13, weight: .medium)).foregroundStyle(MarketTheme.artworkInk).frame(width: 32, height: 32).background(.white.opacity(0.91), in: Circle()) }.buttonStyle(.plain).padding(9)
                         .accessibilityLabel(listing.saved ? "Unsave \(listing.title)" : "Save \(listing.title)")
                 }
             Button(action: open) {
@@ -186,7 +187,7 @@ struct SavedView: View {
             VStack(alignment: .leading, spacing: 23) {
                 Text("Saved listings").font(.system(size: 30, weight: .medium, design: .serif)).tracking(-1).foregroundStyle(MarketTheme.ink)
                 let saved = store.snapshot.listings.filter(\.saved)
-                if saved.isEmpty { MarketEmptyState(symbol: "bookmark", title: "No saved listings", description: "Save a listing to find it here.") }
+                if saved.isEmpty { MarketEmptyState(symbol: "heart", title: "No saved listings", description: "Save a listing to find it here.") }
                 else { LazyVGrid(columns: [GridItem(.flexible(), spacing: 14), GridItem(.flexible(), spacing: 14)], spacing: 22) { ForEach(saved) { listing in ListingCard(listing: listing, open: { selected = listing }, save: { store.save(listing) }) } } }
             }.padding(23)
         }

@@ -53,6 +53,68 @@ pub struct Message {
     pub mine: bool,
     pub created_at: u64,
     pub delivery: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cashu: Option<CashuPayment>,
+}
+
+/// Parsing establishes structure and amount, not mint solvency or unspentness.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CashuPayment {
+    pub token: String,
+    pub amount: String,
+    pub mint: String,
+    pub unit: String,
+    pub status: String,
+}
+
+pub fn cashu_content(text: &str) -> (String, Option<CashuPayment>) {
+    use std::str::FromStr;
+    let mut clean = String::new();
+    let mut payment = None;
+    let mut rest = text;
+    while let Some(start) = rest.find("cashu") {
+        clean.push_str(&rest[..start]);
+        rest = &rest[start..];
+        if !rest.starts_with("cashuA") && !rest.starts_with("cashuB") {
+            clean.push_str("cashu");
+            rest = &rest[5..];
+            continue;
+        }
+        let end = rest
+            .bytes()
+            .take_while(|b| b.is_ascii_alphanumeric() || b"_-=+/".contains(b))
+            .count();
+        let candidate = &rest[..end];
+        if payment.is_none()
+            && candidate.len() <= MAX_MESSAGE_BYTES
+            && let Ok(token) = cashu::Token::from_str(candidate)
+            && let (Ok(amount), Ok(mint)) = (token.value(), token.mint_url())
+            && let Ok(url) = url::Url::parse(&mint.to_string())
+            && url.scheme() == "https"
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.query().is_none()
+            && url.fragment().is_none()
+        {
+            payment = Some(CashuPayment {
+                token: candidate.into(),
+                amount: amount.to_string(),
+                mint: url.to_string(),
+                unit: token
+                    .unit()
+                    .map(|u| u.to_string())
+                    .unwrap_or_else(|| "sat".into()),
+                status: "unverified".into(),
+            });
+        }
+        // Never render bearer material, including malformed payment strings.
+        clean.push_str("Cashu payment");
+        rest = &rest[end..];
+    }
+    clean.push_str(rest);
+    (clean, payment)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -88,6 +150,10 @@ struct PrivateState {
     public_invite: Option<Invite>,
     #[serde(default)]
     authorization_heads: BTreeMap<String, Vec<Event>>,
+    #[serde(default)]
+    orders: crate::orders::OrderBook,
+    #[serde(default)]
+    pending_invites: BTreeMap<String, Invite>,
 }
 
 /// All protocol keys, plaintext messages and queued ciphertext are encrypted at
@@ -317,6 +383,22 @@ impl Messaging {
     }
 
     pub fn accept_invite(&mut self, input: &str) -> MessagingResult<String> {
+        self.accept_invite_inner(input, false).map(|(peer, _)| peer)
+    }
+
+    /// Explicit user invitation acceptance is durable before any discovery.
+    /// Missing signed owner evidence queues the capability encrypted at rest;
+    /// the normal isolated roster subscription wakes verified acceptance.
+    pub fn accept_invite_locally(&mut self, input: &str) -> MessagingResult<bool> {
+        self.accept_invite_inner(input, true)
+            .map(|(_, accepted)| accepted)
+    }
+
+    fn accept_invite_inner(
+        &mut self,
+        input: &str,
+        queue_missing: bool,
+    ) -> MessagingResult<(String, bool)> {
         self.require_authorization()?;
         if input.len() > 64 * 1024 {
             return Err("Invitation is too large".into());
@@ -327,31 +409,75 @@ impl Messaging {
         if invite.inviter_device_pubkey.to_bytes() == self.keys.public_key().to_bytes() {
             return Err("This is this device’s own invitation".into());
         }
-        self.transaction(move |this| {
-            let result = this
-                .engine
-                .accept_invite(&invite, Some(peer))
-                .map_err(protocol_error)?;
-            let result = match result {
-                ProtocolAcceptInviteOutcome::Accepted(result) => result,
-                ProtocolAcceptInviteOutcome::Blocked(
-                    iris_chat_protocol::ProtocolAcceptInviteBlock::MissingOwnerRoster { .. },
-                ) => {
+        self.transaction(move |this| this.accept_parsed_invite(&invite, peer, queue_missing))
+    }
+
+    fn accept_parsed_invite(
+        &mut self,
+        invite: &Invite,
+        peer: PublicKey,
+        queue_missing: bool,
+    ) -> MessagingResult<(String, bool)> {
+        let outcome = self
+            .engine
+            .accept_invite(invite, Some(peer))
+            .map_err(protocol_error)?;
+        match outcome {
+            ProtocolAcceptInviteOutcome::Accepted(result) => {
+                let id = result.owner_pubkey.to_hex();
+                if result.owner_pubkey != self.owner {
+                    self.ensure_conversation(&id)?;
+                }
+                self.queue_effects(result.effects)?;
+                self.state.pending_invites.remove(&id);
+                Ok((id, true))
+            }
+            ProtocolAcceptInviteOutcome::Blocked(
+                iris_chat_protocol::ProtocolAcceptInviteBlock::MissingOwnerRoster { .. },
+            ) => {
+                if !queue_missing {
                     return Err(
                         "Load this person's signed device authorization before connecting".into(),
                     );
                 }
-                ProtocolAcceptInviteOutcome::Blocked(
-                    iris_chat_protocol::ProtocolAcceptInviteBlock::UnauthorizedDevice { .. },
-                ) => return Err("This device is no longer authorized by its account".into()),
-            };
-            let id = result.owner_pubkey.to_hex();
-            if result.owner_pubkey != this.owner {
-                this.ensure_conversation(&id)?;
+                let id = peer.to_hex();
+                if self.state.pending_invites.len() >= 32
+                    && !self.state.pending_invites.contains_key(&id)
+                {
+                    return Err("Too many invitations are waiting for device approval".into());
+                }
+                if peer != self.owner {
+                    self.ensure_conversation(&id)?;
+                }
+                self.state
+                    .pending_invites
+                    .insert(id.clone(), invite.clone());
+                Ok((id, false))
             }
-            this.queue_effects(result.effects)?;
-            Ok(id)
-        })
+            ProtocolAcceptInviteOutcome::Blocked(
+                iris_chat_protocol::ProtocolAcceptInviteBlock::UnauthorizedDevice { .. },
+            ) => Err("This device is no longer authorized by its account".into()),
+        }
+    }
+
+    fn retry_invitations(&mut self) -> MessagingResult<()> {
+        if !self.can_send() {
+            return Ok(());
+        }
+        for (id, invite) in self.state.pending_invites.clone() {
+            let peer = PublicKey::from_hex(&id).map_err(protocol_error)?;
+            let outcome = self
+                .engine
+                .accept_invite(&invite, Some(peer))
+                .map_err(protocol_error)?;
+            if let ProtocolAcceptInviteOutcome::Accepted(result) = outcome {
+                self.queue_effects(result.effects)?;
+                self.state.pending_invites.remove(&id);
+            }
+            // Missing, conflicting and revoked owner evidence never authorizes
+            // a connection. Keep the encrypted intent for a later valid roster.
+        }
+        Ok(())
     }
 
     /// Public authorization is accepted only as exact signed evidence. The
@@ -450,6 +576,8 @@ impl Messaging {
                     mine: true,
                     created_at: now,
                     delivery: "pending".into(),
+                    order_id: None,
+                    cashu: None,
                 },
             )?;
             Ok(())
@@ -562,10 +690,14 @@ impl Messaging {
         if !self
             .engine
             .has_due_pending_retry_work(iris_chat_protocol::NdrUnixSeconds(now()))
+            && !self.state.orders.jobs.iter().any(|job| !job.handed)
+            && self.state.pending_invites.is_empty()
         {
             return Ok(());
         }
         self.transaction(|this| {
+            this.retry_invitations()?;
+            this.send_order_jobs()?;
             let batch = this
                 .engine
                 .retry_pending_protocol(iris_chat_protocol::NdrUnixSeconds(now()))
@@ -584,6 +716,15 @@ impl Messaging {
             .values()
             .cloned()
             .collect::<Vec<_>>();
+        for conversation in &mut items {
+            for message in &mut conversation.messages {
+                let (text, payment) = cashu_content(&message.text);
+                message.text = text;
+                if message.cashu.is_none() {
+                    message.cashu = payment;
+                }
+            }
+        }
         items.sort_by(|a, b| {
             b.messages
                 .last()
@@ -592,6 +733,108 @@ impl Messaging {
                 .then(a.id.cmp(&b.id))
         });
         items
+    }
+
+    pub fn orders(&self) -> Vec<crate::orders::OrderView> {
+        self.state.orders.views(&self.owner.to_hex(), now())
+    }
+
+    pub fn request_order(
+        &mut self,
+        listing: &crate::model::Listing,
+        quantity: u16,
+        note: &str,
+    ) -> MessagingResult<String> {
+        self.transaction(|this| {
+            let id = this.state.orders.request(
+                listing,
+                quantity,
+                note,
+                &this.owner.to_hex(),
+                &this.keys.public_key().to_hex(),
+                now(),
+            )?;
+            this.prepare_order_threads()?;
+            Ok(id)
+        })
+    }
+
+    pub fn update_order(&mut self, id: &str, patch: serde_json::Value) -> MessagingResult<()> {
+        self.transaction(|this| {
+            this.state.orders.update(
+                id,
+                patch,
+                &this.owner.to_hex(),
+                &this.keys.public_key().to_hex(),
+                now(),
+            )?;
+            this.prepare_order_threads()
+        })
+    }
+
+    pub fn archive_order(&mut self, id: &str, archived: bool) -> MessagingResult<()> {
+        self.transaction(|this| this.state.orders.archive(id, archived))
+    }
+
+    fn prepare_order_threads(&mut self) -> MessagingResult<()> {
+        let orders = &self.state.orders;
+        self.state.outbox.retain(|_, queued| {
+            queued
+                .inner_id
+                .as_deref()
+                .is_none_or(|id| orders.can_publish(id))
+        });
+        for job in self.state.orders.jobs.clone() {
+            if job.handed {
+                continue;
+            }
+            self.ensure_conversation(&job.recipient)?;
+            if job.action != "location" {
+                self.append(
+                    &job.recipient,
+                    Message {
+                        id: job.id,
+                        text: job.rumor.content,
+                        mine: true,
+                        created_at: job.rumor.created_at.as_secs(),
+                        delivery: "pending".into(),
+                        order_id: Some(job.order_id),
+                        cashu: None,
+                    },
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn send_order_jobs(&mut self) -> MessagingResult<()> {
+        if !self.can_send() {
+            return Ok(());
+        }
+        for job in self.state.orders.jobs.clone() {
+            if job.handed || !self.state.orders.can_publish(&job.id) {
+                continue;
+            }
+            if self.state.outbox.len() >= MAX_OUTBOX.saturating_sub(16) {
+                break;
+            }
+            let peer = PublicKey::from_hex(&job.recipient).map_err(protocol_error)?;
+            let result = self
+                .engine
+                .send_direct_unsigned_event(peer, &job.recipient, job.rumor, UnixSeconds(now()))
+                .map_err(protocol_error)?;
+            self.queue_effects(result.effects)?;
+            if let Some(pending) = self
+                .state
+                .orders
+                .jobs
+                .iter_mut()
+                .find(|pending| pending.id == job.id)
+            {
+                pending.handed = true;
+            }
+        }
+        Ok(())
     }
 
     pub fn subscriptions(&self) -> Vec<PrivateSubscription> {
@@ -638,6 +881,28 @@ impl Messaging {
                 });
             }
         }
+        let existing: std::collections::BTreeSet<_> = self
+            .state
+            .conversations
+            .keys()
+            .cloned()
+            .chain(std::iter::once(self.owner.to_hex()))
+            .collect();
+        for id in self
+            .state
+            .orders
+            .participants()
+            .into_iter()
+            .filter(|id| !existing.contains(id))
+            .take(MAX_THREADS)
+        {
+            if let Ok(owner) = PublicKey::from_hex(&id) {
+                result.push(PrivateSubscription {
+                    scope: format!("private-order-profile-{id}"),
+                    filter: Filter::new().kind(Kind::Metadata).author(owner).limit(1),
+                });
+            }
+        }
         // Cold-delivery envelopes disclose only the recipient. The sender uses
         // unlinkable session keys. Keep this scope separate from session authors.
         result.push(PrivateSubscription {
@@ -667,6 +932,12 @@ impl Messaging {
             .outbox
             .values()
             .filter(|queued| self.outbound_is_authorized(queued))
+            .filter(|queued| {
+                queued
+                    .inner_id
+                    .as_deref()
+                    .is_none_or(|id| self.state.orders.can_publish(id))
+            })
             .map(|queued| queued.event.clone())
             .collect()
     }
@@ -707,12 +978,19 @@ impl Messaging {
             if let Some(queued) = this.state.outbox.remove(&id)
                 && let Some(inner_id) = queued.inner_id
             {
+                let delivered_to_peer = queued
+                    .recipient_device_owner
+                    .is_some_and(|owner| owner.to_hex() == queued.peer_id);
+                if delivered_to_peer {
+                    this.state.orders.sent(&inner_id, &queued.peer_id);
+                }
                 let remaining = this
                     .state
                     .outbox
                     .values()
                     .any(|other| other.inner_id.as_ref() == Some(&inner_id));
                 if !remaining
+                    && delivered_to_peer
                     && let Some(thread) = this.state.conversations.get_mut(&queued.peer_id)
                     && let Some(message) = thread
                         .messages
@@ -832,6 +1110,13 @@ impl Messaging {
                 return Err("Refusing unsupported private publication".into());
             }
             let id = event.id.to_hex();
+            if publish
+                .inner_event_id
+                .as_deref()
+                .is_some_and(|id| !self.state.orders.can_publish(id))
+            {
+                continue;
+            }
             if !self.state.outbox.contains_key(&id) && self.state.outbox.len() >= MAX_OUTBOX {
                 return Err("Private message queue is full".into());
             }
@@ -900,14 +1185,36 @@ impl Messaging {
             message.sender
         };
         let id = inner.id.ok_or("Private message has no ID")?.to_hex();
+        let order_id = if crate::orders::is_order_message(&inner) {
+            let sender_device = message.sender_device.unwrap_or(message.sender);
+            let Some((order_id, location)) = self.state.orders.receive(
+                &inner,
+                &message.sender.to_hex(),
+                &sender_device.to_hex(),
+                &self.owner.to_hex(),
+                now(),
+            ) else {
+                return Ok(());
+            };
+            if location {
+                return Ok(());
+            }
+            Some(order_id)
+        } else {
+            None
+        };
         self.append(
             &peer.to_hex(),
             Message {
                 id,
+                // Retain the exact received text encrypted, including additional
+                // payment tokens. conversations() hides bearer text in the UI.
                 text: inner.content,
                 mine,
                 created_at: inner.created_at.as_secs(),
                 delivery: if mine { "sent" } else { "received" }.into(),
+                order_id,
+                cashu: None,
             },
         )
     }

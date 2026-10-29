@@ -259,3 +259,73 @@ fn ai_search_uses_one_query_without_hiding_unreviewed_candidates() {
     .unwrap();
     assert_eq!(newest["sort"], "newest");
 }
+
+#[test]
+fn fresh_profile_persists_initial_roster_and_returns_ready_without_network() {
+    let dir = tempfile::tempdir().unwrap();
+    offline(dir.path());
+    let secret = iris_market_core::generate_secret_key();
+    let app = Market::open_fresh(dir.path(), &secret).unwrap();
+    let state: Value = serde_json::from_str(&app.snapshot().unwrap()).unwrap();
+    assert_eq!(state["can_sign"], true);
+    assert_eq!(state["messaging_ready"], true);
+    let store = Store::open(&dir.path().join("market.sqlite")).unwrap();
+    let proof = store.initial_authorization().unwrap().unwrap();
+    proof.verify().unwrap();
+    assert_eq!(proof.pubkey.to_hex(), state["public_key"]);
+    assert!(
+        store
+            .pending()
+            .unwrap()
+            .iter()
+            .any(|event| event.id == proof.id)
+    );
+    let initial_id = proof.id;
+    app.shutdown();
+    drop(app);
+    // Replaying a persisted bootstrap intent reuses exactly the original roster.
+    let resumed = Market::open_fresh(dir.path(), &secret).unwrap();
+    assert_eq!(
+        store.initial_authorization().unwrap().unwrap().id,
+        initial_id
+    );
+    resumed.shutdown();
+    drop(resumed);
+    let restored = Market::open(dir.path(), &secret, false).unwrap();
+    let state: Value = serde_json::from_str(&restored.snapshot().unwrap()).unwrap();
+    assert_eq!(state["messaging_ready"], true);
+    assert!(
+        store
+            .pending()
+            .unwrap()
+            .iter()
+            .any(|event| event.id == initial_id)
+    );
+    restored.shutdown();
+}
+
+#[test]
+fn fresh_constructor_never_rewrites_existing_legacy_or_other_owner_authorization() {
+    let dir = tempfile::tempdir().unwrap();
+    offline(dir.path());
+    let secret = iris_market_core::generate_secret_key();
+    let legacy = Market::open(dir.path(), &secret, false).unwrap();
+    legacy.shutdown();
+    drop(legacy);
+    assert!(Market::open_fresh(dir.path(), &secret).is_err());
+    assert!(
+        Store::open(&dir.path().join("market.sqlite"))
+            .unwrap()
+            .initial_authorization()
+            .unwrap()
+            .is_none()
+    );
+    let fresh_dir = tempfile::tempdir().unwrap();
+    offline(fresh_dir.path());
+    let app = Market::open_fresh(fresh_dir.path(), &secret).unwrap();
+    app.shutdown();
+    drop(app);
+    assert!(
+        Market::open_fresh(fresh_dir.path(), &iris_market_core::generate_secret_key()).is_err()
+    );
+}

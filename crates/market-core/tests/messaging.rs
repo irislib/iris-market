@@ -204,6 +204,59 @@ fn signed_roster(owner: &Keys, devices: &[nostr::PublicKey], timestamp: u64) -> 
     .unwrap()
 }
 
+#[test]
+fn invitation_waits_durably_for_signed_owner_evidence_without_network_or_bypass() {
+    let local_dir = TempDir::new().unwrap();
+    let peer_dir = TempDir::new().unwrap();
+    let local_key = Keys::generate();
+    let owner = Keys::generate();
+    let device = Keys::generate();
+    let timestamp = nostr::Timestamp::now().as_secs();
+    let authorization = signed_roster(&owner, &[device.public_key()], timestamp);
+    let mut peer = Messaging::open_identity(
+        peer_dir.path(),
+        owner.public_key(),
+        Some(owner.clone()),
+        device.clone(),
+        Some(&authorization),
+    )
+    .unwrap();
+    let invite = peer.invite().unwrap();
+    let mut local = Messaging::open(local_dir.path(), local_key.clone()).unwrap();
+    assert!(!local.accept_invite_locally(&invite).unwrap());
+    assert!(local.pending_outbound().is_empty());
+    assert!(
+        local
+            .subscriptions()
+            .iter()
+            .any(|subscription| subscription.scope
+                == format!("private-authorization-{}", owner.public_key().to_hex()))
+    );
+    drop(local);
+    let mut local = Messaging::open(local_dir.path(), local_key).unwrap();
+    local.retry().unwrap();
+    assert!(local.pending_outbound().is_empty());
+    let wrong = signed_roster(&owner, &[Keys::generate().public_key()], timestamp + 1);
+    local.ingest_authorization(&wrong).unwrap();
+    local.retry().unwrap();
+    assert!(local.pending_outbound().is_empty());
+    let valid = signed_roster(&owner, &[device.public_key()], timestamp + 2);
+    local.ingest_authorization(&valid).unwrap();
+    local.retry().unwrap();
+    assert!(!local.pending_outbound().is_empty());
+    exchange(&mut local, &mut peer);
+    local
+        .send(&owner.public_key().to_hex(), "Approved after restart")
+        .unwrap();
+    exchange(&mut local, &mut peer);
+    assert!(peer.conversations().iter().any(|thread| {
+        thread
+            .messages
+            .iter()
+            .any(|message| message.text == "Approved after restart")
+    }));
+}
+
 fn peer_receive(
     engine: &mut iris_chat_protocol::ProtocolEngine,
     events: Vec<Event>,

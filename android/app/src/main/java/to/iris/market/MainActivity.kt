@@ -72,6 +72,8 @@ fun MarketAppView(model: MarketModel, appearance: Appearance, changeAppearance: 
     val notice by model.notice.collectAsStateWithLifecycle()
     var tab by remember { mutableIntStateOf(0) }
     var selected by remember { mutableStateOf<Listing?>(null) }
+    var reviewListing by remember { mutableStateOf<Listing?>(null) }
+    var orderId by remember { mutableStateOf<String?>(null) }
     var profileAuthor by remember { mutableStateOf<String?>(null) }
     var posting by remember { mutableStateOf(false) }
     var settings by remember { mutableStateOf(false) }
@@ -80,7 +82,7 @@ fun MarketAppView(model: MarketModel, appearance: Appearance, changeAppearance: 
         bottomBar = {
             NavigationBar(containerColor = Cream, tonalElevation = 0.dp, modifier = Modifier.background(Cream)) {
                 listOf("Browse" to Icons.Filled.Storefront, "Saved" to Icons.Filled.Bookmark,
-                    "Inbox" to Icons.Filled.ChatBubble, "You" to Icons.Filled.Person).forEachIndexed { index, (label, icon) ->
+                    "Inbox" to Icons.Filled.ChatBubble, "Orders" to Icons.Filled.ReceiptLong, "You" to Icons.Filled.Person).forEachIndexed { index, (label, icon) ->
                     NavigationBarItem(selected = tab == index, onClick = {
                         if (tab != index) {
                             tab = index
@@ -113,20 +115,33 @@ fun MarketAppView(model: MarketModel, appearance: Appearance, changeAppearance: 
             when (tab) {
                 0 -> BrowseView(state, model, busy, selected = { selected = it }, settings = { settings = true })
                 1 -> SavedView(state, model, selected = { selected = it })
-                2 -> InboxView(state, model, busy)
-                3 -> ProfileView(state, busy, { settings = true }, { switchMode(!state.demo) }, model, appearance, changeAppearance, openProfile={profileAuthor=state.publicKey})
+                2 -> InboxView(state, model, busy, openOrder = { orderId = it })
+                3 -> OrdersView(state, openOrder = { orderId = it })
+                4 -> ProfileView(state, busy, { settings = true }, { switchMode(!state.demo) }, model, appearance, changeAppearance, openProfile={profileAuthor=state.publicKey})
             }
         }
     }
     selected?.let { original ->
         val listing = state.listings.firstOrNull { it.id == original.id } ?: original
         ModalBottomSheet(onDismissRequest = { selected = null }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = Cream) {
-            ListingDetail(listing, state.demo, model, busy, person=state.people[listing.author], openProfile={ profileAuthor=it; selected=null }) { selected = null; tab = 2 }
+            ListingDetail(listing, state.demo, model, busy, person=state.people[listing.author], openProfile={ profileAuthor=it; selected=null }, buy={ reviewListing=listing; selected=null }) { selected = null; tab = 2 }
         }
     }
     profileAuthor?.let { author ->
         ModalBottomSheet(onDismissRequest={profileAuthor=null},sheetState=rememberModalBottomSheetState(skipPartiallyExpanded=true),containerColor=Cream) {
-            PublicProfileView(author,state,model,openListing={profileAuthor=null;selected=it}) { profileAuthor=null }
+            PublicProfileView(author,state,model,openListing={profileAuthor=null;selected=it}, message={ target -> model.command(org.json.JSONObject().put("type","contact").put("author",target)) { profileAuthor=null; tab=2 } }) { profileAuthor=null }
+        }
+    }
+    reviewListing?.let { listing ->
+        ModalBottomSheet(onDismissRequest = { reviewListing = null }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = Cream) {
+            OrderReview(listing, state, model, busy) { id -> reviewListing = null; if (id != null) { orderId = id; tab = 3 } }
+        }
+    }
+    orderId?.let { id ->
+        ModalBottomSheet(onDismissRequest = { orderId = null }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = Cream) {
+            val order = state.orders.firstOrNull { it.id == id }
+            if (order != null) OrderDetail(order, state, model, busy, openProfile = { profileAuthor = it; orderId = null }) { orderId = null }
+            else Column(Modifier.padding(24.dp)) { Text("This order is not available on this device yet."); TextButton(onClick = { orderId = null }) { Text("Done") } }
         }
     }
     if (posting) ModalBottomSheet(onDismissRequest = { posting = false }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = Cream) {

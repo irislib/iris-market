@@ -11,6 +11,11 @@ pub const HELP: &str = "Iris Market
   iris-market invite <profile>
   iris-market accept <profile> <invite-file|-> [--wait 5]
   iris-market send <profile> <peer-id> <text|-> [--wait 5]
+  iris-market orders <profile> [--wait 0]
+  iris-market order-request <profile> <listing-id> [request.json|-] [--wait 0]
+  iris-market order-update <profile> <order-id> <patch.json|-> [--wait 0]
+  iris-market order-archive <profile> <order-id>
+  iris-market order-restore <profile> <order-id>
   iris-market snapshot <profile> [--wait 0]
   iris-market preview <isolated-directory>
   iris-market command <profile> '<JSON>' [--wait 2]
@@ -21,6 +26,9 @@ pub const HELP: &str = "Iris Market
 
 Output is JSON. --wait accepts 0 through 60 seconds; 0 skips background waiting.
 Use - to read a draft, invitation, private message, or action from stdin.
+Order requests accept {\"quantity\":1,\"note\":\"\"}; updates use the shared order patch.
+Keep private order notes and delivery addresses in stdin or private JSON files.
+Orders are saved locally first. Queued private updates resume when the profile opens.
 Invitation URLs are capabilities: pass them through stdin or a private file.
 Live commands read IRIS_MARKET_SECRET_KEY from secure credential storage.
 Do not put signing keys in arguments or shell history. One writer per profile.
@@ -38,6 +46,10 @@ pub enum Mode {
     Invite,
     Accept { source: String },
     Send { peer: String, text: String },
+    Orders,
+    OrderRequest { id: String, source: Option<String> },
+    OrderUpdate { id: String, source: String },
+    OrderArchive { id: String, archived: bool },
     Command { request: String },
     Serve,
     Mcp,
@@ -67,6 +79,24 @@ fn listing_author(value: &str) -> Result<String> {
     Ok(author.into())
 }
 
+fn order_id(value: &str) -> Result<String> {
+    let valid = value.split_once(':').is_some_and(|(buyer, id)| {
+        public_key(buyer)
+            && id.len() == 36
+            && id.bytes().enumerate().all(|(i, b)| {
+                if [8, 13, 18, 23].contains(&i) {
+                    b == b'-'
+                } else {
+                    b.is_ascii_digit() || (b'a'..=b'f').contains(&b)
+                }
+            })
+    });
+    if !valid {
+        bail!("Use the complete order ID returned by orders");
+    }
+    Ok(value.into())
+}
+
 pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Invocation> {
     let args: Vec<String> = args.into_iter().collect();
     if args.len() > 32 || args.iter().any(|a| a.len() > 32768) {
@@ -91,8 +121,24 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Invocation> {
         return Ok(Invocation::Tools);
     }
     if ![
-        "preview", "snapshot", "search", "publish", "save", "close", "contact", "invite", "accept",
-        "send", "command", "serve", "mcp",
+        "preview",
+        "snapshot",
+        "search",
+        "publish",
+        "save",
+        "close",
+        "contact",
+        "invite",
+        "accept",
+        "send",
+        "command",
+        "serve",
+        "mcp",
+        "orders",
+        "order-request",
+        "order-update",
+        "order-archive",
+        "order-restore",
     ]
     .contains(&command)
     {
@@ -139,7 +185,17 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Invocation> {
     if command != "search" && side.is_some() {
         bail!("--side applies to search");
     }
-    if ["preview", "invite", "serve", "mcp"].contains(&command) && wait.is_some() {
+    if [
+        "preview",
+        "invite",
+        "serve",
+        "mcp",
+        "order-archive",
+        "order-restore",
+    ]
+    .contains(&command)
+        && wait.is_some()
+    {
         bail!("This command does not use --wait");
     }
     let count = positional.len();
@@ -147,6 +203,9 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Invocation> {
         "search" => 1..=2,
         "publish" | "save" | "close" | "contact" | "accept" | "command" => 2..=2,
         "send" => 3..=3,
+        "order-request" => 2..=3,
+        "order-update" => 3..=3,
+        "order-archive" | "order-restore" => 2..=2,
         _ => 1..=1,
     };
     if !expected.contains(&count) {
@@ -198,6 +257,22 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Invocation> {
                 text: positional[2].clone(),
             }
         }
+        "orders" => Mode::Orders,
+        "order-request" => {
+            listing_author(&argument())?;
+            Mode::OrderRequest {
+                id: argument(),
+                source: positional.get(2).cloned(),
+            }
+        }
+        "order-update" => Mode::OrderUpdate {
+            id: order_id(&argument())?,
+            source: positional[2].clone(),
+        },
+        "order-archive" | "order-restore" => Mode::OrderArchive {
+            id: order_id(&argument())?,
+            archived: command == "order-archive",
+        },
         "command" => Mode::Command {
             request: argument(),
         },
@@ -208,6 +283,10 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Invocation> {
     let default_wait = match &mode {
         Mode::Preview | Mode::Snapshot | Mode::Invite | Mode::Serve | Mode::Mcp => 0,
         Mode::Command { .. } => 2,
+        Mode::Orders
+        | Mode::OrderRequest { .. }
+        | Mode::OrderUpdate { .. }
+        | Mode::OrderArchive { .. } => 0,
         _ => 5,
     };
     Ok(Invocation::Profile {
@@ -271,5 +350,55 @@ mod tests {
         assert!(p(&["accept", "profile", "https://market.iris.to/invite#private"]).is_err());
         assert!(p(&["accept", "profile", "-"]).is_ok());
         assert!(p(&["send", "profile", &"b".repeat(64), "--", "--private-text"]).is_ok());
+    }
+    #[test]
+    fn order_commands_default_to_local_and_validate_identifiers() {
+        let listing = format!("{}:listing", "a".repeat(64));
+        let order = format!("{}:00000000-0000-0000-0000-000000000001", "b".repeat(64));
+        assert_eq!(
+            p(&["orders", "profile"]).unwrap(),
+            Invocation::Profile {
+                dir: "profile".into(),
+                mode: Mode::Orders,
+                wait: 0
+            }
+        );
+        assert_eq!(
+            p(&["order-request", "profile", &listing]).unwrap(),
+            Invocation::Profile {
+                dir: "profile".into(),
+                mode: Mode::OrderRequest {
+                    id: listing.clone(),
+                    source: None
+                },
+                wait: 0
+            }
+        );
+        assert!(p(&["order-request", "profile", &listing, "-", "--wait", "1"]).is_ok());
+        assert_eq!(
+            p(&["order-update", "profile", &order, "-"]).unwrap(),
+            Invocation::Profile {
+                dir: "profile".into(),
+                mode: Mode::OrderUpdate {
+                    id: order.clone(),
+                    source: "-".into()
+                },
+                wait: 0
+            }
+        );
+        assert_eq!(
+            p(&["order-restore", "profile", &order]).unwrap(),
+            Invocation::Profile {
+                dir: "profile".into(),
+                mode: Mode::OrderArchive {
+                    id: order.clone(),
+                    archived: false
+                },
+                wait: 0
+            }
+        );
+        assert!(p(&["order-archive", "profile", &order, "--wait", "1"]).is_err());
+        assert!(p(&["order-update", "profile", "bad-order", "-"]).is_err());
+        assert!(p(&["order-request", "profile", "bad-listing"]).is_err());
     }
 }

@@ -67,6 +67,7 @@ struct ConversationView: View {
     @Environment(\.dismiss) private var dismiss
     let conversation: MarketConversation
     @State private var text = ""
+    @State private var orderID: String?
     private var current: MarketConversation { store.snapshot.conversations.first(where: { $0.id == conversation.id }) ?? conversation }
     var body: some View {
         NavigationStack {
@@ -78,7 +79,14 @@ struct ConversationView: View {
                             ForEach(current.messages) { message in
                                 HStack {
                                     if message.mine { Spacer(minLength: 42) }
-                                    Text(message.text).font(.system(size: 16)).lineSpacing(3).padding(.horizontal, 16).padding(.vertical, 13)
+                                    VStack(alignment: .leading, spacing: 12) {
+                                        if let payment = message.cashu {
+                                            PaymentMessageView(payment: payment)
+                                            if message.text != "Cashu payment" && !message.text.isEmpty { Text(message.text).font(.system(size: 15)).lineSpacing(3) }
+                                        } else { Text(message.text).font(.system(size: 16)).lineSpacing(3) }
+                                        if let id = message.orderId { Button("View order") { orderID = id }.font(.system(size: 13, weight: .semibold)) }
+                                        if message.mine && message.delivery == "queued" { Text("Waiting to send").font(.system(size: 10)).foregroundStyle(MarketTheme.muted) }
+                                    }.padding(.horizontal, 16).padding(.vertical, 13)
                                         .foregroundStyle(MarketTheme.ink).background(message.mine ? MarketTheme.mint : MarketTheme.surface, in: RoundedRectangle(cornerRadius: 20))
                                     if !message.mine { Spacer(minLength: 42) }
                                 }.id(message.id)
@@ -96,6 +104,8 @@ struct ConversationView: View {
                     ToolbarItem(placement: .principal) { UserRow(person: store.snapshot.people[current.id] ?? .unnamed(current.id), size: 30) }
                     ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
                 }
+                .sheet(isPresented: Binding(get: { orderID != nil }, set: { if !$0 { orderID = nil } })) { if let orderID { OrderDetailView(orderID: orderID).marketSheetScope() } }
+                .onChange(of: store.snapshot.publicKey) { _ in dismiss() }
         }
     }
     private func send() { let pending = text; store.command(["type": "send_message", "peer_id": conversation.id, "text": pending]) { if $0 { text = "" } } }

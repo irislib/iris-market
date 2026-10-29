@@ -10,14 +10,22 @@ android {
         applicationId = "to.iris.market"
         minSdk = 29
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = providers.environmentVariable("MARKET_ANDROID_VERSION_CODE").orNull?.toInt() ?: 1
+        versionName = providers.environmentVariable("MARKET_RELEASE_VERSION").orNull ?: "0.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk { abiFilters += "arm64-v8a" }
     }
+    signingConfigs {
+        create("release") {
+            providers.environmentVariable("MARKET_ANDROID_KEYSTORE").orNull?.let { storeFile = file(it) }
+            storePassword = providers.environmentVariable("MARKET_ANDROID_STORE_PASSWORD").orNull
+            keyAlias = providers.environmentVariable("MARKET_ANDROID_KEY_ALIAS").orNull
+            keyPassword = providers.environmentVariable("MARKET_ANDROID_KEY_PASSWORD").orNull
+        }
+    }
     buildTypes {
         debug { applicationIdSuffix = ".debug"; versionNameSuffix = "-dev" }
-        release { isMinifyEnabled = false }
+        release { isMinifyEnabled = false; signingConfig = signingConfigs.getByName("release") }
     }
     buildFeatures { compose = true; buildConfig = true }
     compileOptions {
@@ -25,12 +33,12 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     sourceSets.named("main") {
-        jniLibs.srcDir(layout.buildDirectory.dir("generated/jniLibs").get().asFile)
+        jniLibs.srcDir(providers.environmentVariable("MARKET_ANDROID_JNI_DIR").orNull ?: layout.buildDirectory.dir("generated/jniLibs").get().asFile)
     }
     packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
 }
 tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
-    if (!name.contains("Test")) source(layout.buildDirectory.dir("generated/uniffi").get().asFile)
+    if (!name.contains("Test")) source(providers.environmentVariable("MARKET_ANDROID_BINDINGS_DIR").orNull ?: layout.buildDirectory.dir("generated/uniffi").get().asFile)
 }
 dependencyLocking { lockAllConfigurations() }
 dependencies {

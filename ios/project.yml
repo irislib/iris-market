@@ -48,6 +48,7 @@ targets:
       - framework: Frameworks/IrisMarketCore.xcframework
         embed: false
       - sdk: Security.framework
+      - sdk: libsqlite3.tbd
 
   IrisMarketUITests:
     type: bundle.ui-testing

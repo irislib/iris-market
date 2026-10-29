@@ -98,6 +98,8 @@ Feed filters support up to eight Nostr tags and the direct follows of a public `
 
 Requires macOS, Xcode with an arm64 iOS simulator SDK, XcodeGen and the `aarch64-apple-ios-sim` Rust target. The app targets iOS 16+. The Rust C dependencies receive the matching minimum deployment version.
 
+iOS uses the SQLite library supplied by the selected Apple SDK and operating system; the build wrappers explicitly select it and do not search host package-manager libraries. Other targets retain the lockfile-pinned bundled SQLite. Private message encryption remains in the existing application storage layer, before database writes.
+
 ```sh
 ./scripts/ios-core
 ./scripts/ios-build
@@ -218,7 +220,9 @@ The CLI also exposes `orders`, `order-request <listing-id> [json|-]`, `order-upd
 
 `scripts/alpha-release.py` and `scripts/native-alpha.py` define the iOS, Android, macOS and cross-platform CLI artifact set. Release inputs are pinned in `scripts/release-build-inputs.json` and `scripts/android-release-inputs.json`; installers verify their hashes before use. Signing values come only from the release environment. The release manifest requires an exact full source commit, public GitHub/Hashtree source-history verification, target-specific runtime acceptance, and matching artifact hashes. Apple distribution additionally requires the appropriate signing/notarization or TestFlight gates. These scripts are release tooling, not evidence that binaries have shipped.
 
-Acceptance includes actual fresh-native Rust→JS order interoperability and an iOS UI order journey using an isolated local relay. Seller/courier native screens were additionally exercised with an isolated UI harness. Native profile grids currently show the locally loaded inventory; author-specific discovery is a separate parity task. Native wallet redemption and live-location sending remain unavailable.
+Native release diagnostics remap source paths to `/source/iris-market`, Cargo inputs to `/build/cargo`, and the build home to `/build/home`. Local Apple input installations can be reused with `release-build-inputs.py --install --local-macos --reuse` and the same target/tool selection: pinned Rust components are reinstalled, every native archive payload byte is verified, and the preceding source receipt is preserved. This does not reuse runtime acceptance or change the exact-source release gate.
+
+Acceptance includes actual fresh-native Rust→JS order interoperability and an iOS UI order journey using an isolated local relay. Seller/courier native screens were additionally exercised with an isolated UI harness. Native profile grids load signed author listings independently from Browse, with bounded load-more queries; this was exercised on an actual iOS simulator. Native wallet redemption and live-location sending remain unavailable.
 
 ## Protocol and privacy
 

@@ -11,8 +11,10 @@ import os
 from pathlib import Path
 import plistlib
 import shutil
+import shlex
 import subprocess
 import sys
+import zipfile
 
 sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location('alpha_release', Path(__file__).with_name('alpha-release.py'))
@@ -27,6 +29,39 @@ def run(command, environment):
 
 def rust(environment, *arguments):
     run([environment.get('CARGO', 'cargo'), *arguments], environment)
+
+
+def private_path_remaps(environment):
+    """Stable virtual source roots; no local identity enters release diagnostics."""
+    roots = [(Path.home().resolve(), '/build/home')]
+    cargo_home = Path(environment.get('CARGO_HOME', Path.home()/'.cargo')).resolve()
+    roots += [(cargo_home, '/build/cargo'), (ROOT.resolve(), '/source/iris-market')]
+    return roots
+
+
+def release_environment(environment):
+    result = dict(environment)
+    # Encoded flags avoid shell splitting when a legitimate source path has spaces.
+    flags = (result.get('CARGO_ENCODED_RUSTFLAGS', '').split('\x1f') if result.get('CARGO_ENCODED_RUSTFLAGS')
+             else shlex.split(result.get('RUSTFLAGS', '')))
+    flags += ['--remap-path-prefix='+str(path)+'='+virtual for path, virtual in private_path_remaps(result)]
+    result['CARGO_ENCODED_RUSTFLAGS'] = '\x1f'.join(flags)
+    result.pop('RUSTFLAGS', None)
+    return result
+
+
+def verify_release_paths(artifact, environment):
+    markers = [str(path).encode() for path, _ in private_path_remaps(environment)]
+    overlap = max(map(len, markers)) - 1
+    with zipfile.ZipFile(artifact) as archive:
+        release.require(sum(entry.file_size for entry in archive.infolist()) <= 1024**3, 'Native archive exceeds verification bound')
+        for entry in archive.infolist():
+            previous = b''
+            with archive.open(entry) as stream:
+                while block := stream.read(1024*1024):
+                    data = previous + block
+                    release.require(not any(marker in data for marker in markers), 'Native release payload contains a private build path')
+                    previous = data[-overlap:]
 
 
 def binding_library(cache, host):
@@ -52,6 +87,10 @@ def apple_project(stage, platform, environment):
     if not headers.is_dir(): apple_headers(stage)
     source = ROOT/('ios' if platform == 'ios-arm64' else 'macos')
     text = (source/'project.yml').read_text()
+    # Release projects reference immutable sources outside the generated project
+    # directory. XcodeGen's intermediate-group walker cannot reach that parent
+    # and loops on absolute paths; group layout has no effect on build inputs.
+    text = text.replace('createIntermediateGroups: true', 'createIntermediateGroups: false')
     replacements = {'- path: Sources': '- path: '+str(ROOT/'ios/Sources'), '- path: Bindings': '- path: '+str(stage/'Bindings'), '- path: UITests': '- path: '+str(ROOT/'ios/UITests'), '- path: ../ios/Sources': '- path: '+str(ROOT/'ios/Sources'), '- path: ../ios/Bindings': '- path: '+str(stage/'Bindings'), 'INFOPLIST_FILE: Info.plist': 'INFOPLIST_FILE: '+str(source/'Info.plist'), 'Frameworks/IrisMarketCore.xcframework': str(stage/'IrisMarketCore.xcframework'), '$(PROJECT_DIR)/.build/headers': str(headers)}
     for old, new in replacements.items(): text = text.replace(old, new)
     # Future source asset catalogs remain relative to the original platform tree.
@@ -66,6 +105,13 @@ def build_ios(args, stage, cache, environment):
     release.require((ROOT/'ios/Assets.xcassets/AppIcon.appiconset/Contents.json').is_file(), 'iOS distribution needs a reviewed AppIcon asset catalog')
     bindings(stage, cache, environment, 'swift')
     environment.update(IPHONEOS_DEPLOYMENT_TARGET='16.0', CFLAGS_aarch64_apple_ios='-miphoneos-version-min=16.0')
+    environment['CFLAGS_aarch64_apple_ios'] += ' '+ ' '.join(shlex.quote('-ffile-prefix-map='+str(path)+'='+virtual) for path, virtual in private_path_remaps(environment))
+    sdk = Path(subprocess.check_output(['xcrun', '--sdk', 'iphoneos', '--show-sdk-path'], text=True).strip())
+    release.require((sdk/'usr/lib/libsqlite3.tbd').is_file(), 'Selected iOS SDK lacks system SQLite')
+    # libsqlite3-sys supports explicit system linkage even when another crate
+    # enables its bundled feature. Never resolve a host Homebrew/pkg-config lib.
+    environment.update(LIBSQLITE3_SYS_USE_PKG_CONFIG='1', SQLITE3_NO_PKG_CONFIG='1',
+                       SQLITE3_STATIC='0', SQLITE3_LIB_DIR=str(sdk/'usr/lib'), SQLITE3_INCLUDE_DIR=str(sdk/'usr/include'))
     rust(environment, 'build', '--locked', '--release', '-p', 'iris-market-app', '--target', 'aarch64-apple-ios')
     headers = apple_headers(stage)
     run(['xcodebuild', '-create-xcframework', '-library', cache/'aarch64-apple-ios/release/libiris_market_app.a', '-headers', headers, '-output', stage/'IrisMarketCore.xcframework'], environment)
@@ -150,7 +196,7 @@ def main():
     args.output = args.output.resolve(); args.output.mkdir(parents=True, exist_ok=True)
     release.require(not (args.output/artifact_name(args)).exists(), 'Never overwrite an existing release artifact')
     stage = args.output/(args.platform+'-staging'); stage.mkdir(mode=0o700, exist_ok=False)
-    environment = release.verified_environment(args.inputs, inputs)
+    environment = release_environment(release.verified_environment(args.inputs, inputs))
     if args.platform in ('ios-arm64', 'macos-arm64'):
         generator = next((tool for tool in inputs.get('nativeTools', []) if tool.get('name') == 'xcodegen'), None)
         release.require(generator is not None, 'Apple release requires checksum-verified XcodeGen in its input receipt')
@@ -160,7 +206,8 @@ def main():
     {'ios-arm64':build_ios,'macos-arm64':build_macos,'android-arm64':build_android}[args.platform](args,stage,cache,environment)
     release.exact_source(args.tag,args.commit)
     artifact = args.output/artifact_name(args)
-    receipt = {'platform':args.platform,'asset':artifact.name,'tag':args.tag,'sourceCommit':args.commit,'sha256':release.sha256(artifact),'readyForPublication':False,'signed':not args.unsigned_android,'buildNumber':args.build_number,'inputsSHA256':release.sha256(args.inputs)}
+    verify_release_paths(artifact, environment)
+    receipt = {'platform':args.platform,'asset':artifact.name,'tag':args.tag,'sourceCommit':args.commit,'sha256':release.sha256(artifact),'readyForPublication':False,'signed':not args.unsigned_android,'buildNumber':args.build_number,'inputsSHA256':release.sha256(args.inputs),'sourcePathPolicy':'home=/build/home; cargo=/build/cargo; source=/source/iris-market'}
     (args.output/(artifact.name+'.build.json')).write_text(json.dumps(receipt,indent=2)+'\n')
     print(json.dumps(receipt))
 

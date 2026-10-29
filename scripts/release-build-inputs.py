@@ -212,11 +212,46 @@ def native_prerequisites(profile):
             'clang':subprocess.check_output(['xcrun', '--find', 'clang'], text=True, timeout=30).strip()}
 
 
-def install_native(pins, profile, host, work, env, receipt):
+def verify_native_install(archive_path, pin, destination):
+    """Revalidate the complete installed archive payload before executing it."""
+    verify_native(archive_path, pin)
+    def compare(name, mode, stream=None, link=None, directory=False):
+        require(not name.startswith('/') and '\\' not in name and '..' not in name.split('/'), 'Unsafe installed archive member')
+        path = destination/name
+        require(path.resolve().is_relative_to(destination.resolve()), 'Installed tool escapes its directory')
+        if link is not None:
+            require(path.is_symlink() and os.readlink(path) == link, 'Installed tool symlink changed')
+        elif directory:
+            require(path.is_dir(), 'Installed tool directory missing')
+        else:
+            require(path.is_file() and not path.is_symlink(), 'Installed tool file missing')
+            value = hashlib.sha256()
+            for block in iter(lambda: stream.read(1024*1024), b''): value.update(block)
+            require(value.hexdigest() == digest(path) and path.stat().st_mode & 0o111 == mode & 0o111, 'Installed tool payload changed')
+    if pin['format'] == 'zip':
+        with zipfile.ZipFile(archive_path) as archive:
+            for member in archive.infolist():
+                with archive.open(member) as stream:
+                    compare(member.filename, member.external_attr >> 16, stream, directory=member.is_dir())
+    else:
+        with tarfile.open(archive_path, 'r:gz') as archive:
+            for member in archive:
+                require(member.isfile() or member.isdir() or member.issym(), 'Unsupported installed native member')
+                if member.isfile():
+                    with archive.extractfile(member) as stream: compare(member.name, member.mode, stream)
+                else: compare(member.name, member.mode, link=member.linkname if member.issym() else None, directory=member.isdir())
+
+
+def install_native(pins, profile, host, work, env, receipt, reuse=False):
     exports, paths = {}, []
     for name, pin in native_selection(pins, profile, host):
         archive = download_native(pin, work/'archives'/(name+'.'+pin['format']))
-        binary = unpack_native(archive, pin, work/('native-'+name))
+        destination = work/('native-'+name)
+        if reuse:
+            verify_native_install(archive, pin, destination)
+            binary = destination/pin['binary']
+        else:
+            binary = unpack_native(archive, pin, destination)
         tool_env = {**env, **exports, 'PATH':os.pathsep.join([*paths, env['PATH']])}
         if name == 'dotnet':
             tool_env.update(DOTNET_ROOT=str(binary.parent), DOTNET_MULTILEVEL_LOOKUP='0',
@@ -389,7 +424,7 @@ def installation_context(local_macos=False):
     return 'github-actions'
 
 
-def install(pins, work, targets, components, bash=None, tools=None, local_macos=False):
+def install(pins, work, targets, components, bash=None, tools=None, local_macos=False, reuse=False):
     context = installation_context(local_macos)
     host = host_target()
     targets, selected = selected_components(pins, host, targets, components)
@@ -401,10 +436,23 @@ def install(pins, work, targets, components, bash=None, tools=None, local_macos=
                 'Windows requires the explicit installed Git Bash executable (--bash)')
     require(hasattr(tarfile, 'data_filter'), 'Python with tarfile.data_filter is required')
     require(work.is_absolute() and not any(c in str(work) for c in '\r\n'), 'absolute safe work path required')
-    work.mkdir(mode=0o700, parents=True, exist_ok=False)
+    if reuse:
+        require(local_macos and work.is_dir() and not work.is_symlink(), '--reuse requires an existing local Apple input directory')
+        prior = json.loads((work/'receipt.json').read_text())
+        require(prior.get('passed') is True and prior.get('pinsSHA256') == digest(PINS) and prior.get('host') == host and
+                prior.get('targets') == targets and prior.get('components') == selected and
+                [(tool['name'],tool['input']) for tool in prior.get('nativeTools',[])] == (native_selection(pins,tools,host) if tools else []),
+                'Existing installation does not match requested pinned inputs')
+        require(re.fullmatch('[0-9a-f]{40}', prior.get('sourceCommit','')) is not None, 'Previous source identity is invalid')
+        previous = work/('receipt-'+prior['sourceCommit']+'-'+digest(work/'receipt.json')[:16]+'.json')
+        if previous.exists(): require(previous.read_bytes() == (work/'receipt.json').read_bytes(), 'Previous receipt already differs')
+        else: shutil.copyfile(work/'receipt.json',previous)
+    else:
+        work.mkdir(mode=0o700, parents=True, exist_ok=False)
     archive_dir, extracted, prefix = work/'archives', work/'extracted', work/'toolchain'
-    archive_dir.mkdir()
-    extracted.mkdir()
+    archive_dir.mkdir(exist_ok=reuse)
+    extracted.mkdir(exist_ok=reuse)
+    require(not any(extracted.iterdir()), 'Input extraction from another operation is active or incomplete')
     receipt = {'passed':False, 'pinsSHA256':digest(PINS), 'host':host, 'targets':targets,
                'sourceCommit':None, 'workflowCommit':os.environ.get('GITHUB_SHA'),
                'installerSHA256':digest(Path(__file__)), 'python':sys.version,
@@ -424,7 +472,7 @@ def install(pins, work, targets, components, bash=None, tools=None, local_macos=
             shutil.rmtree(root)  # Only this invocation's verified temporary extraction.
         env = installed_environment(prefix, windows, os.environ)
         receipt['versions'] = validate_install(prefix, host, targets, components, env)
-        exports, native_paths = install_native(pins, tools, host, work, env, receipt) if tools else ({}, [])
+        exports, native_paths = install_native(pins, tools, host, work, env, receipt, reuse) if tools else ({}, [])
         receipt['lockfiles'] = {str(path.relative_to(ROOT)):digest(path) for path in
                                (ROOT/'Cargo.lock',)
                                if path.is_file()}
@@ -432,7 +480,7 @@ def install(pins, work, targets, components, bash=None, tools=None, local_macos=
         values = {key:env[key] for key in ('CARGO', 'RUSTC', 'RUSTDOC')} | exports
         if local_macos:
             destination = work/'environment.json'
-            with destination.open('x') as stream:
+            with destination.open('w' if reuse else 'x') as stream:
                 json.dump({'variables':values, 'path':[str(prefix/'bin'), *native_paths]}, stream, indent=2)
             destination.chmod(0o600)
         else:
@@ -458,12 +506,13 @@ def main():
     parser.add_argument('--bash', help='Exact Git Bash executable from the Windows workflow $BASH')
     parser.add_argument('--tools', choices=sorted(TOOL_PROFILES))
     parser.add_argument('--local-macos', action='store_true', help='Explicit local Apple installation; never mutates global toolchains or CI state')
+    parser.add_argument('--reuse', action='store_true', help='Reinstall identical pinned Rust components and verify every native tool byte in the existing local Apple directory; preserve its previous source receipt')
     args = parser.parse_args()
     pins = json.loads(PINS.read_text())
     check_pins(pins)
     if args.install:
         require(args.work is not None, '--work is required for installation')
-        install(pins, args.work, args.target, args.component, args.bash, args.tools, args.local_macos)
+        install(pins, args.work, args.target, args.component, args.bash, args.tools, args.local_macos, args.reuse)
     else:
         print('Reviewed Rust 1.99.0 pins (four hosts, seven targets) and seven native tool archives.')
 

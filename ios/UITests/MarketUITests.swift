@@ -209,6 +209,27 @@ final class MarketUITests: XCTestCase {
     }
 
     /// Opt-in localhost inventory fixture provides one Browse item and sixty author listings.
+    func testLocalDatabaseSurvivesRestart() throws {
+        guard ProcessInfo.processInfo.environment["MARKET_LOCAL_DATABASE_UI_TEST"] == "1" else { throw XCTSkip("Needs the isolated cached local inventory") }
+        app.terminate(); app.launchArguments = []; app.launch()
+        XCTAssertTrue(app.staticTexts["Studio collection 00"].waitForExistence(timeout: 20))
+        let save = app.buttons.matching(NSPredicate(format: "label == %@", "Save Studio collection 00")).firstMatch
+        XCTAssertTrue(save.waitForExistence(timeout: 5)); save.tap()
+        app.terminate(); app.launch()
+        XCTAssertTrue(app.buttons["tabSaved"].waitForExistence(timeout: 15))
+        app.buttons["tabSaved"].tap()
+        XCTAssertTrue(app.staticTexts["Studio collection 00"].waitForExistence(timeout: 8))
+        // The encrypted inbox is opened by the real store at each cold launch.
+        app.buttons["tabInbox"].tap()
+        XCTAssertTrue(app.staticTexts["Inbox"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.alerts.firstMatch.exists)
+        capture("database-reopened-inbox")
+        app.buttons["tabSaved"].tap()
+        let remove = app.buttons.matching(NSPredicate(format: "label == %@", "Unsave Studio collection 00")).firstMatch
+        XCTAssertTrue(remove.waitForExistence(timeout: 5)); remove.tap()
+    }
+
+    /// Opt-in localhost inventory fixture provides one Browse item and sixty author listings.
     func testLocalAuthorInventoryAndLoadMore() throws {
         guard ProcessInfo.processInfo.environment["MARKET_LOCAL_PROFILE_UI_TEST"] == "1" else { throw XCTSkip("Needs isolated localhost author inventory") }
         app.terminate(); app.launchArguments = []; app.launch()

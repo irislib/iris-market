@@ -3,6 +3,7 @@
 import copy
 import importlib.util
 import json
+import io
 import os
 from pathlib import Path
 import sys
@@ -22,6 +23,7 @@ def load(name, filename):
     return module
 installer=load('release_inputs_test','release-build-inputs.py')
 signer=load('android_sign_test','android-sign.py')
+native=load('native_alpha_test','native-alpha.py')
 TAG, COMMIT, DIGEST = 'v0.1.0-alpha.1', 'a'*40, 'b'*64
 
 
@@ -45,6 +47,67 @@ class AlphaContract(unittest.TestCase):
         self.assertEqual(len(self.entries), 7)
         release.check_acceptance(self.gate, TAG, COMMIT, self.entries)
         release.verify(self.manifest, self.root, TAG, COMMIT)
+
+    def test_external_apple_sources_do_not_walk_intermediate_groups(self):
+        source = self.root/'source'
+        (source/'ios').mkdir(parents=True)
+        (source/'ios/project.yml').write_text('options:\n  createIntermediateGroups: true\nsources:\n  - path: Sources\n  - path: Bindings\n')
+        stage = self.root/'generated'; stage.mkdir()
+        (stage/'headers').mkdir()
+        with patch.object(native, 'ROOT', source), patch.object(native, 'run') as run:
+            native.apple_project(stage, 'ios-arm64', {'MARKET_XCODEGEN': '/verified/xcodegen'})
+        project = (stage/'project.yml').read_text()
+        self.assertIn('createIntermediateGroups: false', project)
+        self.assertIn('- path: '+str(source/'ios/Sources'), project)
+        self.assertIn('- path: '+str(stage/'Bindings'), project)
+        self.assertEqual(run.call_args.args[0][0], '/verified/xcodegen')
+
+    def test_release_path_remaps_preserve_flags_and_paths_with_spaces(self):
+        home = self.root/'private user'
+        source = home/'accepted source'
+        with patch.object(native.Path, 'home', return_value=home), patch.object(native, 'ROOT', source):
+            result = native.release_environment({'RUSTFLAGS':'-C opt-level=3', 'CARGO_HOME':str(home/'cargo')})
+        flags = result['CARGO_ENCODED_RUSTFLAGS'].split('\x1f')
+        self.assertEqual(flags[:2], ['-C','opt-level=3'])
+        self.assertEqual(flags[-1], '--remap-path-prefix='+str(source.resolve())+'=/source/iris-market')
+        self.assertIn('--remap-path-prefix='+str(home.resolve())+'=/build/home',flags)
+        self.assertNotIn('RUSTFLAGS',result)
+
+    def test_native_reuse_verifies_every_payload_byte_and_executable_mode(self):
+        destination=self.root/'native';destination.mkdir()
+        binary=destination/'tool';binary.write_bytes(b'verified');binary.chmod(0o755)
+        resource=destination/'resource';resource.write_bytes(b'data');resource.chmod(0o644)
+        archive=self.root/'native.zip'
+        with zipfile.ZipFile(archive,'w') as output:
+            for name, data, mode in [('tool',b'verified',0o100755),('resource',b'data',0o100644)]:
+                entry=zipfile.ZipInfo(name);entry.external_attr=mode<<16;output.writestr(entry,data)
+        pin={'format':'zip','size':archive.stat().st_size,'sha256':release.sha256(archive)}
+        installer.verify_native_install(archive,pin,destination)
+        resource.write_bytes(b'bad!')
+        with self.assertRaises(ValueError):installer.verify_native_install(archive,pin,destination)
+        resource.write_bytes(b'data');binary.chmod(0o644)
+        with self.assertRaises(ValueError):installer.verify_native_install(archive,pin,destination)
+
+    def test_native_reuse_checks_tar_symlink_targets(self):
+        destination=self.root/'native';destination.mkdir()
+        binary=destination/'tool';binary.write_bytes(b'verified');binary.chmod(0o755)
+        (destination/'link').symlink_to('tool')
+        archive=self.root/'native.tar.gz'
+        with tarfile.open(archive,'w:gz') as output:
+            entry=tarfile.TarInfo('tool');entry.mode=0o755;entry.size=8;output.addfile(entry,io.BytesIO(b'verified'))
+            entry=tarfile.TarInfo('link');entry.type=tarfile.SYMTYPE;entry.linkname='tool';output.addfile(entry)
+        pin={'format':'tar.gz','size':archive.stat().st_size,'sha256':release.sha256(archive)}
+        installer.verify_native_install(archive,pin,destination)
+        (destination/'link').unlink();(destination/'link').symlink_to('../outside')
+        with self.assertRaises(ValueError):installer.verify_native_install(archive,pin,destination)
+
+    def test_native_archive_rejects_embedded_private_paths_across_chunks(self):
+        good=self.root/'good.ipa';bad=self.root/'bad.ipa'
+        with zipfile.ZipFile(good,'w') as archive:archive.writestr('Payload/Market',b'/source/iris-market/src/lib.rs')
+        native.verify_release_paths(good,{})
+        with zipfile.ZipFile(bad,'w') as archive:
+            archive.writestr('Payload/Market',b'x'*(1024*1024-3)+str(Path.home()).encode()+b'/private.rs')
+        with self.assertRaises(ValueError):native.verify_release_paths(bad,{})
 
     def test_rejects_ambiguous_identity(self):
         for tag in ('latest', 'v0.1.0', 'v0.1.0-alpha.0', '../alpha.1'):

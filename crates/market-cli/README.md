@@ -3,7 +3,7 @@
 Command-line client and MCP server for Iris Market, a marketplace using signed Nostr listings and private encrypted enquiries.
 
 ```sh
-cargo install iris-market --version 0.1.0 --locked
+cargo install iris-market --locked
 iris-market --help
 iris-market tools
 iris-market preview ./market-preview

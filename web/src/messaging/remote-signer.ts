@@ -1,4 +1,5 @@
 import { validateUploadAuthorization } from '../upload-auth.ts';
+import { REVIEW_KIND, validateReviewDraft } from '../reviews.ts';
 // Adapted from Iris Chat at cc68f2fa6ac9396faed732bc94e3b511f09d834f.
 // https://github.com/irislib/iris-chat/blob/cc68f2fa6ac9396faed732bc94e3b511f09d834f/src/lib/remoteSigner.ts
 import { finalizeEvent, generateSecretKey, getPublicKey, nip44, verifyEvent } from "nostr-tools";
@@ -31,7 +32,7 @@ function approvalErrorMessage(error) {
 }
 function signerPermissions(values) {
   if (values === undefined) return ["sign_event:37368"];
-  const supported = new Set(["sign_event:0", "sign_event:3", "sign_event:30402", "sign_event:24242"]);
+  const supported = new Set(["sign_event:0", "sign_event:3", "sign_event:30402", "sign_event:7368", "sign_event:24242"]);
   if (!Array.isArray(values) || !values.length || values.length > supported.size || values.some(value => !supported.has(value))) throw new Error("Unsupported signer permissions.");
   return [...new Set(values)];
 }
@@ -152,6 +153,7 @@ class RemoteSigner {
   async signEvent(event:UnsignedEvent):Promise<VerifiedEvent> {
     if (!this.permissions.includes(`sign_event:${event?.kind}`)) throw new Error("This signer cannot approve that event type.");
     if (event.kind === 24242) validateUploadAuthorization(event,undefined);
+    if (event.kind === REVIEW_KIND) validateReviewDraft(event,event.pubkey);
     const response = await this.request("sign_event", [JSON.stringify(event)]);
     if (response.length > 32 * 1024) throw new Error("Invalid signer response.");
     let signed;

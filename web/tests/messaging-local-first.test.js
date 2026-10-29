@@ -5,6 +5,7 @@ import { AppKeys } from 'nostr-double-ratchet';
 import { createMessaging, canPublishToDevice } from '../src/messaging/client.ts';
 import { createVault } from '../src/messaging/vault.ts';
 import { prepareSignerAuthorization } from '../src/messaging/authorization.ts';
+import { buildReviewDraft } from '../src/reviews.ts';
 
 function memoryBackend() {
   let row;
@@ -80,4 +81,37 @@ test('unknown or revoked destination devices never receive queued ciphertext',()
   assert.equal(canPublishToDevice(event,context,[]),false);
   assert.equal(canPublishToDevice(event,undefined,[]),false);
   assert.equal(canPublishToDevice(event,context,[{ownerPubkey:owner,appKeys:new AppKeys([])}]),false);
+});
+
+test('public review is durable before silent relays reply, isolated from private messages and restored exactly', {timeout:3000},async t=>{
+  const backend=memoryBackend(),network=silentNetwork(),vault=createVault({backend}),app=make(vault,network);t.after(()=>app.destroy());
+  const created=await app.createAccount(),target=getPublicKey(generateSecretKey());
+  const draft=buildReviewDraft({target,author:created.ownerPubkey,rating:4,body:'Carefully packed.'});
+  const receipt=await app.publishEvent(draft),id=receipt.event.id;
+  assert.equal(receipt.delivery,'queued');assert.deepEqual(receipt.accepted,[]);
+  assert.equal((await vault.get(`market/public/${id}`)).id,id);assert.equal(app.state().pendingReviews[0].id,id);
+  assert.equal(JSON.stringify(await backend.read()).includes('Carefully packed.'),false);
+  receipt.event.tags.find(tag=>tag[0]==='body')[1]='Mutated receipt';
+  const view=app.state();view.pendingReviews[0].tags.find(tag=>tag[0]==='body')[1]='Mutated state';
+  assert.equal(app.state().pendingReviews[0].tags.find(tag=>tag[0]==='body')[1],'Carefully packed.');
+  assert.deepEqual(app.state().conversations,[]);assert.deepEqual(app.state().orders,[]);
+  await app.lock();const restored=await app.restore();assert.equal(restored.pendingReviews[0].id,id);
+  assert.equal(restored.pendingReviews[0].tags.find(tag=>tag[0]==='body')[1],'Carefully packed.');
+  assert.deepEqual(restored.conversations,[]);assert.deepEqual(restored.orders,[]);
+});
+
+test('review allowlist rejects private payloads, forged signers and unsupported facts before queuing or signing', {timeout:3000},async t=>{
+  const network=silentNetwork(),vault=createVault({backend:memoryBackend()}),app=make(vault,network);t.after(()=>app.destroy());
+  const state=await app.createAccount(),key=nip19.decode(app.exportKey()).data,target=getPublicKey(generateSecretKey());
+  const draft=buildReviewDraft({target,author:state.ownerPubkey,rating:5});
+  for(const changed of [{...draft,content:'private message'},{...draft,tags:[...draft.tags,['shipment','private route']]},{...draft,kind:14},{...draft,kind:1059}]){
+    await assert.rejects(app.publishSignedEvent(finalizeEvent(changed,key)),/Invalid public account event/);
+  }
+  await assert.rejects(app.publishSignedEvent(finalizeEvent(draft,generateSecretKey())),/Invalid public account event/);
+  await assert.rejects(app.signEvent({...draft,tags:[...draft.tags,['location','60,24']]}),/Unsupported review fields/);
+  assert.deepEqual(app.state().pendingReviews,[]);
+  // A signed but unsupported record left in storage must not be re-published on restore.
+  const invalid=finalizeEvent({...draft,content:'private message'},key);
+  await vault.put(`market/public/${invalid.id}`,invalid);await app.lock();await app.restore();
+  assert.deepEqual(app.state().pendingReviews,[]);assert.equal(network.calls.some(call=>call.kind==='publish'&&call.value.id===invalid.id),false);
 });

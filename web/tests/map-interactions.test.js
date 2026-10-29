@@ -15,6 +15,7 @@ class Element {
   addEventListener(name, fn) { this.listeners.set(name, fn) }
   removeEventListener(name, fn) { if (this.listeners.get(name) === fn) this.listeners.delete(name) }
   focus() { this.focused = true }
+  contains(target) { return target===this||this.children.some(child=>child.contains(target)) }
   get firstElementChild() { return this.children[0] }
 }
 function fixture(items = [listing('a'), listing('b', [25, 60.2])]) {
@@ -29,11 +30,12 @@ function fixture(items = [listing('a'), listing('b', [25, 60.2])]) {
     easeTo: value => eases.push(value),
     setFeatureState: (target, state) => featureStates.push({ target, state }),
   }
-  const api = createListingInteractions(map, { getListings: () => items, onSelect: item => selected.push(item), onError: error => errors.push(error), document: { createElement: tag => new Element(tag) }, createPopup: () => {
+  const document=new Element('document');document.createElement=tag=>new Element(tag)
+  const api = createListingInteractions(map, { getListings: () => items, onSelect: item => selected.push(item), onError: error => errors.push(error), document, createPopup: () => {
     const popup = { setLngLat(value) { this.coordinates = value; return this }, setDOMContent(value) { this.content = value; return this }, addTo(value) { assert.equal(value, map); return this }, remove() { this.removed = true } }
     popups.push(popup); return popup
   } })
-  return { api, map, canvas, source, selected, errors, popups, eases, handlers, featureStates, hover(features) { map.features = features; handlers.get('mousemove')({ point: { x: 20, y: 20 } }) }, async click(features) { map.features = features; handlers.get('click')({ point: { x: 20, y: 20 } }); await tick() } }
+  return { api, map, canvas, document, source, selected, errors, popups, eases, handlers, featureStates, hover(features) { map.features = features; handlers.get('mousemove')({ point: { x: 20, y: 20 } }) }, async click(features) { map.features = features; handlers.get('click')({ point: { x: 20, y: 20 } }); await tick() } }
 }
 
 for (const layer of ['market-clusters', 'market-cluster-count']) test(`cluster ${layer} hit expands once using current Promise API`, async () => {
@@ -55,9 +57,29 @@ test('max-zoom clusters and overlapping unclustered pins allow choosing every li
   f.popups[1].content.children[1].children[0].onclick(); assert.equal(f.selected[0].id, 'a'); f.api.destroy()
 })
 
-test('single listing click opens detail directly and duplicate rendered hits are deduplicated', async () => {
+test('single pin opens the shared choices popover and only choosing its listing opens detail', async () => {
   const item = listing('a'), f = fixture([item]); await f.click([pin(item), pin(item)])
-  assert.deepEqual(f.selected, [item]); assert.equal(f.popups.length, 0); f.api.destroy()
+  assert.deepEqual(f.selected, []);assert.equal(f.popups.length,1);assert.equal(f.eases.length,0)
+  const content=f.popups[0].content,choices=content.children[1]
+  assert.equal(content.children[0].textContent,'1 listing');assert.equal(content.getAttribute('role'),'dialog');assert.equal(choices.children.length,1);assert.equal(choices.firstElementChild.focused,true)
+  choices.firstElementChild.onclick();assert.deepEqual(f.selected,[item]);assert.equal(f.popups[0].removed,true);f.api.destroy()
+})
+
+test('single-pin choices dismiss outside, on Escape or Close with appropriate focus',async()=>{
+  const item=listing('a'),f=fixture([item])
+  await f.click([pin(item)]);const content=f.popups[0].content
+  f.document.listeners.get('pointerdown')({target:content.children[1].firstElementChild});assert.equal(f.popups[0].removed,undefined)
+  f.document.listeners.get('pointerdown')({target:new Element('button')});assert.equal(f.popups[0].removed,true);assert.equal(f.canvas.focused,undefined)
+  await f.click([pin(item)]);f.document.listeners.get('keydown')({key:'Escape',preventDefault(){},stopPropagation(){}});assert.equal(f.popups[1].removed,true);assert.equal(f.canvas.focused,true)
+  f.canvas.focused=false;await f.click([pin(item)]);f.popups[2].content.children[2].onclick();assert.equal(f.popups[2].removed,true);assert.equal(f.canvas.focused,true)
+  f.canvas.focused=false;await f.click([pin(item)]);f.document.listeners.get('focusin')({target:new Element('a')});assert.equal(f.popups[3].removed,true);assert.equal(f.canvas.focused,false)
+  assert.equal(f.selected.length,0);f.api.destroy();assert.equal(f.document.listeners.size,0)
+})
+
+test('empty-map click dismisses a popover and an outside action cancels late cluster choices',async()=>{
+  const item=listing('a'),f=fixture([item]);await f.click([pin(item)]);await f.click([]);assert.equal(f.popups[0].removed,true)
+  let release;f.source.getClusterExpansionZoom=()=>new Promise(resolve=>{release=resolve});f.map.features=[cluster()];f.handlers.get('click')({point:{}})
+  f.document.listeners.get('pointerdown')({target:new Element('button')});release(10);await tick();assert.equal(f.popups.length,1);assert.equal(f.eases.length,0);f.api.destroy()
 })
 
 test('Enter on focused map lists visible items; Escape closes and restores map focus', () => {

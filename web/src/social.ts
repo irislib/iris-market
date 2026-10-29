@@ -1,9 +1,10 @@
 import { verifyEvent, type Event as NostrEvent } from 'nostr-tools/pure'
 import { decode } from 'nostr-tools/nip19'
 import { SocialGraph } from 'nostr-social-graph'
+import { getPublicRuntime, type PublicEventRuntime } from './nostr-runtime.ts'
 import { DEFAULT_RELAYS, validateRelays } from './market.ts'
 
-export interface FollowLookupOptions { relays?: readonly string[]; signal?: AbortSignal; timeoutMs?: number; WebSocketImpl?: typeof WebSocket; now?: () => number }
+export interface FollowLookupOptions { relays?: readonly string[]; signal?: AbortSignal; timeoutMs?: number; WebSocketImpl?: typeof WebSocket; runtime?: PublicEventRuntime; now?: () => number }
 export interface PublicFollows { pubkey: string; authors: readonly string[] }
 interface FollowConnection { socket: WebSocket | null; subscription: string; frames: number; events: number; settled: boolean }
 
@@ -70,15 +71,26 @@ function contactList(input: NostrEvent, pubkey: string, now: number) {
  */
 export async function fetchFollows(publicKey: string, {
   relays = DEFAULT_RELAYS, signal, timeoutMs = 8000,
-  WebSocketImpl = globalThis.WebSocket, now = seconds,
+  WebSocketImpl, runtime, now = seconds,
 }: FollowLookupOptions = {}): Promise<PublicFollows> {
   const pubkey = normalizePublicKey(publicKey)
   const servers = validateRelays(relays)
   if (!servers.length) throw lookupError('unavailable', 'Choose a message server to look up public follows.')
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30000) throw lookupError('invalid-options', 'Follow lookup timeout must be between 1 and 30000 milliseconds.')
-  if (typeof WebSocketImpl !== 'function') throw lookupError('unavailable', 'This browser cannot connect to message servers.')
+  if (WebSocketImpl !== undefined && typeof WebSocketImpl !== 'function') throw lookupError('unavailable', 'This browser cannot connect to message servers.')
   if (signal && (typeof signal.addEventListener !== 'function' || typeof signal.removeEventListener !== 'function')) throw lookupError('invalid-options', 'Invalid cancellation signal.')
   if (signal?.aborted) throw new DOMException('Public follows lookup cancelled.', 'AbortError')
+  if(WebSocketImpl === undefined || runtime) {
+    const response=await (runtime??getPublicRuntime(servers)).query([{kinds:[3],authors:[pubkey],limit:1}],{signal,deadline:Date.now()+timeoutMs,limit:MAX_EVENTS_PER_RELAY*servers.length});
+    let latest:ReturnType<typeof contactList>|null=null;
+    if(response.events.length>MAX_EVENTS_PER_RELAY*servers.length)throw lookupError('limit','The public follow lookup exceeded its event limit.');
+    for(const raw of response.events){
+      try{const candidate=contactList(raw,pubkey,now());if(candidate&&(!latest||candidate.createdAt>latest.createdAt||(candidate.createdAt===latest.createdAt&&candidate.id<latest.id)))latest=candidate;}
+      catch(error){if(error?.code==='limit')throw error;}
+    }
+    if(!latest)throw lookupError('unavailable','Could not load this profile’s public follows.');
+    return Object.freeze({pubkey,authors:Object.freeze(latest.authors)});
+  }
 
   return new Promise<PublicFollows>((resolve, reject) => {
     const connections: FollowConnection[] = []

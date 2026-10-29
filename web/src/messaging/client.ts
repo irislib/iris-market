@@ -1,5 +1,6 @@
 import { invitationBase } from '../asset-url.ts';
 import { validateUploadAuthorization } from '../upload-auth.ts';
+import { REVIEW_KIND, parseReview, validateReviewDraft } from '../reviews.ts';
 import { finalizeEvent, generateSecretKey, getEventHash, getPublicKey, nip19 } from 'nostr-tools';
 import { AppKeys, Invite, NdrRuntime, createPersistentNostrOutbox, hasMetadataPrivacyVersion } from 'nostr-double-ratchet';
 import { createVault } from './vault.ts';
@@ -15,7 +16,7 @@ import type { OrderListing, OrderPatch, OrderView } from '../orders.ts';
 type AccountMode='local'|'extension'|'linked';
 interface AccountRecord {owner:string;mode:AccountMode;deviceSecret:number[];ownerSecret?:number[];proof?:VerifiedEvent;installed?:boolean;freshOwner?:boolean;displayName?:string;profileEvent?:VerifiedEvent}
 export interface ChatMessage {id:string;text:string;mine:boolean;createdAt:number;expiresAt?:number;delivery:'queued'|'sent'|'received';orderId?:string}
-export interface MessagingState {status:string;error:string;password:boolean;ownerPubkey?:string;devicePubkey?:string;displayName?:string;pendingPublic:number;chatStatus:string;profileEvent?:VerifiedEvent;pendingListings:VerifiedEvent[];orders:OrderView[];canSend:boolean;canSign:boolean;mode?:AccountMode;needsLogin:boolean;devices:{pubkey:string;current:boolean}[];conversations:{pubkey:string;messages:ChatMessage[]}[]}
+export interface MessagingState {status:string;error:string;password:boolean;ownerPubkey?:string;devicePubkey?:string;displayName?:string;pendingPublic:number;chatStatus:string;profileEvent?:VerifiedEvent;pendingListings:VerifiedEvent[];pendingReviews:VerifiedEvent[];orders:OrderView[];canSend:boolean;canSign:boolean;mode?:AccountMode;needsLogin:boolean;devices:{pubkey:string;current:boolean}[];conversations:{pubkey:string;messages:ChatMessage[]}[]}
 type AccountSigner=(event:UnsignedEvent)=>Event|Promise<Event>;
 interface BrowserSigner {getPublicKey():Promise<string>;signEvent:AccountSigner}
 interface MessagingOptions {getRelays?:()=>string[];onChange?:(state:MessagingState)=>void;vault?:Vault;transportFactory?:()=>PrivateTransport;extension?:()=>BrowserSigner|undefined}
@@ -25,6 +26,11 @@ type PublicationContext=NostrPublishContext&{recipientDeviceOwnerPubkey?:string}
 const HEX = /^[a-f0-9]{64}$/;
 const DEVICE_PREFIX = 'v1/device-manager/';
 const now = () => Math.floor(Date.now() / 1000);
+function publicAccountEvent(event:VerifiedEvent):boolean {
+  if([0,3,30402].includes(event.kind))return true;
+  if(event.kind!==REVIEW_KIND)return false;
+  try{parseReview(event);return true;}catch{return false;}
+}
 
 function secretBytes(value) {
   if (value instanceof Uint8Array && value.length === 32) return new Uint8Array(value);
@@ -71,6 +77,7 @@ export function createMessaging({ getRelays=()=>[], onChange = () => {}, vault =
     displayName: profilePatch?.name ?? account?.displayName, pendingPublic: publicQueue.size + (profilePatch ? 1 : 0), chatStatus,
     profileEvent: account?.profileEvent ? structuredClone(account.profileEvent) : undefined,
     pendingListings: [...publicQueue.values()].filter(event => event.kind === 30402).map(event => structuredClone(event)),
+    pendingReviews: [...publicQueue.values()].filter(event => event.kind === REVIEW_KIND).map(event => structuredClone(event)),
     orders: orders?.state() ?? [],
     canSend: status === 'ready' && authorizationChecked && runtime?.getState().isCurrentDeviceRegistered === true,
     canSign: !!signer && status === 'ready', mode: account?.mode, needsLogin: status === 'locked' && !account?.ownerSecret,
@@ -85,6 +92,7 @@ export function createMessaging({ getRelays=()=>[], onChange = () => {}, vault =
   const signing = async draft => {
     if (!signer || !account) throw new Error('Approve this action with your account signer.');
     if (draft.kind === 24242) validateUploadAuthorization(draft,undefined);
+    if (draft.kind === REVIEW_KIND) validateReviewDraft(draft,account.owner);
     const expected = { ...draft, pubkey: account.owner, tags: draft.tags.map(tag => [...tag]) };
     const attempt = generation;
     const signed = verifiedPrivateEvent(await signer(structuredClone(expected)));
@@ -252,9 +260,10 @@ export function createMessaging({ getRelays=()=>[], onChange = () => {}, vault =
     requireReady();
     const attempt = generation;
     if (!publicQueue.has(event.id) && publicQueue.size >= 128) throw new Error('Too many updates are waiting to sync.');
-    await vault.put(`market/public/${event.id}`, event);
-    check(attempt); publicQueue.set(event.id, event); notify(); scheduleBackground();
-    return {event, delivery:'queued', accepted:[]};
+    const stored=structuredClone(event);
+    await vault.put(`market/public/${stored.id}`, stored);
+    check(attempt); publicQueue.set(stored.id, stored); notify(); scheduleBackground();
+    return {event:structuredClone(stored), delivery:'queued', accepted:[]};
   }
   async function syncPublic() {
     if (syncing || status !== 'ready') return syncing;
@@ -369,7 +378,7 @@ export function createMessaging({ getRelays=()=>[], onChange = () => {}, vault =
     orders=createOrderBook({vault,owner:account.owner,device:getPublicKey(Uint8Array.from(account.deviceSecret)),notify,check:()=>check(attempt)});
     await orders.load();check(attempt);
     publicQueue=new Map();
-    for(const key of await vault.list('market/public/')){const event=verifiedPrivateEvent(await vault.get(key));if(event&&event.pubkey===account.owner&&([0,3,30402].includes(event.kind)||(event.kind===37368&&event.id===account.proof?.id)))publicQueue.set(event.id,event);}
+    for(const key of await vault.list('market/public/')){const event=verifiedPrivateEvent(await vault.get(key));if(event&&event.pubkey===account.owner&&(publicAccountEvent(event)||(event.kind===37368&&event.id===account.proof?.id)))publicQueue.set(event.id,event);}
     profilePatch=await vault.get<{name:string;picture?:string}>('market/profile-patch');
     check(attempt);status='ready';error='';chatStatus='connecting';notify();scheduleBackground();
     if(account.mode==='extension'&&!signer){const nip07=extension();if(nip07)void nip07.getPublicKey().then(owner=>{if(attempt===generation&&owner===account.owner){signer=enrollmentSigner=draft=>nip07.signEvent(draft);notify();scheduleBackground();}}).catch(()=>{});}
@@ -459,7 +468,7 @@ export function createMessaging({ getRelays=()=>[], onChange = () => {}, vault =
       const channel = transportFactory();
       let remote;
       remote = new RemoteSigner({ runtime: channel, relays: getRelays(), bunkerLink, signal, onConnectionLink, onAuthUrl,
-        permissions: ['sign_event:0', 'sign_event:3', 'sign_event:30402', 'sign_event:24242'], timeoutMs: 15 * 60_000,
+        permissions: ['sign_event:0', 'sign_event:3', 'sign_event:30402', 'sign_event:7368', 'sign_event:24242'], timeoutMs: 15 * 60_000,
         onClose: () => {
           channel.close();
           if (postingRemote === remote) { postingRemote = postingTransport = undefined; signer = undefined; notify(); }
@@ -515,7 +524,7 @@ export function createMessaging({ getRelays=()=>[], onChange = () => {}, vault =
     async publishSignedEvent(raw) {
       requireReady();
       const event = verifiedPrivateEvent(raw);
-      if (!event || event.pubkey !== account.owner || ![0, 3, 30402].includes(event.kind)) throw new Error('Invalid public account event.');
+      if (!event || event.pubkey !== account.owner || !publicAccountEvent(event)) throw new Error('Invalid public account event.');
       return queuePublic(event);
     },
     async publishEvent(draft) { return this.publishSignedEvent(await signing(draft)); },

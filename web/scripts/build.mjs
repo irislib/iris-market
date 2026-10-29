@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
 import { GRAPH_BOOTSTRAP } from '../src/graph-bootstrap.ts';
 import { RUNTIME } from '../src/feed-filter/runtime.ts';
+import { buildPwa } from './pwa-build.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const maxAssetBytes = 25 * 1024 * 1024;
@@ -33,11 +34,13 @@ async function writeNotices(dest, bundleResults, includeRuntime) {
     const files = (await readdir(folder, { withFileTypes: true }))
       .filter(file => file.isFile() && /^(licen[sc]e|copying|notice)(?:[.-]|$)/i.test(file.name))
       .map(file => file.name).sort();
-    if (!files.length && !['pmtiles','nostr-double-ratchet'].includes(info.name) && !info.name.startsWith('onnxruntime-')) {
+    if (!files.length && !['pmtiles','nostr-double-ratchet','@fips/tcp'].includes(info.name) && !info.name.startsWith('onnxruntime-')) {
       throw new Error(`Missing bundled dependency license: ${info.name}@${info.version}`);
     }
     const texts = await Promise.all(files.map(file => readFile(resolve(folder, file), 'utf8')));
     if (info.name === 'nostr-double-ratchet') texts.push(await readFile(resolve(root, 'licenses/NOSTR-DOUBLE-RATCHET-LICENSE.txt'), 'utf8'));
+    // fips-tcp's pinned 0.2.3 package omits its root license (upstream commit 975a368f597db5c86ca0231245493da92e4e5ea9).
+    if (info.name === '@fips/tcp') texts.push(await readFile(resolve(root, 'licenses/FIPS-TCP-LICENSE.txt'), 'utf8'));
     if (info.name === 'pmtiles') texts.push(await readFile(resolve(root, 'licenses/PMTILES-LICENSE.txt'), 'utf8'));
     notices.push(`${info.name}@${info.version} (${info.license ?? 'see license below'})\n${texts.join('\n\n') || 'Covered by the ONNX Runtime notices below.'}`);
   }
@@ -90,6 +93,7 @@ for (const [name, source, entry] of [['web', root, 'src/app.ts'], ['site', resol
     await copyFile(resolve(root, 'native-map.html'), resolve(dest, 'native-map.html'));
     for (const file of ['maplibre-gl.css','maplibre-gl-worker.mjs','maplibre-gl-shared.mjs']) await copyFile(resolve(root, 'node_modules/maplibre-gl/dist', file), resolve(dest, file));
     results.push(await build({ absWorkingDir: root, entryPoints: [resolve(root, 'src/native-map.ts')], bundle: true, minify: true, format: 'esm', target: 'es2022', outfile: resolve(dest, 'native-map.js'), legalComments: 'eof', metafile: true }));
+    results.push(await build({ absWorkingDir: root, entryPoints: [resolve(root, 'src/nostr.worker.ts')], define: {'import.meta.env.VITE_TEST_MODE': 'false', 'import.meta.env.VITE_TEST_BOOTSTRAP_PUBKEY': 'undefined'}, bundle: true, minify: true, format: 'esm', platform: 'browser', target: 'es2022', outfile: resolve(dest, 'nostr.worker.js'), legalComments: 'eof', metafile: true }));
     results.push(await build({ absWorkingDir: root, entryPoints: [resolve(root, 'src/feed-filter/worker.ts')], bundle: true, minify: true, format: 'esm', platform: 'browser', target: 'es2022', outfile: resolve(dest, 'feed-filter.worker.js'), legalComments: 'eof', metafile: true }));
     const rawName = RUNTIME.wasm.replace(/\.gz$/, '');
     const binary = await readFile(resolve(root, 'node_modules/onnxruntime-web/dist', rawName));
@@ -104,9 +108,13 @@ for (const [name, source, entry] of [['web', root, 'src/app.ts'], ['site', resol
     console.log(`runtime: ${binary.length} → ${compressed.length} bytes; SHA256 ${RUNTIME.sha256}`);
   }
   await writeNotices(dest, results, name === 'web');
-  const headers = `/*\n  X-Content-Type-Options: nosniff\n  Referrer-Policy: no-referrer\n  Permissions-Policy: camera=(), microphone=(), geolocation=${name === 'web' ? '(self)' : '()'}\n  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'${routeHash}; worker-src 'self' blob:; style-src 'self'; img-src 'self' data: https:; connect-src 'self' wss: https://mint.coinos.io https://upload.iris.to https://api.coinbase.com https://cdn.iris.to https://huggingface.co https://*.huggingface.co https://*.hf.co https://*.xethub.hf.co; object-src 'none'; base-uri ${name==='web'?"'self'":"'none'"}; frame-ancestors 'none'; form-action 'self'\n`;
+  const headers = `/*\n  X-Content-Type-Options: nosniff\n  Referrer-Policy: no-referrer\n  Permissions-Policy: camera=(), microphone=(), geolocation=${name === 'web' ? '(self)' : '()'}\n  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'${routeHash}; worker-src 'self' blob:; style-src 'self'; img-src 'self' data: blob: https:; connect-src 'self' wss: https://mint.coinos.io https://upload.iris.to https://api.coinbase.com https://cdn.iris.to https://huggingface.co https://*.huggingface.co https://*.hf.co https://*.xethub.hf.co; object-src 'none'; base-uri ${name==='web'?"'self'":"'none'"}; frame-ancestors 'none'; form-action 'self'\n`;
   await writeFile(resolve(dest, '_headers'), headers);
   await writeFile(resolve(dest, 'robots.txt'), 'User-agent: *\nAllow: /\n');
+  if (name === 'web') {
+    const offline = await buildPwa({root,dest,results});
+    console.log(`offline: ${offline.assets} verified assets, ${offline.bytes} bytes`);
+  }
   const largest = await checkAssetSizes(dest);
   console.log(`${name}: largest asset ${largest.name}, ${largest.bytes} bytes (limit ${maxAssetBytes})`);
 }

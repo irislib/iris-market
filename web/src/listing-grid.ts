@@ -38,15 +38,16 @@ export function setupListingGrid({grid, controls, button, status, makeCard, card
     button.hidden = !hasMore && !remote.error;
     button.disabled = loading || remote.loading;
     button.textContent = loading || remote.loading ? 'Loading…' : remote.error && !localMore ? 'Try again' : 'Load more';
-    status.textContent = remote.error && !localMore ? 'Could not load more listings.' : shown.length ? `${shown.length} of ${items.length} listings` : '';
+    status.textContent = remote.error && !localMore ? 'Could not load more listings.' : shown.length ? `${shown.length} ${shown.length===1?'listing':'listings'} shown` : '';
     grid.setAttribute('aria-busy', String(loading || Boolean(remote.loading)));
-    // Re-observe after the page grows. At most three automatic batches keep the footer reachable.
+    // Two automatic batches, then explicit loading keeps the footer reachable.
     observer?.unobserve(controls);
-    if (scrolled && visible && hasMore && automatic < 3 && !loading && !remote.loading && !remote.error && !remote.paused && shown.length) observer?.observe(controls);
+    if (scrolled && visible && hasMore && automatic < 2 && !loading && !remote.loading && !remote.error && !remote.paused && shown.length) observer?.observe(controls);
   }
   async function more(manual = false) {
     if (disposed || loading || !visible) return;
-    if (manual) automatic = 0; else automatic++;
+    // Once the reader chooses Load more, every further batch stays explicit.
+    if (manual) automatic = 2; else automatic++;
     windowed.pin();
     if (windowed.ids.length < items.length) { windowed.more(); paint(); return; }
     if (!pagination().hasMore && !pagination().error) return;
@@ -56,7 +57,7 @@ export function setupListingGrid({grid, controls, button, status, makeCard, card
     finally { loading = false; paint(); }
   }
   const observer = typeof IntersectionObserver === 'function' ? new IntersectionObserver(entries => {
-    if (scrolled && entries.some(entry => entry.isIntersecting) && automatic < 3 && !document.querySelector('dialog[open]')) void more();
+    if (scrolled && entries.some(entry => entry.isIntersecting) && automatic < 2 && !document.querySelector('dialog[open]')) void more();
   }, {rootMargin:'500px 0px'}) : null;
   const pinOnScroll = () => {
     if (window.scrollY > 100) {

@@ -1,7 +1,7 @@
 import { decode, npubEncode, naddrEncode } from 'nostr-tools/nip19';
 import { routeBase } from './route-base.ts';
 
-export type MarketRoute = {type:'home'|'saved'|'post'|'wallet'|'settings'|'missing'} | {type:'profile';pubkey:string} | {type:'listing';id:string} | {type:'messages';pubkey?:string} | {type:'orders';id?:string};
+export type MarketRoute = {type:'home'|'saved'|'post'|'wallet'|'settings'|'account'|'courier'|'missing'} | {type:'profile';pubkey:string} | {type:'listing';id:string} | {type:'messages';pubkey?:string} | {type:'orders';id?:string};
 const keyPattern = /^[a-f0-9]{64}$/;
 export function validListingId(id: string): boolean { return typeof id === 'string' && keyPattern.test(id.slice(0,64)) && id[64] === ':' && new TextEncoder().encode(id.slice(65)).length > 0 && new TextEncoder().encode(id.slice(65)).length <= 160; }
 function publicKey(value: string): string | null {
@@ -15,7 +15,8 @@ export function parseMarketRoute(href: string): MarketRoute {
   const raw=queryPage?queryPage.split('/'):url.pathname.slice(base.pathname.length).split('/').filter(Boolean);
   let parts:string[];try{parts=raw.map(decodeURIComponent);}catch{return {type:'missing'};}
   if(!parts.length||parts[0]==='index.html')return {type:'home'};
-  if(parts.length===1&&['saved','post','wallet','settings'].includes(parts[0]))return {type:parts[0] as 'saved'|'post'|'wallet'|'settings'};
+  if(parts.length===2&&parts[0]==='settings'&&parts[1]==='profile')return {type:'account'};
+  if(parts.length===1&&['saved','post','wallet','settings','courier'].includes(parts[0]))return {type:parts[0] as 'saved'|'post'|'wallet'|'settings'|'courier'};
   if(parts[0]==='messages'&&parts.length<=2){const pubkey=parts[1]?publicKey(parts[1]):undefined;return parts[1]&&!pubkey?{type:'missing'}:{type:'messages',...(pubkey?{pubkey}:{})};}
   if(parts[0]==='orders'&&parts.length<=2)return parts[1]&&parts[1].length>160?{type:'missing'}:{type:'orders',...(parts[1]?{id:parts[1]}:{})};
   if(parts.length===1&&parts[0].startsWith('naddr1')){try{const event=decode(parts[0]);if(event.type==='naddr'&&event.data.kind===30402){const id=`${event.data.pubkey}:${event.data.identifier}`;if(validListingId(id))return {type:'listing',id};}}catch{}return {type:'missing'};}

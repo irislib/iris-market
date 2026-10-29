@@ -4,6 +4,7 @@ import { AppKeys } from 'nostr-double-ratchet'
 import { finalizeEvent, generateSecretKey, getPublicKey, nip44, verifiedSymbol, verifyEvent } from 'nostr-tools'
 import { RemoteSigner, parseBunkerLink, signerRelayUrls } from '../src/messaging/remote-signer.ts'
 import { authorizeSignerDevice, fetchSignerRoster, prepareSignerAuthorization, selectSignerRoster, validateSignerAuthorization } from '../src/messaging/authorization.ts'
+import { buildReviewDraft } from '../src/reviews.ts'
 
 const relays = ['wss://signer.example/']
 const ownerSecret = generateSecretKey(), owner = getPublicKey(ownerSecret)
@@ -338,4 +339,25 @@ test('default device authorization cannot sign public posts and arbitrary scopes
   for (const permissions of [[], ['sign_event'], ['sign_event:1'], ['sign_event:37368'], ['nip44_decrypt']]) {
     assert.throws(() => clientFor(runtime, { permissions }), /Unsupported signer permissions/)
   }
+})
+
+test('review signing requires explicit public permission and rejects unsupported facts before requesting a signature', async () => {
+  const draft={...buildReviewDraft({target:newDevice,author:owner,rating:4,body:'Clear communication.'}),pubkey:owner}
+  const enrollmentRuntime=signerRuntime(),enrollment=clientFor(enrollmentRuntime)
+  try {
+    await enrollment.connect();const count=enrollmentRuntime.requests.length
+    await assert.rejects(enrollment.signEvent(draft),/cannot approve/)
+    assert.equal(enrollmentRuntime.requests.length,count)
+  } finally { enrollment.close() }
+  const runtime=signerRuntime(),client=clientFor(runtime,{permissions:['sign_event:7368']})
+  try {
+    await client.connect()
+    assert.equal(runtime.requests.find(request=>request.method==='connect').params[2],'sign_event:7368')
+    const signed=await client.signEvent(draft);assert.equal(signed.pubkey,owner);assert.equal(signed.kind,7368);assert(verifyEvent({...signed}))
+    assert(!runtime.requests.some(request=>request.method==='iris_get_link_info'))
+    const count=runtime.requests.length
+    for(const invalid of [{...draft,content:'hidden private text'},{...draft,tags:[...draft.tags,['shipment','private route']]},{...draft,tags:draft.tags.map(tag=>tag[0]==='reviewer'?['reviewer',newDevice]:tag)}]) await assert.rejects(client.signEvent(invalid))
+    await assert.rejects(client.signEvent(prepareSignerAuthorization(owner,newDevice,null)),/cannot approve/)
+    assert.equal(runtime.requests.length,count)
+  } finally { client.close() }
 })

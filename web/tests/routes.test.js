@@ -33,3 +33,11 @@ test('legacy links resolve and unrelated or secret identifiers do not',()=>{
  assert.deepEqual(parseMarketRoute(`https://market.iris.to/?listing=${id}`),{type:'listing',id});
  for(const href of ['https://market.iris.to/?listing=bad','https://market.iris.to/?profile=nsec1bad',`https://market.iris.to/${naddrEncode({pubkey:key,kind:30023,identifier:'article'})}`])assert.equal(parseMarketRoute(href).type,'missing');
 });
+
+
+test('courier and profile management have their own direct routes',()=>{
+ assert.deepEqual(parseMarketRoute('https://market.iris.to/courier'),{type:'courier'});
+ assert.deepEqual(parseMarketRoute('https://market.iris.to/settings/profile'),{type:'account'});
+ assert.equal(pageURL('courier','https://market.iris.to/settings/profile'),'https://market.iris.to/courier');
+ assert.deepEqual(parseMarketRoute('https://example.test/market/?page=settings/profile'),{type:'account'});
+});

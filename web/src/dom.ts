@@ -130,6 +130,7 @@ interface IdTags {
   'search': 'input';
   'search-mode': 'button';
   'search-run': 'button';
+  'ships-to': 'select';
   'sort': 'select';
   'tag-input': 'input';
   'toast': 'div';

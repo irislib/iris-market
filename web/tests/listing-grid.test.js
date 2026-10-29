@@ -49,8 +49,9 @@ test('a short initial feed cannot pin rankings or load history until the reader 
       this.children.splice(anchor ? this.children.indexOf(anchor) : this.children.length,0,node);
     },
   };
+  const button = {};
   const view = setupListingGrid({
-    grid,controls:{},button:{},status:{},cardKey:item=>item.id,
+    grid,controls:{},button,status:{},cardKey:item=>item.id,
     makeCard:()=>{const node={dataset:{},remove(){const i=grid.children.indexOf(node);if(i>=0)grid.children.splice(i,1);}};return node;},
     olderState:()=>({hasMore:true}),loadOlder:async()=>{historyRequests++;},
   });
@@ -68,5 +69,19 @@ test('a short initial feed cannot pin rankings or load history until the reader 
   assert.equal(grid.children.length,48);
   view.update(items(60),'browse');
   assert.equal(grid.children[0].dataset.listingId,'59');
+  view.update(items(150),'browse');
+  intersect([{isIntersecting:true}]);
+  assert.equal(grid.children.length,72);
+  intersect([{isIntersecting:true}]);
+  assert.equal(grid.children.length,72, 'automatic loading stops after two batches');
+  button.onclick();
+  assert.equal(grid.children.length,96);
+  intersect([{isIntersecting:true}]);
+  assert.equal(grid.children.length,96, 'Load more does not restart endless scrolling');
+  view.update(items(150),'new-search');
+  assert.equal(grid.children.length,24);
+  window.scrollY=150;onScroll();
+  intersect([{isIntersecting:true}]);
+  assert.equal(grid.children.length,48, 'a new search gets a fresh automatic allowance');
   view.dispose();
 });

@@ -1,5 +1,10 @@
 import { verifyEvent, type Event as NostrEvent } from 'nostr-tools/pure'
 import { locationFromTags } from './map/geohash.ts'
+import { queryPublicIndex } from './nostr-runtime.ts'
+import type { Filter } from 'nostr-tools'
+import type { RuntimeQueryOptions } from 'nostr-pubsub'
+import { SeenTags, observedMarketTags } from './seen-tags.ts'
+import {publicListingCache,type PublicListingCache} from './offline-listings.ts'
 
 export const DEFAULT_RELAYS = Object.freeze(['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net'])
 export const LISTING_KIND = 30402
@@ -158,6 +163,8 @@ export interface MarketPagination { loading: boolean; exhausted: boolean; limite
 export interface MarketStatus { state: 'closed' | 'empty' | 'live' | 'connecting' | 'offline'; connected: number; total: number; message: string }
 interface RelayHistory { initialOldest: number | null; cursor: number | null; started: boolean; exhausted: boolean; limited: boolean; requests: number }
 interface HistoryPage { error?: string; limited?: boolean; count?: number; oldest?: number | null }
+interface HistoryOptions { tags?:readonly string[];signal?:AbortSignal;pageSize?:number;maxRequests?:number;rounds?:number;timeoutMs?:number;budget?:{bytes:number;max:number} }
+export interface QueryCandidates {loading:boolean;added:number;hasMore:boolean;error:string;limited:boolean}
 interface RelayConnection {
   url: string; attempt: number; socket: WebSocket | null; failed: boolean; ready: boolean; subscription: string
   timer: ReturnType<typeof setTimeout> | null; retry: ReturnType<typeof setTimeout> | null
@@ -168,6 +175,9 @@ export interface MarketRelayOptions {
   onChange?: (listings: MarketListing[]) => void; onStatus?: (status: MarketStatus) => void; onPagination?: (pagination: MarketPagination) => void
   historyPageSize?: number; records?: Map<string, MarketListing>; maxRecords?: number
   WebSocketImpl?: typeof WebSocket; now?: () => number
+  indexQuery?: ((filters:Filter[],options:RuntimeQueryOptions)=>Promise<{events:NostrEvent[];complete?:boolean}>) | null
+  tagCatalogue?: SeenTags
+  offlineCache?: PublicListingCache | null
 }
 
 /** Read-only relay client. Holds no signing keys and never publishes. */
@@ -204,7 +214,24 @@ export class MarketRelayClient {
   lastStatus: string
   geohashes: string[]
   geoSequence: number
-  constructor({ relays = DEFAULT_RELAYS, onChange = () => {}, onStatus = () => {}, onPagination = () => {}, historyPageSize = HISTORY_PAGE_SIZE, records = new Map(), maxRecords = MAX_RECORDS, WebSocketImpl = globalThis.WebSocket, now = seconds, targetId, tags = [], authors = null }: MarketRelayOptions = {}) {
+  indexQuery: MarketRelayOptions['indexQuery']
+  indexReads = new Set<AbortController>()
+  indexRequests = 0
+  indexBytes = 0
+  tagCatalogue: SeenTags
+  queryTags:readonly string[]=[]
+  queryHistory=new Map<string,RelayHistory>()
+  queryIndexHistory:RelayHistory={initialOldest:null,cursor:null,started:false,exhausted:false,limited:false,requests:0}
+  queryController=new AbortController()
+  queryPromise:Promise<QueryCandidates>|null=null
+  queryBudget={bytes:0,max:8*1024*1024}
+  queryAdded=0
+  queryError=''
+  queryText=''
+  tagSelectionTimer:ReturnType<typeof setTimeout>|null=null
+  offlineCache:PublicListingCache|null
+  cacheGeneration=0
+  constructor({ relays = DEFAULT_RELAYS, onChange = () => {}, onStatus = () => {}, onPagination = () => {}, historyPageSize = HISTORY_PAGE_SIZE, records = new Map(), maxRecords = MAX_RECORDS, WebSocketImpl, now = seconds, targetId, tags = [], authors = null, indexQuery, tagCatalogue=observedMarketTags,offlineCache }: MarketRelayOptions = {}) {
     this.relays = validateRelays(relays)
     this.tags = feedTags(tags)
     this.authors = feedAuthors(authors)
@@ -230,7 +257,10 @@ export class MarketRelayClient {
     this.pageError = ''
     this.pageAdded = 0
     this.lastPagination = ''
-    this.WebSocket = WebSocketImpl
+    this.WebSocket = WebSocketImpl ?? globalThis.WebSocket
+    this.indexQuery = indexQuery===undefined ? (WebSocketImpl ? null : (filters,options)=>queryPublicIndex(this.relays,filters,options)) : indexQuery
+    this.tagCatalogue=tagCatalogue
+    this.offlineCache=offlineCache===undefined?(WebSocketImpl?null:publicListingCache(event=>parseEvent(event))):offlineCache
     this.now = now
     this.running = false
     this.connections = new Map()
@@ -245,9 +275,12 @@ export class MarketRelayClient {
 
   start() {
     if (this.running) return this
+    if(this.queryController.signal.aborted){this.queryController=new AbortController();this.queryPromise=null}
     if (this.hasQueries && typeof this.WebSocket !== 'function') fail('This browser cannot connect to message servers')
     this.running = true
+    void this.restoreOffline(++this.cacheGeneration)
     if (this.hasQueries) for (const url of this.relays) this.connect(url)
+    this.requestIndex()
     this.emitStatus()
     this.emitChange()
     this.emitPagination()
@@ -265,6 +298,120 @@ export class MarketRelayClient {
       .filter(listing => listing.id === this.targetId || this.matchesFeed(listing))
   }
 
+  parseIncoming(event:NostrEvent):MarketListing {
+    const listing=parseEvent(event,{now:this.now()});this.tagCatalogue.observe(event,this.now())
+    this.offlineCache?.save(event)
+    if(this.running&&this.queryText&&!this.queryTags.length&&this.tagSelectionTimer===null)this.tagSelectionTimer=setTimeout(()=>{
+      this.tagSelectionTimer=null;if(this.running)this.searchTags(this.queryText)
+    },24)
+    return listing
+  }
+
+  async restoreOffline(generation:number){
+    if(!this.offlineCache)return
+    try{
+      const events=await this.offlineCache.load()
+      for(let i=0;i<events.length;i++){
+        if(!this.running||generation!==this.cacheGeneration)return
+        try{this.acceptListing(parseEvent(events[i],{now:this.now()}))}catch{/* Cached records require fresh verification. */}
+        if(i%32===31)await new Promise(resolve=>setTimeout(resolve,0))
+      }
+    }catch{/* Offline storage is optional; live browsing remains available. */}
+  }
+
+  /** Broaden candidate retrieval without using the query as a title predicate. */
+  searchTags(query:string):readonly string[] {
+    this.queryText=typeof query==='string'&&query.length<=2000?query:''
+    return this.setQueryTags(this.tagCatalogue.select(query))
+  }
+
+  setQueryTags(tags:readonly string[]):readonly string[] {
+    const selected=feedTags(tags).filter(tag=>this.tagCatalogue.has(tag))
+    if(JSON.stringify(selected)===JSON.stringify(this.queryTags))return this.queryTags
+    this.queryController.abort();this.queryController=new AbortController();this.queryPromise=null
+    this.queryTags=Object.freeze(selected);this.queryAdded=0;this.queryError='';this.queryBudget={bytes:0,max:8*1024*1024}
+    this.queryHistory=new Map(this.relays.map(url=>[url,{initialOldest:null,cursor:null,started:false,exhausted:false,limited:false,requests:0}]))
+    this.queryIndexHistory={initialOldest:null,cursor:null,started:false,exhausted:!this.indexQuery,limited:false,requests:0}
+    if(this.running&&selected.length)void this.loadQueryCandidates()
+    return this.queryTags
+  }
+
+  queryPagination():QueryCandidates {
+    const histories=[...this.queryHistory.values(),this.queryIndexHistory]
+    const full=this.records.size>=this.maxRecords||this.queryBudget.bytes>=this.queryBudget.max
+    const limited=full||histories.some(item=>item.limited)
+    return{loading:!!this.queryPromise,added:this.queryAdded,error:this.queryError,limited,
+      hasMore:!!this.queryTags.length&&this.hasInventoryQuery&&!full&&histories.some(item=>!item.exhausted&&!item.limited)}
+  }
+
+  /** Finite tag-specific history. The caller chooses how many batches to autoload. */
+  loadQueryCandidates():Promise<QueryCandidates> {
+    if(this.queryPromise)return this.queryPromise
+    if(!this.running||!this.queryPagination().hasMore)return Promise.resolve(this.queryPagination())
+    const tags=this.queryTags,controller=this.queryController,budget=this.queryBudget,before=this.records.size
+    const options:HistoryOptions={tags,signal:controller.signal,pageSize:80,maxRequests:8,rounds:2,timeoutMs:3500,budget}
+    const histories=this.queryHistory,indexHistory=this.queryIndexHistory
+    this.queryError='';this.queryAdded=0
+    this.queryPromise=Promise.resolve().then(async()=>{
+      const results=await Promise.all([
+        ...[...histories].filter(([,item])=>!item.exhausted&&!item.limited).map(([url,item])=>this.loadOlderFrom(url,item,options)),
+        ...(this.indexQuery&&!indexHistory.exhausted&&!indexHistory.limited?[this.loadQueryIndex(tags,indexHistory,controller.signal,budget)]:[]),
+      ])
+      if(controller!==this.queryController)return
+      this.queryAdded=Math.max(0,this.records.size-before)
+      if(results.some(result=>result.error))this.queryError='Some matching listings could not be loaded.'
+    }).catch(()=>{if(controller===this.queryController)this.queryError='Matching listings could not be loaded.'}).finally(()=>{
+      if(controller===this.queryController){this.queryPromise=null;if(this.running){this.emitChange();this.onPagination(this.pagination())}}
+    }).then(()=>this.queryPagination())
+    return this.queryPromise
+  }
+
+  async loadQueryIndex(tags:readonly string[],history:RelayHistory,signal:AbortSignal,budget:{bytes:number;max:number}):Promise<HistoryPage> {
+    if(++history.requests>4){history.limited=true;return{limited:true}}
+    const until=history.cursor??this.now(),limit=120
+    let timer:ReturnType<typeof setTimeout>,abort:()=>void
+    try{
+      const timeout=new Promise<never>((_,reject)=>{
+        abort=()=>reject(new Error('Loading stopped.'));timer=setTimeout(()=>reject(new Error('Matching index read timed out.')),3500)
+        signal.addEventListener('abort',abort,{once:true});if(signal.aborted)abort()
+      })
+      const report=await Promise.race([this.indexQuery([{kinds:[LISTING_KIND],'#t':[...tags],until,limit,...(this.authors?{authors:[...this.authors]}:{})}],{signal,deadline:Date.now()+3500,limit}),timeout])
+      if(signal.aborted||!this.running)return{error:'Loading stopped.'}
+      let oldest:number|null=null,count=0
+      for(const event of report.events.slice(0,limit)){
+        budget.bytes+=bytes(JSON.stringify(event));if(budget.bytes>budget.max){history.limited=true;return{limited:true}}
+        try{const listing=this.parseIncoming(event)
+          if(listing.createdAt>until||!listing.tags.some(tag=>tags.includes(tag))||(this.authorSet&&!this.authorSet.has(listing.author)))continue
+          oldest=Math.min(oldest??listing.createdAt,listing.createdAt);count++;this.acceptListing(listing)
+        }catch{/* Invalid index records are not candidates. */}
+      }
+      if(oldest!==null&&oldest<until)history.cursor=oldest
+      else if(count>=limit){history.limited=true;return{limited:true}}
+      else if(report.complete){if(count)history.cursor=Math.max(0,until-1);else history.exhausted=true}
+      else return{error:'Index history is incomplete.'}
+      return{}
+    }catch{return{error:'Index history is unavailable.'}}
+    finally{clearTimeout(timer);signal.removeEventListener('abort',abort)}
+  }
+
+  /** The same verified winner reducer receives durable history and live relay events. */
+  requestIndex(extra:Filter[]=[]):void {
+    if(!this.running||!this.hasQueries||!this.indexQuery||this.indexReads.size>=2||this.indexRequests>=16||this.indexBytes>=MAX_HISTORY_BYTES)return
+    const filters:Filter[]=extra.length?extra:[
+      ...(this.hasInventoryQuery?[{kinds:[LISTING_KIND],limit:this.historyPageSize,...(this.authors?{authors:[...this.authors]}:{}),...(this.tags.length?{'#t':[...this.tags]}:{})}]:[]),
+      ...(this.targetFilter?[{kinds:[LISTING_KIND],authors:[...this.targetFilter.authors!],'#d':this.targetFilter['#d'],limit:1}]:[]),
+    ]
+    const controller=new AbortController();this.indexReads.add(controller);this.indexRequests++
+    void this.indexQuery(filters,{signal:controller.signal,deadline:Date.now()+6000,limit:Math.min(600,this.maxRecords)}).then(report=>{
+      if(!this.running||controller.signal.aborted)return
+      for(const event of report.events.slice(0,600)){
+        this.indexBytes+=bytes(JSON.stringify(event));if(this.indexBytes>MAX_HISTORY_BYTES)break
+        try{this.acceptListing(this.parseIncoming(event))}catch{/* Signature and field errors never enter listings. */}
+      }
+      this.emitPagination()
+    }).catch(()=>{/* Relay results remain available when an index is offline. */}).finally(()=>this.indexReads.delete(controller))
+  }
+
   /** Update only the map discovery subscription; received listings stay usable. */
   setGeohashes(values = []) {
     if (!Array.isArray(values) || values.length > MAX_GEOHASH_VALUES || values.some(value => typeof value !== 'string' || !/^[0123456789bcdefghjkmnpqrstuvwxyz]{1,8}$/.test(value))) fail('Invalid map search area')
@@ -272,6 +419,7 @@ export class MarketRelayClient {
     if (JSON.stringify(next) === JSON.stringify(this.geohashes)) return
     this.geohashes = next
     if (!this.running) return
+    if(next.length&&this.hasInventoryQuery)this.requestIndex([{kinds:[LISTING_KIND],'#g':next,limit:GEO_QUERY_LIMIT,...(this.authors?{authors:[...this.authors]}:{}),...(this.tags.length?{'#t':[...this.tags]}:{})}])
     for (const connection of this.connections.values()) if (!connection.failed && connection.socket?.readyState === 1) this.requestGeohashes(connection)
   }
 
@@ -298,6 +446,7 @@ export class MarketRelayClient {
   refresh() {
     if (!this.running) return this.start()
     if (!this.hasQueries) { this.emitStatus(); this.emitChange(); return this }
+    this.requestIndex()
     for (const url of this.relays) {
       const connection = this.connections.get(url)
       if (connection?.socket?.readyState === 1 && !connection.failed) { this.request(connection); this.requestGeohashes(connection) }
@@ -312,6 +461,10 @@ export class MarketRelayClient {
 
   close() {
     this.running = false
+    this.cacheGeneration++
+    this.queryController.abort()
+    clearTimeout(this.tagSelectionTimer);this.tagSelectionTimer=null
+    for(const controller of this.indexReads)controller.abort();this.indexReads.clear()
     for (const finish of [...this.historyReaders]) finish({ error: 'Loading stopped.' })
     clearInterval(this.expiryTimer)
     clearTimeout(this.changeTimer)
@@ -351,7 +504,7 @@ export class MarketRelayClient {
         if (frame[0] === 'CLOSED') { connection.geoSubscription = null; return }
         if (frame[0] !== 'EVENT' || frame.length !== 3) return
         try {
-          const listing = parseEvent(frame[2], { now: this.now() })
+          const listing = this.parseIncoming(frame[2])
           if (!this.matchesFeed(listing) || !frame[2].tags.some(tag => tag[0] === 'g' && this.geohashes.includes(tag[1]))) return
           this.acceptListing(listing)
         } catch { /* Ignore malformed or unrelated map results. */ }
@@ -368,7 +521,7 @@ export class MarketRelayClient {
         this.failed(connection)
       } else if (frame[0] === 'EVENT' && frame.length === 3) {
         try {
-          const listing = parseEvent(frame[2], { now: this.now() })
+          const listing = this.parseIncoming(frame[2])
           const history = this.history.get(url)
           // The exact shared-target query may return an ancient event alongside
           // recent inventory. It must not skip the intervening history.
@@ -440,18 +593,18 @@ export class MarketRelayClient {
     return this.pagePromise
   }
 
-  async loadOlderFrom(url: string, history: RelayHistory): Promise<HistoryPage> {
+  async loadOlderFrom(url: string, history: RelayHistory, options:HistoryOptions={}): Promise<HistoryPage> {
     history.started = true
     history.cursor ??= history.initialOldest ?? this.now()
-    let limit = this.historyPageSize
+    let limit = options.pageSize??this.historyPageSize
     // At most four reads drain a dense second (300, 600, 1000) and
     // check the next second. Never silently skip an unfilled boundary.
-    for (let round = 0; round < 4 && this.running; round++) {
+    for (let round = 0; round < (options.rounds??4) && this.running&&!options.signal?.aborted; round++) {
       if (this.records.size >= this.maxRecords) return { limited: true }
-      if (history.requests >= MAX_HISTORY_REQUESTS) { history.limited = true; return { limited: true } }
+      if (history.requests >= (options.maxRequests??MAX_HISTORY_REQUESTS)) { history.limited = true; return { limited: true } }
       const until = history.cursor
       history.requests++
-      const page = await this.readHistory(url, until, limit)
+      const page = await this.readHistory(url, until, limit,options)
       if (page.error || page.limited) return page
       if (page.count === 0) { history.exhausted = true; return {} }
       if (page.oldest < until) { history.cursor = page.oldest; return {} }
@@ -463,13 +616,13 @@ export class MarketRelayClient {
       } else {
         if (until === 0) { history.exhausted = true; return {} }
         history.cursor = until - 1
-        limit = this.historyPageSize
+        limit = options.pageSize??this.historyPageSize
       }
     }
     return { error: this.running ? 'History boundary needs another request.' : 'Loading stopped.' }
   }
 
-  readHistory(url: string, until: number, limit: number): Promise<HistoryPage> {
+  readHistory(url: string, until: number, limit: number,options:HistoryOptions={}): Promise<HistoryPage> {
     return new Promise<HistoryPage>(resolve => {
       const subscription = `older-${Math.random().toString(36).slice(2, 14)}`
       let socket, ended = false, timer, frames = 0, receivedBytes = 0, invalid = false, oldest = null
@@ -478,6 +631,7 @@ export class MarketRelayClient {
         if (ended) return
         ended = true
         clearTimeout(timer)
+        options.signal?.removeEventListener('abort',abort)
         this.historyReaders.delete(finish)
         if (socket) {
           socket.onopen = socket.onmessage = socket.onerror = socket.onclose = null
@@ -486,14 +640,17 @@ export class MarketRelayClient {
         }
         resolve(result)
       }
+      const abort=()=>finish({error:'Loading stopped.'})
+      if(options.signal?.aborted){finish({error:'Loading stopped.'});return}
+      options.signal?.addEventListener('abort',abort,{once:true})
       this.historyReaders.add(finish)
-      timer = setTimeout(() => finish({ error: 'Older listings timed out.' }), HISTORY_TIMEOUT)
+      timer = setTimeout(() => finish({ error: 'Older listings timed out.' }), options.timeoutMs??HISTORY_TIMEOUT)
       try { socket = new this.WebSocket(url) } catch { finish({ error: 'Connection failed.' }); return }
       socket.onopen = () => {
         if (ended || !this.running) { finish({ error: 'Loading stopped.' }); return }
         const filter: MarketFilter = { kinds: [LISTING_KIND], until, limit }
         if (this.authors !== null) filter.authors = this.authors
-        if (this.tags.length) filter['#t'] = this.tags
+        const tags=options.tags??this.tags;if (tags.length) filter['#t'] = tags
         try { socket.send(JSON.stringify(['REQ', subscription, filter])) }
         catch { finish({ error: 'Request failed.' }) }
       }
@@ -501,6 +658,7 @@ export class MarketRelayClient {
         if (ended || typeof data !== 'string') return
         if (data.length > MAX_FRAME_BYTES) { finish({ error: 'Older response exceeded its limit.' }); return }
         const size = bytes(data)
+        if(options.budget){options.budget.bytes+=size;if(options.budget.bytes>options.budget.max){finish({limited:true});return}}
         receivedBytes += size
         if (++frames > limit * 2 + 32 || size > MAX_FRAME_BYTES || receivedBytes > MAX_HISTORY_BYTES) { finish({ error: 'Older response exceeded its limit.' }); return }
         let frame
@@ -513,8 +671,9 @@ export class MarketRelayClient {
         }
         if (frame[0] !== 'EVENT' || frame.length !== 3) return
         try {
-          const listing = parseEvent(frame[2], { now: this.now() })
-          if (listing.createdAt > until || !this.matchesFeed(listing)) { invalid = true; return }
+          const listing = this.parseIncoming(frame[2])
+          const scoped=options.tags?(!this.authorSet||this.authorSet.has(listing.author))&&listing.tags.some(tag=>options.tags.includes(tag)):this.matchesFeed(listing)
+          if (listing.createdAt > until || !scoped) { invalid = true; return }
           if (!accepted.has(listing.eventId) && accepted.size >= limit) { finish({ error: 'Older response exceeded its limit.' }); return }
           accepted.add(listing.eventId)
           oldest = Math.min(oldest ?? listing.createdAt, listing.createdAt)

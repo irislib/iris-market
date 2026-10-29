@@ -25,10 +25,10 @@ const courierKey = (input:string) => {
 const dark = () => document.documentElement.dataset.appearance === 'dark' || (document.documentElement.dataset.appearance !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
 
 /** Private order requests are separate from chat and never imply a payment. */
-export function setupOrders({ account, isPreview = () => false, onProfile = () => {}, onUnread = (_count:number) => {}, page, onNavigate = (_id?:string) => {}, onClose = () => {}, formatPrice = item => `${item.price || ''} ${item.currency || ''}`.trim() }: {account:ReturnType<typeof import('./account-ui.ts').setupAccount>;isPreview?:()=>boolean;onProfile?:(key:string)=>void;onUnread?:(count:number)=>void;page?:HTMLElement;onNavigate?:(id?:string)=>void;onClose?:()=>void;formatPrice?:(item:any)=>string}) {
+export function setupOrders({ account, isPreview = () => false, onProfile = () => {}, onUnread = (_count:number) => {}, page, onNavigate = (_id?:string,_tab?:string) => {}, onClose = () => {}, formatPrice = item => `${item.price || ''} ${item.currency || ''}`.trim() }: {account:ReturnType<typeof import('./account-ui.ts').setupAccount>;isPreview?:()=>boolean;onProfile?:(key:string)=>void;onUnread?:(count:number)=>void;page?:HTMLElement;onNavigate?:(id?:string,tab?:string)=>void;onClose?:()=>void;formatPrice?:(item:any)=>string}) {
   const unread=createUnreadTracker({kind:'orders',onUnread});
   let state = account.state(), view = 'history', tab = 'purchases', selected, listing, pending, busy = false, error = '', sharing, map, mapLoading, mapHost, mapOrderId, mapGeneration = 0, destroyed = false;
-  const dialog = createSurface({className:'orders-dialog',label:'Orders',pageHost:page,onOpen:()=>onNavigate(view==='detail'?selected:undefined),onClose}); dialog.id = 'orders-dialog'; dialog.setAttribute('aria-labelledby', 'orders-title');
+  const dialog = createSurface({className:'orders-dialog',label:'Orders',pageHost:page,onOpen:()=>onNavigate(view==='detail'?selected:undefined,tab),onClose}); dialog.id = 'orders-dialog'; dialog.setAttribute('aria-labelledby', 'orders-title');
   const close = node('button', '×', 'dialog-close icon-button'); close.type = 'button'; close.setAttribute('aria-label', 'Close orders'); close.onclick = () => dialog.close();
   const back = node('button', '← Orders', 'text-button orders-back'); back.type = 'button'; back.onclick = () => showHistory();
   const heading = node('h2', 'Orders'); heading.id = 'orders-title';
@@ -72,7 +72,7 @@ export function setupOrders({ account, isPreview = () => false, onProfile = () =
     if (publish && state.status === 'ready' && state.ownerPubkey === stopped.owner) void account.messaging.updateOrder(stopped.orderId, { location: null }).catch(() => {});
   }
   function changeView(next) { if (next !== 'detail') stopLocation(); view = next; error = ''; if (next !== 'detail') dropMap(); }
-  function showHistory() { changeView('history'); selected = undefined; render(); if(dialog.open)onNavigate(); }
+  function showHistory() { changeView('history'); selected = undefined; render(); if(dialog.open)onNavigate(undefined,tab); }
   function showDetail(order) {
     if (selected !== order.id) { stopLocation(); dropMap(); }
     selected = order.id; view = 'detail'; error = ''; render(); if(dialog.open)onNavigate(order.id);
@@ -82,7 +82,7 @@ export function setupOrders({ account, isPreview = () => false, onProfile = () =
     if (state.status !== 'ready') { pending = intent; account.showAccount(); return false; }
     return true;
   }
-  function open(id) { state = account.state(); if (!requestReady({ type: 'history', id })) return; const order = id && orders().find(item => item.id === id); if (order) showDetail(order); else { showHistory(); if (id) { error = 'This order is not available on this device yet.'; render(); } } if (!dialog.open) dialog.showModal(); syncUnread(); }
+  function open(id,section?:string) { if(['purchases','sales','deliveries','archived'].includes(section))tab=section;state = account.state(); if (!requestReady({ type: 'history', id, section })) return; const order = id && orders().find(item => item.id === id); if (order) showDetail(order); else { showHistory(); if (id) { error = 'This order is not available on this device yet.'; render(); } } if (!dialog.open) dialog.showModal(); syncUnread(); }
   function buy(value) {
     state = account.state();
     if (!requestReady({ type: 'buy', listing: value })) return;
@@ -92,7 +92,7 @@ export function setupOrders({ account, isPreview = () => false, onProfile = () =
     tabs.hidden = view !== 'history'; tabs.replaceChildren();
     for (const [key, label] of [['purchases', 'Purchases'], ['sales', 'Sales'], ['deliveries', 'Deliveries'], ['archived', 'Archived']]) {
       const button = node('button', label); button.type = 'button'; button.setAttribute('aria-pressed', String(tab === key));
-      button.onclick = () => { tab = key; error = ''; render(); }; tabs.append(button);
+      button.onclick = () => { tab = key; error = ''; render(); if(dialog.open)onNavigate(undefined,tab); }; tabs.append(button);
     }
   }
   function filteredOrders() {
@@ -284,7 +284,7 @@ export function setupOrders({ account, isPreview = () => false, onProfile = () =
   function render() {
     if (destroyed) return;
     syncUnread();
-    heading.textContent = view === 'review' ? 'Request an order' : view === 'route' ? 'Delivery details' : view === 'detail' ? 'Order details' : 'Orders';
+    heading.textContent = view === 'review' ? 'Request an order' : view === 'route' ? 'Delivery details' : view === 'detail' ? 'Order details' : tab==='deliveries'?'Courier':'Orders';
     back.hidden = view === 'history'; failure.textContent = error; renderTabs();
     const scrollTop = dialog.scrollTop; body.replaceChildren();
     if (view === 'review') renderReview(); else if (view === 'detail') renderDetail(); else if (view === 'route') renderRoute(); else renderHistory();
@@ -297,7 +297,7 @@ export function setupOrders({ account, isPreview = () => false, onProfile = () =
     const order = current();
     const sharedStop = sharing && order?.shipment?.stops?.find(stop => stop.id === sharing.stopId && stop.status !== 'completed' && (order.seller === owner() || stop.courierPubkey === owner()));
     if (sharing && (!order || terminal(order) || !sharedStop || order.archived || document.visibilityState === 'hidden')) stopLocation();
-    if (pending && state.status === 'ready') { const intent = pending; pending = undefined; account.closeAccount?.(); if (intent.type === 'buy') buy(intent.listing); else open(intent.id); return; }
+    if (pending && state.status === 'ready') { const intent = pending; pending = undefined; account.closeAccount?.(); if (intent.type === 'buy') buy(intent.listing); else open(intent.id,intent.section); return; }
     // Preserve typing while private updates arrive in the background.
     if (dialog.open && !['review', 'route'].includes(view)) render();
   }

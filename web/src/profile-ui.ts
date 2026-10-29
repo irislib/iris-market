@@ -4,6 +4,8 @@ import { loadProfile, readProfileMetadata, DEFAULT_SOCIAL_GRAPH_ROOT, DEFAULT_SO
 import { normalizePublicKey } from './social.ts'
 import { createAvatar, createUserRow } from './people.ts'
 import { profileURL } from './routes.ts'
+import { setupProfileReviews } from './reviews-ui.ts'
+import type { PublishReview, ReviewAccount, ReviewQuery } from './reviews.ts'
 import type { PublicProfile, SocialConnection } from './profiles.ts'
 
 const element = domElement
@@ -19,7 +21,13 @@ export function createRelationshipBadge(relation) {
   return badge
 }
 
-export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCIAL_GRAPH_ROOT, isPreview = () => false, onContextChange = () => {}, onAuthorListings = () => {}, onMessage = () => {}, onNavigate = () => {}, onClose = () => {}, renderListings }: {page?:HTMLElement;getRelays:()=>string[];getContext?:()=>string;isPreview?:()=>boolean;onContextChange?:(key:string)=>void;onAuthorListings?:(key:string)=>void;onMessage?:(key:string)=>void;onNavigate?:(key:string)=>void;onClose?:()=>void;renderListings?:(key:string,host:HTMLElement)=>void|(()=>void)}) {
+interface ProfileOptions {
+  page?:HTMLElement;getRelays:()=>string[];getContext?:()=>string;isPreview?:()=>boolean;
+  onContextChange?:(key:string)=>void;onAuthorListings?:(key:string)=>void;onMessage?:(key:string)=>void;
+  onNavigate?:(key:string)=>void;onClose?:()=>void;renderListings?:(key:string,host:HTMLElement)=>void|(()=>void);
+  queryReviews?:ReviewQuery;getReviewAccount?:()=>ReviewAccount;publishReview?:PublishReview;onReviewSignIn?:()=>void;
+}
+export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCIAL_GRAPH_ROOT, isPreview = () => false, onContextChange = () => {}, onAuthorListings = () => {}, onMessage = () => {}, onNavigate = () => {}, onClose = () => {}, renderListings, queryReviews, getReviewAccount, publishReview, onReviewSignIn }: ProfileOptions) {
   const container = page ?? element('section', undefined, 'profile-page')
   container.setAttribute('aria-labelledby', 'public-profile-title')
   container.hidden = true
@@ -34,6 +42,7 @@ export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCI
   if (!page) document.body.append(container)
   let controller:AbortController|undefined, generation = 0, currentKey:string|undefined, destroyed = false
   let listingCleanup:(()=>void)|undefined, listingsActive=false, selectedView='listings'
+  let reviews:ReturnType<typeof setupProfileReviews>|undefined, reviewSummaryButton:HTMLButtonElement|undefined, reviewTab:HTMLButtonElement|undefined
   const listingHost=element('div',undefined,'profile-listings')
   const panel=element('div',undefined,'profile-list-panel')
   panel.id='profile-list-panel';panel.setAttribute('role','tabpanel')
@@ -48,7 +57,7 @@ export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCI
   const renderSections=(data?:ProfileData)=>{
     const tabs=element('div',undefined,'profile-tabs')
     tabs.setAttribute('role','tablist');tabs.setAttribute('aria-label','Profile')
-    const views:ProfileView[]=[{id:'listings',label:'Listings'},...connectionViews(data)]
+    const views:ProfileView[]=[{id:'listings',label:'Listings'},{id:'reviews',label:'Reviews'},...connectionViews(data)]
     const select=(view:ProfileView,button:HTMLButtonElement)=>{
       selectedView=view.id
       for(const tab of tabs.children){tab.setAttribute('aria-selected',String(tab===button));(tab as HTMLElement).tabIndex=tab===button?0:-1}
@@ -60,6 +69,9 @@ export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCI
           if(renderListings){const cleanup=renderListings(currentKey,listingHost);if(typeof cleanup==='function')listingCleanup=cleanup}
           else {const browse=element('button','Browse listings','button secondary');browse.onclick=()=>{const key=currentKey;close();onAuthorListings(key)};listingHost.append(browse)}
         }
+      }else if(view.id==='reviews'){
+        stopListings()
+        panel.replaceChildren(reviews.element)
       }else{
         stopListings()
         panel.replaceChildren(view.people?peopleList(view.people,view.empty):element('p','Loading connections…','muted small'))
@@ -68,6 +80,7 @@ export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCI
     for(const view of views){
       const tab=element('button',view.label);tab.id=`profile-tab-${view.id}`;tab.setAttribute('role','tab');tab.setAttribute('aria-controls',panel.id)
       tab.onclick=()=>select(view,tab)
+      if(view.id==='reviews')reviewTab=tab
       tab.onkeydown=event=>{
         if(!['ArrowRight','ArrowLeft','Home','End'].includes(event.key))return
         event.preventDefault();const current=[...tabs.children].indexOf(tab),total=views.length
@@ -82,7 +95,7 @@ export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCI
   }
 
   function close({notify=false}: {notify?:boolean} = {}) {
-    controller?.abort(); stopListings(); generation++; currentKey=undefined; container.hidden=true
+    controller?.abort(); stopListings(); reviews?.close(); reviews=undefined; reviewTab=undefined; reviewSummaryButton=undefined; generation++; currentKey=undefined; container.hidden=true
     if (notify && !destroyed) onClose()
   }
   const peopleList = (people, emptyText) => {
@@ -102,6 +115,9 @@ export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCI
     if (badge) name.append(badge)
     const heading = element('div')
     heading.append(name)
+    reviewSummaryButton=element('button',reviews?.summary().label??'Reviews','text-button profile-review-summary')
+    reviewSummaryButton.onclick=()=>reviewTab?.click()
+    heading.append(reviewSummaryButton)
     identity.append(back, createAvatar(profile.pubkey, {size:76}), heading)
     body.append(identity)
     if (profile.about) body.append(element('p', profile.about, 'profile-about'))
@@ -176,8 +192,9 @@ export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCI
     if (navigate) onNavigate(key)
     // A router may synchronously reopen this profile without navigation.
     if (generation!==beforeNavigate || destroyed) return
-    controller?.abort(); stopListings(); selectedView='listings'; controller = new AbortController(); const run = ++generation
+    controller?.abort(); stopListings(); reviews?.close(); reviewTab=undefined; reviewSummaryButton=undefined; selectedView='listings'; controller = new AbortController(); const run = ++generation
     currentKey = key; container.hidden=false; container.scrollTop=0
+    reviews=setupProfileReviews({target:key,query:queryReviews,getAccount:getReviewAccount,publish:publishReview,preview:isPreview(),onSignIn:onReviewSignIn,onProfile:pubkey=>void open(pubkey),onSummary:value=>{if(run===generation&&reviewSummaryButton)reviewSummaryButton.textContent=value.label}})
     let displayed=renderCached(key)
     if (isPreview()) { status.textContent = 'Profiles are available in live mode.'; return }
     status.textContent = displayed ? 'Loading connections…' : 'Loading profile…'
@@ -197,5 +214,5 @@ export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCI
     } catch (error) { if (run === generation && error.name !== 'AbortError') status.textContent = error.message || 'Could not load this profile.' }
     finally { stopProgress() }
   }
-  return { open, close, destroy() { destroyed = true; close(); container.replaceChildren(); if(!page)container.remove() } }
+  return { open, close, refreshReviews(){reviews?.refresh()}, destroy() { destroyed = true; close(); container.replaceChildren(); if(!page)container.remove() } }
 }

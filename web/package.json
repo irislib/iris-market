@@ -16,12 +16,16 @@
     "@cashu/cashu-ts": "4.13.0",
     "@hashtree/core": "https://github.com/mmalmi/hashtree/releases/download/hashtree-ts-runtime-v0.5.9/hashtree-core-0.3.2.tgz",
     "@hashtree/dexie": "https://github.com/mmalmi/hashtree/releases/download/hashtree-ts-runtime-v0.5.9/hashtree-dexie-0.1.11.tgz",
+    "@hashtree/nostr": "https://github.com/mmalmi/hashtree/releases/download/hashtree-ts-runtime-v0.5.9/hashtree-nostr-0.2.5.tgz",
+    "@hashtree/nostr-pubsub": "https://github.com/mmalmi/hashtree/releases/download/hashtree-ts-runtime-v0.5.21/hashtree-nostr-pubsub-0.1.8.tgz",
+    "@hashtree/worker": "https://github.com/mmalmi/hashtree/releases/download/hashtree-ts-runtime-v0.5.21/hashtree-worker-0.4.12.tgz",
     "@huggingface/transformers": "4.3.2",
     "@noble/hashes": "2.0.1",
     "maplibre-gl": "6.15.0",
     "marked": "15.0.12",
     "minidenticons": "4.2.1",
     "nostr-double-ratchet": "0.0.183",
+    "nostr-pubsub": "https://github.com/mmalmi/nostr-pubsub/releases/download/nostr-pubsub-ts-v0.5.20/nostr-pubsub-0.5.20.tgz",
     "nostr-social-graph": "https://github.com/mmalmi/nostr-social-graph/releases/download/v2.0.4/nostr-social-graph-2.0.4.tgz",
     "nostr-tools": "2.25.2",
     "onnxruntime-web": "1.31.0-dev.20260914-8d85527a0",
@@ -31,5 +35,9 @@
     "esbuild": "0.25.12",
     "typescript": "5.9.3",
     "wrangler": "4.154.0"
+  },
+  "overrides": {
+    "nostr-pubsub": "$nostr-pubsub",
+    "nostr-tools": "$nostr-tools"
   }
 }

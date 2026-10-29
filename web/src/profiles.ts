@@ -20,12 +20,14 @@
 import { verifyEvent, type Event as NostrEvent } from 'nostr-tools/pure'
 import { fallbackIdentityName, getProfileName } from './shared/iris-kit/profile.ts'
 import { SocialGraph } from 'nostr-social-graph'
+import type { Filter } from 'nostr-tools'
+import { getPublicRuntime, type PublicEventRuntime } from './nostr-runtime.ts'
 import { loadGraphBootstrap } from './graph-bootstrap.ts'
 import { DEFAULT_RELAYS, validateRelays } from './market.ts'
 import { normalizePublicKey } from './social.ts'
 
-export interface ProfileFilter { kinds?: number[]; authors?: string[]; '#p'?: string[]; limit?: number }
-export interface ProfileQueryOptions { relays?: readonly string[]; signal?: AbortSignal; WebSocketImpl?: typeof WebSocket; now?: () => number; timeoutMs?: number }
+export interface ProfileFilter extends Filter { kinds?: number[]; authors?: string[]; '#p'?: string[]; limit?: number }
+export interface ProfileQueryOptions { relays?: readonly string[]; signal?: AbortSignal; WebSocketImpl?: typeof WebSocket; runtime?: PublicEventRuntime; now?: () => number; timeoutMs?: number }
 export interface ProfileQueryResult { events: NostrEvent[]; completed: number; limited: boolean; partial: boolean }
 export interface CurationOptions extends ProfileQueryOptions { contextPubkey?: string; targetAuthors?: string[]; bootstrapLoader?: typeof loadGraphBootstrap }
 export interface PublicProfile { pubkey: string; eventId?: string; createdAt?: number; name: string; about: string; pictureUrl: string | null; website: string | null; nip05: string; metadataFound: boolean }
@@ -101,11 +103,12 @@ function matches(event: NostrEvent, filter: ProfileFilter) {
 }
 
 /** Bounded anonymous reads only. EOSE starts a short reply grace, not proof of global completeness. */
-export function queryProfileRecords(filters: ProfileFilter[], { relays = DEFAULT_RELAYS, signal, WebSocketImpl = globalThis.WebSocket, now = seconds, timeoutMs = PROFILE_LIMITS.timeoutMs }: ProfileQueryOptions = {}): Promise<ProfileQueryResult> {
+export function queryProfileRecords(filters: ProfileFilter[], { relays = DEFAULT_RELAYS, signal, WebSocketImpl, runtime, now = seconds, timeoutMs = PROFILE_LIMITS.timeoutMs }: ProfileQueryOptions = {}): Promise<ProfileQueryResult> {
   const servers = validateRelays(relays)
-  if (!servers.length || typeof WebSocketImpl !== 'function') return Promise.reject(new Error('Profile servers are unavailable'))
+  if (!servers.length || (WebSocketImpl !== undefined && typeof WebSocketImpl !== 'function')) return Promise.reject(new Error('Profile servers are unavailable'))
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 10000) return Promise.reject(new Error('Invalid profile lookup timeout'))
   if (signal?.aborted) return Promise.reject(abortError())
+  if (WebSocketImpl === undefined || runtime) return queryWorkerProfileRecords(filters, runtime ?? getPublicRuntime(servers), { signal, now, timeoutMs })
   return new Promise<ProfileQueryResult>((resolve, reject) => {
     const connections: ProfileConnection[] = [], winners = new Map<string, NostrEvent>()
     let finished = false, pending = servers.length, completed = 0, bytes = 0, events = 0, limited = false, graceTimer = null
@@ -165,6 +168,21 @@ export function queryProfileRecords(filters: ProfileFilter[], { relays = DEFAULT
       socket.onerror = socket.onclose = () => settle(connection, false)
     }
   })
+}
+
+async function queryWorkerProfileRecords(filters:ProfileFilter[], runtime:PublicEventRuntime, {signal,now,timeoutMs}:ProfileQueryOptions):Promise<ProfileQueryResult> {
+  const response=await runtime.query(filters,{signal,deadline:Date.now()+timeoutMs,limit:PROFILE_LIMITS.queryEvents});
+  const winners=new Map<string,NostrEvent>();let size=0,limited=response.events.length>PROFILE_LIMITS.queryEvents;
+  for(const raw of response.events.slice(0,PROFILE_LIMITS.queryEvents)) {
+    size+=encoder.encode(JSON.stringify(raw)).length;
+    if(size>PROFILE_LIMITS.queryBytes){limited=true;break;}
+    try{const event=verifyProfileRecord(raw,{now:now()});if(!filters.some(filter=>matches(event,filter)))continue;
+      const coordinate=`${event.kind}:${event.pubkey}`;if(newer(event,winners.get(coordinate)))winners.set(coordinate,event);
+    }catch{/* Invalid records cannot replace a verified profile. */}
+  }
+  const completed=response.sources.filter(source=>source.complete).length;
+  if(!completed&&!winners.size&&!limited)throw new Error('Could not load public profile records');
+  return{events:[...winners.values()],completed,limited,partial:true};
 }
 
 function fallback(pubkey: string): PublicProfile {
@@ -238,13 +256,13 @@ function relevantFollowLists(direct, targetAuthors, graph) {
   return [...direct].sort((a, b) => (scores.get(b) || 0) - (scores.get(a) || 0) || a.localeCompare(b)).slice(0, PROFILE_LIMITS.secondHop)
 }
 
-export async function loadCurationContext({ relays = DEFAULT_RELAYS, contextPubkey = DEFAULT_SOCIAL_GRAPH_ROOT, signal, WebSocketImpl = globalThis.WebSocket, now = seconds, timeoutMs, targetAuthors = [], bootstrapLoader = loadGraphBootstrap }: CurationOptions = {}): Promise<CurationContext> {
+export async function loadCurationContext({ relays = DEFAULT_RELAYS, contextPubkey = DEFAULT_SOCIAL_GRAPH_ROOT, signal, WebSocketImpl, runtime, now = seconds, timeoutMs, targetAuthors = [], bootstrapLoader = loadGraphBootstrap }: CurationOptions = {}): Promise<CurationContext> {
   const root = normalizePublicKey(contextPubkey), store = storeFor(relays)
   const targets = [...new Set((Array.isArray(targetAuthors) ? targetAuthors : []).filter(isKey))].sort().slice(0, 128)
   const cacheKey = JSON.stringify([root, targets]), cached = store.contexts.get(cacheKey)
   if (signal?.aborted) throw abortError()
   if (cached && now() - cached.loadedAt < 120) return cached.result
-  const options = { relays, signal, WebSocketImpl, now, timeoutMs }
+  const options = { relays, signal, WebSocketImpl, runtime, now, timeoutMs }
   const warnings: string[] = [], selected = new Map<string, FollowRecord>()
   const bootstrapTask = root === DEFAULT_SOCIAL_GRAPH_ROOT ? bootstrapLoader({ root, signal }).catch(error => ({ error })) : Promise.resolve(null)
   let completed = 0
@@ -355,4 +373,36 @@ export async function loadProfileMetadata(pubkeys: string[], options: ProfileQue
     ingest(store, response.events, now())
   }
   return keys.map(key => person(store, key))
+}
+
+/** Keep receiving verified metadata when shared cache writes outlast historical EOSE. */
+export function watchProfileMetadata(pubkeys: string[], { relays = DEFAULT_RELAYS, runtime = getPublicRuntime(relays), signal, now = seconds,
+  lifetimeMs = 90000, onChange = () => {}, onClose = () => {} }: {
+  relays?: readonly string[]; runtime?: PublicEventRuntime; signal?: AbortSignal; now?: () => number; lifetimeMs?: number;
+  onChange?: (profile: PublicProfile) => void; onClose?: () => void;
+} = {}) {
+  const keys = new Set(pubkeys.map(normalizePublicKey).slice(0, PROFILE_LIMITS.metadata)), store = storeFor(relays)
+  if (!Number.isInteger(lifetimeMs) || lifetimeMs < 1 || lifetimeMs > 90000) throw new Error('Invalid metadata subscription lifetime')
+  let stopped = false, frames = 0, bytes = 0, subscription: ReturnType<PublicEventRuntime['subscribe']> | undefined
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const close = () => { if (stopped) return; stopped = true; clearTimeout(timer); signal?.removeEventListener('abort', close); subscription?.close(); onClose() }
+  if (signal?.aborted || !keys.size) { close(); return { close } }
+  signal?.addEventListener('abort', close, { once: true }); timer = setTimeout(close, lifetimeMs)
+  subscription = runtime.subscribe([{ kinds: [0], authors: [...keys], limit: keys.size * 2 }], {
+    onEvent(raw) {
+      if (stopped) return
+      if (++frames > PROFILE_LIMITS.queryEvents) { close(); return }
+      bytes += encoder.encode(JSON.stringify(raw)).length
+      if (bytes > PROFILE_LIMITS.queryBytes) { close(); return }
+      try {
+        const event = verifyProfileRecord(raw, { now: now() })
+        if (event.kind !== 0 || !keys.has(event.pubkey) || !newer(event, store.profiles.get(event.pubkey)?.event)) return
+        ingest(store, [event], now()); onChange(person(store, event.pubkey))
+      } catch { /* Untrusted metadata never replaces the signed winner. */ }
+    },
+    // Historical completion is not the end of a live subscription. In
+    // particular, delayed admission must still reach rows already on screen.
+  })
+  if (stopped) subscription.close()
+  return { close }
 }

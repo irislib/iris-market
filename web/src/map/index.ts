@@ -69,8 +69,8 @@ export function mapViewport(map: maplibre.Map): MapViewport | null {
 }
 
 /** One hit test covers both the cluster label and circle without duplicate actions. */
-export function createListingInteractions(map, { getListings, onSelect, onError = () => {}, createPopup = () => new maplibre.Popup({ className: 'market-map-popup', maxWidth: '300px', focusAfterOpen: true }), document: doc = globalThis.document }: ListingInteractionOptions = {}) {
-  let destroyed = false, revision = 0, popup
+export function createListingInteractions(map, { getListings, onSelect, onError = () => {}, createPopup = () => new maplibre.Popup({ className: 'market-map-popup', maxWidth: '300px', focusAfterOpen: true, closeOnClick: false, closeButton: false }), document: doc = globalThis.document }: ListingInteractionOptions = {}) {
+  let destroyed = false, revision = 0, popup, popupContent:HTMLElement|undefined
   let hovered: string | number | undefined
   const canvas = map.getCanvas()
   const previousLabel = canvas.getAttribute('aria-label')
@@ -83,13 +83,13 @@ export function createListingInteractions(map, { getListings, onSelect, onError 
     const ids = new Set(features.map(feature => feature.properties?.id))
     return getListings().filter(listing => ids.has(listing.id))
   }
-  const close = () => { popup?.remove(); popup = undefined }
+  const close = (restoreFocus=false) => { const opened=!!popup;popup?.remove();popup=undefined;popupContent=undefined;if(opened&&restoreFocus)canvas.focus({preventScroll:true}) }
   function choose(listings, coordinates) {
     if (destroyed || !listings.length) return
     close()
-    if (listings.length === 1) { onSelect(listings[0]); return }
     const content = doc.createElement('section'), heading = doc.createElement('h3'), choices = doc.createElement('div')
-    heading.textContent = `${listings.length} listings`
+    content.setAttribute('role','dialog');content.setAttribute('aria-label','Choose a listing')
+    heading.textContent = `${listings.length} ${listings.length===1?'listing':'listings'}`
     choices.className = 'market-map-choices'
     choices.setAttribute('aria-label', 'Choose a listing')
     for (const listing of listings) {
@@ -98,14 +98,16 @@ export function createListingInteractions(map, { getListings, onSelect, onError 
       button.onclick = () => { close(); onSelect(listing) }
       choices.append(button)
     }
-    content.append(heading, choices)
-    content.addEventListener('keydown', event => { if (event.key === 'Escape') { event.stopPropagation(); close(); canvas.focus() } })
+    const dismiss=doc.createElement('button')
+    dismiss.type='button';dismiss.className='maplibregl-popup-close-button';dismiss.textContent='×';dismiss.setAttribute('aria-label','Close listing choices');dismiss.onclick=()=>close(true)
+    content.append(heading, choices, dismiss);popupContent=content
+    content.addEventListener('keydown', event => { if (event.key === 'Escape') { event.stopPropagation(); close(true) } })
     popup = createPopup().setLngLat(coordinates).setDOMContent(content).addTo(map);
     (choices.firstElementChild as HTMLElement)?.focus({ preventScroll: true })
   }
   async function activate(event) {
     const ticket = ++revision, features = hits(event.point)
-    if (!features.length) return
+    if (!features.length) { close();return }
     const cluster = features.find(feature => feature.properties?.cluster_id !== undefined)
     if (!cluster) { choose(resolve(features), features[0].geometry.coordinates); return }
     const source = map.getSource('market-listings'), id = cluster.properties.cluster_id
@@ -147,13 +149,19 @@ export function createListingInteractions(map, { getListings, onSelect, onError 
     const listings = getListings().filter(listing => listing.coordinates && bounds.contains(listing.coordinates)).slice(0, 1000)
     choose(listings, map.getCenter())
   }
+  const inside=target=>!!target&&!!popupContent?.contains(target)
+  const outside=event=>{if(!inside(event.target)){revision++;close()}}
+  const focusOutside=event=>{if(popup&&!inside(event.target))close()}
+  const escape=event=>{if(popup&&event.key==='Escape'){event.preventDefault();event.stopPropagation();revision++;close(true)}}
   map.on('click', click); map.on('mousemove', move); map.on('style.load', leave); map.on('movestart', leave)
   canvas.addEventListener('mouseleave', leave); canvas.addEventListener('keydown', keydown)
+  doc.addEventListener('pointerdown',outside);doc.addEventListener('focusin',focusOutside);doc.addEventListener('keydown',escape)
   return {
     invalidate() { revision++; close(); leave() },
     destroy() {
       destroyed = true; revision++; close(); leave(); map.off('click', click); map.off('mousemove', move); map.off('style.load', leave); map.off('movestart', leave)
       canvas.removeEventListener('mouseleave', leave); canvas.removeEventListener('keydown', keydown); canvas.style.cursor = ''
+      doc.removeEventListener('pointerdown',outside);doc.removeEventListener('focusin',focusOutside);doc.removeEventListener('keydown',escape)
       if (previousLabel === null) canvas.removeAttribute('aria-label'); else canvas.setAttribute('aria-label', previousLabel)
     },
   }

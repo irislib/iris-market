@@ -7,6 +7,7 @@ class Element {
   append(...children){for(const child of children){child.parent=this;this.children.push(child);}}
   replaceChildren(...children){this.children=[];this.append(...children);}
   setAttribute(name,value){this.attributes.set(name,String(value));}
+  querySelectorAll(selector){return this.children.flatMap(child=>[...(selector==='[data-person-relationship]'&&'personRelationship'in child.dataset?[child]:[]),...child.querySelectorAll(selector)]);}
   remove(){if(this.parent)this.parent.children=this.parent.children.filter(child=>child!==this);}
   click(){return this.onclick?.();}
   focus(){this.focused=true;}
@@ -26,6 +27,7 @@ const {setupProfiles}=await import('../src/profile-ui.ts');
 const {cacheProfileMetadata}=await import('../src/profiles.ts');
 const {setupPeople}=await import('../src/people.ts');
 const {profileURL}=await import('../src/routes.ts');
+const {buildReviewDraft}=await import('../src/reviews.ts');
 const relays=['wss://profile.test.invalid'];
 setupPeople({getRelays:()=>relays,isPreview:()=>true});
 const secrets=[new Uint8Array(32).fill(1),new Uint8Array(32).fill(2)],keys=secrets.map(getPublicKey);
@@ -76,4 +78,17 @@ test('profile defaults to listings and owns their lifetime across connection tab
   await profiles.open(keys[1],{navigate:false});assert.equal(selected().textContent,'Listings');
   assert.deepEqual(stopped,[keys[0],keys[0]]);assert.equal(started.at(-1),keys[1]);
   profiles.close();assert.deepEqual(stopped,[keys[0],keys[0],keys[1]]);profiles.destroy();assert.equal(stopped.length,3);
+});
+
+test('review summary opens a secondary tab and account refresh preserves the selected listings host',async()=>{
+  const page=new Element('main'),started=[],stopped=[];
+  const review=finalizeEvent(buildReviewDraft({target:keys[0],author:keys[1],rating:4,body:'Good communication.'}),secrets[1]);
+  let pending=[review];
+  const profiles=setupProfiles({page,getRelays:()=>relays,isPreview:()=>true,getReviewAccount:()=>({owner:keys[1],canSign:true,pending}),renderListings(key,host){
+    started.push(key);host.append(new Element('article'));return()=>stopped.push(key);
+  }});
+  await profiles.open(keys[0],{navigate:false});assert.equal(all(page).find(node=>node.attributes.get('aria-selected')==='true').textContent,'Listings');
+  const host=all(page).find(node=>node.className==='profile-listings');profiles.refreshReviews();assert.equal(started.length,1);assert.equal(stopped.length,0);assert.equal(all(page).find(node=>node.className==='profile-listings'),host);
+  find(page,'★ 4.0 · 1 review').click();assert.equal(stopped.length,1);assert(find(page,'Good communication.'));assert.equal(all(page).find(node=>node.attributes.get('aria-selected')==='true').textContent,'Reviews');
+  find(page,'Listings').click();assert.equal(started.length,2);profiles.close();assert.equal(stopped.length,2);profiles.destroy();
 });

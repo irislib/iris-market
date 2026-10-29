@@ -145,6 +145,9 @@ test('actual NDR runtimes exchange buyer/seller/courier orders privately; locati
  await sellerApp.updateOrder(requested.id,{shipment:{stops:[{id:'pick',label:'Pickup',address:'Private address',courierPubkey:courierOwner}]}});
  await waitFor(()=>courierApp.state().orders.length===1&&buyerApp.state().orders[0].shipment.stops.length===1);
  await courierApp.updateOrder(requested.id,{stopId:'pick',status:'arrived'});await waitFor(()=>buyerApp.state().orders[0].shipment.stops[0].status==='arrived');
+ // Order state commits before its ordinary chat projection; wait for the
+ // arrival message before measuring whether the later location adds a row.
+ await waitFor(()=>buyerApp.state().conversations.some(chat=>chat.messages.some(message=>message.orderId===requested.id&&message.text==='Delivery stop arrived for Bicycle.')));
  const before=buyerApp.state().conversations.reduce((sum,chat)=>sum+chat.messages.length,0);
  await courierApp.updateOrder(requested.id,{location:{stopId:'pick',coordinates:[24.1234,60.2345]}});await waitFor(()=>buyerApp.state().orders[0].shipment.location);
  assert.equal(buyerApp.state().conversations.reduce((sum,chat)=>sum+chat.messages.length,0),before);

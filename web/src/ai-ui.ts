@@ -7,7 +7,7 @@ const $=byId;
 const keyFor = listing => listing.eventId || listing.id;
 export const AI_MODE_STORAGE_KEY='market-ai-mode-v1',AI_MODEL_STORAGE_KEY='market-ai-model-v1';
 interface SearchListing {id:string;eventId?:string;title:string;description?:string;side?:string;category?:string;location?:string;tags?:string[];price?:string|number;currency?:string}
-interface AIOptions {getCandidates:()=>SearchListing[];onChange:()=>void;onTextSearch?:(query:string)=>void;fetchMoreCandidates?:()=>Promise<boolean>;client?:Pick<FeedFilterClient,'info'|'load'|'classify'|'dispose'>;browserClient?:BrowserFeedFilterClient;hasWebGPU?:()=>boolean;autoPrepare?:boolean;storage?:Pick<Storage,'getItem'|'setItem'>;saveData?:()=>boolean}
+interface AIOptions {getCandidates:()=>SearchListing[];onChange:()=>void;onTextSearch?:(query:string)=>void;fetchMoreCandidates?:()=>Promise<boolean>;client?:Pick<FeedFilterClient,'info'|'load'|'classify'|'dispose'>&{pin?:()=>()=>void};browserClient?:BrowserFeedFilterClient;hasWebGPU?:()=>boolean;autoPrepare?:boolean;storage?:Pick<Storage,'getItem'|'setItem'>;saveData?:()=>boolean}
 interface SourceRequest {epoch:number;done:boolean;more?:boolean;error?:unknown}
 export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandidates, client = new FeedFilterClient(), browserClient=new BrowserFeedFilterClient(),hasWebGPU=()=>!!globalThis.navigator&&'gpu' in globalThis.navigator,autoPrepare=true,storage:providedStorage,saveData=()=>!!(globalThis.navigator as Navigator&{connection?:{saveData?:boolean}})?.connection?.saveData }:AIOptions) {
   let scores = new Map(), showAll = false, phase:'idle'|'loading'|'searching'='idle', generation = 0, submittedQuery='', paused=false;
@@ -20,6 +20,10 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
   const setEnabled=(active:boolean)=>{$('search-mode').value=active?'ai':'text';$('search-mode').setAttribute('aria-pressed',String(active));};
   if(preference==='on'||preference==='off')setEnabled(preference==='on');
   if(preferredModel==='deberta')$('ai-model').value='deberta';
+  let browserOption:HTMLOptionElement|undefined;
+  if(preferredModel==='browser'){
+    browserOption=element('option','Browser model · checking availability');browserOption.value='browser';$('ai-model').append(browserOption);$('ai-model').value='browser';$('ai-model').closest?.('label')?.removeAttribute('hidden');
+  }
   let targetMatches=24,sourceExhausted=false;
   let sourceEpoch=0,sourceRequest:SourceRequest|null=null,wakeCandidates:(()=>void)|null=null;
   const progress=element('progress');progress.id='ai-download-progress';progress.max=1;progress.hidden=true;progress.setAttribute('aria-label','Model download');
@@ -107,13 +111,14 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
     if(needsCPU()){$('ai-model').value='deberta';stop();return;}
     const current = ++generation;
     const selected=runtime();
+    const releaseModel='pin' in selected&&typeof selected.pin==='function'?selected.pin():()=>{};
     wakeCandidates?.();
     paused=false;
     if(!continuation){sourceEpoch++;submittedQuery=$('search').value.trim();scores.clear();showAll=false;sourceExhausted=false;targetMatches=24;}
     else targetMatches=matchCount()+24;
     $('ai-error').textContent='';
     phase=selected.info?'searching':'loading';onChange();
-    if(selected.info&&!submittedQuery){phase='idle';refresh();return;}
+    if(selected.info&&!submittedQuery){phase='idle';refresh();releaseModel();return;}
     try {
       if (!selected.info) {
         phase='loading';progress.removeAttribute('value');$('ai-progress').textContent='Loading model…';refresh();
@@ -160,7 +165,7 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
       }
     } catch (error) {
       if (current === generation) { paused=true;selected.dispose(); $('ai-error').textContent = `${error.message || 'Search failed'}. Show all listings or switch to Text to continue browsing.`; }
-    } finally { if (current === generation) { phase='idle';$('ai-progress').textContent='';refresh();onChange(); } }
+    } finally { releaseModel();if (current === generation) { phase='idle';$('ai-progress').textContent='';refresh();onChange(); } }
   }
   $('search-mode').onclick = () => {
     const active=!enabled();preference=active?'on':'off';writeSetting(AI_MODE_STORAGE_KEY,preference);setEnabled(active);
@@ -186,9 +191,10 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
   window.addEventListener('pagehide', () => {closed=true;generation++;sourceEpoch++;prepareGeneration++;wakeCandidates?.();client.dispose();browserClient.dispose();});
   const ready=Promise.resolve().then(async()=>{
     const available=await browserClient.probe();if(closed)return;
-    if(available!=='unavailable'){
-      const option=element('option','Browser model · on device');option.value='browser';$('ai-model').append(option);$('ai-model').closest?.('label')?.removeAttribute('hidden');
+    if(available!=='unavailable'||preferredModel==='browser'||browserOption){
+      const option=browserOption??element('option');option.textContent=available==='unavailable'?'Browser model · unavailable':'Browser model · on device';option.value='browser';if(!browserOption){$('ai-model').append(option);browserOption=option;}$('ai-model').closest?.('label')?.removeAttribute('hidden');
       if(preferredModel==='browser')$('ai-model').value='browser';
+      if(preferredModel==='browser'&&available==='unavailable')$('ai-error').textContent='Browser AI is unavailable here. Reload to retry or choose DeBERTa.';
     }
     if(!autoPrepare||preference==='off'||phase!=='idle'||preferredModel==='browser'&&available==='unavailable')return;
     if(!runtime().info&&(saveData()||$('ai-model').value==='browser'&&available!=='available'))return;

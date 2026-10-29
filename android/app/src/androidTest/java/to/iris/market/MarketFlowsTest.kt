@@ -20,6 +20,9 @@ class MarketFlowsTest {
         val intent = Intent(ApplicationProvider.getApplicationContext(), MainActivity::class.java)
             .putExtra("demo", true).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         activity = ActivityScenario.launch(intent)
+        compose.waitUntil(15_000) { compose.onAllNodesWithContentDescription("Filters").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithContentDescription("Filters").performClick()
+        compose.onNodeWithText("Show all listings").performClick()
         compose.waitUntil(15_000) { compose.onAllNodesWithText("A little more green").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("Selling").assertIsSelected()
         compose.onNodeWithText("Everything").assertDoesNotExist()
@@ -121,10 +124,55 @@ class MarketFlowsTest {
         compose.onNodeWithText("Done").performClick()
         compose.onNodeWithContentDescription("AI search").performClick()
         compose.onNodeWithContentDescription("AI search").assertIsOn()
+        compose.onNodeWithTag("runAISearch").assertExists()
+        compose.onNodeWithContentDescription("Search with AI").assertExists()
         compose.onNode(hasSetTextAction()).assertExists()
         compose.onNodeWithContentDescription("Show map").assertIsNotEnabled()
         compose.onNodeWithContentDescription("AI search").performClick()
     }
+    @Test fun compactAISearchStaysInlineAndTextSearchWaitsForSubmit() {
+        val search = compose.onNode(hasSetTextAction())
+        search.performTextInput("no-such-preview-listing-783")
+        compose.onNodeWithText("A little more green").assertExists()
+        search.performImeAction()
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("No matches").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithContentDescription("Clear search").performClick()
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("A little more green").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithContentDescription("AI search").performClick()
+        val action = compose.onNodeWithTag("runAISearch")
+        action.assertExists()
+        compose.onNodeWithContentDescription("Search with AI").assertExists()
+        compose.waitForIdle()
+        val fieldBounds = search.fetchSemanticsNode().boundsInRoot
+        val actionBounds = action.fetchSemanticsNode().boundsInRoot
+        val toggleBounds = compose.onNodeWithContentDescription("AI search").fetchSemanticsNode().boundsInRoot
+        println("Compact search bounds: editable=$fieldBounds toggle=$toggleBounds action=$actionBounds")
+        capture("compact-ai-search-inline")
+        org.junit.Assert.assertTrue("Action must remain inside the search field", actionBounds.left >= fieldBounds.left && actionBounds.right <= fieldBounds.right)
+        org.junit.Assert.assertTrue("Action must share the search row", kotlin.math.abs(actionBounds.center.y - toggleBounds.center.y) < 1f)
+        org.junit.Assert.assertTrue("Action center must stay within the editable field", actionBounds.center.y >= fieldBounds.top && actionBounds.center.y <= fieldBounds.bottom)
+        compose.onNodeWithContentDescription("AI search").performClick()
+    }
+
+    @Test fun homePhotoDefaultKeepsSearchAndSavedWithoutPhotos() {
+        compose.onNodeWithContentDescription("Filters").performClick()
+        compose.onNodeWithText("Automatic").performClick()
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("A little more green").fetchSemanticsNodes().isEmpty() }
+        capture("home-photo-default-no-placeholder-tiles")
+        compose.onNode(hasSetTextAction()).performTextInput("green")
+        compose.onNode(hasSetTextAction()).performImeAction()
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("A little more green").fetchSemanticsNodes().isNotEmpty() }
+        if(compose.onAllNodesWithContentDescription("Unsave A little more green").fetchSemanticsNodes().isNotEmpty()) compose.onNodeWithContentDescription("Unsave A little more green").performClick()
+        compose.onNodeWithContentDescription("Save A little more green").performClick()
+        compose.onNodeWithContentDescription("Filters").performClick()
+        compose.onNodeWithText("Has photos").performClick()
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("A little more green").fetchSemanticsNodes().isEmpty() }
+        compose.onNodeWithText("Saved").performClick()
+        compose.onNodeWithText("A little more green").assertExists()
+        capture("saved-no-photo-remains-visible")
+        compose.onNodeWithContentDescription("Unsave A little more green").performClick()
+    }
+
     @Test fun freshProfileNameEntryDoesNotWaitForRelay() {
         assumeTrue(InstrumentationRegistry.getArguments().getString("freshProfile") == "1")
         activity.close()

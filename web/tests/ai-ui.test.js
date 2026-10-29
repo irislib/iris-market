@@ -319,3 +319,39 @@ test('relevance scores expose only current submitted query/model/revision decisi
   field('ai-model').onchange();assert.equal(ui.scoreFor(row),undefined);assert.equal(ui.query(),'');
   field('search-mode').onclick();assert.equal(ui.scoreFor(row),undefined);
 });
+
+
+test('submitted AI searches hold a model lease across source waits and release on completion, empty query and Stop',async()=>{
+  let pins=0,releases=0,fetches=0;const source=deferred();
+  const client={info:{model:'deberta'},pin(){pins++;let done=false;return()=>{if(!done){done=true;pins--;releases++;}};},async load(){this.info={model:'deberta'};},async classify(){return{score:.9,cached:true};},dispose(){this.info=null;}};
+  const {field,ui,setRows}=fixture({rows:[],query:'chair',client,fetchMoreCandidates:()=>{fetches++;return source.promise;}});
+  const run=field('search-run').onclick();await until(()=>fetches===1);assert.equal(pins,1);
+  setRows([{...bicycle,title:'Chair'}]);await until(()=>ui.pagination().matches===1);assert.equal(pins,1,'cache-hit work followed by a source wait remains pinned');
+  source.resolve(false);await run;assert.equal(pins,0);assert.equal(releases,1);
+  field('search').value='';await field('search-run').onclick();assert.equal(pins,0);assert.equal(releases,2,'the empty already-loaded path releases its lease');
+  const waiting=deferred();let stopped=false;const second=fixture({rows:[],query:'desk',client,fetchMoreCandidates:()=>waiting.promise});
+  const pending=second.field('search-run').onclick().then(()=>{stopped=true;});await until(()=>pins===1);
+  second.field('ai-stop').onclick();await until(()=>stopped);await pending;assert.equal(pins,0);assert.equal(client.info,null);assert.equal(releases,3);
+});
+
+test('a remembered Browser choice survives unavailable, missing and failed probes without silently loading DeBERTa',async()=>{
+  for(const getAPI of [()=>undefined,()=>({availability:async()=> 'unavailable',create:async()=>{throw Error('must not load');}}),()=>({availability:async()=>{throw Error('transient probe failure');},create:async()=>{throw Error('must not load');}})]) {
+    const storage=memoryStorage({[AI_MODE_STORAGE_KEY]:'on',[AI_MODEL_STORAGE_KEY]:'browser'});
+    const browserClient=new BrowserFeedFilterClient({getAPI});
+    const {ui,field,calls}=fixture({mode:'text',storage,browserClient,autoPrepare:true});
+    assert.equal(field('ai-model').value,'browser','restore before the asynchronous probe so an early Search cannot load another model');await ui.ready;
+    assert.equal(field('ai-model').value,'browser');assert.equal(storage.getItem(AI_MODEL_STORAGE_KEY),'browser');
+    assert.equal(ui.enabled(),true);assert.equal(calls.length,0,'no alternative model is prepared');
+    assert.match(field('ai-error').textContent,/Browser AI is unavailable.*Reload to retry/);
+    assert.equal(field('ai-model').children.some(option=>option.value==='browser'&&/unavailable/.test(option.textContent)),true);
+    await field('search-run').onclick();assert.equal(calls.length,0,'an explicit search still cannot silently choose DeBERTa');
+    ui.stop();
+  }
+});
+
+test('an unavailable remembered Browser choice preserves explicit Off',async()=>{
+  const storage=memoryStorage({[AI_MODE_STORAGE_KEY]:'off',[AI_MODEL_STORAGE_KEY]:'browser'});
+  const {ui,field,calls}=fixture({mode:'ai',storage,browserClient:new BrowserFeedFilterClient({getAPI:()=>undefined}),autoPrepare:true});await ui.ready;
+  assert.equal(ui.enabled(),false);assert.equal(field('ai-model').value,'browser');assert.equal(calls.length,0);
+  assert.equal(storage.getItem(AI_MODE_STORAGE_KEY),'off');
+});

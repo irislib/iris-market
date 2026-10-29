@@ -77,6 +77,7 @@ fun MarketAppView(model: MarketModel, appearance: Appearance, changeAppearance: 
     var profileAuthor by remember { mutableStateOf<String?>(null) }
     var posting by remember { mutableStateOf(false) }
     var settings by remember { mutableStateOf(false) }
+    var photoFilter by remember { mutableStateOf<Boolean?>(null) }
     if(state.profileNameRequired && !state.demo) {
         var profileName by remember(state.publicKey) { mutableStateOf("") }
         Column(Modifier.fillMaxSize().padding(28.dp),verticalArrangement=Arrangement.Center) {
@@ -127,7 +128,7 @@ fun MarketAppView(model: MarketModel, appearance: Appearance, changeAppearance: 
                 }
             }
             when (tab) {
-                0 -> BrowseView(state, model, busy, selected = { selected = it }, settings = { settings = true })
+                0 -> BrowseView(state, model, busy, selected = { selected = it }, settings = { settings = true }, photoFilter=photoFilter, changePhotoFilter={photoFilter=it})
                 1 -> SavedView(state, model, selected = { selected = it })
                 2 -> InboxView(state, model, busy, openOrder = { orderId = it })
                 3 -> OrdersView(state, openOrder = { orderId = it })

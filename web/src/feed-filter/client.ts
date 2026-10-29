@@ -6,6 +6,7 @@ import {DecisionCache,decisionCacheKey} from './decision-cache.ts'
  * License: ./LICENSE. Explicit loading, bounded caching, and cancellation for Iris Market. */
 import { FEED_MODELS, FILTER_VERSION, MAX_LISTING_LENGTH, validateModel, validateInput } from './models.ts'
 export { FEED_MODELS, DEFAULT_FEED_MODEL } from './models.ts'
+export const FEED_FILTER_IDLE_MS = 15 * 60 * 1000
 
 export class FeedFilterClient {
   Worker: typeof Worker
@@ -19,19 +20,40 @@ export class FeedFilterClient {
   queue: Promise<unknown>
   queued: number
   idleTimer: ReturnType<typeof setTimeout> | null
+  private pins = 0
   constructor({ WorkerImpl = globalThis.Worker, workerUrl = assetUrl('feed-filter.worker.js'), decisionCache=new DecisionCache() } = {}) {
     this.Worker = WorkerImpl; this.workerUrl = workerUrl
     this.worker = null; this.info = null; this.serial = 0; this.generation = 0
     this.pending = new Map(); this.cache = decisionCache; this.queue = Promise.resolve(); this.queued = 0; this.idleTimer = null
   }
+  /** A submitted search owns its model across cache hits and relay-page waits. */
+  pin(): () => void {
+    const generation = this.generation
+    this.pins++; clearTimeout(this.idleTimer); this.idleTimer = null
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      if (generation !== this.generation) return
+      this.pins--; this.scheduleIdle()
+    }
+  }
+  private scheduleIdle() {
+    clearTimeout(this.idleTimer); this.idleTimer = null
+    if (this.worker && !this.pins && !this.pending.size && !this.queued) {
+      const generation = this.generation
+      this.idleTimer = setTimeout(() => { if (generation === this.generation) this.dispose() }, FEED_FILTER_IDLE_MS)
+    }
+  }
   exclusive<T>(run: () => Promise<T>): Promise<T> {
     if (this.queued >= 64) return Promise.reject(new Error('Too many listings are waiting for local filtering.'))
     const generation = this.generation
+    clearTimeout(this.idleTimer); this.idleTimer = null
     this.queued++
     const result = this.queue.then(() => {
       if (generation !== this.generation) throw new Error('Local filter stopped.')
       return run()
-    }).finally(() => { this.queued-- })
+    }).finally(() => { this.queued--; this.scheduleIdle() })
     this.queue = result.catch(() => {})
     return result
   }
@@ -51,7 +73,7 @@ export class FeedFilterClient {
         if (data.error) { this.dispose(String(data.error)); return }
         clearTimeout(pending.timer); pending.unlisten(); this.pending.delete(data.id)
         pending.resolve(data.result)
-        this.idleTimer = setTimeout(() => this.dispose(), 120000)
+        this.scheduleIdle()
       }
       worker.onerror = () => this.dispose('Could not start the local model. Try another model or browser.')
       worker.onmessageerror = () => this.dispose('The local model returned an unreadable response.')
@@ -101,6 +123,7 @@ export class FeedFilterClient {
   }
   dispose(message = 'Local filter stopped.') {
     this.generation++
+    this.pins = 0
     clearTimeout(this.idleTimer); this.idleTimer = null
     if (this.worker) {
       this.worker.onmessage = this.worker.onerror = this.worker.onmessageerror = null

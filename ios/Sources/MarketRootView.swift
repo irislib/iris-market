@@ -7,6 +7,7 @@ struct MarketRootView: View {
     @State private var tab = MarketTab.browse
     @State private var compose = false
     @State private var selected: MarketListing?
+    @State private var photoFilter: Bool?
     enum MarketTab: String, CaseIterable {
         case browse = "Explore", saved = "Saved", orders = "Orders", inbox = "Inbox", profile = "Profile"
         var symbol: String { switch self { case .browse: return "square.grid.2x2.fill"; case .saved: return "heart.fill"; case .orders: return "shippingbox.fill"; case .inbox: return "bubble.left.and.bubble.right.fill"; case .profile: return "person.crop.circle.fill" } }
@@ -26,7 +27,7 @@ struct MarketRootView: View {
             }.padding(.horizontal, 23).padding(.top, 10).padding(.bottom, 16)
             Group {
                 switch tab {
-                case .browse: BrowseView(selected: $selected)
+                case .browse: BrowseView(selected: $selected, photoFilter: $photoFilter)
                 case .saved: SavedView(selected: $selected)
                 case .orders: OrdersView()
                 case .inbox: InboxView()
@@ -71,10 +72,16 @@ struct BrowseView: View {
     @State private var aiSearch = false
     @State private var showMap = false
     @State private var aiSettings = false
+    @Binding var photoFilter: Bool?
     private let columns = [GridItem(.flexible(), spacing: 14), GridItem(.flexible(), spacing: 14)]
     private var curationActive: Bool { store.snapshot.aiSearch && store.snapshot.settings.ai.enabled && store.snapshot.error == nil }
     private var hiddenCount: Int { curationActive ? store.snapshot.listings.filter { $0.relevance?.show == false }.count : 0 }
-    private var visibleListings: [MarketListing] { curationActive && !showAllMatches ? store.snapshot.listings.filter { $0.relevance?.show != false } : store.snapshot.listings }
+    private var wantsPhotos: Bool { NativePhotoFilter.wantsPhotos(choice: photoFilter, query: store.snapshot.query, side: store.snapshot.side, map: showMap) }
+    private var visibleListings: [MarketListing] {
+        store.snapshot.listings.filter { listing in
+            (!curationActive || showAllMatches || listing.relevance?.show != false) && NativePhotoFilter.includes(imageURL: listing.imageUrl, choice: photoFilter, query: store.snapshot.query, side: store.snapshot.side, map: showMap)
+        }
+    }
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
@@ -86,24 +93,32 @@ struct BrowseView: View {
                         Image(systemName: "sparkles").foregroundStyle(aiSearch ? MarketTheme.green : MarketTheme.muted)
                     }.accessibilityLabel("AI search").accessibilityValue(aiSearch ? "On" : "Off").accessibilityIdentifier("aiSearchToggle")
                     if !query.isEmpty { Button { query = ""; store.filter(query: "", side: side) } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(MarketTheme.muted) }.accessibilityLabel("Clear search") }
+                    if aiSearch {
+                        Button {
+                            if store.snapshot.settings.ai.enabled { submitSearch() } else { aiSettings = true }
+                        } label: {
+                            ZStack {
+                                if store.busy || store.localAIProgress != nil { ProgressView().controlSize(.small) }
+                                else { Image(systemName: "arrow.up.circle.fill").font(.system(size: 24)).foregroundStyle(MarketTheme.green) }
+                            }.frame(width: 36, height: 40)
+                        }.disabled(store.busy || store.localAIProgress != nil || (store.demo && store.snapshot.settings.ai.provider != "apple") || (store.snapshot.settings.ai.enabled && query.trimmingCharacters(in: .whitespaces).isEmpty))
+                            .accessibilityLabel("Search with AI").accessibilityHint(store.snapshot.settings.ai.enabled ? "" : "Choose an AI model")
+                            .accessibilityIdentifier("runAISearch")
+                    }
                 }.padding(.horizontal, 16).frame(height: 51).background(MarketTheme.surface.opacity(0.82), in: RoundedRectangle(cornerRadius: 16)).overlay(RoundedRectangle(cornerRadius: 16).stroke(MarketTheme.line, lineWidth: 1))
                 HStack(spacing: 8) {
                     filterChip("Selling", value: "offer", symbol: "tag.fill")
                     filterChip("Buying", value: "request", symbol: "hand.wave.fill")
-                }
-                if aiSearch {
-                    HStack {
-                        Text("AI search").font(.caption).foregroundStyle(MarketTheme.muted)
-                        Spacer()
-                        Button(store.snapshot.settings.ai.enabled ? "Search" : "Choose model") {
-                            if store.snapshot.settings.ai.enabled { submitSearch() } else { aiSettings = true }
-                        }.font(.system(size: 13, weight: .semibold)).disabled(store.busy || store.localAIProgress != nil || (store.demo && store.snapshot.settings.ai.provider != "apple") || (store.snapshot.settings.ai.enabled && query.trimmingCharacters(in: .whitespaces).isEmpty)).accessibilityIdentifier("runAISearch")
-                        if store.busy { ProgressView() }
-                    }
+                    Spacer()
+                    Menu {
+                        Button { photoFilter = true } label: { Label("Has photos", systemImage: wantsPhotos ? "checkmark" : "photo") }.accessibilityIdentifier("hasPhotosFilter")
+                        Button("Show all listings") { photoFilter = false }.accessibilityIdentifier("allPhotosFilter")
+                        Button("Automatic") { photoFilter = nil }.accessibilityIdentifier("automaticPhotoFilter")
+                    } label: { Image(systemName: "line.3.horizontal.decrease.circle.fill").font(.system(size: 21)).foregroundStyle(MarketTheme.muted).frame(width: 40, height: 40) }
+                        .accessibilityLabel("Filters").accessibilityValue(wantsPhotos ? "Has photos" : "All listings").accessibilityIdentifier("listingFilters")
                 }
                 if let progress = store.localAIProgress {
                     HStack {
-                        ProgressView().controlSize(.small)
                         Text(progress).font(.caption).foregroundStyle(MarketTheme.muted)
                         Spacer()
                         Button("Cancel") { store.cancelLocalAI() }.font(.caption)

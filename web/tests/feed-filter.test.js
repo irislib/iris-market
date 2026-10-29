@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { FeedFilterClient, FEED_MODELS, DEFAULT_FEED_MODEL } from '../src/feed-filter/client.ts'
+import { FeedFilterClient, FEED_MODELS, DEFAULT_FEED_MODEL, FEED_FILTER_IDLE_MS } from '../src/feed-filter/client.ts'
 import { validateModel } from '../src/feed-filter/models.ts'
 import {DecisionCache} from '../src/feed-filter/decision-cache.ts'
 
@@ -122,6 +122,43 @@ test('timeout, cancellation and idle release terminate the worker', async t => {
   const controller = new AbortController()
   pending = client.classify('chair', 'two', { signal: controller.signal }); await tick()
   controller.abort(); await assert.rejects(pending, /cancelled/); assert(worker.terminated)
-  worker = await load(client); t.mock.timers.tick(120000); assert(worker.terminated)
+  worker = await load(client); t.mock.timers.tick(120000); assert.equal(worker.terminated,false); t.mock.timers.tick(FEED_FILTER_IDLE_MS-120000); assert(worker.terminated)
   assert.equal(client.info, null)
 })
+
+
+test('an active search pins the model through long source waits and cache-hit work',async t=>{
+  t.mock.timers.enable({apis:['setTimeout']});
+  const client=make(),release=client.pin(),worker=await load(client);
+  try {
+    const first=client.classify('chair','oak chair');await tick();worker.respond({score:.9});await first;
+    t.mock.timers.tick(FEED_FILTER_IDLE_MS*2);assert.equal(worker.terminated,false,'relay-page waits retain the active model');
+    assert.equal((await client.classify('chair','oak chair')).cached,true);
+    assert.equal(worker.messages.length,2,'cached work sends no inference');
+    t.mock.timers.tick(FEED_FILTER_IDLE_MS*2);assert.equal(worker.terminated,false);
+    release();release();t.mock.timers.tick(FEED_FILTER_IDLE_MS-1);assert.equal(worker.terminated,false);
+    t.mock.timers.tick(1);assert.equal(worker.terminated,true);assert.equal(client.info,null);
+  }finally{client.dispose();}
+});
+
+test('unpinned cache hits refresh the idle deadline',async t=>{
+  t.mock.timers.enable({apis:['setTimeout']});const client=make(),worker=await load(client);
+  try {
+    const first=client.classify('chair','oak chair');await tick();worker.respond({score:.9});await first;
+    t.mock.timers.tick(FEED_FILTER_IDLE_MS-1000);
+    assert.equal((await client.classify('chair','oak chair')).cached,true);
+    t.mock.timers.tick(1000);assert.equal(worker.terminated,false);
+    t.mock.timers.tick(FEED_FILTER_IDLE_MS-1000);assert.equal(worker.terminated,true);
+  }finally{client.dispose();}
+});
+
+test('Stop disposes a pinned model immediately and old releases cannot unpin its replacement',async t=>{
+  t.mock.timers.enable({apis:['setTimeout']});const client=make(),oldRelease=client.pin(),old=await load(client);
+  const pending=client.classify('chair','work in flight');await tick();client.dispose();
+  await assert.rejects(pending,/stopped/);assert.equal(old.terminated,true);
+  const release=client.pin(),worker=await load(client);
+  try {
+    oldRelease();t.mock.timers.tick(FEED_FILTER_IDLE_MS*2);assert.equal(worker.terminated,false);
+    release();t.mock.timers.tick(FEED_FILTER_IDLE_MS);assert.equal(worker.terminated,true);
+  }finally{client.dispose();}
+});

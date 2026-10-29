@@ -10,6 +10,10 @@ final class MarketUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Listings"].waitForExistence(timeout: 20))
         XCTAssertTrue(app.buttons["filterSelling"].isSelected)
         XCTAssertFalse(app.buttons["filterAll"].exists)
+        // Offline preview fixtures intentionally have no photographs.
+        app.buttons["listingFilters"].tap()
+        app.buttons["allPhotosFilter"].tap()
+        XCTAssertTrue(app.buttons.matching(identifier: "listingOpen").firstMatch.waitForExistence(timeout: 5))
     }
     private func capture(_ name: String) {
         let image = XCTAttachment(screenshot: app.screenshot())
@@ -128,14 +132,50 @@ final class MarketUITests: XCTestCase {
         XCTAssertEqual(ai.value as? String, "On")
         XCTAssertTrue(app.textFields["marketSearch"].exists)
         let searchAction = app.buttons["runAISearch"]
-        if searchAction.label == "Choose model" {
-            XCTAssertTrue(searchAction.isEnabled)
-        } else {
-            XCTAssertEqual(searchAction.label, "Search")
-            XCTAssertFalse(searchAction.isEnabled)
-        }
+        XCTAssertTrue(searchAction.exists)
+        XCTAssertEqual(searchAction.label, "Search with AI")
+        XCTAssertLessThan(abs(searchAction.frame.midY - app.textFields["marketSearch"].frame.midY), 12)
         capture("16-shared-search")
         ai.tap()
+    }
+
+    func testCompactAISearchStaysInlineAndTextSearchWaitsForSubmit() throws {
+        let search = app.textFields["marketSearch"]
+        search.tap(); search.typeText("no-such-preview-listing-783")
+        XCTAssertFalse(app.staticTexts["No results"].exists)
+        search.typeText("\n")
+        XCTAssertTrue(app.staticTexts["No results"].waitForExistence(timeout: 5))
+        app.buttons["Clear search"].tap()
+        XCTAssertTrue(app.buttons.matching(identifier: "listingOpen").firstMatch.waitForExistence(timeout: 5))
+        app.buttons["aiSearchToggle"].tap()
+        let action = app.buttons["runAISearch"]
+        XCTAssertTrue(action.waitForExistence(timeout: 5))
+        XCTAssertEqual(action.label, "Search with AI")
+        XCTAssertGreaterThan(action.frame.width, 0)
+        XCTAssertGreaterThanOrEqual(action.frame.minX, 0)
+        XCTAssertLessThanOrEqual(action.frame.maxX, app.frame.width)
+        XCTAssertLessThan(abs(action.frame.midY - search.frame.midY), 12)
+        capture("compact-ai-search-inline")
+        app.buttons["aiSearchToggle"].tap()
+    }
+
+    func testHomePhotosDefaultDoesNotHideSearchOrSavedListings() throws {
+        app.buttons["listingFilters"].tap(); app.buttons["automaticPhotoFilter"].tap()
+        XCTAssertTrue(app.staticTexts["No listings"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons.matching(identifier: "listingOpen").firstMatch.exists)
+        capture("home-photo-default-no-placeholder-tiles")
+        let search = app.textFields["marketSearch"]
+        search.tap(); search.typeText("green\n")
+        XCTAssertTrue(app.staticTexts["A little more green"].waitForExistence(timeout: 5))
+        let unsave = app.buttons["Unsave A little more green"]
+        if unsave.exists { unsave.tap() }
+        app.buttons["Save A little more green"].tap()
+        app.buttons["listingFilters"].tap(); app.buttons["hasPhotosFilter"].tap()
+        XCTAssertTrue(app.staticTexts["No results"].waitForExistence(timeout: 5))
+        app.buttons["tabSaved"].tap()
+        XCTAssertTrue(app.staticTexts["A little more green"].waitForExistence(timeout: 5))
+        capture("saved-no-photo-remains-visible")
+        app.buttons["Unsave A little more green"].tap()
     }
 
     /// Opt-in integration against an isolated local relay; never uses public relay defaults.

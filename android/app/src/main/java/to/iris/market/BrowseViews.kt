@@ -19,6 +19,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -29,18 +30,22 @@ import kotlinx.coroutines.delay
 import org.json.JSONObject
 
 @Composable fun BrowseView(state: MarketSnapshot, model: MarketModel, busy: Boolean,
-    selected: (Listing) -> Unit, settings: () -> Unit) {
+    selected: (Listing) -> Unit, settings: () -> Unit, photoFilter: Boolean?, changePhotoFilter: (Boolean?) -> Unit) {
     var query by remember { mutableStateOf(state.query) }
     var showAll by remember { mutableStateOf(false) }
     var aiSearch by remember { mutableStateOf(state.aiSearch) }
     var showMap by remember { mutableStateOf(false) }
     var sortMenu by remember { mutableStateOf(false) }
+    var filtersMenu by remember { mutableStateOf(false) }
     val ai = remember(state.settings) { JSONObject(state.settings).optJSONObject("ai") }
     val localModel by model.localModelState.collectAsState()
     val localInference = localModel.phase in setOf(LocalModelPhase.VERIFYING, LocalModelPhase.LOADING, LocalModelPhase.REVIEWING)
     val canCurate = ai?.optBoolean("enabled") == true && state.aiSearch && state.error == null
     val hiddenCount = if (canCurate) state.listings.count { it.relevanceShow == false } else 0
-    val visibleListings = if (canCurate && !showAll) state.listings.filter { it.relevanceShow != false } else state.listings
+    val wantsPhotos = NativePhotoFilter.wantsPhotos(photoFilter,state.query,state.side,showMap)
+    val visibleListings = state.listings.filter { listing ->
+        (!canCurate || showAll || listing.relevanceShow != false) && NativePhotoFilter.includes(listing.imageUrl,photoFilter,state.query,state.side,showMap)
+    }
     LazyVerticalGrid(columns = GridCells.Fixed(2), horizontalArrangement = Arrangement.spacedBy(14.dp),
         verticalArrangement = Arrangement.spacedBy(18.dp), contentPadding = PaddingValues(start=22.dp,end=22.dp,bottom=90.dp)) {
         item(span = { GridItemSpan(maxLineSpan) }) {
@@ -61,19 +66,18 @@ import org.json.JSONObject
                 Spacer(Modifier.height(16.dp))
                 OutlinedTextField(value = query, onValueChange = { query = it }, placeholder = { Text("Search listings") },
                     leadingIcon = { Icon(Icons.Filled.Search, null, tint = Forest) },
-                    trailingIcon = { Row {
+                    trailingIcon = { Row(verticalAlignment = Alignment.CenterVertically) {
                         IconToggleButton(checked=aiSearch,onCheckedChange={aiSearch=it;showAll=false}) { Icon(Icons.Filled.AutoAwesome,"AI search",tint=if(aiSearch) Forest else Muted) }
-                        if(query.isNotBlank()) IconButton(onClick={query="";model.filter("",state.side)}) { Icon(Icons.Filled.Close,"Clear search") }
+                        if(query.isNotBlank()) IconButton(onClick={query="";model.filter("",state.side)},modifier=Modifier.size(36.dp)) { Icon(Icons.Filled.Close,"Clear search") }
+                        if(aiSearch) IconButton(enabled=!busy&&!localInference&&!state.demo&&(ai?.optBoolean("enabled")!=true||query.isNotBlank()),onClick={if(ai?.optBoolean("enabled")==true) model.searchAI(query,state.side) else settings()},modifier=Modifier.size(40.dp).testTag("runAISearch").semantics { contentDescription = "Search with AI" }) {
+                            if(busy||localInference) CircularProgressIndicator(Modifier.size(20.dp),strokeWidth=2.dp)
+                            else Icon(Icons.Filled.ArrowCircleUp,null,tint=Forest)
+                        }
                     } },
                     keyboardOptions=KeyboardOptions(imeAction=ImeAction.Search), keyboardActions=KeyboardActions(onSearch={if(aiSearch) model.searchAI(query,state.side) else model.filter(query,state.side)}),
                     singleLine = true, shape = RoundedCornerShape(18.dp), modifier = Modifier.fillMaxWidth(),
                     colors = OutlinedTextFieldDefaults.colors(unfocusedBorderColor = Line, focusedBorderColor = Forest,
                         unfocusedContainerColor = White, focusedContainerColor = White))
-                if(aiSearch) Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
-                    Text("AI search",Modifier.weight(1f),color=Muted,style=MaterialTheme.typography.labelSmall)
-                    if(busy&&!localInference) CircularProgressIndicator(Modifier.size(18.dp),strokeWidth=2.dp)
-                    TextButton(enabled=!busy&&!state.demo&&(ai?.optBoolean("enabled")!=true||query.isNotBlank()),onClick={if(ai?.optBoolean("enabled")==true) model.searchAI(query,state.side) else settings()}) { Text(if(ai?.optBoolean("enabled")==true) "Search" else "Choose model") }
-                }
                 if(localInference) Column(Modifier.fillMaxWidth()) {
                     if(localModel.phase==LocalModelPhase.REVIEWING && localModel.total>0) {
                         LinearProgressIndicator(progress={localModel.reviewed.toFloat()/localModel.total},modifier=Modifier.fillMaxWidth())
@@ -88,13 +92,22 @@ import org.json.JSONObject
                     }
                 }
                 Spacer(Modifier.height(14.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(Modifier.fillMaxWidth(),horizontalArrangement = Arrangement.spacedBy(8.dp),verticalAlignment=Alignment.CenterVertically) {
                     listOf("offer" to "Selling", "request" to "Buying").forEach { (value,label) ->
                         FilterChip(selected = state.side == value, onClick = { model.filter(state.query, value, state.aiSearch) }, label = { Text(label) },
                             leadingIcon = if (state.side == value) {{ Icon(Icons.Filled.Check, null, Modifier.size(16.dp)) }} else null,
                             shape = CircleShape, colors = FilterChipDefaults.filterChipColors(selectedContainerColor = Action,
                                 selectedLabelColor = OnInk, selectedLeadingIconColor = OnInk), border = FilterChipDefaults.filterChipBorder(
                                 enabled=true, selected=state.side==value, borderColor=Line, selectedBorderColor=Action))
+                    }
+                    Spacer(Modifier.weight(1f))
+                    Box {
+                        IconButton(onClick={filtersMenu=true}) { Icon(Icons.Filled.FilterAlt,"Filters",tint=Muted) }
+                        DropdownMenu(expanded=filtersMenu,onDismissRequest={filtersMenu=false}) {
+                            DropdownMenuItem(text={Text("Has photos")},leadingIcon={if(wantsPhotos) Icon(Icons.Filled.Check,null)},onClick={changePhotoFilter(true);filtersMenu=false})
+                            DropdownMenuItem(text={Text("Show all listings")},onClick={changePhotoFilter(false);filtersMenu=false})
+                            DropdownMenuItem(text={Text("Automatic")},onClick={changePhotoFilter(null);filtersMenu=false})
+                        }
                     }
                 }
                 if (hiddenCount > 0) Surface(color = Mint, shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth().padding(top = 5.dp)) {

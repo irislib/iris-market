@@ -22,6 +22,9 @@ struct ListingDetailView: View {
                     HStack { Text(current.side == "request" ? "BUYING" : current.category.uppercased()).font(.system(size: 10, weight: .bold)).tracking(1.5).foregroundStyle(MarketTheme.green); Spacer(); Text(current.delivery == "queued" ? "Waiting to send" : current.delivery == "failed" ? "Not sent" : "").font(.caption).foregroundStyle(MarketTheme.muted) }
                     Text(current.title).font(.system(size: 32, weight: .medium)).tracking(-0.7).foregroundStyle(MarketTheme.ink)
                     HStack { Text(current.formattedPrice).font(.system(size: 28, weight: .semibold)); Spacer(); Label(current.location.isEmpty ? "Anywhere" : current.location, systemImage: "mappin.circle.fill").font(.system(size: 13)).foregroundStyle(MarketTheme.muted) }.foregroundStyle(MarketTheme.ink)
+                    TimelineView(.periodic(from: .now, by: 60)) { context in
+                        Text(NativeListingExpiry.detail(deadline: current.expiresAt, now: Int64(context.date.timeIntervalSince1970))).font(.system(size: 13)).foregroundStyle(MarketTheme.muted).accessibilityIdentifier("listingExpiryDetail")
+                    }
                     Button { authorProfile = true } label: {
                         UserRow(person: store.snapshot.people[current.author] ?? .unnamed(current.author))
                     }.accessibilityIdentifier("listingAuthor")
@@ -67,6 +70,7 @@ struct NewListingView: View {
     @State private var location = ""
     @State private var category = "Other"
     @State private var imageURL = ""
+    @State private var expiry: NativeListingExpiry = .never
     @FocusState private var entryFocused: Bool
     private let categories = ["Electronics", "Home", "Clothing", "Books", "Transport", "Services", "Garden", "Music", "Other"]
     var body: some View {
@@ -80,6 +84,7 @@ struct NewListingView: View {
                 }
                 Section("Details") {
                     HStack { TextField("Price or budget", text: $price, prompt: Text("Price or budget").foregroundColor(MarketTheme.muted)).marketDecimalKeyboard().accessibilityIdentifier("listingPrice"); Picker("Currency", selection: $currency) { Text("EUR").tag("EUR"); Text("USD").tag("USD"); Text("GBP").tag("GBP"); Text("BTC").tag("BTC") }.labelsHidden().frame(width: 90) }
+                    Picker("Expires in", selection: $expiry) { ForEach(NativeListingExpiry.presets, id: \.self) { Text($0.label).tag($0) } }.accessibilityIdentifier("listingExpiry")
                     TextField("Town, area, or remote", text: $location, prompt: Text("Town, area, or remote").foregroundColor(MarketTheme.muted)).accessibilityIdentifier("listingLocation")
                     TextField("Photo URL (optional)", text: $imageURL, prompt: Text("Photo URL (optional)").foregroundColor(MarketTheme.muted)).marketNoAutocapitalization().autocorrectionDisabled().marketURLKeyboard()
                 }
@@ -102,6 +107,6 @@ struct NewListingView: View {
     }
     private func publish() {
         let draft: [String: Any] = ["title": title, "description": description, "side": side, "price": price, "currency": currency, "location": location, "category": category, "image_url": imageURL.isEmpty ? NSNull() : imageURL as Any]
-        store.command(["type": "publish", "draft": draft]) { if $0 { dismiss() } }
+        store.command(["type": "publish", "draft": draft], publishExpiry: expiry) { if $0 { dismiss() } }
     }
 }

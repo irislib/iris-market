@@ -32,7 +32,7 @@ data class Listing(
     val price: String, val currency: String, val location: String, val category: String,
     val imageUrl: String?, val saved: Boolean, val mine: Boolean, val status: String,
     val delivery: String, val relevance: String?, val relevanceShow: Boolean?, val coordinates: List<Double>? = null,
-    val serviceAreas: String? = null, val priceDisplay: PriceDisplay? = null
+    val serviceAreas: String? = null, val priceDisplay: PriceDisplay? = null, val expiresAt: Long? = null
 ) {
     val displayPrice: String get() {
         if (price.isBlank()) return "Let's talk"
@@ -57,7 +57,8 @@ data class Listing(
                 if (decision.has("show") && !decision.isNull("show")) decision.optBoolean("show") else null
             }, l.optJSONArray("coordinates")?.let { a -> if (a.length()==2) listOf(a.optDouble(0),a.optDouble(1)).takeIf { values -> values.all { it.isFinite() } } else null },
             l.optJSONObject("service_areas")?.toString()?.takeIf { it.toByteArray(Charsets.UTF_8).size <= 32832 },
-            l.optJSONObject("display_price")?.let { d -> PriceDisplay(d.optDouble("amount"),d.optString("currency"),d.optBoolean("approximate"),d.optBoolean("stale")) })
+            l.optJSONObject("display_price")?.let { d -> PriceDisplay(d.optDouble("amount"),d.optString("currency"),d.optBoolean("approximate"),d.optBoolean("stale")) },
+            if(l.has("expires_at")&&!l.isNull("expires_at")) l.getLong("expires_at") else null)
     }
 
 }
@@ -341,8 +342,9 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
     } }
     fun dismissNotice() { alert.value = null }
     fun command(request: JSONObject, onSuccess: (() -> Unit)? = null) = submit(request, onSuccess, null)
+    fun publishListing(draft: JSONObject, expiry: NativeListingExpiry, onSuccess: () -> Unit) = submit(JSONObject().put("type","publish").put("draft",JSONObject(draft.toString())), onSuccess, null, publishExpiry=expiry)
     fun orderCommand(request: JSONObject, onSuccess: () -> Unit = {}, onError: (String) -> Unit) = submit(request, onSuccess, onError)
-    private fun submit(request: JSONObject, onSuccess: (() -> Unit)?, onError: ((String) -> Unit)?, expectedAIIntent: Long? = null) {
+    private fun submit(request: JSONObject, onSuccess: (() -> Unit)?, onError: ((String) -> Unit)?, expectedAIIntent: Long? = null, publishExpiry: NativeListingExpiry? = null) {
         if (request.optString("type") in setOf("set_filter", "set_settings")) cancelLocalAI()
         val preferenceEpoch = if(request.optString("type")=="set_settings") expectedAIIntent ?: aiIntentEpoch else null
         viewModelScope.launch {
@@ -360,7 +362,11 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
                                 MarketSnapshot.parse(app.command(commit.toString()))
                             } ?: throw CancellationException("Superseded AI preference")
                             publishSnapshot(next)
-                        } else publishSnapshot(MarketSnapshot.parse(app.command(request.toString())))
+                        } else {
+                            val commit=JSONObject(request.toString())
+                            if(publishExpiry!=null && commit.optString("type")=="publish") commit.getJSONObject("draft").put("expires_at",publishExpiry.deadline(System.currentTimeMillis()/1000) ?: JSONObject.NULL)
+                            publishSnapshot(MarketSnapshot.parse(app.command(commit.toString())))
+                        }
                     }
                 }
                 onSuccess?.invoke()

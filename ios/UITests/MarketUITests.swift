@@ -21,6 +21,27 @@ final class MarketUITests: XCTestCase {
         image.lifetime = .keepAlways
         add(image)
     }
+    func testRelativeExpiryPresetsStayOptionalInComposer() {
+        app.buttons.matching(identifier: "listingOpen").firstMatch.tap()
+        XCTAssertTrue(app.staticTexts["listingExpiryDetail"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts["listingExpiryDetail"].label, "No expiry")
+        app.buttons["Done"].tap()
+        app.buttons["createListing"].tap()
+        XCTAssertTrue(app.textFields["listingTitle"].waitForExistence(timeout: 5))
+        let expiry = app.buttons["listingExpiry"]
+        for _ in 0..<3 where !expiry.isHittable { app.swipeUp() }
+        XCTAssertTrue(expiry.waitForExistence(timeout: 5))
+        XCTAssertTrue(expiry.label.contains("Never"))
+        expiry.tap()
+        app.buttons["1 week"].tap()
+        XCTAssertTrue(expiry.label.contains("1 week"))
+        capture("relative-expiry-week")
+        expiry.tap()
+        app.buttons["Never"].tap()
+        XCTAssertTrue(expiry.label.contains("Never"))
+        app.buttons["Cancel"].tap()
+    }
+
     func testPreviewBrowsingAndNativeFlows() throws {
         XCTAssertTrue(app.staticTexts["PREVIEW"].exists)
         let firstListing = app.buttons.matching(identifier: "listingOpen").firstMatch

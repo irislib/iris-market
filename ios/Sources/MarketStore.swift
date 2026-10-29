@@ -154,7 +154,7 @@ final class MarketStore: ObservableObject {
             } catch { Task { @MainActor in self?.alert = marketErrorMessage(error) } }
         }
     }
-    func command(_ value: [String: Any], expectedAIIntent: Int? = nil, urgentPreference: Bool = false, completion: ((Bool) -> Void)? = nil) {
+    func command(_ value: [String: Any], expectedAIIntent: Int? = nil, urgentPreference: Bool = false, publishExpiry: NativeListingExpiry? = nil, completion: ((Bool) -> Void)? = nil) {
         guard let app else { return }
         do {
             let request = String(decoding: try JSONSerialization.data(withJSONObject: value), as: UTF8.self)
@@ -167,6 +167,12 @@ final class MarketStore: ObservableObject {
             let commandQueue = urgentPreference ? aiPreferenceQueue : queue
             commandQueue.async { [weak self] in
                 do {
+                    let request: String = try {
+                        guard let publishExpiry, var publish = try JSONSerialization.jsonObject(with: Data(request.utf8)) as? [String: Any], publish["type"] as? String == "publish", var draft = publish["draft"] as? [String: Any] else { return request }
+                        draft["expires_at"] = publishExpiry.deadline(publishedAt: Int64(Date().timeIntervalSince1970)).map { $0 as Any } ?? NSNull()
+                        publish["draft"] = draft
+                        return String(decoding: try JSONSerialization.data(withJSONObject: publish), as: UTF8.self)
+                    }()
                     let response: String
                     if let epoch {
                         guard let result = try gate.perform(at: epoch, { () throws -> String in

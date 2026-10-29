@@ -35,6 +35,8 @@ import org.json.JSONObject
 }
 
 @Composable fun PostListing(state:MarketSnapshot,model:MarketModel,busy:Boolean,done:()->Unit) {
+    var expiry by remember { mutableStateOf(NativeListingExpiry.NEVER) }
+    var expiryOpen by remember { mutableStateOf(false) }
     var confirmPublish by remember { mutableStateOf(false) }
     var side by remember { mutableStateOf("offer") }
     var title by remember { mutableStateOf("") };var description by remember { mutableStateOf("") }
@@ -54,6 +56,14 @@ import org.json.JSONObject
         Row(horizontalArrangement=Arrangement.spacedBy(12.dp)) {
             Box(Modifier.weight(1f)) { MarketField(price,{price=it},if(side=="request") "Budget" else "Price",keyboard=KeyboardType.Decimal) }
             Box(Modifier.width(100.dp)) { MarketField(currency,{currency=it.uppercase().take(6)},"Currency") }
+        }
+        Box {
+            OutlinedButton(onClick={expiryOpen=true}, modifier=Modifier.fillMaxWidth().height(52.dp).testTag("listingExpiry"), shape=RoundedCornerShape(14.dp)) {
+                Text("Expires in"); Spacer(Modifier.weight(1f)); Text(expiry.label); Icon(Icons.Filled.ExpandMore,null)
+            }
+            DropdownMenu(expanded=expiryOpen,onDismissRequest={expiryOpen=false}) {
+                NativeListingExpiry.entries.forEach { choice -> DropdownMenuItem(text={Text(choice.label)},onClick={expiry=choice;expiryOpen=false}) }
+            }
         }
         MarketField(location,{location=it},"Location",hint="City or neighbourhood")
         Box {
@@ -83,7 +93,7 @@ import org.json.JSONObject
             val draft=JSONObject().put("title",title.trim()).put("description",description.trim()).put("side",side)
                 .put("price",price.trim()).put("currency",currency.trim()).put("location",location.trim())
                 .put("category",category).put("image_url",imageUrl.trim().ifBlank { null } ?: JSONObject.NULL)
-            model.command(JSONObject().put("type","publish").put("draft",draft),done)
+            model.publishListing(draft,expiry,done)
         }){Text("Publish")}})
 }
 

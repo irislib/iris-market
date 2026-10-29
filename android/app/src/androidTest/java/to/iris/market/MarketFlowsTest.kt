@@ -84,6 +84,21 @@ class MarketFlowsTest {
         compose.onNodeWithText("Archived").performScrollTo().performClick().assertIsSelected()
         compose.onNodeWithText("Nothing archived").assertIsDisplayed()
     }
+    @Test fun relativeExpiryPresetsStayOptionalInComposer() {
+        compose.onNodeWithText("A little more green").performClick()
+        compose.onNodeWithTag("listingExpiryDetail").performScrollTo().assertTextEquals("No expiry")
+        compose.onNode(SemanticsMatcher.keyIsDefined(SemanticsActions.Dismiss)).performSemanticsAction(SemanticsActions.Dismiss) { it() }
+        compose.waitUntil(5_000) { compose.onAllNodesWithTag("listingExpiryDetail").fetchSemanticsNodes().isEmpty() }
+        compose.onNodeWithContentDescription("Create listing").performClick()
+        compose.onNodeWithTag("listingExpiry").performScrollTo().assertTextContains("Never").performClick()
+        compose.onNodeWithText("1 week").performClick()
+        compose.onNodeWithTag("listingExpiry").assertTextContains("1 week")
+        capture("relative-expiry-week")
+        compose.onNodeWithTag("listingExpiry").performClick()
+        compose.onNodeWithText("Never").performClick()
+        compose.onNodeWithTag("listingExpiry").assertTextContains("Never")
+        compose.onNodeWithText("Publish listing").performScrollTo().assertIsNotEnabled()
+    }
     @Test fun creationIsExplicitlyDisabledInPreview() {
         compose.onNodeWithContentDescription("Create listing").performClick()
         compose.onNodeWithText("Title").performTextInput("My reading chair")

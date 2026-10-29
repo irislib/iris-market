@@ -15,7 +15,7 @@ A general marketplace for things, skills and opportunities. Native iOS, Android 
 - Relevance combines search matches, optional AI scores, social connections, freshness, saved categories and nearby listings when location is known. Social and Newest are separate sort choices. The unfiltered Selling feed starts with photos; Filters can include listings without them. Saved items remain in Browse.
 - Listing maps use the same pinned Hashtree basemap as Iris Maps, with a bounded public-data cache and markers from signed geohash tags.
 - The browser creator offers optional delivery destinations and a fixed delivery cost, plus Delivery / Passenger ride / Both for transport listings. Price can stay blank for negotiation; payment conditions remain in the description. Delivery options use the draft extension described below. Native delivery-option creation is pending.
-- Listing expiry is optional, with relative presets in the browser. The signed event retains an absolute deadline, and expired listings stay hidden. Native expiry controls are undergoing platform validation for the next build.
+- Listing expiry is optional, with relative presets in the browser. The signed event retains an absolute deadline, and expired listings stay hidden. Native expiry controls have passed iOS, macOS and Android build and focused UI checks; they are pending the next signed native release.
 - One search field for text or optional AI matching. Browser-local AI can prepare its local model automatically, with inline progress, cancellation and a Show all override. It is experimental; marketplace accuracy is not established.
 - Named CLI commands, a local JSON action interface and MCP stdio tools for search, publication, saved listings, contact, messages and private orders.
 

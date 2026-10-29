@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -208,6 +209,9 @@ import org.json.JSONObject
         if(listing.location.isNotBlank()) Row(Modifier.padding(top=12.dp),verticalAlignment=Alignment.CenterVertically) {
             Icon(Icons.Filled.LocationOn,null,Modifier.size(17.dp),tint=Muted);Spacer(Modifier.width(5.dp));Text(listing.location,color=Muted)
         }
+        var expiryNow by remember(listing.id) { mutableStateOf(System.currentTimeMillis()/1000) }
+        LaunchedEffect(listing.id) { while(true) { expiryNow=System.currentTimeMillis()/1000; kotlinx.coroutines.delay(60_000) } }
+        Text(NativeListingExpiry.detail(listing.expiresAt,expiryNow),color=Muted,style=MaterialTheme.typography.bodySmall,modifier=Modifier.testTag("listingExpiryDetail"))
         TextButton(onClick={openProfile(listing.author)},modifier=Modifier.fillMaxWidth().padding(top=12.dp).semantics { contentDescription = "View author" }) {
             UserRow(person ?: PublicPerson.unnamed(listing.author))
         }

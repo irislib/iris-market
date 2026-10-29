@@ -25,7 +25,12 @@ android {
     }
     buildTypes {
         debug { applicationIdSuffix = ".debug"; versionNameSuffix = "-dev" }
-        release { isMinifyEnabled = false; signingConfig = signingConfigs.getByName("release") }
+        release {
+            isMinifyEnabled = false
+            if (providers.environmentVariable("MARKET_ANDROID_UNSIGNED_RELEASE").orNull != "1") {
+                signingConfig = signingConfigs.getByName("release")
+            }
+        }
     }
     buildFeatures { compose = true; buildConfig = true }
     compileOptions {

@@ -16,6 +16,12 @@ sys.dont_write_bytecode = True
 SPEC = importlib.util.spec_from_file_location('alpha_release', Path(__file__).with_name('alpha-release.py'))
 release = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(release)
+def load(name, filename):
+    spec=importlib.util.spec_from_file_location(name,Path(__file__).with_name(filename))
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+    return module
+installer=load('release_inputs_test','release-build-inputs.py')
+signer=load('android_sign_test','android-sign.py')
 TAG, COMMIT, DIGEST = 'v0.1.0-alpha.1', 'a'*40, 'b'*64
 
 
@@ -112,6 +118,51 @@ class AlphaContract(unittest.TestCase):
         with patch.object(release, 'exact_source'), patch.object(release, 'git', return_value='c'*40):
             with self.assertRaises(ValueError): release.seal(args)
         self.assertFalse(manifest.exists())
+
+    def test_local_install_is_explicit_and_macos_only(self):
+        with patch.dict(os.environ,{},clear=True),patch.object(installer.platform,'system',return_value='Darwin'):
+            with self.assertRaises(ValueError):installer.installation_context()
+            self.assertEqual(installer.installation_context(True),'local-macos')
+        with patch.dict(os.environ,{},clear=True),patch.object(installer.platform,'system',return_value='Linux'):
+            with self.assertRaises(ValueError):installer.installation_context(True)
+        with patch.dict(os.environ,{'GITHUB_ACTIONS':'true','GITHUB_ENV':'/env','GITHUB_PATH':'/path'},clear=True):
+            self.assertEqual(installer.installation_context(),'github-actions')
+            with self.assertRaises(ValueError):installer.installation_context(True)
+
+    def test_native_tool_mutation_is_rejected(self):
+        prefix=self.root/'toolchain/bin';prefix.mkdir(parents=True)
+        for name in ('cargo','rustc','rustdoc'):(prefix/name).write_text('fixture')
+        tool=self.root/'native-cmake/bin/cmake';tool.parent.mkdir(parents=True);tool.write_text('verified fixture')
+        receipt={'host':'aarch64-apple-darwin','nativeTools':[{'name':'cmake-ios','binary':str(tool),'binarySHA256':release.sha256(tool)}]}
+        environment=release.verified_environment(self.root/'receipt.json',receipt,{'PATH':'/fixture'})
+        self.assertEqual(environment['CMAKE'],str(tool.resolve()))
+        tool.write_text('changed')
+        with self.assertRaises(ValueError):release.verified_environment(self.root/'receipt.json',receipt,{'PATH':'/fixture'})
+
+    def test_android_payload_proof_checks_bytes_metadata_and_names(self):
+        def apk(name,content=b'native code',mode=0o100755,signature=False):
+            path=self.root/name
+            with zipfile.ZipFile(path,'w') as archive:
+                archive.writestr('AndroidManifest.xml',b'fixture manifest')
+                info=zipfile.ZipInfo('lib/arm64-v8a/libiris_market_app.so');info.external_attr=mode<<16
+                archive.writestr(info,content)
+                if signature:archive.writestr('META-INF/CERT.RSA',b'fixture signature')
+            return path
+        unsigned=apk('unsigned.apk');signed=apk('signed.apk',signature=True)
+        self.assertEqual(signer.payload(unsigned),signer.payload(signed,True))
+        with self.assertRaises(ValueError):signer.payload(signed)
+        self.assertNotEqual(signer.payload(unsigned),signer.payload(apk('changed.apk',b'changed'),True))
+        self.assertNotEqual(signer.payload(unsigned),signer.payload(apk('mode.apk',mode=0o100644),True))
+        with zipfile.ZipFile(signed,'a') as archive:archive.writestr('../escaped',b'bad')
+        with self.assertRaises(ValueError):signer.payload(signed,True)
+
+    def test_unsigned_handoff_cannot_masquerade_as_release(self):
+        path=self.root/(release.asset_name(TAG,'android-arm64').removesuffix('.apk')+'.unsigned.apk')
+        path.write_bytes(b'fixture')
+        receipt={'asset':path.name,'tag':TAG,'sourceCommit':COMMIT,'platform':'android-arm64','signed':False,'readyForPublication':False,'sha256':release.sha256(path)}
+        signer.verify_handoff(receipt,path,TAG,COMMIT)
+        for changed in ({'signed':True},{'sourceCommit':'c'*40},{'readyForPublication':True},{'sha256':DIGEST}):
+            with self.assertRaises(ValueError):signer.verify_handoff(receipt|changed,path,TAG,COMMIT)
 
 
 if __name__ == '__main__': unittest.main()

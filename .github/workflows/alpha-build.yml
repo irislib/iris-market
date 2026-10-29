@@ -1,0 +1,142 @@
+name: Alpha build candidates
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: Full accepted source commit; must equal the dispatched workflow ref
+        required: true
+        type: string
+      tag:
+        description: Explicit vMAJOR.MINOR.PATCH-alpha.N identity
+        required: true
+        type: string
+      build_number:
+        description: Positive Apple/Android build number
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: market-alpha-${{ inputs.commit }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_COMMIT: ${{ inputs.commit }}
+  RELEASE_TAG: ${{ inputs.tag }}
+  RELEASE_BUILD_NUMBER: ${{ inputs.build_number }}
+  CARGO_BUILD_JOBS: '2'
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  cli:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: cli-linux-x64
+            target: x86_64-unknown-linux-gnu
+          - runner: windows-2025
+            platform: cli-windows-x64
+            target: x86_64-pc-windows-msvc
+          - runner: macos-15
+            platform: cli-macos-arm64
+            target: aarch64-apple-darwin
+          - runner: macos-15
+            platform: cli-macos-x64
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify immutable workflow and source identity
+        run: |
+          test "$RELEASE_COMMIT" = "$GITHUB_SHA"
+          python -c 'import importlib.util,os; s=importlib.util.spec_from_file_location("release","scripts/alpha-release.py"); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); m.exact_source(os.environ["RELEASE_TAG"],os.environ["RELEASE_COMMIT"])'
+      - name: Select existing Microsoft compiler
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$vs) { throw 'Installed MSVC tools are required' }
+          $vars = cmd /s /c "`"$vs\VC\Auxiliary\Build\vcvars64.bat`" >nul && set"
+          if ($LASTEXITCODE -ne 0) { throw 'MSVC environment initialization failed' }
+          $vars | Where-Object { $_ -match '^(PATH|INCLUDE|LIB|LIBPATH|VCToolsInstallDir|WindowsSdkDir)=' } | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Install checksum-verified Rust inputs
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+        run: |
+          args=()
+          if [[ "$RUNNER_OS" == 'Windows' ]]; then args=(--bash "$(cygpath -w "$BASH")"); fi
+          if [[ "$RUNNER_OS" == 'macOS' ]]; then args+=(--tools macos-cli); fi
+          python scripts/release-build-inputs.py --install --work "$RUNNER_TEMP/market-rust" --target "$RELEASE_TARGET" "${args[@]}"
+      - name: Build locked CLI candidate
+        env:
+          RELEASE_PLATFORM: ${{ matrix.platform }}
+        run: |
+          python scripts/alpha-release.py build-cli --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT" --platform "$RELEASE_PLATFORM" --inputs "$RUNNER_TEMP/market-rust/receipt.json" --output artifacts/alpha
+      - name: Attest exact candidate bytes
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: artifacts/alpha/*
+      - name: Retain candidates and input evidence
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: ${{ matrix.platform }}-${{ inputs.commit }}
+          path: |
+            artifacts/alpha/*
+            ${{ runner.temp }}/market-rust/receipt.json
+          if-no-files-found: error
+          retention-days: 14
+
+  android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify immutable workflow and source identity
+        run: |
+          test "$RELEASE_COMMIT" = "$GITHUB_SHA"
+          python3 -c 'import importlib.util,os; s=importlib.util.spec_from_file_location("release","scripts/alpha-release.py"); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); m.exact_source(os.environ["RELEASE_TAG"],os.environ["RELEASE_COMMIT"])'
+      - name: Install checksum-verified Rust inputs
+        run: python3 scripts/release-build-inputs.py --install --work "$RUNNER_TEMP/market-rust" --target aarch64-linux-android
+      - name: Install checksum-verified Android inputs
+        run: python3 scripts/android-release-inputs.py --install --work "$RUNNER_TEMP/market-android" --rust-work "$RUNNER_TEMP/market-rust"
+      - name: Build unsigned release payload and replay dependencies offline
+        run: |
+          python3 scripts/native-alpha.py --platform android-arm64 --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT" --build-number "$RELEASE_BUILD_NUMBER" --inputs "$RUNNER_TEMP/market-rust/receipt.json" --android-inputs "$RUNNER_TEMP/market-android/receipt.json" --output artifacts/alpha --unsigned-android --acquire-android-dependencies
+      - name: Attest unsigned payload and build receipt
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: |
+            artifacts/alpha/*.unsigned.apk
+            artifacts/alpha/*.build.json
+      - name: Retain unsigned handoff and input evidence
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: android-unsigned-${{ inputs.commit }}
+          path: |
+            artifacts/alpha/*.unsigned.apk
+            artifacts/alpha/*.build.json
+            ${{ runner.temp }}/market-rust/receipt.json
+            ${{ runner.temp }}/market-android/receipt.json
+          if-no-files-found: error
+          retention-days: 14

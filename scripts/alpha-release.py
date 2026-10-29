@@ -93,23 +93,32 @@ def verified_environment(inputs, receipt, previous=None):
         require(executable.is_file(), 'Verified toolchain executable is missing: ' + key)
         require(not environment.get(key) or Path(environment[key]).resolve() == executable.resolve(), 'Build environment differs from verified input: ' + key)
         environment[key] = str(executable)
-    environment['PATH'] = str(prefix / 'bin') + os.pathsep + environment.get('PATH', '')
+    paths = [str(prefix / 'bin')]
+    for tool in receipt.get('nativeTools', []):
+        binary = Path(tool['binary']).resolve()
+        require(binary.is_relative_to(Path(inputs).resolve().parent) and binary.is_file() and
+                tool.get('binarySHA256') == sha256(binary), 'Verified native tool has changed')
+        paths.append(str(binary.parent))
+        if tool['name'].startswith('cmake-'): environment['CMAKE'] = str(binary)
+    environment['PATH'] = os.pathsep.join(paths) + os.pathsep + environment.get('PATH', '')
     return environment
 
 
-def preflight(tag, commit, platform, inputs, build_number=None):
+def preflight(tag, commit, platform, inputs, build_number=None, unsigned_android=False):
     exact_source(tag, commit)
     receipt = read_json(inputs)
     check_inputs(receipt, commit, platform)
     if not platform.startswith('cli-'):
         require(isinstance(build_number, int) and 0 < build_number <= 2_100_000_000, 'Native builds require a positive monotonically increasing build number')
-    missing = [name for name in REQUIRED_ENV.get(platform, ()) if not os.environ.get(name)]
+    require(not unsigned_android or platform == 'android-arm64', 'Unsigned output is only supported for Android signing handoff')
+    missing = [name for name in (() if unsigned_android else REQUIRED_ENV.get(platform, ())) if not os.environ.get(name)]
     require(not missing, 'Missing signing configuration names: ' + ', '.join(missing))
     require((ROOT/'Cargo.lock').is_file(), 'Cargo.lock is required')
     if platform == 'android-arm64':
         for relative in ('android/app/gradle.lockfile', 'android/gradle/verification-metadata.xml'):
             require((ROOT/relative).is_file(), 'Missing reviewed Android lock/checksum input')
-        require(Path(os.environ['MARKET_ANDROID_KEYSTORE']).is_file(), 'Configured Android keystore is unavailable')
+        if not unsigned_android:
+            require(Path(os.environ['MARKET_ANDROID_KEYSTORE']).is_file(), 'Configured Android keystore is unavailable')
     return receipt
 
 
@@ -154,7 +163,10 @@ def build_cli(args):
         subprocess.run([str(binary), '--help'], cwd=ROOT, env=environment, check=True, stdout=subprocess.DEVNULL)
     package_cli(binary, artifact, args.tag, args.platform, int(git('show', '-s', '--format=%ct', args.commit)))
     exact_source(args.tag, args.commit)
-    print(json.dumps({'platform': args.platform, 'asset': artifact.name, 'sha256': sha256(artifact), 'sourceCommit': args.commit}))
+    build = {'platform': args.platform, 'asset': artifact.name, 'sha256': sha256(artifact), 'sourceCommit': args.commit,
+             'tag':args.tag, 'inputsSHA256':sha256(args.inputs), 'nativeHelpSmokePassed':target == receipt['host'], 'readyForPublication':False}
+    (output/(artifact.name+'.build.json')).write_text(json.dumps(build,indent=2)+'\n')
+    print(json.dumps(build))
 
 
 def asset_entries(directory, tag):

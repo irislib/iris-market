@@ -5,7 +5,8 @@
 Adapted from irislib/iris-chat-rs commit 7a8f6d53b273af98ce4451ab3b3b429f5fdfe6d6
 (MIT, Martti Malmi); originally from the NDR verified-component installer. Native OS/compiler and other
 build-tool assumptions are listed in release-build-inputs.json. --check is pure;
---install is restricted to hosted CI and requires a new, absolute work directory.
+--install requires hosted CI or explicit --local-macos, and a new absolute work
+directory. Local mode writes environment.json instead of changing the shell.
 """
 import argparse
 import hashlib
@@ -230,7 +231,7 @@ def install_native(pins, profile, host, work, env, receipt):
         if name == 'dotnet':
             exports.update({key:tool_env[key] for key in
                             ('DOTNET_ROOT', 'DOTNET_MULTILEVEL_LOOKUP', 'DOTNET_SKIP_FIRST_TIME_EXPERIENCE')})
-        receipt['nativeTools'].append({'name':name, 'input':pin, 'binary':str(binary), 'version':version})
+        receipt['nativeTools'].append({'name':name, 'input':pin, 'binary':str(binary), 'binarySHA256':digest(binary), 'version':version})
     return exports, paths
 
 
@@ -377,8 +378,19 @@ def validate_install(prefix, host, targets, components, env):
     return versions
 
 
-def install(pins, work, targets, components, bash=None, tools=None):
-    require(os.environ.get('GITHUB_ACTIONS') == 'true', 'installation is restricted to hosted CI')
+def installation_context(local_macos=False):
+    if local_macos:
+        require(platform.system() == 'Darwin' and os.environ.get('GITHUB_ACTIONS') != 'true',
+                '--local-macos requires a local macOS host')
+        return 'local-macos'
+    require(os.environ.get('GITHUB_ACTIONS') == 'true' and
+            all(os.environ.get(key) for key in ('GITHUB_ENV', 'GITHUB_PATH')),
+            'Use hosted CI or explicit --local-macos')
+    return 'github-actions'
+
+
+def install(pins, work, targets, components, bash=None, tools=None, local_macos=False):
+    context = installation_context(local_macos)
     host = host_target()
     targets, selected = selected_components(pins, host, targets, components)
     if tools:
@@ -397,6 +409,7 @@ def install(pins, work, targets, components, bash=None, tools=None):
                'sourceCommit':None, 'workflowCommit':os.environ.get('GITHUB_SHA'),
                'installerSHA256':digest(Path(__file__)), 'python':sys.version,
                'runnerImage':{key:os.environ.get(key) for key in ('ImageOS', 'ImageVersion')},
+               'executionContext':context, 'hostSystem':platform.platform(),
                'components':[], 'nativeTools':[], 'externalAssumptions':pins['external_assumptions']}
     try:
         receipt['sourceCommit'] = checkout_commit()
@@ -416,14 +429,18 @@ def install(pins, work, targets, components, bash=None, tools=None):
                                (ROOT/'Cargo.lock',)
                                if path.is_file()}
         # Publish paths only after the complete requested installation validates.
-        with open(os.environ['GITHUB_PATH'], 'a', encoding='utf-8') as stream:
-            # GitHub prepends these entries in reverse order in the next step.
-            stream.write('\n'.join([cargo_home_bin(env), *native_paths, str(prefix/'bin')])+'\n')
-        with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as stream:
-            for key in ('CARGO', 'RUSTC', 'RUSTDOC'):
-                stream.write(key+'='+env[key]+'\n')
-            for key, value in exports.items():
-                stream.write(key+'='+value+'\n')
+        values = {key:env[key] for key in ('CARGO', 'RUSTC', 'RUSTDOC')} | exports
+        if local_macos:
+            destination = work/'environment.json'
+            with destination.open('x') as stream:
+                json.dump({'variables':values, 'path':[str(prefix/'bin'), *native_paths]}, stream, indent=2)
+            destination.chmod(0o600)
+        else:
+            with open(os.environ['GITHUB_PATH'], 'a', encoding='utf-8') as stream:
+                # GitHub prepends these entries in reverse order in the next step.
+                stream.write('\n'.join([cargo_home_bin(env), *native_paths, str(prefix/'bin')])+'\n')
+            with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as stream:
+                for key, value in values.items(): stream.write(key+'='+value+'\n')
         receipt['passed'] = True
     finally:
         (work/'receipt.json').write_text(json.dumps(receipt, indent=2)+'\n')
@@ -440,12 +457,13 @@ def main():
     parser.add_argument('--work', type=Path)
     parser.add_argument('--bash', help='Exact Git Bash executable from the Windows workflow $BASH')
     parser.add_argument('--tools', choices=sorted(TOOL_PROFILES))
+    parser.add_argument('--local-macos', action='store_true', help='Explicit local Apple installation; never mutates global toolchains or CI state')
     args = parser.parse_args()
     pins = json.loads(PINS.read_text())
     check_pins(pins)
     if args.install:
         require(args.work is not None, '--work is required for installation')
-        install(pins, args.work, args.target, args.component, args.bash, args.tools)
+        install(pins, args.work, args.target, args.component, args.bash, args.tools, args.local_macos)
     else:
         print('Reviewed Rust 1.99.0 pins (four hosts, seven targets) and seven native tool archives.')
 

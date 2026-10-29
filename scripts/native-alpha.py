@@ -119,13 +119,23 @@ def build_android(args, stage, cache, environment):
     jni = stage/'jniLibs/arm64-v8a'; jni.mkdir(parents=True)
     shutil.copyfile(cache/'aarch64-linux-android/release/libiris_market_app.so', jni/'libiris_market_app.so')
     environment.update(MARKET_ANDROID_BINDINGS_DIR=str(stage/'Bindings'), MARKET_ANDROID_JNI_DIR=str(stage/'jniLibs'), MARKET_RELEASE_VERSION=args.tag[1:], MARKET_ANDROID_VERSION_CODE=str(args.build_number), ANDROID_HOME=str(sdk))
-    run([ROOT/'android/gradlew', '-p', ROOT/'android', '--offline', '--no-daemon', '--max-workers=2', '--dependency-verification', 'strict', ':app:assembleRelease'], environment)
-    apk = ROOT/'android/app/build/outputs/apk/release/app-release.apk'
-    release.require(apk.is_file(), 'Expected signed release APK')
+    if args.unsigned_android: environment['MARKET_ANDROID_UNSIGNED_RELEASE'] = '1'
+    else: environment.pop('MARKET_ANDROID_UNSIGNED_RELEASE', None)
+    gradle = [ROOT/'android/gradlew', '-p', ROOT/'android', '--no-daemon', '--max-workers=2', '--dependency-verification', 'strict', ':app:assembleRelease']
+    if args.acquire_android_dependencies: run(gradle, environment)
+    run([*gradle, '--offline'], environment)
+    apk = ROOT/'android/app/build/outputs/apk/release'/('app-release-unsigned.apk' if args.unsigned_android else 'app-release.apk')
+    release.require(apk.is_file(), 'Expected release APK')
     apksigner = sdk/'build-tools/36.0.0/apksigner'
     release.require(apksigner.is_file(), 'Reviewed Android build-tools36.0.0 are required for signature verification')
-    run([apksigner, 'verify', apk], environment)
-    shutil.copyfile(apk, args.output/release.asset_name(args.tag, args.platform))
+    if not args.unsigned_android: run([apksigner, 'verify', apk], environment)
+    run([sdk/'build-tools/36.0.0/zipalign', '-c', '-P', '16', '4', apk], environment)
+    shutil.copyfile(apk, args.output/artifact_name(args))
+
+
+def artifact_name(args):
+    name = release.asset_name(args.tag, args.platform)
+    return name.removesuffix('.apk')+'.unsigned.apk' if args.unsigned_android else name
 
 
 def main():
@@ -133,9 +143,12 @@ def main():
     parser.add_argument('--platform', choices=('ios-arm64','macos-arm64','android-arm64'), required=True)
     parser.add_argument('--tag', required=True); parser.add_argument('--commit', required=True); parser.add_argument('--build-number', type=int, required=True)
     parser.add_argument('--android-inputs', type=Path); parser.add_argument('--inputs', type=Path, required=True); parser.add_argument('--output', type=Path, required=True)
-    args = parser.parse_args(); inputs = release.preflight(args.tag, args.commit, args.platform, args.inputs, args.build_number)
+    parser.add_argument('--unsigned-android', action='store_true', help='Build an explicitly nonpublishable Android signing handoff')
+    parser.add_argument('--acquire-android-dependencies', action='store_true', help='Acquire strictly checksum-verified Gradle dependencies, then replay offline')
+    args = parser.parse_args(); inputs = release.preflight(args.tag, args.commit, args.platform, args.inputs, args.build_number, args.unsigned_android)
+    release.require(not args.acquire_android_dependencies or args.platform == 'android-arm64', 'Dependency acquisition only applies to Android')
     args.output = args.output.resolve(); args.output.mkdir(parents=True, exist_ok=True)
-    release.require(not (args.output/release.asset_name(args.tag,args.platform)).exists(), 'Never overwrite an existing release artifact')
+    release.require(not (args.output/artifact_name(args)).exists(), 'Never overwrite an existing release artifact')
     stage = args.output/(args.platform+'-staging'); stage.mkdir(mode=0o700, exist_ok=False)
     environment = release.verified_environment(args.inputs, inputs)
     if args.platform in ('ios-arm64', 'macos-arm64'):
@@ -146,8 +159,10 @@ def main():
     environment['CARGO_TARGET_DIR'] = str(cache)
     {'ios-arm64':build_ios,'macos-arm64':build_macos,'android-arm64':build_android}[args.platform](args,stage,cache,environment)
     release.exact_source(args.tag,args.commit)
-    artifact = args.output/release.asset_name(args.tag,args.platform)
-    print(json.dumps({'platform':args.platform,'asset':artifact.name,'sourceCommit':args.commit,'sha256':release.sha256(artifact),'readyForPublication':False}))
+    artifact = args.output/artifact_name(args)
+    receipt = {'platform':args.platform,'asset':artifact.name,'tag':args.tag,'sourceCommit':args.commit,'sha256':release.sha256(artifact),'readyForPublication':False,'signed':not args.unsigned_android,'buildNumber':args.build_number,'inputsSHA256':release.sha256(args.inputs)}
+    (args.output/(artifact.name+'.build.json')).write_text(json.dumps(receipt,indent=2)+'\n')
+    print(json.dumps(receipt))
 
 
 if __name__ == '__main__':

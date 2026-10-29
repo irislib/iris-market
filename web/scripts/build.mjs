@@ -80,7 +80,15 @@ for (const [name, source, entry] of [['web', root, 'src/app.ts'], ['site', resol
     const html=await readFile(resolve(source,'index.html'),'utf8');
     await writeFile(resolve(dest,'index.html'),html.replace('<!-- route-bootstrap -->',`<script>${script}</script>`));
   } else await copyFile(resolve(source, 'index.html'), resolve(dest, 'index.html'));
-  if (name === 'site') for (const file of ['app-light.png', 'app-dark.png']) await copyFile(resolve(source, file), resolve(dest, file));
+  if (name === 'site') {
+    for (const file of ['app-light.jpg', 'app-dark.jpg']) await copyFile(resolve(source, file), resolve(dest, file));
+    const html=await readFile(resolve(dest,'index.html'),'utf8');
+    for(const [,src] of html.matchAll(/<img\b[^>]*\bsrc=["']([^"']+)["']/g)) {
+      if (/^(?:https?:|data:)/.test(src)) continue;
+      const image=resolve(dest,src),path=relative(dest,image);
+      if(path.startsWith('..')||!(await stat(image)).isFile())throw new Error(`Download page image is missing: ${src}`);
+    }
+  }
   if (name === 'web') {
     await copyFile(resolve(root, 'profiles.css'), resolve(dest, 'profiles.css'));
     await copyFile(resolve(root, 'account.css'), resolve(dest, 'account.css'));

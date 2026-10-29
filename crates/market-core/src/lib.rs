@@ -45,6 +45,8 @@ pub(crate) struct State {
     sort: String,
     status: String,
     error: Option<String>,
+    ai_message: Option<String>,
+    ai_check: u64,
     revision: u64,
     messaging: Option<messaging::Messaging>,
     invite: Option<String>,
@@ -163,6 +165,7 @@ impl State {
             demo: self.demo,
             status: self.status.clone(),
             error: self.error.clone(),
+            ai_message: self.ai_message.clone(),
             query: self.query.clone(),
             side: self.side.clone(),
             ai_search: self.ai_search,
@@ -361,6 +364,8 @@ impl Market {
             }
             .into(),
             error: None,
+            ai_message: None,
+            ai_check: 0,
             revision: 0,
             messaging,
             invite: None,
@@ -623,6 +628,8 @@ impl Market {
                 rates::validate_currency(&settings.currency)?;
                 let changed_relays = s.settings.relays != settings.relays;
                 s.store.save_settings(&settings)?;
+                s.ai_message = None;
+                s.ai_check += 1;
                 s.ai_configured = true;
                 s.local_curation = None;
                 s.settings = settings;
@@ -913,15 +920,25 @@ impl Market {
     }
 
     fn curate(&self, key: &str, check: bool) -> Result<()> {
-        let (settings, original_settings, search, candidates) = {
+        let (settings, original_settings, search, candidates, ai_check) = {
             let mut s = self.state.lock().unwrap();
+            if check {
+                s.ai_message = None;
+                s.error = None;
+                s.ai_check += 1;
+                s.revision += 1;
+            }
             if s.demo {
                 bail!("Leave Preview to connect an AI provider");
             }
             if !check && (!s.ai_search || s.query.trim().is_empty()) {
                 bail!("Type what you are looking for in the search field");
             }
-            let listings = s.snapshot()?.listings;
+            let listings = if check {
+                Vec::new()
+            } else {
+                s.snapshot()?.listings
+            };
             let candidates = listings
                 .into_iter()
                 .filter(|l| l.relevance.is_none())
@@ -941,19 +958,35 @@ impl Market {
                 s.settings.ai.clone(),
                 (s.query.clone(), s.side.clone(), s.ai_search),
                 candidates,
+                s.ai_check,
             )
         };
         let runtime = self.runtime.lock().unwrap();
         let runtime = runtime.as_ref().context("App has closed")?;
         if check {
             let started = std::time::Instant::now();
-            runtime.block_on(ai::probe(&settings, key))?;
+            let result = runtime.block_on(ai::probe(&settings, key));
             let mut s = self.state.lock().unwrap();
-            if s.settings.ai != original_settings {
+            if s.settings.ai != original_settings || s.ai_check != ai_check {
                 return Ok(());
             }
-            s.status = format!("Model connected · {} ms", started.elapsed().as_millis());
-            s.error = None;
+            match result {
+                Ok(()) => {
+                    let message = format!("Model connected · {} ms", started.elapsed().as_millis());
+                    s.ai_message = Some(message.clone());
+                    s.status = message;
+                    s.error = None;
+                }
+                Err(_) => {
+                    // Provider responses and validation errors may contain user
+                    // input. Keep the durable UI result independent and generic.
+                    let message =
+                        "Connection test failed. Check the provider settings and try again."
+                            .to_owned();
+                    s.ai_message = Some(message.clone());
+                    s.error = Some(message);
+                }
+            }
             s.revision += 1;
             return Ok(());
         }

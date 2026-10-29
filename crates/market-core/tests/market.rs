@@ -571,3 +571,128 @@ fn display_currency_projects_browse_saved_and_author_without_mutating_signed_pri
     );
     app.shutdown();
 }
+
+#[test]
+fn connection_probe_has_dedicated_sanitized_result_and_clears_stale_messages() {
+    use std::sync::{Arc, mpsc};
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (started_tx, started_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let server = std::thread::spawn(move || {
+        for probe in 0..2 {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut bytes = Vec::new();
+            let mut buffer = [0; 2048];
+            let (offset, length) = loop {
+                let n = stream.read(&mut buffer).unwrap();
+                assert!(n > 0);
+                bytes.extend_from_slice(&buffer[..n]);
+                assert!(bytes.len() < 16384);
+                if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&bytes[..end]).to_lowercase();
+                    let length: usize = headers
+                        .lines()
+                        .find_map(|line| line.strip_prefix("content-length:"))
+                        .unwrap()
+                        .trim()
+                        .parse()
+                        .unwrap();
+                    break (end + 4, length);
+                }
+            };
+            while bytes.len() < offset + length {
+                let n = stream.read(&mut buffer).unwrap();
+                assert!(n > 0);
+                bytes.extend_from_slice(&buffer[..n]);
+            }
+            let body = String::from_utf8(bytes[offset..offset + length].to_vec()).unwrap();
+            assert!(body.contains("City bicycle"));
+            assert!(
+                !body.contains("private search fixture"),
+                "probe must use synthetic data"
+            );
+            let (status, response) = if probe == 0 {
+                (
+                    "200 OK",
+                    json!({"choices":[{"message":{"content":"{\"show\":true}"}}]}).to_string(),
+                )
+            } else {
+                started_tx.send(()).unwrap();
+                release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                (
+                    "401 Unauthorized",
+                    "provider echoed synthetic-secret-key and private provider error".into(),
+                )
+            };
+            write!(stream,"HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",response.len()).unwrap();
+        }
+    });
+    let dir = tempfile::tempdir().unwrap();
+    offline(dir.path());
+    let app = Arc::new(
+        Market::open(dir.path(), &iris_market_core::generate_secret_key(), false).unwrap(),
+    );
+    let mut settings = Settings {
+        relays: vec![],
+        ..Default::default()
+    };
+    settings.ai.model = "test-model".into();
+    settings.ai.base_url = format!("http://127.0.0.1:{port}/v1");
+    app.command(&json!({"type":"set_settings","settings":settings}).to_string())
+        .unwrap();
+    app.command(r#"{"type":"set_filter","query":"private search fixture","side":"all"}"#)
+        .unwrap();
+    let first: Value = serde_json::from_str(
+        &app.command(r#"{"type":"check_ai","api_key":"synthetic-secret-key"}"#)
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        first["ai_message"]
+            .as_str()
+            .unwrap()
+            .starts_with("Model connected · ")
+    );
+    assert!(first["ai_message"].as_str().unwrap().ends_with(" ms"));
+    let refreshed: Value =
+        serde_json::from_str(&app.command(r#"{"type":"refresh"}"#).unwrap()).unwrap();
+    assert_eq!(
+        refreshed["ai_message"], first["ai_message"],
+        "network status updates must not erase probe results"
+    );
+    let checking = app.clone();
+    let failed_probe = std::thread::spawn(move || {
+        checking
+            .command(r#"{"type":"check_ai","api_key":"synthetic-secret-key"}"#)
+            .unwrap()
+    });
+    started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    let pending: Value = serde_json::from_str(&app.snapshot().unwrap()).unwrap();
+    assert!(
+        pending["ai_message"].is_null(),
+        "a new check clears the previous result before sending"
+    );
+    release_tx.send(()).unwrap();
+    let failed = failed_probe.join().unwrap();
+    assert!(!failed.contains("synthetic-secret-key"));
+    assert!(!failed.contains("private provider error"));
+    let failed: Value = serde_json::from_str(&failed).unwrap();
+    assert_eq!(
+        failed["ai_message"],
+        "Connection test failed. Check the provider settings and try again."
+    );
+    assert_eq!(failed["error"], failed["ai_message"]);
+    settings.ai.base_url = "http://127.0.0.1:1/v1".into();
+    let changed: Value = serde_json::from_str(
+        &app.command(&json!({"type":"set_settings","settings":settings}).to_string())
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(changed["ai_message"].is_null());
+    server.join().unwrap();
+    app.shutdown();
+}

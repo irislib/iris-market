@@ -139,6 +139,7 @@ class SecureRecord(application: Application) {
         return JSONObject(String(cipher.doFinal(Base64.decode(envelope.getString("data"), Base64.NO_WRAP)), Charsets.UTF_8))
     }
     fun get(name: String): String = synchronized(recordLock) { read().optString(name) }
+    fun contains(name: String): Boolean = synchronized(recordLock) { read().has(name) }
     fun put(name: String, value: String) = synchronized(recordLock) {
         val values = read().put(name, value)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
@@ -216,13 +217,8 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
             val ai = JSONObject(state.value.settings).optJSONObject("ai") ?: JSONObject()
             val originalEndpoint = ai.optString("base_url")
             val originalProvider = ai.optString("provider", "compatible")
-            val legacy = secure.get("ai-$originalProvider")
-            val capture = "ai-legacy-endpoint-$originalProvider"
-            if (legacy.isNotBlank() && secure.get(capture).isBlank()) secure.put(capture, originalEndpoint)
-            if (legacy.isNotBlank() && secure.get(capture) == originalEndpoint && originalEndpoint.isNotBlank()) {
-                val slot = NativePreferences.keySlot(originalProvider, originalEndpoint)
-                if (secure.get(slot).isBlank()) secure.put(slot, legacy)
-            }
+            NativeKeyMigration.migrate(originalProvider, originalEndpoint,
+                { endpoint -> NativePreferences.keySlot(originalProvider, endpoint) }, secure::get, secure::contains, secure::put)
             val initialGeneration = accountGeneration
             viewModelScope.launch(Dispatchers.IO) {
                 val installed = localModel.verifyInstalled()
@@ -435,7 +431,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
     fun saveSettings(settings: JSONObject, provider: String, apiKey: String, replaceKey: Boolean, done: () -> Unit) {
         viewModelScope.launch {
             try {
-                if (replaceKey) withContext(Dispatchers.IO) { secure.put(NativePreferences.keySlot(provider, settings.getJSONObject("ai").optString("base_url")), apiKey) }
+                if (replaceKey) withContext(Dispatchers.IO) { NativeKeyMigration.replace(provider, NativePreferences.keySlot(provider, settings.getJSONObject("ai").optString("base_url")), apiKey, secure::put) }
                 command(JSONObject().put("type", "set_settings").put("settings", settings), done)
             } catch (_: Exception) { alert.value = "Could not securely save your provider key." }
         }

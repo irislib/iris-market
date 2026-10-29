@@ -53,10 +53,9 @@ struct AISettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @State var settings: MarketSettings
     @State private var apiKey = ""
-    @State private var replaceKey = false
+    @State private var saved = NativeAutosaveState<MarketSettings>()
     @State private var presetID = "custom"
     @State private var customModel = false
-    @State private var original: MarketSettings?
     @State private var initialized = false
     @State private var owner = ""
     @State private var autosave: Task<Void, Never>?
@@ -90,7 +89,7 @@ struct AISettingsView: View {
                         }
                         if customModel || preset.models.isEmpty { TextField("Model name", text: $settings.ai.model).marketNoAutocapitalization().autocorrectionDisabled() }
                         if settings.ai.provider != "ollama" {
-                            SecureField("API key", text: Binding(get: { apiKey }, set: { apiKey = $0; replaceKey = true; scheduleSave() })).marketNoAutocapitalization().autocorrectionDisabled()
+                            SecureField("API key", text: Binding(get: { apiKey }, set: { apiKey = $0; saved.keyChanged(); scheduleSave() })).marketNoAutocapitalization().autocorrectionDisabled()
                             if let value = preset.keyURL, let url = URL(string: value) { Link(presetID == "systemone" ? "Service details" : "Get an API key", destination: url) }
                         }
                         Text(settings.ai.provider == "ollama" ? "Sends your search and public listing text to your Ollama server. Install the selected model on that server first." : "Sends your search and public listing text to this provider.").font(.caption).foregroundStyle(MarketTheme.muted)
@@ -110,7 +109,7 @@ struct AISettingsView: View {
                     owner = store.snapshot.publicKey; store.aiPreferencesEditing = true
                     presetID = NativeAIProvider.matching(settings.ai).id
                     customModel = !preset.models.contains { $0.id == settings.ai.model }
-                    loadKey(); original = settings; initialized = true
+                    loadKey(); saved.reset(settings); initialized = true
                 }
                 .onChange(of: presetID) { value in
                     guard initialized, let choice = NativeAIProvider.presets.first(where: { $0.id == value }) else { return }
@@ -124,7 +123,7 @@ struct AISettingsView: View {
         }
     }
     private func loadKey() {
-        replaceKey = false
+        saved.keyLoaded()
         apiKey = store.demo ? "" : ((try? SecureStore.read(SecureStore.aiAccount(settings.ai))) ?? "")
     }
     private func scheduleSave() {
@@ -137,11 +136,12 @@ struct AISettingsView: View {
     private func save(completion: ((Bool) -> Void)? = nil) {
         autosave?.cancel()
         guard initialized, canSave, owner == store.snapshot.publicKey else { completion?(false); return }
-        guard settings != original || replaceKey else { completion?(true); return }
+        guard saved.needsSave(settings) else { completion?(true); return }
         settings.ai.interests = ""; settings.ai.curateFeed = false
-        let replacing = replaceKey; replaceKey = false
-        store.saveSettings(settings, key: apiKey, replaceKey: replacing) { success in
-            if success { original = settings }; completion?(success)
+        let submitted = saved.submit(settings)
+        store.saveSettings(submitted.value, key: apiKey, replaceKey: submitted.replaceKey) { success in
+            saved.complete(submitted, success: success)
+            completion?(success)
         }
     }
 }

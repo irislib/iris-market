@@ -161,6 +161,7 @@ pub struct Snapshot {
     pub demo: bool,
     pub status: String,
     pub error: Option<String>,
+    pub ai_message: Option<String>,
     pub query: String,
     pub side: String,
     pub ai_search: bool,

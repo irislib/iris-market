@@ -9,6 +9,7 @@ from pathlib import Path
 import sys
 import tarfile
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 import zipfile
@@ -72,6 +73,20 @@ class AlphaContract(unittest.TestCase):
         self.assertEqual(flags[-1], '--remap-path-prefix='+str(source.resolve())+'=/source/iris-market')
         self.assertIn('--remap-path-prefix='+str(home.resolve())+'=/build/home',flags)
         self.assertNotIn('RUSTFLAGS',result)
+
+    def test_macos_packages_signed_archive_product_not_build_product(self):
+        stage=self.root/'stage'; cache=self.root/'cache'
+        args=SimpleNamespace(platform='macos-arm64',tag=TAG,build_number=1,output=self.root)
+        environment={'MARKET_MACOS_SIGNING_IDENTITY':'synthetic identity','MARKET_APPLE_TEAM_ID':'synthetic team'}
+        with patch.object(native.sys,'platform','darwin'), patch.object(native,'bindings'), patch.object(native,'rust'), patch.object(native,'apple_project'), patch.object(native,'run') as run:
+            native.build_macos(args,stage,cache,environment)
+        commands=[call.args[0] for call in run.call_args_list]
+        archive=stage/'IrisMarket.xcarchive'
+        app=archive/'Products/Applications/IrisMarket.app'
+        self.assertEqual(commands[0][-1],'archive')
+        self.assertEqual(commands[0][commands[0].index('-archivePath')+1],archive)
+        self.assertEqual(commands[1],['codesign','--verify','--deep','--strict',app])
+        self.assertEqual(commands[2][-2],app)
 
     def test_native_reuse_verifies_every_payload_byte_and_executable_mode(self):
         destination=self.root/'native';destination.mkdir()

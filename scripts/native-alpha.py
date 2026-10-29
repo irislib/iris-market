@@ -135,8 +135,11 @@ def build_macos(args, stage, cache, environment):
     rust(environment, 'build', '--locked', '--release', '-p', 'iris-market-app', '--target', 'aarch64-apple-darwin')
     apple_project(stage, args.platform, environment)
     derived = Path(environment.get('MARKET_MACOS_RELEASE_DERIVED_DATA', ROOT/'macos/.build/ReleaseDerivedData'))
-    run(['xcodebuild', '-project', stage/'IrisMarketMac.xcodeproj', '-scheme', 'IrisMarketMac', '-configuration', 'Release', '-sdk', 'macosx', '-destination', 'generic/platform=macOS', '-derivedDataPath', derived, '-jobs', '2', 'ARCHS=arm64', 'ONLY_ACTIVE_ARCH=YES', 'CODE_SIGN_STYLE=Manual', 'CODE_SIGN_IDENTITY='+environment['MARKET_MACOS_SIGNING_IDENTITY'], 'DEVELOPMENT_TEAM='+environment['MARKET_APPLE_TEAM_ID'], 'ENABLE_HARDENED_RUNTIME=YES', 'MARKET_MACOS_STATIC_LIB='+str(cache/'aarch64-apple-darwin/release/libiris_market_app.a'), 'MARKETING_VERSION='+args.tag[1:].split('-')[0], 'CURRENT_PROJECT_VERSION='+str(args.build_number), 'build'], environment)
-    app = derived/'Build/Products/Release/IrisMarket.app'
+    archive = stage/'IrisMarket.xcarchive'
+    # Archive performs Xcode's normal install/strip/sign sequence. A plain build
+    # retains linker debug-map paths in the app even with release optimization.
+    run(['xcodebuild', '-project', stage/'IrisMarketMac.xcodeproj', '-scheme', 'IrisMarketMac', '-configuration', 'Release', '-sdk', 'macosx', '-destination', 'generic/platform=macOS', '-archivePath', archive, '-derivedDataPath', derived, '-jobs', '2', 'ARCHS=arm64', 'ONLY_ACTIVE_ARCH=YES', 'CODE_SIGN_STYLE=Manual', 'CODE_SIGN_IDENTITY='+environment['MARKET_MACOS_SIGNING_IDENTITY'], 'DEVELOPMENT_TEAM='+environment['MARKET_APPLE_TEAM_ID'], 'ENABLE_HARDENED_RUNTIME=YES', 'MARKET_MACOS_STATIC_LIB='+str(cache/'aarch64-apple-darwin/release/libiris_market_app.a'), 'MARKETING_VERSION='+args.tag[1:].split('-')[0], 'CURRENT_PROJECT_VERSION='+str(args.build_number), 'archive'], environment)
+    app = archive/'Products/Applications/IrisMarket.app'
     run(['codesign', '--verify', '--deep', '--strict', app], environment)
     # Notarization/stapling and exact-archive runtime acceptance remain promotion gates.
     run(['ditto', '-c', '-k', '--sequesterRsrc', '--keepParent', app, args.output/release.asset_name(args.tag, args.platform)], environment)

@@ -13,6 +13,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.unit.dp
 import org.json.JSONObject
@@ -42,7 +43,10 @@ import org.json.JSONObject
     val person=profile?.person ?: state.people[author] ?: PublicPerson.unnamed(author)
     val feed=state.profileListings?.takeIf { it.author==author }
     val authorListings=feed?.listings ?: emptyList()
-    val people=when(selection) { 1->profile?.known;2->profile?.following;3->profile?.followers;else->null } ?: emptyList()
+    val known=profile?.known?.distinctBy { it.author } ?: emptyList()
+    val allPeople=(known + (profile?.followers ?: emptyList())).associateBy { it.author }
+    val followers=NativeProfileConnections.ordered(known.map { it.author },profile?.followers?.map { it.author } ?: emptyList()).mapNotNull { allPeople[it] }
+    val people=when(selection) { 1->profile?.following;2->followers;else->null } ?: emptyList()
     val retryListings={model.command(JSONObject().put("type",if(feed==null) "load_profile" else "load_more_profile_listings").put("author",author));Unit}
     LazyVerticalGrid(columns=GridCells.Fixed(2),state=gridState,modifier=Modifier.fillMaxWidth(),
         horizontalArrangement=Arrangement.spacedBy(14.dp),verticalArrangement=Arrangement.spacedBy(18.dp),
@@ -69,13 +73,17 @@ import org.json.JSONObject
                 if(profile?.loading==true) LinearProgressIndicator(Modifier.fillMaxWidth())
                 if(!profile?.about.isNullOrBlank()) Text(profile!!.about,style=MaterialTheme.typography.bodyMedium)
                 profile?.website?.let { url -> TextButton(onClick={runCatching{uri.openUri(url)}}) { Text(url,maxLines=2) } }
+                if(known.isNotEmpty()) KnownFollowersLine(known.take(3),maxOf(known.size,person.connection.knownFollowers),open={history=history+author;author=it},showFollowers={
+                    selection=2
+                    if(!state.demo && profile?.followersLoaded!=true && profile?.followersLoading!=true) model.command(JSONObject().put("type","load_profile_followers").put("author",author))
+                })
                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),horizontalArrangement=Arrangement.spacedBy(6.dp)) {
-                    val labels=listOf("Listings",profile?.let{"Known ${it.known.size}"}?:"Known",profile?.let{"Following ${it.followingCount}"}?:"Following",profile?.takeIf{it.followersLoaded}?.let{"Followers ${it.followers.size}"}?:"Followers")
+                    val labels=listOf("Listings",profile?.let{"Following ${it.followingCount}"}?:"Following",profile?.takeIf{it.followersLoaded}?.let{"Followers ${followers.size}"}?:"Followers")
                     labels.forEachIndexed { index,label ->
                         FilterChip(selected=selection==index,onClick={
-                            if(selection==3 && index!=3) model.command(JSONObject().put("type","cancel_profile_followers").put("author",author))
+                            if(selection==2 && index!=2) model.command(JSONObject().put("type","cancel_profile_followers").put("author",author))
                             selection=index
-                            if(index==3 && profile?.followersLoaded!=true && profile?.followersLoading!=true) model.command(JSONObject().put("type","load_profile_followers").put("author",author))
+                            if(!state.demo && index==2 && profile?.followersLoaded!=true && profile?.followersLoading!=true) model.command(JSONObject().put("type","load_profile_followers").put("author",author))
                         },label={Text(label,style=MaterialTheme.typography.labelSmall)})
                     }
                 }
@@ -102,17 +110,17 @@ import org.json.JSONObject
                 }
             }
         } else {
-            if(selection==3 && profile?.followersLoading==true) item(span={GridItemSpan(maxLineSpan)}) { LinearProgressIndicator(Modifier.fillMaxWidth()) }
-            if(selection==3 && profile?.followersError!=null) item(span={GridItemSpan(maxLineSpan)}) {
+            if(selection==2 && profile?.followersLoading==true) item(span={GridItemSpan(maxLineSpan)}) { LinearProgressIndicator(Modifier.fillMaxWidth()) }
+            if(selection==2 && profile?.followersError!=null) item(span={GridItemSpan(maxLineSpan)}) {
                 Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) { Text(profile.followersError,color=Muted,modifier=Modifier.weight(1f)); TextButton(onClick={model.command(JSONObject().put("type","load_profile_followers").put("author",author))}){Text("Retry")} }
             }
-            if(selection!=3 && (profile==null || profile.loading || profile.error!=null || !profile.graphLoaded)) item(span={GridItemSpan(maxLineSpan)}) {
+            if(!state.demo && selection!=2 && (profile==null || profile.loading || profile.error!=null || !profile.graphLoaded)) item(span={GridItemSpan(maxLineSpan)}) {
                 Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
                     Text(if(profile==null || profile.loading) "Loading connections…" else if(state.demo && profile.error!=null) profile.error else "Some connections are unavailable.",color=Muted,style=MaterialTheme.typography.bodySmall,modifier=Modifier.weight(1f))
                     if(profile!=null && !profile.loading && !state.demo) TextButton(onClick={model.command(JSONObject().put("type","load_profile").put("author",author))}) { Text("Retry") }
                 }
             }
-            if(people.isEmpty() && profile!=null && !(if(selection==3) profile.followersLoading else profile.loading)) item(span={GridItemSpan(maxLineSpan)}) {
+            if(people.isEmpty() && profile!=null && !(if(selection==2) profile.followersLoading else profile.loading)) item(span={GridItemSpan(maxLineSpan)}) {
                 Text("No connections to show.",color=Muted,style=MaterialTheme.typography.bodyMedium)
             }
             items(people,key={it.author},span={GridItemSpan(maxLineSpan)}) { connection ->
@@ -121,5 +129,22 @@ import org.json.JSONObject
                 }
             }
         }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable fun KnownFollowersLine(people: List<PublicPerson>, total: Int, open:(String)->Unit, showFollowers:()->Unit) {
+    FlowRow(modifier=Modifier.fillMaxWidth().testTag("profileFollowedBy"),horizontalArrangement=Arrangement.spacedBy(4.dp),verticalArrangement=Arrangement.spacedBy(4.dp)) {
+        Text("Followed by",color=Muted,style=MaterialTheme.typography.bodySmall)
+        people.forEachIndexed { index, person ->
+            Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(3.dp)) {
+                Row(Modifier.widthIn(max=200.dp).clickable { open(person.author) },verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(4.dp)) {
+                    UserAvatar(person,20.dp); UserName(person,style=MaterialTheme.typography.bodySmall)
+                }
+                if(index<people.lastIndex) Text(",",color=Muted,style=MaterialTheme.typography.bodySmall)
+            }
+        }
+        val remaining=NativeProfileConnections.remaining(total,people.size)
+        if(remaining>0) Text("and $remaining others",Modifier.clickable(onClick=showFollowers),color=Forest,style=MaterialTheme.typography.bodySmall)
     }
 }

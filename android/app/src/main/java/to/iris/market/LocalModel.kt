@@ -67,12 +67,12 @@ internal object LocalModelContract {
         return LocalCurationDecision(eventId, show.asBoolean, explanation)
     }
 
-    fun prompt(interests: String, listing: Listing): String {
+    fun prompt(interests: String, listing: Listing, sandbox: Boolean = false): String {
         val data = JsonObject().apply {
-            addProperty("search", interests.take(800))
+            addProperty("search", interests.take(if(sandbox) 1000 else 800))
             add("listing", JsonObject().apply {
                 addProperty("title", listing.title.take(400))
-                addProperty("description", listing.description.take(1_200))
+                addProperty("description", listing.description.take(if(sandbox) 2000 else 1200))
                 addProperty("category", listing.category.take(100))
                 addProperty("location", listing.location.take(160))
                 addProperty("side", listing.side.take(24))
@@ -178,7 +178,7 @@ class LocalModel(application: Application, private val scope: CoroutineScope) {
         }
     }
 
-    suspend fun classify(batch: LocalCurationBatch): List<LocalCurationDecision> {
+    suspend fun classify(batch: LocalCurationBatch, sandbox: Boolean = false): List<LocalCurationDecision> {
         check(state.value.available) { "Download the on-device model in Settings first." }
         require(batch.candidates.size <= 24)
         return withContext(Dispatchers.IO) {
@@ -205,7 +205,7 @@ class LocalModel(application: Application, private val scope: CoroutineScope) {
                         try {
                             val response = StringBuilder()
                             withTimeout(30_000) {
-                                conversation.sendMessageAsync(LocalModelContract.prompt(batch.interests, candidate.listing),
+                                conversation.sendMessageAsync(LocalModelContract.prompt(batch.interests, candidate.listing, sandbox),
                                     extraContext = mapOf("enable_thinking" to false)).collect { message ->
                                     response.append(message.toString())
                                     require(response.length <= 1_200) { "Model response is too long" }

@@ -27,6 +27,8 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
   if(preferredModel==='browser'){
     browserOption=element('option','Browser model · checking availability');browserOption.value='browser';$('ai-model').append(browserOption);$('ai-model').value='browser';$('ai-model').closest?.('label')?.removeAttribute('hidden');
   }
+  let testEpoch=0,testBusy=false,testRequested=false,testController:AbortController|null=null,testOwnsLoad=false,testRuntime:ReturnType<typeof runtime>|undefined;
+  let testProgress:((message:string,details?:{loaded:number;total?:number})=>void)|undefined;
   let targetMatches=24,sourceExhausted=false,sourceError:string|null=null;
   let sourceEpoch=0,sourceRequest:SourceRequest|null=null,wakeCandidates:(()=>void)|null=null;
   let sourceErrorVisible=false,runController:AbortController|null=null;
@@ -50,7 +52,8 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
     $('ai-stop').hidden = !busy;
     $('ai-model').disabled = busy;
     $('ai-threshold').disabled = ['qwen35','browser'].includes($('ai-model').value);
-    $('search-run').disabled = phase==='loading';
+    $('search-run').disabled = phase==='loading'||testBusy;
+    $('ai-test-run').disabled=busy||testBusy;$('ai-test-run').textContent=testBusy?'Testing…':'Test';$('ai-test-run').setAttribute('aria-busy',String(testBusy));$('ai-test-cancel').hidden=!testBusy;
     $('search-run').textContent = 'Search';
     $('search-run').setAttribute('aria-busy',String(phase==='loading'));
     const preparing=!!preparation||phase==='loading';
@@ -74,6 +77,7 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
     let loading:Promise<unknown>;
     try{loading=selected.load(model,model==='deberta'?'wasm':model==='browser'?'auto':'webgpu',(message,details)=>{
       if(current!==prepareGeneration||closed)return;
+      testProgress?.(message,details);
       $('ai-progress').textContent=message;
       downloadFraction=details&&Number.isFinite(details.total)&&details.total>0?Math.min(1,Math.max(0,details.loaded/details.total)):undefined;
       if(downloadFraction!==undefined)progress.value=downloadFraction;else progress.removeAttribute('value');refresh();
@@ -111,6 +115,7 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
     refresh();onChange();
   }
   function run({continuation=false}={}):Promise<void> {
+    if(testBusy)return Promise.resolve();
     const query=continuation?submittedQuery:$('search').value.trim();
     // Repeated Submit must not restart a running pass or queue the same work.
     // A loading pass already adopts the latest input once preparation finishes.
@@ -151,7 +156,7 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
       if(activeRun)activeRun.query=query;
       if(query!==submittedQuery){sourceEpoch++;submittedQuery=query;scores.clear();onChange();}
       if(!query||!enabled())return;
-      const condition=searchCondition(query);let sourceRequests=0,unpainted=0,painted=false,lastPaint=performance.now();
+      const condition=searchCondition(query,$('ai-model').value);let sourceRequests=0,unpainted=0,painted=false,lastPaint=performance.now();
       phase='searching';refresh();
       while(matchCount()<targetMatches) {
         if (current !== generation) return;
@@ -212,12 +217,58 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
   };
   $('search').addEventListener('click',activateBrowser);$('search').addEventListener('keydown',activateBrowser);
   $('search-run').onclick = () => run();
-  $('ai-model').onchange = () => {preferredModel=$('ai-model').value;writeSetting(AI_MODEL_STORAGE_KEY,preferredModel);preference=enabled()?'on':'off';writeSetting(AI_MODE_STORAGE_KEY,preference);stop({reset:true});};
-  $('ai-threshold').onchange = () => { refresh(); onChange(); };
+  $('ai-model').onchange = () => {cancelTest();preferredModel=$('ai-model').value;writeSetting(AI_MODEL_STORAGE_KEY,preferredModel);preference=enabled()?'on':'off';writeSetting(AI_MODE_STORAGE_KEY,preference);stop({reset:true});};
+  $('ai-threshold').onchange = () => {cancelTest(); refresh(); onChange(); };
   $('ai-stop').onclick = () => stop();
-  $('ai-unload').onclick = () => {preference='off';writeSetting(AI_MODE_STORAGE_KEY,preference);setEnabled(false);stop({reset:true});};
+  $('ai-unload').onclick = () => {cancelTest();preference='off';writeSetting(AI_MODE_STORAGE_KEY,preference);setEnabled(false);stop({reset:true});};
   $('ai-show-all').onclick = () => { showAll = !showAll; refresh(); onChange(); };
-  window.addEventListener('pagehide', () => {closed=true;generation++;runController?.abort();runController=null;activeRun=null;sourceEpoch++;prepareGeneration++;wakeCandidates?.();client.dispose();browserClient.dispose();});
+  window.addEventListener('pagehide', () => {cancelTest();testObserver?.disconnect();closed=true;generation++;runController?.abort();runController=null;activeRun=null;sourceEpoch++;prepareGeneration++;wakeCandidates?.();client.dispose();browserClient.dispose();});
+  const testSnapshot=()=>JSON.stringify([$('ai-model').value,$('ai-threshold').value,$('ai-test-query').value,$('ai-test-title').value,$('ai-test-description').value]);
+  function cancelTest(message=''){
+    testEpoch++;testController?.abort();testController=null;
+    if(testBusy&&testOwnsLoad){prepareGeneration++;preparation=undefined;testRuntime?.dispose();}
+    testOwnsLoad=false;testBusy=false;testProgress=undefined;testRuntime=undefined;
+    $('ai-test-progress').hidden=true;$('ai-test-status').textContent=message;refresh();
+  }
+  async function runTest(){
+    if(closed||testBusy)return;
+    if(phase!=='idle'){$('ai-test-status').textContent='Stop the current search before testing.';return;}
+    cancelTest();testRequested=true;
+    const query=$('ai-test-query').value.trim(),title=$('ai-test-title').value.trim(),description=$('ai-test-description').value.trim();
+    if(!query){$('ai-test-status').textContent='Enter a search to test.';return;}
+    if(!title&&!description){$('ai-test-status').textContent='Enter an example listing title or description.';return;}
+    if(query.length>200||title.length>160||description.length>1500){$('ai-test-status').textContent='Shorten the test inputs.';return;}
+    if(needsCPU()){$('ai-test-status').textContent='This model needs WebGPU. Choose a supported model.';return;}
+    const epoch=++testEpoch,snapshot=testSnapshot(),selected=runtime(),model=$('ai-model').value,cutoff=threshold(),started=performance.now();
+    const controller=new AbortController();testController=controller;testRuntime=selected;testBusy=true;testOwnsLoad=!selected.info&&!preparation;
+    const release='pin' in selected&&typeof selected.pin==='function'?selected.pin():()=>{};
+    const current=()=>!closed&&testBusy&&epoch===testEpoch&&!controller.signal.aborted&&snapshot===testSnapshot();
+    testProgress=(message,details)=>{if(!current())return;$('ai-test-status').textContent=message;const progress=$('ai-test-progress');progress.hidden=false;if(details&&Number.isFinite(details.total)&&details.total>0)progress.value=Math.max(0,Math.min(1,details.loaded/details.total));else progress.removeAttribute('value');};
+    $('ai-test-status').textContent=selected.info?'Testing example…':'Loading model…';refresh();
+    try{
+      // Starts synchronously from the button, retaining browser download activation.
+      if(!selected.info)await prepareModel();
+      if(!current())return;
+      if(!selected.info||selected.info.model!==model)throw Error('The selected model is not ready.');
+      testOwnsLoad=false;$('ai-test-progress').hidden=true;$('ai-test-status').textContent='Testing example…';
+      let score=0,cached=true;
+      for(const text of listingSearchTexts({title,description,side:'offer'},query,model)){
+        const result=await selected.classify(searchCondition(query,model),text,{signal:controller.signal});
+        if(!current())return;
+        if(!Number.isFinite(result.score)||result.score<0||result.score>1)throw Error('The model returned an invalid decision.');
+        cached&&=!!result.cached;score=Math.max(score,result.score);if(score>=cutoff)break;
+      }
+      if(!current())return;
+      const label=model==='browser'?'Browser model':model==='deberta'?'DeBERTa':model==='qwen35'?'Qwen 3.5':selected.info.model;
+      $('ai-test-status').textContent=`${score>=cutoff?'Match':'No match'} · ${label} · ${Math.round(performance.now()-started)} ms${cached?' · cached':''}`;
+    }catch(error){if(current())$('ai-test-status').textContent=error instanceof Error?error.message:'Could not test this model.';}
+    finally{release();if(epoch===testEpoch){testBusy=false;testController=null;testProgress=undefined;testOwnsLoad=false;testRuntime=undefined;$('ai-test-progress').hidden=true;refresh();}}
+  }
+  $('ai-test-run').onclick=()=>runTest();$('ai-test-cancel').onclick=()=>cancelTest('Test cancelled.');
+  for(const id of ['ai-test-query','ai-test-title','ai-test-description'] as const)$(id).addEventListener('input',()=>cancelTest());
+  $('ai-settings').addEventListener('toggle',()=>{if(!$('ai-settings').open)cancelTest();});
+  const testObserver=typeof MutationObserver==='function'?new MutationObserver(()=>{if($('preferences-dialog').hidden)cancelTest();}):undefined;
+  testObserver?.observe($('preferences-dialog'),{attributes:true,attributeFilter:['hidden']});
   const ready=Promise.resolve().then(async()=>{
     const available=await browserClient.probe();if(closed)return;
     if(available!=='unavailable'||preferredModel==='browser'||browserOption){
@@ -225,9 +276,9 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
       if(preferredModel==='browser')$('ai-model').value='browser';
       if(preferredModel==='browser'&&available==='unavailable')$('ai-error').textContent='Browser AI is unavailable here. Reload to retry or choose DeBERTa.';
     }
-    if(!autoPrepare||preference==='off'||phase!=='idle'||preferredModel==='browser'&&available==='unavailable')return;
+    if(!autoPrepare||testRequested||preference==='off'||phase!=='idle'||preferredModel==='browser'&&available==='unavailable')return;
     if(!runtime().info&&(saveData()||$('ai-model').value==='browser'&&available!=='available'))return;
-    try{await prepareModel();if(!closed&&preference!=='off'&&!textSubmitted){preference='on';writeSetting(AI_MODE_STORAGE_KEY,preference);setEnabled(true);refresh();onChange();}}
+    try{await prepareModel();if(!closed&&!testRequested&&preference!=='off'&&!textSubmitted){preference='on';writeSetting(AI_MODE_STORAGE_KEY,preference);setEnabled(true);refresh();onChange();}}
     catch{/* Background preparation is optional. Explicit Search can retry without blocking Browse. */}
   });
   const pagination=()=>{const rows=candidates(),remaining=rows.filter(listing=>!scores.has(keyFor(listing))).length;return{hasMore:enabled()&&!!submittedQuery&&!showAll&&(remaining>0||!!fetchMoreCandidates&&!sourceExhausted),loading:phase!=='idle',paused,error:sourceErrorVisible?sourceError:$('ai-error').textContent,remaining,reviewed:rows.length-remaining,matches:matchCount(),target:targetMatches};};

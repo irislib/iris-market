@@ -21,6 +21,7 @@ struct MarketSnapshot: Decodable {
     var listings: [MarketListing] = []
     var savedCount: Int = 0
     var savedListings: [MarketListing]?
+    var aiTestResult: NativeAITestResult?
     var aiMessage: String?
     var aiConfigured: Bool?
     var profileNameRequired: Bool?

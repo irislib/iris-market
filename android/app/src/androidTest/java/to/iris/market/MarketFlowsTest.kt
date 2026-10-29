@@ -106,6 +106,22 @@ class MarketFlowsTest {
         compose.onNodeWithText("Publish listing").performScrollTo().assertIsNotEnabled()
         compose.onNodeWithText("This is Preview. Switch to your live market to publish a listing.").assertExists()
     }
+    @Test fun aiSandboxInputsStaySeparateFromFeed() {
+        compose.onNodeWithText("You").performClick()
+        compose.onNode(hasText("Settings") and hasClickAction()).performClick()
+        compose.onNodeWithText("Test search").performScrollTo().performTextReplacement("human edible products")
+        compose.onNodeWithText("Example listing").performScrollTo().performTextReplacement("Fresh apples. Fresh eating apples from our orchard, sold by the kilogram.")
+        compose.onNodeWithTag("aiSandboxTest").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithTag("aiSandboxResult").assertDoesNotExist()
+        capture("ai-sandbox-editable-preview")
+        compose.onNode(SemanticsMatcher.keyIsDefined(SemanticsActions.Dismiss)).performSemanticsAction(SemanticsActions.Dismiss) { it() }
+        compose.waitUntil(5_000) {compose.onAllNodes(hasText("Settings") and hasClickAction().not()).fetchSemanticsNodes().isEmpty()}
+        compose.onNode(hasText("Settings") and hasClickAction()).performClick()
+        compose.onNodeWithText("Test search").performScrollTo().assertTextContains("bicycle")
+        compose.onNode(SemanticsMatcher.keyIsDefined(SemanticsActions.Dismiss)).performSemanticsAction(SemanticsActions.Dismiss) { it() }
+        compose.onNodeWithText("Browse").performClick()
+        compose.onNodeWithText("A little more green").assertExists()
+    }
     @Test fun aiSettingsAndAppearancePersist() {
         compose.onNodeWithText("You").performClick()
         compose.onNodeWithText("Dark").performClick().assertIsSelected()
@@ -134,15 +150,19 @@ class MarketFlowsTest {
     @Test fun profileAndSharedSearchKeepPreviewOffline() {
         compose.onNodeWithText("A little more green").performClick()
         compose.onNodeWithContentDescription("View author").performScrollTo().performClick()
-        compose.onNodeWithText("Known",substring=true).performClick()
-        compose.waitUntil(5_000) { compose.onAllNodesWithText("Profiles are unavailable in offline preview.").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("Known",substring=true).assertDoesNotExist()
+        compose.onNodeWithText("Followers",substring=true).performClick().assertIsSelected()
+        capture("profile-followers-no-known-tab")
+        compose.onNodeWithText("Following",substring=true).performClick()
+        compose.onNodeWithText("Some connections are unavailable.").assertDoesNotExist()
+        compose.onNodeWithText("Profiles are unavailable in offline preview.").assertDoesNotExist()
         compose.onNodeWithText("Done").performClick()
         val sparkle = compose.onNodeWithContentDescription("AI search")
         val previous = sparkle.fetchSemanticsNode().config[androidx.compose.ui.semantics.SemanticsProperties.ToggleableState]
         sparkle.performTouchInput { longClick() }
-        compose.onNodeWithText("Settings").assertExists()
+        compose.onNode(hasText("Settings") and hasClickAction().not()).assertExists()
         compose.onNode(SemanticsMatcher.keyIsDefined(SemanticsActions.Dismiss)).performSemanticsAction(SemanticsActions.Dismiss) { it() }
-        compose.waitUntil(5_000) { compose.onAllNodesWithText("Settings").fetchSemanticsNodes().isEmpty() }
+        compose.waitUntil(5_000) { compose.onAllNodes(hasText("Settings") and hasClickAction().not()).fetchSemanticsNodes().isEmpty() }
         org.junit.Assert.assertEquals(previous,sparkle.fetchSemanticsNode().config[androidx.compose.ui.semantics.SemanticsProperties.ToggleableState])
         compose.onNodeWithTag("runAISearch").assertDoesNotExist()
         compose.onNodeWithContentDescription("Show map").assertIsNotEnabled()

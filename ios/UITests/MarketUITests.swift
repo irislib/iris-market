@@ -115,6 +115,58 @@ final class MarketUITests: XCTestCase {
         XCTAssertEqual(control.value as? String, expected)
     }
 
+    func testAISandboxInputsStaySeparateFromFeed() throws {
+        app.buttons["tabProfile"].tap(); app.buttons["aiSettingsRow"].tap()
+        XCTAssertTrue(app.navigationBars["AI search"].waitForExistence(timeout: 5))
+        app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Provider")).firstMatch.tap()
+        app.buttons["Groq · free quota"].tap()
+        let query = app.textFields["aiTestQuery"]
+        for _ in 0..<3 where !query.isHittable { app.swipeUp() }
+        XCTAssertTrue(query.waitForExistence(timeout: 5))
+        XCTAssertEqual(query.value as? String, "bicycle")
+        query.tap(); query.typeText(" synthetic")
+        XCTAssertNotEqual(query.value as? String, "bicycle")
+        for _ in 0..<3 where !app.buttons["aiSandboxTest"].isHittable { app.swipeUp() }
+        XCTAssertFalse(app.buttons["aiSandboxTest"].isEnabled, "Remote tests must remain offline in preview")
+        capture("ai-sandbox-editable-preview")
+        app.buttons["Done"].tap(); app.buttons["aiSettingsRow"].tap()
+        for _ in 0..<3 where !app.textFields["aiTestQuery"].isHittable { app.swipeUp() }
+        XCTAssertEqual(app.textFields["aiTestQuery"].value as? String, "bicycle", "Test text must not persist with settings")
+        app.buttons["Done"].tap(); app.buttons["tabExplore"].tap()
+        XCTAssertTrue(app.buttons.matching(identifier: "listingOpen").firstMatch.waitForExistence(timeout: 5))
+    }
+
+    func testAppleSandboxActualDecisionPreservesFeed() throws {
+        app.buttons["tabProfile"].tap(); app.buttons["aiSettingsRow"].tap()
+        app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Provider")).firstMatch.tap()
+        app.buttons["Apple on-device"].tap()
+        let readiness = app.staticTexts["appleAIAvailability"]
+        XCTAssertTrue(readiness.waitForExistence(timeout: 5))
+        guard readiness.label == "Ready on this device" else { capture("ai-sandbox-apple-unavailable"); throw XCTSkip(readiness.label) }
+        setSwitch("enableAI", enabled: false)
+        let query = app.textFields["aiTestQuery"]
+        query.tap(withNumberOfTaps: 3, numberOfTouches: 1)
+        query.typeText("human edible products")
+        XCTAssertEqual(query.value as? String, "human edible products")
+        let listing = app.textFields["aiTestListing"]
+        listing.tap(withNumberOfTaps: 3, numberOfTouches: 1)
+        listing.typeText("Fresh apples. Fresh eating apples from our orchard, sold by the kilogram.")
+        XCTAssertEqual(listing.value as? String, "Fresh apples. Fresh eating apples from our orchard, sold by the kilogram.")
+        let test = app.buttons["aiSandboxTest"]
+        for _ in 0..<3 where !test.isHittable { app.swipeUp() }
+        expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: test); waitForExpectations(timeout: 8)
+        print("APPLE_SANDBOX_ONE_INFERENCE_START human edible products")
+        test.tap()
+        let completed = NSPredicate { _, _ in self.app.staticTexts["aiSandboxResult"].exists || self.app.staticTexts["aiSandboxError"].exists }
+        expectation(for: completed, evaluatedWith: app); waitForExpectations(timeout: 45)
+        let actual = app.staticTexts["aiSandboxResult"].exists ? app.staticTexts["aiSandboxResult"].label : app.staticTexts["aiSandboxError"].label
+        print("APPLE_SANDBOX_ACTUAL_RESULT " + actual)
+        capture("ai-sandbox-apple-actual-result")
+        XCTAssertEqual(app.switches["enableAI"].value as? String, "0", "Testing must preserve feed AI Off")
+        app.buttons["Done"].tap(); app.buttons["tabExplore"].tap()
+        XCTAssertTrue(app.buttons.matching(identifier: "listingOpen").firstMatch.waitForExistence(timeout: 5), "The sandbox must not filter the feed")
+    }
+
     func testProviderPreferencesAutosaveWithoutCurationControls() throws {
         app.buttons["tabProfile"].tap()
         app.buttons["aiSettingsRow"].tap()
@@ -141,9 +193,12 @@ final class MarketUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Profile"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["profileListings"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.staticTexts["Some connections are unavailable."].exists)
-        app.buttons["profileKnown"].tap()
-        XCTAssertTrue(app.staticTexts["Some connections are unavailable."].waitForExistence(timeout: 5))
-        app.buttons["profileKnown"].tap()
+        XCTAssertFalse(app.buttons["profileKnown"].exists)
+        app.buttons["profileFollowers"].tap()
+        XCTAssertTrue(app.buttons["profileFollowers"].isSelected)
+        XCTAssertFalse(app.staticTexts["Some connections are unavailable."].exists)
+        capture("profile-followers-no-known-tab")
+        app.buttons["profileFollowers"].tap()
         capture("15-profile-preview")
         app.navigationBars["Profile"].buttons["Done"].tap()
         XCTAssertTrue(app.navigationBars["Listing"].waitForExistence(timeout: 5))

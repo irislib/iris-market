@@ -26,6 +26,11 @@ final class MarketStore: ObservableObject {
     private var localAIRequest = UUID()
     @Published private(set) var localAIProgress: String?
     @Published private(set) var localAIStatus: String?
+    @Published private(set) var aiTestBusy = false
+    @Published private(set) var aiTestResult: NativeAITestResult?
+    @Published private(set) var aiTestError: String?
+    private let aiTestSession = NativeAITestSession()
+    private var aiTestTask: Task<Void, Never>?
     var aiPreferencesEditing = false
     private var initializingLocalAI = false
     private var localAIDefault = NativeLocalAIDefault()
@@ -45,7 +50,10 @@ final class MarketStore: ObservableObject {
         snapshot.settings.ai.enabled ? (aiSearchEnabled ? "On" : "On, unavailable") : "Off"
     }
     private func acceptSnapshot(_ next: MarketSnapshot) {
-        if next.revision >= snapshot.revision { snapshot = next }
+        if next.revision >= snapshot.revision {
+            if next.settings.ai != snapshot.settings.ai { invalidateAITest() }
+            snapshot = next
+        }
     }
     func refreshAIAvailability() {
         appleAIUnavailableReason = appleAvailability()
@@ -96,6 +104,7 @@ final class MarketStore: ObservableObject {
         let demo = self.demo
         localAIRequest = UUID(); localAITask?.cancel(); localAITask = nil; localAIProgress = nil; localAIStatus = nil
         let previous = app
+        invalidateAITest()
         app = nil; ready = false; activeOrderID = nil; stopPolling(); accountGeneration += 1; operationCount = 0; busy = false
         _ = aiIntentGate.advance()
         let generation = accountGeneration
@@ -263,6 +272,82 @@ final class MarketStore: ObservableObject {
         settings.ai.curateFeed = false; settings.ai.interests = ""
         saveSettings(settings, key: "", replaceKey: false, expectedAIIntent: aiIntentEpoch) { [weak self] _ in self?.initializingLocalAI = false }
     }
+    private var aiTestContext: NativeAITestContext {
+        let ai = snapshot.settings.ai
+        return NativeAITestContext(account: accountGeneration, epoch: aiIntentEpoch, provider: ai.provider, model: ai.model, endpoint: ai.baseUrl, enabled: ai.enabled)
+    }
+    @discardableResult private func invalidateAITest() -> Int {
+        let revision = aiTestSession.invalidate()
+        aiTestTask?.cancel(); aiTestTask = nil
+        aiTestBusy = false; aiTestResult = nil; aiTestError = nil
+        return revision
+    }
+    func clearAITest() {
+        let revision = invalidateAITest(), generation = accountGeneration
+        guard let app else { return }
+        aiTestBusy = true
+        aiPreferenceQueue.async { [weak self] in
+            _ = try? app.command(request: "{\"type\":\"check_ai\",\"clear\":true,\"token\":\"\(revision)\"}")
+            Task { @MainActor in
+                guard let self, self.accountGeneration == generation, self.aiTestSession.revision == revision else { return }
+                self.aiTestBusy = false
+            }
+        }
+    }
+    func testAI(_ sample: NativeAITestInput) {
+        guard !busy, !aiTestBusy, localAITask == nil, localAIProgress == nil else { return }
+        let revision = invalidateAITest(), context = aiTestContext
+        if let error = sample.validationError { aiTestError = error; return }
+        if context.provider == "apple" {
+            if let reason = appleAIUnavailableReason { aiTestError = reason; return }
+            aiTestBusy = true
+            let started = Date()
+            aiTestTask = Task { [weak self] in
+                do {
+                    let matched = try await NativeAITestRunner.run(sample) { try await OnDeviceAI.matches(interests: $0, listing: $1) }
+                    guard let self, !Task.isCancelled, self.aiTestSession.accepts(revision, context: context, current: self.aiTestContext) else { return }
+                    self.aiTestResult = NativeAITestResult(matched: matched, elapsedMs: UInt64(max(0, Date().timeIntervalSince(started) * 1000)), provider: context.provider, model: context.model, error: nil)
+                    self.aiTestBusy = false; self.aiTestTask = nil
+                } catch {
+                    guard let self, !Task.isCancelled, self.aiTestSession.accepts(revision, context: context, current: self.aiTestContext) else { return }
+                    self.aiTestError = (error as? OnDeviceAI.Unavailable)?.message ?? "The on-device model could not finish the test."
+                    self.aiTestBusy = false; self.aiTestTask = nil
+                }
+            }
+            return
+        }
+        guard !demo else { aiTestError = "Preview stays offline. Leave preview to test this provider."; return }
+        guard NativeAIReadiness.canEnable(provider: context.provider, model: context.model, endpoint: context.endpoint, localAvailable: false) else { aiTestError = "Choose a model and provider URL before testing."; return }
+        guard let app else { aiTestError = "Your profile is not ready."; return }
+        do {
+            let key = try SecureStore.read(SecureStore.aiAccount(snapshot.settings.ai)) ?? ""
+            let request = String(decoding: try JSONSerialization.data(withJSONObject: ["type": "check_ai", "api_key": key, "test": ["query": sample.query, "listing": sample.listing], "token": String(revision), "expected": ["provider": context.provider, "model": context.model, "base_url": context.endpoint, "enabled": context.enabled]]), as: UTF8.self)
+            aiTestBusy = true
+            let session = aiTestSession, preferenceQueue = aiPreferenceQueue
+            queue.async { [weak self] in
+                guard session.revision == revision else { return }
+                let result: Result<MarketSnapshot, Error> = Result {
+                    try preferenceQueue.sync {
+                        guard session.revision == revision else { throw CancellationError() }
+                        _ = try app.command(request: "{\"type\":\"check_ai\",\"clear\":true,\"token\":\"\(revision)\"}")
+                    }
+                    return try MarketJSON.decoder().decode(MarketSnapshot.self, from: Data(try app.command(request: request).utf8))
+                }
+                Task { @MainActor in
+                    guard let self, self.aiTestSession.accepts(revision, context: context, current: self.aiTestContext) else { return }
+                    self.aiTestBusy = false
+                    switch result {
+                    case .success(let next):
+                        self.acceptSnapshot(next)
+                        guard self.aiTestSession.accepts(revision, context: context, current: self.aiTestContext) else { return }
+                        self.aiTestResult = next.aiTestResult
+                        if next.aiTestResult == nil { self.aiTestError = "Test cancelled. Try again when ready." }
+                    case .failure(let error): self.aiTestError = marketErrorMessage(error).contains("Stop the current search before testing.") ? "Stop the current search before testing." : "Could not test this provider. Check its settings and try again."
+                    }
+                }
+            }
+        } catch { aiTestError = "Could not read the provider key securely." }
+    }
     func runAI(type: String) {
         guard !busy else { return }
         if snapshot.settings.ai.provider == "apple" { runOnDeviceAI(check: type == "check_ai"); return }
@@ -274,6 +359,7 @@ final class MarketStore: ObservableObject {
         if let batch = snapshot.localCuration { command(["type": "cancel_local_curation", "id": batch.id]) }
     }
     private func runOnDeviceAI(check: Bool) {
+        guard !aiTestBusy else { return }
         guard snapshot.settings.ai.enabled else { alert = "Enable AI in settings first."; return }
         guard localAITask == nil, localAIProgress == nil else { return }
         if let reason = OnDeviceAI.unavailableReason { alert = reason; return }

@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { FeedFilterClient, FEED_MODELS, DEFAULT_FEED_MODEL, FEED_FILTER_IDLE_MS } from '../src/feed-filter/client.ts'
 import { validateModel } from '../src/feed-filter/models.ts'
+import {searchCondition} from '../src/search-condition.ts'
 import {DecisionCache} from '../src/feed-filter/decision-cache.ts'
 
 class FakeWorker {
@@ -160,5 +161,17 @@ test('Stop disposes a pinned model immediately and old releases cannot unpin its
   try {
     oldRelease();t.mock.timers.tick(FEED_FILTER_IDLE_MS*2);assert.equal(worker.terminated,false);
     release();t.mock.timers.tick(FEED_FILTER_IDLE_MS);assert.equal(worker.terminated,true);
+  }finally{client.dispose();}
+});
+
+
+test('the general DeBERTa query fix cannot reuse a cached old search-meta decision',async()=>{
+  const client=make(),worker=await load(client),query='fresh apples',content='Offered: Fresh apples',eventId='same-signed-listing';
+  try{
+    const oldCondition=searchCondition(query,'browser'),nextCondition=searchCondition(query,'deberta');
+    const previous=client.classify(oldCondition,content,{eventId});await tick();worker.respond({score:0});await previous;
+    assert.equal((await client.classify(oldCondition,content,{eventId})).cached,true);const before=worker.messages.length;
+    const corrected=client.classify(nextCondition,content,{eventId});await tick();assert.equal(worker.messages.length,before+1);assert.equal(worker.messages.at(-1).condition,'This listing offers fresh apples.');worker.respond({score:.9});assert.equal((await corrected).cached,false);
+    assert.equal((await client.classify(nextCondition,content,{eventId})).cached,true);
   }finally{client.dispose();}
 });

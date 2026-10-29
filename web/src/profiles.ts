@@ -271,6 +271,18 @@ export function socialConnection(graph: SocialGraph | null, contextPubkey: strin
   return { distance, badge, knownFollowers, knownFollowerCount: knownFollowers.length, description, partial: true }
 }
 
+/** Withdraw only graph paths superseded by explicitly observed signed lists. */
+export function excludeKnownFollowers(relation:SocialConnection,excluded:readonly string[]=[]):SocialConnection {
+  const removed=new Set(excluded),knownFollowers=relation.knownFollowers.filter(key=>!removed.has(key));
+  const withdrawn=relation.knownFollowers.length-knownFollowers.length;
+  if(!withdrawn)return relation;
+  const knownFollowerCount=Math.max(0,relation.knownFollowerCount-withdrawn);
+  if(relation.distance!==2)return {...relation,knownFollowers,knownFollowerCount};
+  return {...relation,knownFollowers,knownFollowerCount,distance:knownFollowerCount?2:null,
+    badge:knownFollowerCount?(knownFollowerCount>10?'trusted':'friend'):null,
+    description:knownFollowerCount?`Followed by ${knownFollowerCount} known ${knownFollowerCount===1?'person':'people'}`:'No connection found in loaded lists'};
+}
+
 async function buildGraph(root: string, lists: Map<string, FollowRecord>) {
   const graph = new SocialGraph(root)
   // Winner selection is ours: the upstream graph's timestamp-only replacement
@@ -374,7 +386,9 @@ export async function loadProfile(pubkey: string, options: CurationOptions = {})
   const followingRecord = store.follows.get(target)
   const following = followingRecord?.follows ? followingRecord : null
   if (followingRecord && !following) warnings.push('This follow list exceeds the supported size.')
-  const known = context.relationFor(target).knownFollowers
+  const originalRelation=context.relationFor(target);
+  const excludedKnownFollowers=originalRelation.knownFollowers.filter(key=>{const latest=store.follows.get(key);return latest&&!latest.follows?.includes(target);});
+  const relation=excludeKnownFollowers(originalRelation,excludedKnownFollowers),known=relation.knownFollowers;
   const peopleKeys = [...new Set([target, context.contextPubkey, ...known, ...(following?.follows || [])])].slice(0, PROFILE_LIMITS.metadata)
   if (peopleKeys.length) await safeQuery([{ kinds: [0], authors: peopleKeys, limit: peopleKeys.length }])
   if (signal?.aborted) throw abortError()
@@ -382,7 +396,7 @@ export async function loadProfile(pubkey: string, options: CurationOptions = {})
   const contextFollowsTarget = rootList ? rootList.follows.includes(target) : null
   const targetFollowsContext = following ? following.follows.includes(context.contextPubkey) : null
   return { profile: person(store, target), contextPubkey: context.contextPubkey, contextLabel: context.contextLabel,
-    relation: context.relationFor(target), mutualFollowing: contextFollowsTarget === null || targetFollowsContext === null ? null : contextFollowsTarget && targetFollowsContext,
+    relation, mutualFollowing: contextFollowsTarget === null || targetFollowsContext === null ? null : contextFollowsTarget && targetFollowsContext,
     followsContext: targetFollowsContext, following: { items: (following?.follows || []).slice(0, PROFILE_LIMITS.display).map(key => person(store, key)), total: following?.follows.length ?? null, truncated: (following?.follows.length || 0) > PROFILE_LIMITS.display },
     followers: { items: [] as PublicProfile[], observedCount: 0, complete: false as const, loaded: false },
     followedByKnown: known.map(key => person(store, key)), coverage: { ...context.coverage, inboundCandidates: 0, inboundRefreshed: 0, warnings: [...context.coverage.warnings, ...warnings] } }
@@ -401,7 +415,7 @@ export async function loadProfileFollowers(pubkey:string, options:CurationOption
   const warnings:string[]=[];
   if(followers.length)try{await query([{kinds:[0],authors:followers,limit:followers.length}]);}catch(error){if(error.name==='AbortError')throw error;warnings.push('Some names are unavailable.');}
   if(options.signal?.aborted)throw abortError();
-  return {items:followers.map(key=>person(store,key)),observedCount:followers.length,complete:false as const,loaded:true as const,warnings};
+  return {items:followers.map(key=>person(store,key)),excludedKnownFollowers:[...authors].filter(key=>!store.follows.get(key)?.follows?.includes(target)),observedCount:followers.length,complete:false as const,loaded:true as const,warnings};
 }
 
 /** Clear only this module's public in-memory cache, useful on explicit identity/relay changes. */

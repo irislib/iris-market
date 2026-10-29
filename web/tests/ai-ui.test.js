@@ -474,3 +474,99 @@ test('immediately cached source pages also yield instead of chaining pagination 
   const run=field('search-run').onclick();setTimeout(()=>{heartbeatAt=fetches;},0);await run;
   assert.equal(fetches,32);assert(heartbeatAt>0&&heartbeatAt<32,'input can run between immediate source pages');assert(client.info);
 });
+
+const example=(field,{query='bicycle',title='City bicycle',description='A bicycle for everyday rides.'}={})=>{field('ai-test-query').value=query;field('ai-test-title').value=title;field('ai-test-description').value=description;};
+test('AI settings test returns a decision/model/time while preserving submitted results and preferences',async()=>{
+  let renders=0,fetches=0;const memory=new Map([[AI_MODE_STORAGE_KEY,'on'],[AI_MODEL_STORAGE_KEY,'deberta']]),storage={getItem:key=>memory.get(key)??null,setItem:(key,value)=>memory.set(key,value)};
+  const {field,ui,calls}=fixture({query:'bicycle',storage,onRender:()=>renders++,fetchMoreCandidates:async()=>{fetches++;return false;}});await field('search-run').onclick();
+  const before={renders,fetches,score:ui.scoreFor(bicycle),preferences:[...memory]};example(field,{query:'chair',title:'Dining chair',description:'A wooden chair.'});
+  await field('ai-test-run').onclick();
+  assert.match(field('ai-test-status').textContent,/^Match · DeBERTa · \d+ ms$/);assert(!field('ai-test-status').textContent.includes('%'));
+  assert.equal(ui.query(),'bicycle');assert.equal(ui.scoreFor(bicycle),before.score);assert.equal(renders,before.renders);assert.equal(fetches,before.fetches);assert.deepEqual([...memory],before.preferences);assert.equal(field('search').value,'bicycle');assert.equal(ui.enabled(),true);
+  assert(calls.some(call=>call[0]==='classify'&&call[1].includes('chair')));
+});
+test('AI settings test loads explicitly while Off, and validates missing inputs before download or inference',async()=>{
+  const memory=new Map([[AI_MODE_STORAGE_KEY,'off']]),storage={getItem:key=>memory.get(key)??null,setItem:(key,value)=>memory.set(key,value)};
+  const {field,ui,calls}=fixture({mode:'text',storage,autoPrepare:true});example(field,{query:''});await field('ai-test-run').onclick();assert.match(field('ai-test-status').textContent,/Enter a search/);assert.equal(calls.length,0);
+  example(field,{title:'',description:''});await field('ai-test-run').onclick();assert.match(field('ai-test-status').textContent,/example listing/);assert.equal(calls.length,0);
+  example(field);await field('ai-test-run').onclick();await ui.ready;assert.equal(calls.filter(call=>call[0]==='load').length,1);assert.match(field('ai-test-status').textContent,/Match/);assert.equal(ui.enabled(),false);assert.equal(memory.get(AI_MODE_STORAGE_KEY),'off');assert.equal(ui.query(),'');assert.equal(field('ai-summary').hidden,true);
+});
+test('AI settings test shares model progress and cancels its own pending load without late inference',async()=>{
+  let resolveLoad,report,classified=0,disposed=0;
+  const client={info:null,load(_model,_device,progress){report=progress;return new Promise(resolve=>resolveLoad=()=>{this.info={model:'deberta'};resolve(this.info);});},async classify(){classified++;return{score:.9};},dispose(){disposed++;this.info=null;}};
+  const {field}=fixture({mode:'text',client});example(field);const run=field('ai-test-run').onclick();
+  report('Downloading model…',{loaded:25,total:100});assert.equal(field('ai-test-progress').value,.25);assert.equal(field('ai-test-progress').hidden,false);assert.equal(field('ai-test-run').disabled,true);assert.equal(field('ai-test-cancel').hidden,false);
+  await field('ai-test-run').onclick();assert.equal(disposed,0);field('ai-test-cancel').onclick();assert.equal(disposed,1);assert.equal(field('ai-test-status').textContent,'Test cancelled.');
+  resolveLoad();await run;assert.equal(classified,0);assert.equal(field('ai-test-status').textContent,'Test cancelled.');assert.equal(field('ai-test-progress').hidden,true);
+});
+test('editing test inputs aborts inference and suppresses stale results without touching feed state',async()=>{
+  let finish,signal;
+  const client={info:{model:'deberta'},async load(){},classify(_condition,_text,options){signal=options.signal;return new Promise(resolve=>finish=resolve);},dispose(){this.info=null;}};
+  const {field,ui}=fixture({mode:'text',client});example(field);const run=field('ai-test-run').onclick();await until(()=>!!finish);
+  field('ai-test-title').value='New title';field('ai-test-title').dispatchEvent(new Event('input'));assert(signal.aborted);finish({score:1});await run;assert.equal(field('ai-test-status').textContent,'');assert.equal(ui.query(),'');assert.equal(ui.enabled(),false);
+});
+test('settings test is mutually exclusive with feed inference and repeated Search cannot alter its sandbox',async()=>{
+  let finish,signal,calls=0;
+  const client={info:{model:'deberta'},async load(){},classify(_condition,_text,options){calls++;signal=options.signal;return new Promise(resolve=>finish=resolve);},dispose(){this.info=null;}};
+  const {field,ui}=fixture({query:'main feed',client});example(field);const testRun=field('ai-test-run').onclick();await until(()=>!!finish);
+  await field('search-run').onclick();assert.equal(calls,1);assert.equal(ui.query(),'');finish({score:.8});await testRun;
+  const feedRun=field('search-run').onclick();await until(()=>calls===2);await field('ai-test-run').onclick();assert.match(field('ai-test-status').textContent,/Stop the current search/);assert.equal(calls,2);finish({score:.8});await feedRun;assert(!signal.aborted);
+});
+test('model changes and leaving AI settings cancel the test and ignore its late decision',async()=>{
+  for(const action of ['model','details','pagehide']){
+    let finish,signal;const client={info:{model:'deberta'},async load(){},classify(_condition,_text,options){signal=options.signal;return new Promise(resolve=>finish=resolve);},dispose(){this.info=null;}};
+    const {field}=fixture({client});example(field);const run=field('ai-test-run').onclick();await until(()=>!!finish);
+    if(action==='model'){field('ai-model').value='qwen35';field('ai-model').onchange();}
+    else if(action==='details'){field('ai-settings').open=false;field('ai-settings').dispatchEvent(new Event('toggle'));}
+    else window.dispatchEvent(new Event('pagehide'));
+    assert(signal.aborted);finish({score:1});await run;assert.equal(field('ai-test-status').textContent,'');
+  }
+});
+test('browser downloading availability is not readiness: test waits for actual session and labels the browser model',async()=>{
+  let finishCreate,prompts=0;
+  const session={destroy(){},async clone(){return{destroy(){},prompt:async()=>{prompts++;return 'true';}};},prompt:async()=>{prompts++;return 'true';}};
+  const browserClient=new BrowserFeedFilterClient({getAPI:()=>({availability:async()=> 'downloading',create:()=>new Promise(resolve=>finishCreate=()=>resolve(session))}),hasActivation:()=>true});
+  const {field,ui}=fixture({mode:'text',browserClient});await ui.ready;field('ai-model').value='browser';field('ai-model').onchange();example(field);
+  const run=field('ai-test-run').onclick();assert(finishCreate);assert.equal(prompts,0);assert.doesNotMatch(field('ai-test-status').textContent,/^Match/);assert.equal(field('ai-test-run').disabled,true);
+  finishCreate();await run;assert.equal(prompts,1);assert.match(field('ai-test-status').textContent,/^Match · Browser model · \d+ ms$/);assert.equal(ui.enabled(),false);browserClient.dispose();
+});
+test('model failures report only in the test result and No match never exposes a probability',async()=>{
+  for(const fail of [false,true]){
+    const client={info:{model:'deberta'},async load(){},classify:async()=>{if(fail)throw Error('Model could not finish');return{score:0,cached:true};},dispose(){this.info=null;}};
+    const {field,ui}=fixture({client,mode:'text'});example(field);await field('ai-test-run').onclick();
+    assert.match(field('ai-test-status').textContent,fail?/Model could not finish/:/^No match · DeBERTa · \d+ ms · cached$/);assert.equal(field('ai-error').textContent,'');assert.equal(ui.enabled(),false);assert.equal(ui.query(),'');
+  }
+});
+
+test('cancelling a test that shares startup preparation preserves that load and never opts AI in',async()=>{
+  let complete,disposed=0,classified=0;const memory=new Map(),storage={getItem:key=>memory.get(key)??null,setItem:(key,value)=>memory.set(key,value)};
+  const client={info:null,load(){return new Promise(resolve=>complete=()=>{this.info={model:'deberta'};resolve(this.info);});},classify:async()=>{classified++;return{score:1};},dispose(){disposed++;this.info=null;}};
+  const {field,ui}=fixture({mode:'text',client,storage,autoPrepare:true});await until(()=>!!complete);example(field);const run=field('ai-test-run').onclick();
+  field('ai-test-cancel').onclick();assert.equal(disposed,0,'an independently running startup load remains owned by startup');complete();await Promise.all([run,ui.ready]);
+  assert.equal(classified,0);assert.equal(ui.enabled(),false);assert.equal(memory.get(AI_MODE_STORAGE_KEY),undefined);assert.equal(field('ai-test-status').textContent,'Test cancelled.');assert(client.info);
+});
+test('leaving the Settings page aborts its test through the page visibility observer',async()=>{
+  const original=globalThis.MutationObserver;let observe,disconnected=false,finish,signal;
+  globalThis.MutationObserver=class{constructor(callback){observe=callback;}observe(){}disconnect(){disconnected=true;}};
+  try{
+    const client={info:{model:'deberta'},async load(){},classify(_condition,_text,options){signal=options.signal;return new Promise(resolve=>finish=resolve);},dispose(){this.info=null;}};
+    const {field}=fixture({mode:'text',client});example(field);const run=field('ai-test-run').onclick();await until(()=>!!finish);
+    field('preferences-dialog').hidden=true;observe();assert(signal.aborted);finish({score:1});await run;assert.equal(field('ai-test-status').textContent,'');
+    window.dispatchEvent(new Event('pagehide'));assert(disconnected);
+  }finally{if(original===undefined)delete globalThis.MutationObserver;else globalThis.MutationObserver=original;}
+});
+
+test('AI settings sandbox leaves an unentered category empty rather than inventing Other',async()=>{
+  const inputs=[];const client={info:{model:'deberta'},async load(){},async classify(_condition,text){inputs.push(text);return{score:.8};},dispose(){this.info=null;}};
+  const {field}=fixture({mode:'text',client});example(field,{query:'fresh apples',title:'Fresh apples',description:'Fresh eating apples.'});await field('ai-test-run').onclick();
+  assert.equal(inputs.length,1);assert.doesNotMatch(inputs[0],/Category:/);assert.doesNotMatch(inputs[0],/Location:|Price:/);assert(!inputs[0].includes('food'),'no semantic category is inferred from example text');
+});
+
+test('main search and the settings sandbox both use model-aware hypotheses',async()=>{
+  for(const model of ['deberta','qwen35']){
+    const conditions=[];const client={info:{model},async load(){},async classify(condition){conditions.push(condition);return{score:.8};},dispose(){this.info=null;}};
+    const {field}=fixture({client,query:'fresh apples'});field('ai-model').value=model;
+    await field('search-run').onclick();example(field,{query:'fresh apples'});await field('ai-test-run').onclick();
+    assert.equal(conditions.length,2);assert(conditions.every(condition=>condition===(model==='deberta'?'This listing offers fresh apples.':'This listing matches this search: fresh apples')));
+  }
+});

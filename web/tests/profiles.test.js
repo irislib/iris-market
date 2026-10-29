@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { finalizeEvent, getPublicKey } from 'nostr-tools/pure'
 import { SocialGraph } from 'nostr-social-graph'
-import { DEFAULT_SOCIAL_GRAPH_ROOT, PROFILE_LIMITS, parseProfileEvent, parseFollowEvent, verifyProfileRecord, queryProfileRecords, socialConnection, loadProfile, loadProfileFollowers, subscribeProfileMetadata, loadCurationContext, clearProfileCache, cacheProfileMetadata, readProfileMetadata } from '../src/profiles.ts'
+import { DEFAULT_SOCIAL_GRAPH_ROOT, PROFILE_LIMITS, parseProfileEvent, parseFollowEvent, verifyProfileRecord, queryProfileRecords, socialConnection, excludeKnownFollowers, loadProfile, loadProfileFollowers, subscribeProfileMetadata, loadCurationContext, clearProfileCache, cacheProfileMetadata, readProfileMetadata } from '../src/profiles.ts'
 
 const now = 1700000000
 const secrets = Array.from({ length: 20 }, (_, i) => new Uint8Array(32).fill(i + 1))
@@ -291,4 +291,28 @@ test('shared profile presentation restores signed name and avatar before any wor
     assert(stored);const restored=readProfileMetadata(keys[0],{relays});
     assert.equal(restored.name,'Remembered');assert.equal(restored.pictureUrl,'https://example.com/remembered.png');assert.equal(restored.eventId,event.id);
   }finally{clearProfileCache();if(previous)Object.defineProperty(globalThis,'window',previous);else delete globalThis.window;}
+});
+
+test('a newer signed unfollow supersedes known graph evidence without expanding follow-list queries',async()=>{
+  clearProfileCache();
+  const records=[follows(0,[keys[1]]),follows(1,[keys[2]])];
+  const Socket=scriptedSocket(filters=>records.filter(event=>filters.some(filter=>matches(event,filter))));
+  const first=await loadProfile(keys[2],options(Socket));assert.deepEqual(first.followedByKnown.map(person=>person.pubkey),[keys[1]]);
+  records.push(follows(1,[],now+1));
+  const inbound=await loadProfileFollowers(keys[2],options(Socket));assert.equal(inbound.items.length,0);assert(inbound.excludedKnownFollowers.includes(keys[1]));
+  const reopened=await loadProfile(keys[2],options(Socket));assert.deepEqual(reopened.followedByKnown,[],'cached graph edges cannot revive newer observed unfollows');assert.equal(reopened.relation.badge,null);assert.equal(reopened.relation.knownFollowerCount,0);
+  const queries=Socket.sockets.flatMap(socket=>socket.sent.filter(frame=>frame[0]==='REQ').flatMap(frame=>frame.slice(2)));
+  assert.equal(queries.filter(filter=>filter['#p']).length,1,'only explicit Followers scans inbound lists');
+  assert(queries.filter(filter=>filter.kinds.includes(3)&&filter.authors&&!filter.authors.includes(keys[0])&&!filter.authors.includes(keys[2])).every(filter=>filter.authors.length===1&&filter.authors[0]===keys[1]));
+  closed(Socket);
+});
+
+
+test('explicit exclusions reduce second-hop trust but preserve root/direct indicators and unobserved paths',()=>{
+  const relation={distance:2,badge:'trusted',knownFollowers:keys.slice(1,13),knownFollowerCount:12,description:'Previous evidence',partial:true};
+  assert.equal(excludeKnownFollowers(relation,[keys[18]]),relation,'unrelated observations cannot alter known evidence');
+  const partial=excludeKnownFollowers(relation,[keys[1],keys[2]]);assert.equal(partial.knownFollowerCount,10);assert.equal(partial.distance,2);assert.equal(partial.badge,'friend');assert.equal(partial.description,'Followed by 10 known people');
+  const absent=excludeKnownFollowers(relation,keys.slice(1,13));assert.equal(absent.knownFollowerCount,0);assert.equal(absent.distance,null);assert.equal(absent.badge,null);
+  for(const distance of [0,1]){const direct=excludeKnownFollowers({...relation,distance,badge:'following'},keys.slice(1,13));assert.equal(direct.distance,distance);assert.equal(direct.badge,'following');assert.equal(direct.description,'Previous evidence');}
+  assert.equal(relation.knownFollowerCount,12,'the source graph projection is not mutated');
 });

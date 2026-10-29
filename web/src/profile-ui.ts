@@ -1,6 +1,6 @@
 import { element as domElement } from './dom.ts';
 import { npubEncode } from 'nostr-tools/nip19'
-import { loadProfile, loadProfileFollowers, readProfileMetadata, subscribeProfileMetadata, DEFAULT_SOCIAL_GRAPH_ROOT, DEFAULT_SOCIAL_GRAPH_LABEL } from './profiles.ts'
+import { loadProfile, loadProfileFollowers, excludeKnownFollowers, readProfileMetadata, subscribeProfileMetadata, DEFAULT_SOCIAL_GRAPH_ROOT, DEFAULT_SOCIAL_GRAPH_LABEL } from './profiles.ts'
 import { normalizePublicKey } from './social.ts'
 import { createAvatar, createUserRow } from './people.ts'
 import { profileURL } from './routes.ts'
@@ -9,6 +9,11 @@ import type { PublishReview, ReviewAccount, ReviewQuery } from './reviews.ts'
 import type { PublicProfile, SocialConnection } from './profiles.ts'
 
 const element = domElement
+
+/** Keep signed graph observations first; relay omissions do not remove them. */
+export function knownFirstFollowers<T extends {pubkey:string}>(known:readonly T[]=[],observed:readonly T[]=[]):T[] {
+  const seen=new Set<string>();return [...known,...observed].filter(person=>{if(seen.has(person.pubkey))return false;seen.add(person.pubkey);return true;});
+}
 
 /** Relationship evidence, not an identity or seller-verification mark. */
 export function createRelationshipBadge(relation) {
@@ -26,9 +31,9 @@ interface ProfileOptions {
   onContextChange?:(key:string)=>void;onAuthorListings?:(key:string)=>void;onMessage?:(key:string)=>void;
   onNavigate?:(key:string)=>void;onClose?:()=>void;renderListings?:(key:string,host:HTMLElement)=>void|(()=>void);
   queryReviews?:ReviewQuery;getReviewAccount?:()=>ReviewAccount;publishReview?:PublishReview;onReviewSignIn?:()=>void;
-  loadFollowers?:typeof loadProfileFollowers;
+  loadFollowers?:typeof loadProfileFollowers;loadProfileData?:typeof loadProfile;
 }
-export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCIAL_GRAPH_ROOT, isPreview = () => false, onContextChange = () => {}, onAuthorListings = () => {}, onMessage = () => {}, onNavigate = () => {}, onClose = () => {}, renderListings, queryReviews, getReviewAccount, publishReview, onReviewSignIn, loadFollowers=loadProfileFollowers }: ProfileOptions) {
+export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCIAL_GRAPH_ROOT, isPreview = () => false, onContextChange = () => {}, onAuthorListings = () => {}, onMessage = () => {}, onNavigate = () => {}, onClose = () => {}, renderListings, queryReviews, getReviewAccount, publishReview, onReviewSignIn, loadFollowers=loadProfileFollowers,loadProfileData=loadProfile }: ProfileOptions) {
   const container = page ?? element('section', undefined, 'profile-page')
   container.setAttribute('aria-labelledby', 'public-profile-title')
   container.hidden = true
@@ -52,27 +57,31 @@ export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCI
   panel.id='profile-list-panel';panel.setAttribute('role','tabpanel')
   const stopListings=()=>{listingCleanup?.();listingCleanup=undefined;listingsActive=false}
   type ProfileData=Awaited<ReturnType<typeof loadProfile>>
-  let currentData:ProfileData|undefined
+  let currentData:ProfileData|undefined,followDistanceNote:HTMLElement|undefined
   type ProfileView={id:string;label:string;people?:{pubkey:string}[];empty?:string;note?:string}
   const connectionViews=(data?:ProfileData):ProfileView[]=>[
-    {id:'known',label:data?`Known ${data.followedByKnown.length}`:'Known',people:data?.followedByKnown,empty:'No known followers found.',note:data?`Followed by people ${data.contextLabel} follows. Only ${data.coverage.secondHopLoaded} of ${data.coverage.directFollows ?? '?'} follow lists were loaded.`:undefined},
     {id:'following',label:data?`Following ${data.following.total ?? '—'}`:'Following',people:data?.following.items,empty:data?.following.total===null?'Follow list unavailable.':'This public list is empty.',note:data?.following.truncated?`Showing the first ${data.following.items.length} of ${data.following.total} follows.`:'Latest signed follow list observed on your servers.'},
-    {id:'followers',label:followers?`Followers ${followers.observedCount}`:'Followers',people:followers?.items,empty:'No followers found.',note:'Observed followers only. Servers can omit records; this is not a total follower count.'},
+    {id:'followers',label:followerLabel(),people:followerPeople(),empty:'No followers found.',note:'Observed followers only. Servers can omit records; this is not a total follower count.'},
   ]
   const stopFollowers=()=>{followersController?.abort();followersController=undefined;followersGeneration++;followersLoading=false}
+  const knownPeople=()=>{const excluded=new Set(followers?.excludedKnownFollowers??[]);return (currentData?.followedByKnown??[]).filter(person=>!excluded.has(person.pubkey));};
+  const followerPeople=()=>knownFirstFollowers(knownPeople(),followers?.items);
+  const followerLabel=()=>followers||followerPeople().length?`Followers ${followerPeople().length}`:'Followers';
   const renderFollowers=()=>{
-    if(followersTab)followersTab.textContent=followers?`Followers ${followers.observedCount}`:'Followers'
-    if(selectedView!=='followers')return
-    if(followers){panel.replaceChildren(peopleList(followers.items,'No followers found.'));return}
-    const note=element('p',followersError||'Loading followers…','muted small');note.setAttribute('role','status');panel.replaceChildren(note)
-    if(followersError){const retry=element('button','Try again','text-button');retry.onclick=()=>void requestFollowers();panel.append(retry)}
+    if(followersTab)followersTab.textContent=followerLabel();
+    if(selectedView!=='followers')return;
+    const people=followerPeople();
+    panel.replaceChildren(peopleList(people,followers?'No followers found.':''));
+    if(followers)return;
+    const note=element('p',followersError||'Loading followers…','muted small');note.setAttribute('role','status');panel.append(note);
+    if(followersError){const retry=element('button','Try again','text-button');retry.onclick=()=>void requestFollowers();panel.append(retry);}
   }
   const requestFollowers=async()=>{
     if(followers||followersLoading||!currentKey||isPreview())return
     const owner=currentKey,run=generation,request=++followersGeneration,abort=new AbortController();followersController=abort;followersLoading=true;followersError='';renderFollowers()
-    try{const value=await loadFollowers(owner,{relays:getRelays(),signal:abort.signal});if(run!==generation||request!==followersGeneration||abort.signal.aborted||destroyed)return;followers=value}
+    try{const value=await loadFollowers(owner,{relays:getRelays(),signal:abort.signal});if(run!==generation||request!==followersGeneration||abort.signal.aborted||destroyed)return;followers=value;if(currentData){currentData={...currentData,relation:excludeKnownFollowers(currentData.relation,value.excludedKnownFollowers)};if(followDistanceNote){followDistanceNote.hidden=currentData.relation.distance===null;followDistanceNote.textContent=currentData.relation.distance===null?'':`Follow distance: ${currentData.relation.distance}`;}}}
     catch(error){if(run!==generation||request!==followersGeneration||abort.signal.aborted||destroyed)return;followersError='Could not load followers.'}
-    finally{if(run===generation&&request===followersGeneration&&!destroyed){followersLoading=false;followersController=undefined;renderFollowers()}}
+    finally{if(run===generation&&request===followersGeneration&&!destroyed){followersLoading=false;followersController=undefined;if(currentData){identityHost.replaceChildren();renderIdentity(currentData.profile,currentData.relation);}renderFollowers()}}
   }
   const renderSections=(data?:ProfileData)=>{
     const tabs=element('div',undefined,'profile-tabs')
@@ -118,7 +127,7 @@ export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCI
   }
 
   function close({notify=false}: {notify?:boolean} = {}) {
-    controller?.abort();unsubscribeMetadata?.();unsubscribeMetadata=undefined;stopFollowers();followers=undefined;followersTab=undefined;currentData=undefined;stopListings(); reviews?.close(); reviews=undefined; reviewTab=undefined; reviewSummaryButton=undefined; generation++; currentKey=undefined; container.hidden=true
+    controller?.abort();unsubscribeMetadata?.();unsubscribeMetadata=undefined;stopFollowers();followers=undefined;followersTab=undefined;currentData=undefined;followDistanceNote=undefined;stopListings(); reviews?.close(); reviews=undefined; reviewTab=undefined; reviewSummaryButton=undefined; generation++; currentKey=undefined; container.hidden=true
     if (notify && !destroyed) onClose()
   }
   const peopleList = (people, emptyText) => {
@@ -143,6 +152,17 @@ export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCI
     heading.append(reviewSummaryButton)
     identity.append(back, createAvatar(profile.pubkey, {size:76}), heading)
     identityHost.append(identity)
+    const known=knownFirstFollowers(knownPeople());
+    if(known.length){
+      const row=element('div',undefined,'profile-followed-by');row.setAttribute('aria-label','Known followers from loaded public follow lists');
+      row.append(element('span','Followed by'));
+      for(const [index,person] of known.slice(0,3).entries()){
+        if(index)row.append(element('span',',','profile-followed-separator'));
+        row.append(createUserRow(person.pubkey,{size:20,className:'profile-followed-person',onClick:()=>void open(person.pubkey)}));
+      }
+      if(known.length>3){const others=element('button',`and ${known.length-3} ${known.length===4?'other':'others'}`,'text-button');others.type='button';others.onclick=()=>followersTab?.click();row.append(others);}
+      identityHost.append(row);
+    }
     if (profile.about) identityHost.append(element('p', profile.about, 'profile-about'))
     if (profile.website) {
       const link = element('a', new URL(profile.website).hostname, 'profile-website')
@@ -171,7 +191,7 @@ export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCI
     const profile = data.profile
     body.replaceChildren(identityHost);identityHost.replaceChildren();renderIdentity(profile,data.relation)
     const connection = element('div', undefined, 'profile-connection')
-    const connectionText = data.relation.distance === 1 ? `Followed by ${data.contextLabel}` : data.followedByKnown.length ? `Followed by ${data.followedByKnown.length} known ${data.followedByKnown.length === 1 ? 'person' : 'people'}` : ''
+    const connectionText = data.relation.distance === 1 ? `Followed by ${data.contextLabel}` : ''
     if(connectionText) connection.append(element('p',connectionText))
     if (data.mutualFollowing) connection.append(element('p', `Mutual follows with ${data.contextLabel}`, 'small'))
     else if (data.followsContext) connection.append(element('p', `Follows ${data.contextLabel}`, 'small'))
@@ -185,7 +205,8 @@ export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCI
     const network = element('details', undefined, 'profile-network')
     network.append(element('summary', 'Network details'))
     network.append(element('p',`Connections through ${data.contextLabel}.`,'small muted'))
-    if(data.relation.distance !== null)network.append(element('p',`Follow distance: ${data.relation.distance}`,'small muted'))
+    followDistanceNote=element('p',data.relation.distance===null?'':`Follow distance: ${data.relation.distance}`,'small muted');followDistanceNote.hidden=data.relation.distance===null;network.append(followDistanceNote)
+    network.append(element('p',`Known followers are people ${data.contextLabel} follows, from loaded public follow lists. Only ${data.coverage.secondHopLoaded} of ${data.coverage.directFollows??'?'} follow lists were loaded.`,'small muted'))
     for(const view of views)network.append(element('p',view.note,'small muted'))
     for(const warning of new Set(data.coverage.warnings))network.append(element('p',String(warning),'small muted'))
     const copy=element('button','Copy user ID','text-button');copy.onclick=async()=>{try{await navigator.clipboard.writeText(npubEncode(profile.pubkey));status.textContent='User ID copied'}catch{status.textContent='Could not copy this user ID.'}};network.append(copy)
@@ -215,7 +236,7 @@ export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCI
     if (navigate) onNavigate(key)
     // A router may synchronously reopen this profile without navigation.
     if (generation!==beforeNavigate || destroyed) return
-    controller?.abort();unsubscribeMetadata?.();unsubscribeMetadata=undefined;stopFollowers();followers=undefined;followersError='';followersTab=undefined;currentData=undefined;stopListings(); reviews?.close(); reviewTab=undefined; reviewSummaryButton=undefined; selectedView='listings'; controller = new AbortController(); const run = ++generation
+    controller?.abort();unsubscribeMetadata?.();unsubscribeMetadata=undefined;stopFollowers();followers=undefined;followersError='';followersTab=undefined;currentData=undefined;followDistanceNote=undefined;stopListings(); reviews?.close(); reviewTab=undefined; reviewSummaryButton=undefined; selectedView='listings'; controller = new AbortController(); const run = ++generation
     currentKey = key; container.hidden=false; container.scrollTop=0
     reviews=setupProfileReviews({target:key,query:queryReviews,getAccount:getReviewAccount,publish:publishReview,preview:isPreview(),onSignIn:onReviewSignIn,onProfile:pubkey=>void open(pubkey),onSummary:value=>{if(run===generation&&reviewSummaryButton)reviewSummaryButton.textContent=value.label}})
     const displayed=renderCached(key)
@@ -229,7 +250,7 @@ export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCI
       identityHost.replaceChildren();renderIdentity(profile,currentData?.relation)
     },{relays:getRelays()})
     try {
-      const data = await loadProfile(key, { relays: getRelays(), contextPubkey: getContext() || DEFAULT_SOCIAL_GRAPH_ROOT, signal: controller.signal })
+      const data = await loadProfileData(key, { relays: getRelays(), contextPubkey: getContext() || DEFAULT_SOCIAL_GRAPH_ROOT, signal: controller.signal })
       if (run !== generation || destroyed) return
       currentData={...data,profile:readProfileMetadata(key,{relays:getRelays()})};render(currentData)
     } catch (error) { if (run === generation && error.name !== 'AbortError') status.textContent = error.message || 'Could not load this profile.' }

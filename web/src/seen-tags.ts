@@ -1,13 +1,9 @@
 import { verifyEvent, type Event } from 'nostr-tools/pure'
 
-export const TAG_LIMITS=Object.freeze({tags:512,events:2048,perEvent:16,authors:64,pairs:2048,queryTags:8,queryChars:2000,literalTags:4,typoTags:2})
+export type SearchTagExpansion = 'literal' | 'expanded'
+
+export const TAG_LIMITS=Object.freeze({tags:512,events:2048,perEvent:16,authors:64,pairs:2048,queryTags:8,queryChars:2000,literalTags:4})
 const generic=new Set(['nostr','market','marketplace','forsale','for sale','sale','sell','selling','buy','buying','offer','request','bitcoin','sats'])
-const families=[
-  ['electronics','electronic','tech','technology','device','devices','gadget','gadgets','computer','computers','laptop','laptops','macbook','desktop','phone','phones','iphone','smartphone','smartphones','tablet','tablets','ipad','camera','cameras','headphones','audio','speaker','speakers','monitor','monitors','console','gaming','elektroniikka','tietokone','puhelin'],
-  ['clothing','clothes','apparel','fashion','garment','garments','wear','shirt','shirts','tshirt','tshirts','t shirt','t shirts','dress','dresses','jacket','jackets','coat','coats','jeans','pants','trousers','sweater','sweaters','hoodie','hoodies','shoes','shoe','boots','sneakers','vaatteet','vaate','kengät'],
-  ['furniture','furnishing','chair','chairs','table','tables','sofa','couch','desk','desks','shelf','shelves','cabinet','bed','huonekalut'],
-  ['bicycle','bicycles','bike','bikes','cycling','ebike','e bike','polkupyörä','pyörä'],
-] as const
 const normal=(value:string)=>value.normalize('NFKC').toLowerCase().replace(/^#+/,'').replace(/[_-]+/g,' ').replace(/\s+/g,' ').trim()
 const compare=(a:string,b:string)=>a<b?-1:a>b?1:0
 const tokens=(value:string)=>normal(value).split(/[^\p{L}\p{N}]+/u).filter(Boolean)
@@ -19,13 +15,6 @@ export function literalSearchTags(query:string):string[]{
   const words=tokens(query),text=words.join(' ')
   const valid=(tag:string)=>!!tag&&Array.from(tag).length<=60
   return [...new Set([...(valid(text)?[text]:[]),...words.filter(word=>valid(word)&&word.length>1&&!/^\d+$/.test(word)&&!stopWords.has(word))])].slice(0,TAG_LIMITS.literalTags)
-}
-function oneEdit(a:string,b:string):boolean {
-  const left=Array.from(a),right=Array.from(b)
-  if(Math.abs(left.length-right.length)>1)return false
-  let i=0,j=0,edits=0
-  while(i<left.length&&j<right.length){if(left[i]===right[j]){i++;j++;continue}if(++edits>1)return false;if(left.length>=right.length)i++;if(right.length>=left.length)j++}
-  return edits+(i<left.length||j<right.length?1:0)===1
 }
 interface Tag {spellings:Map<string,Set<string>>;authors:Set<string>}
 
@@ -69,18 +58,27 @@ export class SeenTags {
   has(spelling:string):boolean{return this.tags.get(normal(spelling))?.spellings.has(spelling)??false}
   entries(){return [...this.tags].map(([key,entry])=>({tag:key,authors:entry.authors.size,spellings:[...entry.spellings.keys()].sort(compare)})).sort((a,b)=>b.authors-a.authors||compare(a.tag,b.tag))}
   stats(){return{tags:this.tags.size,events:this.events.size,pairs:this.pairs.size}}
+  /** Only alternate relay spellings of the same normalized literal, never related tags. */
+  selectLiteral(query:string):string[]{
+    const literal=literalSearchTags(query),selected=[...literal]
+    for(const tag of literal){
+      const entry=this.tags.get(normal(tag));if(!entry)continue
+      for(const spelling of [...entry.spellings.keys()].sort(compare)){
+        if(selected.length>=TAG_LIMITS.queryTags)return selected
+        if(!selected.includes(spelling))selected.push(spelling)
+      }
+    }
+    return selected
+  }
   select(query:string,limit=TAG_LIMITS.queryTags,extraTags:readonly string[]=[]):string[]{
     if(typeof query!=='string'||query.length>TAG_LIMITS.queryChars||!Number.isInteger(limit)||limit<1||limit>TAG_LIMITS.queryTags)return[]
     const words=tokens(query),text=words.join(' ');if(!text)return[]
     const literal=literalSearchTags(query).slice(0,limit),requested=new Set(Array.isArray(extraTags)?extraTags.slice(0,TAG_LIMITS.queryTags).filter(tag=>typeof tag==='string'&&tag.length<=60).map(normal):[])
-    const groups=families.filter(group=>group.some(term=>phrase(text,normal(term))))
-    const scored=new Map<string,number>(),typos=new Set<string>()
+    const scored=new Map<string,number>()
     for(const [tag] of this.tags){
       const parts=tokens(tag),clean=parts.join(' ')
       const direct=phrase(text,clean)||parts.some(word=>word.length>=3&&words.includes(word))
-      const related=groups.some(group=>group.some(term=>phrase(clean,normal(term))))
-      if(direct||related||requested.has(tag))scored.set(tag,direct?100:requested.has(tag)?90:60)
-      else if(clean.length>=5&&[text,...words].some(word=>word.length>=5&&oneEdit(word,clean))){scored.set(tag,50);typos.add(tag)}
+      if(direct||requested.has(tag))scored.set(tag,direct?100:90)
     }
     // At most two weaker expansions, backed by two distinct authors, avoid a
     // single merchant's broad tag list turning every search into all inventory.
@@ -92,12 +90,12 @@ export class SeenTags {
       if((scored.get(b)??0)>=60&&!scored.has(a))adjacent.set(a,Math.max(adjacent.get(a)??0,authors.size))
     }
     for(const [tag,count] of [...adjacent].sort((a,b)=>b[1]-a[1]||compare(a[0],b[0])).slice(0,2))scored.set(tag,20+Math.min(20,count))
-    const candidates=[...scored].flatMap(([key,score])=>[...this.tags.get(key)!.spellings].map(([tag,authors])=>({tag,score,authors:authors.size,typo:typos.has(key)})))
-    const selected=[...literal];let typoCount=0
+    const candidates=[...scored].flatMap(([key,score])=>[...this.tags.get(key)!.spellings].map(([tag,authors])=>({tag,score,authors:authors.size})))
+    const selected=[...literal]
     for(const item of candidates.sort((a,b)=>b.score-a.score||b.authors-a.authors||compare(a.tag,b.tag))){
       if(selected.length>=limit)break
-      if(selected.includes(item.tag)||item.typo&&typoCount>=TAG_LIMITS.typoTags)continue
-      selected.push(item.tag);if(item.typo)typoCount++
+      if(selected.includes(item.tag))continue
+      selected.push(item.tag)
     }
     return selected
   }

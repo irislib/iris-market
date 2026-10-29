@@ -37,20 +37,23 @@ struct AuthorProfileView: View {
                         if profile.loading { ProgressView("Loading profile…") }
                         if !profile.about.isEmpty { Text(profile.about).font(.body).textSelection(.enabled) }
                         if let website = profile.website, let url = URL(string: website) { Link(website, destination: url).font(.subheadline).lineLimit(2) }
+                        let known = uniqueKnown(profile)
+                        if !known.isEmpty {
+                            KnownFollowersLine(people: Array(known.prefix(3)), total: max(known.count, profile.person.connection.followedByFriends), open: { history.append(author); switchAuthor($0) }, showFollowers: { selectFollowers() })
+                        }
                         HStack(spacing: 18) {
-                            connectionControl("Known", count: profile.followedByKnown.count, value: "known")
                             connectionControl("Following", count: profile.followingCount, value: "following")
-                            connectionControl("Followers", count: profile.followersLoaded == true ? profile.followers.count : nil, value: "followers")
+                            connectionControl("Followers", count: profile.followersLoaded == true ? orderedFollowers(profile).count : nil, value: "followers")
                         }
                         if let selection {
-                            if !profile.loading && (!profile.graphContextLoaded || profile.error != nil) {
+                            if !store.demo && !profile.loading && (!profile.graphContextLoaded || profile.error != nil) {
                                 HStack {
                                     Text("Some connections are unavailable.").font(.caption).foregroundStyle(MarketTheme.muted)
                                     Spacer()
                                     Button("Retry") { store.command(["type": "load_profile", "author": author]) }.font(.caption)
                                 }
                             }
-                            let people = selection == "following" ? profile.following : selection == "followers" ? profile.followers : profile.followedByKnown
+                            let people = selection == "following" ? profile.following : orderedFollowers(profile)
                             if people.isEmpty { Text((selection == "followers" ? profile.followersLoading == true : profile.loading) ? "Loading…" : "No connections to show.").font(.subheadline).foregroundStyle(MarketTheme.muted).padding(.vertical, 12) }
                             ForEach(people) { person in
                                 Button { history.append(author); switchAuthor(person.author) } label: {
@@ -86,7 +89,20 @@ struct AuthorProfileView: View {
                 .onDisappear { cancelFollowers(); store.command(["type": "close_profile", "author": author]) }
         }
     }
-    private func loadFollowers() { store.command(["type": "load_profile_followers", "author": author]) }
+    private func uniqueKnown(_ profile: PublicMarketProfile) -> [MarketPerson] {
+        var seen = Set<String>()
+        return profile.followedByKnown.filter { seen.insert($0.author).inserted }
+    }
+    private func orderedFollowers(_ profile: PublicMarketProfile) -> [MarketPerson] {
+        let people = profile.followedByKnown + profile.followers
+        let byAuthor = Dictionary(people.map { ($0.author, $0) }, uniquingKeysWith: { first, _ in first })
+        return NativeProfileConnections.ordered(known: profile.followedByKnown.map(\.author), followers: profile.followers.map(\.author)).compactMap { byAuthor[$0] }
+    }
+    private func selectFollowers() {
+        selection = "followers"
+        if profile?.followersLoaded != true, profile?.followersLoading != true { loadFollowers() }
+    }
+    private func loadFollowers() { guard !store.demo else { return }; store.command(["type": "load_profile_followers", "author": author]) }
     private func cancelFollowers() { store.command(["type": "cancel_profile_followers", "author": author]) }
     private func switchAuthor(_ next: String) { cancelFollowers(); selection = nil; author = next }
     private func loadMore() { store.command(["type": "load_more_profile_listings", "author": author]) }
@@ -103,4 +119,49 @@ struct AuthorProfileView: View {
             .accessibilityAddTraits(selection == value ? .isSelected : [])
     }
 
+}
+
+/// The same profile components as follower rows, with wrapping for small screens.
+struct KnownFollowersLine: View {
+    let people: [MarketPerson]
+    let total: Int
+    let open: (String) -> Void
+    let showFollowers: () -> Void
+    var body: some View {
+        ProfileInlineLayout(spacing: 4) {
+            Text("Followed by").foregroundStyle(MarketTheme.muted)
+            ForEach(Array(people.enumerated()), id: \.element.author) { index, person in
+                HStack(spacing: 2) {
+                    Button { open(person.author) } label: {
+                        HStack(spacing: 4) { UserAvatar(person: person, size: 20); UserName(person: person) }
+                    }.buttonStyle(.plain)
+                    if index < people.count - 1 { Text(",").foregroundStyle(MarketTheme.muted) }
+                }
+            }
+            let remaining = NativeProfileConnections.remaining(total: total, displayed: people.count)
+            if remaining > 0 { Button("and \(remaining) others", action: showFollowers).buttonStyle(.plain) }
+        }.font(.caption).accessibilityIdentifier("profileFollowedBy")
+    }
+}
+
+private struct ProfileInlineLayout: Layout {
+    var spacing: CGFloat
+    private func arrange(_ subviews: Subviews, width: CGFloat) -> (CGSize, [CGPoint]) {
+        var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0, used: CGFloat = 0
+        var positions: [CGPoint] = []
+        for view in subviews {
+            let size = view.sizeThatFits(ProposedViewSize(width: width, height: nil))
+            if x > 0 && x + size.width > width { x = 0; y += rowHeight + spacing; rowHeight = 0 }
+            positions.append(CGPoint(x: x, y: y)); x += size.width + spacing
+            used = max(used, x - spacing); rowHeight = max(rowHeight, size.height)
+        }
+        return (CGSize(width: used, height: y + rowHeight), positions)
+    }
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        arrange(subviews, width: proposal.width ?? 300).0
+    }
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let positions = arrange(subviews, width: bounds.width).1
+        for (view, point) in zip(subviews, positions) { view.place(at: CGPoint(x: bounds.minX + point.x, y: bounds.minY + point.y), proposal: ProposedViewSize(width: bounds.width, height: nil)) }
+    }
 }

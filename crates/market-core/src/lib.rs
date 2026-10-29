@@ -3,6 +3,7 @@ pub mod geo;
 pub mod identity;
 pub mod image_proxy;
 pub mod listing;
+pub mod literal_search;
 pub mod local_ai;
 pub mod messaging;
 pub mod model;
@@ -46,6 +47,8 @@ pub(crate) struct State {
     status: String,
     error: Option<String>,
     ai_message: Option<String>,
+    ai_test_result: Option<ai::TestResult>,
+    ai_test_token: Option<String>,
     ai_check: u64,
     revision: u64,
     messaging: Option<messaging::Messaging>,
@@ -58,11 +61,13 @@ pub(crate) struct State {
     followers_cancel: Option<Arc<Notify>>,
     local_curation: Option<local_ai::Pending>,
     remote_ai_cancel: Option<Arc<Notify>>,
+    remote_ai_is_check: bool,
     buying_request: u64,
     profile_listings: Option<profile_listings::Feed>,
 }
 impl State {
     fn cancel_remote_ai(&mut self) {
+        self.remote_ai_is_check = false;
         if let Some(cancel) = self.remote_ai_cancel.take() {
             // Retain a permit if invalidation happens before select starts.
             cancel.notify_one();
@@ -93,12 +98,17 @@ impl State {
             (self.side == "all" || l.side == self.side)
                 && (self.ai_search
                     || query.is_empty()
-                    || format!(
-                        "{} {} {} {}",
-                        l.title, l.description, l.location, l.category
-                    )
-                    .to_lowercase()
-                    .contains(&query))
+                    || literal_search::matches_literal_search(
+                        &format!(
+                            "{} {} {} {} {}",
+                            l.title,
+                            l.description,
+                            l.location,
+                            l.category,
+                            l.tags.join(" ")
+                        ),
+                        &query,
+                    ))
         });
         if self.sort == "suggested" {
             ranking::rank(
@@ -178,6 +188,7 @@ impl State {
             status: self.status.clone(),
             error: self.error.clone(),
             ai_message: self.ai_message.clone(),
+            ai_test_result: self.ai_test_result.clone(),
             query: self.query.clone(),
             side: self.side.clone(),
             ai_search: self.ai_search,
@@ -377,6 +388,8 @@ impl Market {
             .into(),
             error: None,
             ai_message: None,
+            ai_test_result: None,
+            ai_test_token: None,
             ai_check: 0,
             revision: 0,
             messaging,
@@ -389,6 +402,7 @@ impl Market {
             followers_cancel: None,
             local_curation: None,
             remote_ai_cancel: None,
+            remote_ai_is_check: false,
             buying_request: 0,
             profile_listings: None,
         };
@@ -445,8 +459,38 @@ impl Market {
             bail!("Profile is closed");
         }
         match command {
-            Command::Curate { api_key } => return self.curate(&api_key, false),
-            Command::CheckAi { api_key } => return self.curate(&api_key, true),
+            Command::Curate { api_key } => return self.curate(&api_key, false, None, None, None),
+            Command::CheckAi {
+                api_key,
+                test,
+                expected,
+                token,
+                clear,
+            } => {
+                if let Some(token) = &token {
+                    anyhow::ensure!(
+                        !token.is_empty()
+                            && token.len() <= 64
+                            && token
+                                .bytes()
+                                .all(|c| c.is_ascii_alphanumeric() || c == b'-'),
+                        "Invalid test token"
+                    );
+                }
+                if clear {
+                    let mut s = self.state.lock().unwrap();
+                    if s.remote_ai_is_check {
+                        s.cancel_remote_ai();
+                    }
+                    s.ai_test_token = token;
+                    s.ai_test_result = None;
+                    s.ai_message = None;
+                    s.ai_check += 1;
+                    s.revision += 1;
+                    return Ok(());
+                }
+                return self.curate(&api_key, true, test, expected, token);
+            }
             Command::Contact { author, listing_id } => return self.contact(&author, &listing_id),
             Command::AcceptInvite { invite } => return self.accept_invite(&invite),
             Command::LoadProfile { author } => return self.load_profile(Some(author)),
@@ -647,6 +691,8 @@ impl Market {
                 s.store.save_settings(&settings)?;
                 s.cancel_remote_ai();
                 s.ai_message = None;
+                s.ai_test_result = None;
+                s.ai_test_token = None;
                 s.ai_check += 1;
                 s.ai_configured = true;
                 s.local_curation = None;
@@ -940,17 +986,48 @@ impl Market {
         Ok(())
     }
 
-    fn curate(&self, key: &str, check: bool) -> Result<()> {
+    fn curate(
+        &self,
+        key: &str,
+        check: bool,
+        sample: Option<ai::TestInput>,
+        expected: Option<ai::TestProvider>,
+        token: Option<String>,
+    ) -> Result<()> {
         let (settings, original_settings, search, candidates, ai_check, cancel) = {
             let mut s = self.state.lock().unwrap();
+            if check
+                && sample.is_some()
+                && (token
+                    .as_ref()
+                    .is_some_and(|value| s.ai_test_token.as_ref() != Some(value))
+                    || expected
+                        .as_ref()
+                        .is_some_and(|value| !value.matches(&s.settings.ai)))
+            {
+                return Ok(());
+            }
+            if check && sample.is_some() && s.remote_ai_cancel.is_some() && !s.remote_ai_is_check {
+                bail!("Stop the current search before testing.");
+            }
             if check {
                 s.ai_message = None;
-                s.error = None;
+                s.ai_test_result = None;
+                if sample.is_none() {
+                    s.error = None;
+                }
                 s.ai_check += 1;
                 s.revision += 1;
             }
             if s.demo {
                 bail!("Leave Preview to connect an AI provider");
+            }
+            if let Some(sample) = &sample {
+                sample.validate()?;
+                anyhow::ensure!(
+                    !ai::is_local(&s.settings.ai),
+                    "Use the on-device model in the native app"
+                );
             }
             if !check && !s.settings.ai.enabled {
                 bail!("Enable AI in settings first");
@@ -980,6 +1057,7 @@ impl Market {
             s.cancel_remote_ai();
             let cancel = Arc::new(Notify::new());
             s.remote_ai_cancel = Some(cancel.clone());
+            s.remote_ai_is_check = check;
             (
                 ai,
                 s.settings.ai.clone(),
@@ -994,7 +1072,13 @@ impl Market {
         if check {
             let started = std::time::Instant::now();
             let result = runtime.block_on(async {
-                tokio::select! { biased; _ = cancel.notified() => None, result = ai::probe(&settings, key) => Some(result) }
+                tokio::select! { biased;
+                    _ = cancel.notified() => None,
+                    result = async {
+                        if let Some(sample) = &sample { ai::test(&settings,key,sample).await.map(Some) }
+                        else { ai::probe(&settings,key).await.map(|()| None) }
+                    } => Some(result)
+                }
             });
             let Some(result) = result else {
                 return Ok(());
@@ -1007,8 +1091,22 @@ impl Market {
                 return Ok(());
             }
             s.remote_ai_cancel = None;
+            s.remote_ai_is_check = false;
+            if sample.is_some() {
+                s.ai_test_result = Some(ai::TestResult {
+                    matched: result.as_ref().ok().copied().flatten(),
+                    elapsed_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+                    provider: settings.provider.clone(),
+                    model: settings.model.clone(),
+                    error: result.is_err().then(|| {
+                        "Test failed. Check the provider settings and try again.".to_owned()
+                    }),
+                });
+                s.revision += 1;
+                return Ok(());
+            }
             match result {
-                Ok(()) => {
+                Ok(_) => {
                     let message = format!("Model connected · {} ms", started.elapsed().as_millis());
                     s.ai_message = Some(message.clone());
                     s.status = message;

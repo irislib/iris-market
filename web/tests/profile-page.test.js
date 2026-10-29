@@ -24,14 +24,14 @@ class SilentSocket {
 }
 globalThis.WebSocket=SilentSocket;
 const {setupProfiles}=await import('../src/profile-ui.ts');
-const {cacheProfileMetadata}=await import('../src/profiles.ts');
+const {cacheProfileMetadata,readProfileMetadata}=await import('../src/profiles.ts');
 const {setupPeople}=await import('../src/people.ts');
 const {profileURL}=await import('../src/routes.ts');
 const {buildReviewDraft}=await import('../src/reviews.ts');
 const relays=['wss://profile.test.invalid'];
 setupPeople({getRelays:()=>relays,isPreview:()=>true});
-const secrets=[new Uint8Array(32).fill(1),new Uint8Array(32).fill(2)],keys=secrets.map(getPublicKey);
-for(let i=0;i<keys.length;i++)cacheProfileMetadata(finalizeEvent({kind:0,created_at:Math.floor(Date.now()/1000),tags:[],content:JSON.stringify({name:['Alice','Bob'][i],about:'Cached public profile'})},secrets[i]),{relays});
+const secrets=Array.from({length:6},(_,index)=>new Uint8Array(32).fill(index+1)),keys=secrets.map(getPublicKey);
+for(let i=0;i<keys.length;i++)cacheProfileMetadata(finalizeEvent({kind:0,created_at:Math.floor(Date.now()/1000),tags:[],content:JSON.stringify({name:['Alice','Bob','Carol','Dave','Eve','Frank'][i],about:'Cached public profile'})},secrets[i]),{relays});
 const all=node=>[node,...node.children.flatMap(all)];
 const find=(node,text)=>all(node).find(element=>element.textContent===text);
 
@@ -116,4 +116,47 @@ test('review summary opens a secondary tab and account refresh preserves the sel
   const host=all(page).find(node=>node.className==='profile-listings');profiles.refreshReviews();assert.equal(started.length,1);assert.equal(stopped.length,0);assert.equal(all(page).find(node=>node.className==='profile-listings'),host);
   find(page,'★ 4.0 · 1 review').click();assert.equal(stopped.length,1);assert(find(page,'Good communication.'));assert.equal(all(page).find(node=>node.attributes.get('aria-selected')==='true').textContent,'Reviews');
   find(page,'Listings').click();assert.equal(started.length,2);profiles.close();assert.equal(stopped.length,2);profiles.destroy();
+});
+
+const graphProfile=(target,known=[])=>({profile:readProfileMetadata(target,{relays}),contextPubkey:keys[0],contextLabel:'Alice',relation:{distance:2,badge:'friend',knownFollowers:known,knownFollowerCount:known.length,description:'Loaded connection',partial:true},mutualFollowing:false,followsContext:false,following:{items:[],total:0,truncated:false},followedByKnown:known.map(pubkey=>({pubkey})),coverage:{secondHopLoaded:4,directFollows:10,warnings:[]}});
+test('known followers replace Known tab and appear first with a max-three linked identity summary',async()=>{
+  const page=new Element('main'),requests=[],known=[keys[2],keys[1],keys[3],keys[4]];
+  const profiles=setupProfiles({page,getRelays:()=>relays,loadProfileData:async()=>graphProfile(keys[0],known),loadFollowers:(key,{signal})=>new Promise(resolve=>requests.push({key,signal,resolve}))});
+  await profiles.open(keys[0],{navigate:false});
+  assert(!all(page).some(node=>node.id==='profile-tab-known'));assert.equal(requests.length,0);
+  const summary=all(page).find(node=>node.className==='profile-followed-by');assert(summary);
+  assert.deepEqual(summary.children.filter(node=>node.dataset.person).map(node=>node.dataset.person),known.slice(0,3));
+  assert(find(summary,'Followed by'));assert(find(summary,'Carol'));assert(find(summary,'Bob'));assert(find(summary,'Dave'));assert(!find(summary,'Eve'));
+  assert(!all(summary).some(node=>node.textContent.startsWith('npub')));
+  find(summary,'and 1 other').click();assert.equal(requests.length,1);
+  let list=all(page).find(node=>node.className==='profile-people');assert.deepEqual(list.children.filter(node=>node.dataset.person).map(node=>node.dataset.person),known);
+  requests[0].resolve({items:[{pubkey:keys[5]},{pubkey:keys[1]},{pubkey:keys[4]}],observedCount:3,complete:false,loaded:true,warnings:[]});await new Promise(resolve=>setImmediate(resolve));
+  list=all(page).find(node=>node.className==='profile-people');assert.deepEqual(list.children.map(node=>node.dataset.person),[...known,keys[5]]);assert(find(page,'Followers 5'));
+  find(page,'Followers 5').click();assert.equal(requests.length,1,'loaded follower pages are reused');
+  const currentSummary=all(page).find(node=>node.className==='profile-followed-by');currentSummary.children.find(node=>node.dataset.person===keys[2]).click();assert(find(page,'Carol'),'known names open profiles via the existing person action');profiles.destroy();
+});
+test('failed inbound lookup retains graph-known followers and retry can exclude superseded signed evidence',async()=>{
+  const page=new Element('main');let calls=0;
+  const profiles=setupProfiles({page,getRelays:()=>relays,loadProfileData:async()=>graphProfile(keys[0],[keys[1],keys[2]]),loadFollowers:async()=>{calls++;if(calls===1)throw Error('offline');return {items:[{pubkey:keys[3]}],excludedKnownFollowers:[keys[1]],observedCount:1,loaded:true,complete:false,warnings:[]};}});
+  await profiles.open(keys[0],{navigate:false});find(page,'Followers 2').click();await new Promise(resolve=>setImmediate(resolve));
+  assert(find(page,'Could not load followers.'));assert(find(page,'Followers 2'));assert.equal(all(page).find(node=>node.className==='profile-people').children.length,2);
+  find(page,'Try again').click();await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(all(page).find(node=>node.className==='profile-people').children.map(node=>node.dataset.person),[keys[2],keys[3]]);assert(find(page,'Followers 2'));
+  const summary=all(page).find(node=>node.className==='profile-followed-by');assert.deepEqual(summary.children.filter(node=>node.dataset.person).map(node=>node.dataset.person),[keys[2]]);profiles.destroy();
+});
+test('unknown follower coverage has no fabricated count or empty followed-by row',async()=>{
+  const page=new Element('main');let resolveFollowers;
+  const profiles=setupProfiles({page,getRelays:()=>relays,loadProfileData:async()=>graphProfile(keys[0]),loadFollowers:()=>new Promise(resolve=>resolveFollowers=resolve)});
+  await profiles.open(keys[0],{navigate:false});assert(!all(page).some(node=>node.className==='profile-followed-by'));assert(find(page,'Followers'));assert(!find(page,'Followers 0'));
+  find(page,'Followers').click();resolveFollowers({items:[],observedCount:0,complete:false,loaded:true,warnings:[]});await new Promise(resolve=>setImmediate(resolve));assert(find(page,'Followers 0'));profiles.destroy();
+});
+
+test('explicitly superseded second-hop followers clear the current stale badge and follow-distance note',async()=>{
+  const page=new Element('main');
+  const profiles=setupProfiles({page,getRelays:()=>relays,loadProfileData:async()=>graphProfile(keys[0],[keys[1]]),loadFollowers:async()=>({items:[],excludedKnownFollowers:[keys[1]],observedCount:0,loaded:true,complete:false,warnings:[]})});
+  await profiles.open(keys[0],{navigate:false});assert(all(page).some(node=>node.className==='relationship-badge relationship-friend'));
+  find(page,'Followers 1').click();await new Promise(resolve=>setImmediate(resolve));
+  assert(!all(page).some(node=>node.className==='profile-followed-by'));
+  assert(!all(page).some(node=>node.className==='relationship-badge relationship-friend'),'the open identity must not retain a second-hop badge after every known path explicitly unfollows');
+  assert(!all(page).some(node=>node.textContent==='Follow distance: 2'&&!node.hidden));profiles.destroy();
 });

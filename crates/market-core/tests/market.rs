@@ -909,3 +909,318 @@ fn off_cancels_delayed_remote_http_and_frees_the_serial_search_queue() {
         app.shutdown();
     }
 }
+
+fn read_sandbox_request(stream: &mut std::net::TcpStream) -> String {
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut bytes = Vec::new();
+    let mut buffer = [0; 2048];
+    let (offset, length) = loop {
+        let n = stream.read(&mut buffer).unwrap();
+        assert!(n > 0);
+        bytes.extend_from_slice(&buffer[..n]);
+        assert!(bytes.len() < 16384);
+        if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+            let headers = String::from_utf8_lossy(&bytes[..end]).to_lowercase();
+            let length: usize = headers
+                .lines()
+                .find_map(|line| line.strip_prefix("content-length:"))
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+            break (end + 4, length);
+        }
+    };
+    while bytes.len() < offset + length {
+        let n = stream.read(&mut buffer).unwrap();
+        assert!(n > 0);
+        bytes.extend_from_slice(&buffer[..n]);
+    }
+    String::from_utf8(bytes[offset..offset + length].to_vec()).unwrap()
+}
+
+#[test]
+fn sandbox_returns_decisions_while_feed_ai_is_off_without_saving_test_text() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
+    let server = std::thread::spawn(move || {
+        for outcome in [Some(true), Some(false), None] {
+            let (mut stream, _) = listener.accept().unwrap();
+            let input = read_sandbox_request(&mut stream);
+            assert!(input.contains("sandbox-only-marker"));
+            assert!(!input.contains("actual-feed-interest"));
+            let response = outcome
+                .map(|matched| {
+                    json!({"choices":[{"message":{"content":json!({"show":matched}).to_string()}}]})
+                        .to_string()
+                })
+                .unwrap_or_else(|| {
+                    "provider echoed synthetic-secret-key and sandbox-only-marker".into()
+                });
+            let code = if outcome.is_some() {
+                "200 OK"
+            } else {
+                "401 Unauthorized"
+            };
+            write!(stream,"HTTP/1.1 {code}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",response.len()).unwrap();
+        }
+    });
+    let dir = tempfile::tempdir().unwrap();
+    offline(dir.path());
+    let secret = iris_market_core::generate_secret_key();
+    let app = Market::open(dir.path(), &secret, false).unwrap();
+    let seller = Keys::generate();
+    app.ingest_event(
+        &listing::build(&seller, &draft(), "sandbox-feed", listing::now(), false).unwrap(),
+    )
+    .unwrap();
+    let mut settings = Settings {
+        relays: vec![],
+        ..Default::default()
+    };
+    settings.ai.enabled = false;
+    settings.ai.model = "sandbox-model".into();
+    settings.ai.base_url = endpoint;
+    settings.ai.interests = "actual-feed-interest".into();
+    app.command(&json!({"type":"set_settings","settings":settings}).to_string())
+        .unwrap();
+    let before: Value = serde_json::from_str(&app.snapshot().unwrap()).unwrap();
+    for expected in [Some(true), Some(false), None] {
+        let raw=app.command(&json!({"type":"check_ai","api_key":"synthetic-secret-key","test":{"query":"sandbox-only-marker","listing":"An example listing for sandbox-only-marker"}}).to_string()).unwrap();
+        assert!(!raw.contains("sandbox-only-marker"));
+        assert!(!raw.contains("synthetic-secret-key"));
+        let after: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(after["ai_test_result"]["matched"], json!(expected));
+        assert_eq!(after["settings"]["ai"]["enabled"], false);
+        assert_eq!(after["ai_test_result"]["provider"], "compatible");
+        assert_eq!(after["ai_test_result"]["model"], "sandbox-model");
+        assert!(after["ai_test_result"]["elapsed_ms"].is_u64());
+        assert_eq!(
+            after["ai_test_result"]["error"].is_null(),
+            expected.is_some()
+        );
+        for key in [
+            "query",
+            "side",
+            "ai_search",
+            "settings",
+            "listings",
+            "saved_listings",
+        ] {
+            assert_eq!(after[key], before[key], "sandbox mutated {key}");
+        }
+    }
+    server.join().unwrap();
+    let cleared: Value =
+        serde_json::from_str(&app.command(r#"{"type":"check_ai","clear":true}"#).unwrap()).unwrap();
+    assert!(cleared["ai_test_result"].is_null());
+    app.shutdown();
+    drop(app);
+    let reopened = Market::open(dir.path(), &secret, false).unwrap();
+    let restored = reopened.snapshot().unwrap();
+    assert!(!restored.contains("sandbox-only-marker"));
+    assert!(serde_json::from_str::<Value>(&restored).unwrap()["ai_test_result"].is_null());
+}
+
+#[test]
+fn sandbox_validates_before_network_and_clear_cancels_a_delayed_check() {
+    use std::sync::{Arc, mpsc};
+    let dir = tempfile::tempdir().unwrap();
+    offline(dir.path());
+    let app = Arc::new(
+        Market::open(dir.path(), &iris_market_core::generate_secret_key(), false).unwrap(),
+    );
+    for sample in [
+        json!({"query":"","listing":"sample"}),
+        json!({"query":"valid","listing":""}),
+        json!({"query":"é".repeat(501),"listing":"sample"}),
+        json!({"query":"valid","listing":"x".repeat(2001)}),
+    ] {
+        assert!(
+            app.command(&json!({"type":"check_ai","test":sample}).to_string())
+                .is_err()
+        );
+    }
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
+    let (started_tx, started_rx) = mpsc::channel();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        read_sandbox_request(&mut stream);
+        started_tx.send(()).unwrap();
+        let mut b = [0; 1];
+        assert!(
+            matches!(stream.read(&mut b), Ok(0) | Err(_)),
+            "clear must close the request transport"
+        );
+    });
+    let mut settings = Settings {
+        relays: vec![],
+        ..Default::default()
+    };
+    settings.ai.enabled = true;
+    settings.ai.model = "delayed".into();
+    settings.ai.base_url = endpoint;
+    app.command(&json!({"type":"set_settings","settings":settings}).to_string())
+        .unwrap();
+    let checking = app.clone();
+    let task = std::thread::spawn(move || {
+        checking
+            .command(
+                &json!({"type":"check_ai","test":{"query":"bicycle","listing":"City bicycle"}})
+                    .to_string(),
+            )
+            .unwrap()
+    });
+    started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    let started = std::time::Instant::now();
+    app.command(r#"{"type":"check_ai","clear":true}"#).unwrap();
+    let finished: Value = serde_json::from_str(&task.join().unwrap()).unwrap();
+    assert!(started.elapsed() < Duration::from_secs(2));
+    assert!(finished["ai_test_result"].is_null());
+    server.join().unwrap();
+}
+
+#[test]
+fn sandbox_rejects_queued_old_tokens_and_provider_context_before_using_a_key() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
+    let dir = tempfile::tempdir().unwrap();
+    offline(dir.path());
+    let app = Market::open(dir.path(), &iris_market_core::generate_secret_key(), false).unwrap();
+    let mut settings = Settings {
+        relays: vec![],
+        ..Default::default()
+    };
+    settings.ai.enabled = true;
+    settings.ai.model = "current".into();
+    settings.ai.base_url = endpoint.clone();
+    app.command(&json!({"type":"set_settings","settings":settings}).to_string())
+        .unwrap();
+    app.command(r#"{"type":"check_ai","clear":true,"token":"new-input"}"#)
+        .unwrap();
+    // Even a non-AI settings write invalidates a queued settings test token.
+    app.command(&json!({"type":"set_settings","settings":settings}).to_string())
+        .unwrap();
+    let stale=app.command(&json!({"type":"check_ai","token":"new-input","test":{"query":"bike","listing":"City bike"}}).to_string()).unwrap();
+    assert!(serde_json::from_str::<Value>(&stale).unwrap()["ai_test_result"].is_null());
+    assert!(matches!(listener.accept(),Err(error) if error.kind()==std::io::ErrorKind::WouldBlock));
+    app.command(r#"{"type":"check_ai","clear":true,"token":"new-input"}"#)
+        .unwrap();
+    let stale_intent=app.command(&json!({"type":"check_ai","token":"new-input","expected":{"provider":"compatible","model":"current","base_url":endpoint,"enabled":false},"test":{"query":"bike","listing":"City bike"}}).to_string()).unwrap();
+    assert!(serde_json::from_str::<Value>(&stale_intent).unwrap()["ai_test_result"].is_null());
+    assert!(matches!(listener.accept(),Err(error) if error.kind()==std::io::ErrorKind::WouldBlock));
+    for (token, provider, model, url) in [
+        ("old-input", "compatible", "current", endpoint.as_str()),
+        ("new-input", "compatible", "old", endpoint.as_str()),
+        ("new-input", "anthropic", "current", endpoint.as_str()),
+        (
+            "new-input",
+            "compatible",
+            "current",
+            "https://previous.invalid/v1",
+        ),
+    ] {
+        let result=app.command(&json!({"type":"check_ai","api_key":"old-endpoint-secret","token":token,"expected":{"provider":provider,"model":model,"base_url":url},"test":{"query":"bike","listing":"City bike"}}).to_string()).unwrap();
+        assert!(serde_json::from_str::<Value>(&result).unwrap()["ai_test_result"].is_null());
+        assert!(
+            matches!(listener.accept(),Err(error) if error.kind()==std::io::ErrorKind::WouldBlock)
+        );
+    }
+}
+
+#[test]
+fn sandbox_refuses_active_feed_work_and_clear_does_not_cancel_curate() {
+    use std::sync::{Arc, mpsc};
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
+    let (started_tx, started_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let body = read_sandbox_request(&mut stream);
+        assert!(body.contains("camera"));
+        started_tx.send(()).unwrap();
+        release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let response = json!({"choices":[{"message":{"content":"{\"show\":true}"}}]}).to_string();
+        write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",response.len()).unwrap();
+    });
+    let dir = tempfile::tempdir().unwrap();
+    offline(dir.path());
+    let app = Arc::new(
+        Market::open(dir.path(), &iris_market_core::generate_secret_key(), false).unwrap(),
+    );
+    app.ingest_event(
+        &listing::build(
+            &Keys::generate(),
+            &draft(),
+            "active-feed",
+            listing::now(),
+            false,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let mut settings = Settings {
+        relays: vec![],
+        ..Default::default()
+    };
+    settings.ai.enabled = true;
+    settings.ai.model = "feed-model".into();
+    settings.ai.base_url = endpoint;
+    app.command(&json!({"type":"set_settings","settings":settings}).to_string())
+        .unwrap();
+    app.command(r#"{"type":"set_filter","query":"camera","side":"all","ai_search":true}"#)
+        .unwrap();
+    let running = app.clone();
+    let (finished_tx, finished_rx) = mpsc::channel();
+    let task = std::thread::spawn(move || {
+        let result = running.command(r#"{"type":"curate"}"#).unwrap();
+        finished_tx.send(result).unwrap();
+    });
+    started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    let before: Value = serde_json::from_str(&app.snapshot().unwrap()).unwrap();
+    let refused = app
+        .command(
+            &json!({"type":"check_ai","test":{"query":"sandbox-only","listing":"sample"}})
+                .to_string(),
+        )
+        .unwrap_err();
+    assert!(
+        refused
+            .to_string()
+            .contains("Stop the current search before testing.")
+    );
+    let after: Value = serde_json::from_str(&app.snapshot().unwrap()).unwrap();
+    for key in [
+        "query",
+        "side",
+        "ai_search",
+        "settings",
+        "listings",
+        "ai_message",
+        "ai_test_result",
+    ] {
+        assert_eq!(after[key], before[key], "refused test changed {key}");
+    }
+    app.command(r#"{"type":"check_ai","clear":true,"token":"editing-input"}"#)
+        .unwrap();
+    assert!(
+        matches!(
+            finished_rx.recv_timeout(Duration::from_millis(50)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ),
+        "clearing a sandbox must not cancel the real feed search"
+    );
+    release_tx.send(()).unwrap();
+    let completed: Value =
+        serde_json::from_str(&finished_rx.recv_timeout(Duration::from_secs(5)).unwrap()).unwrap();
+    assert_eq!(completed["listings"][0]["relevance"]["show"], true);
+    assert_eq!(completed["query"], "camera");
+    assert_eq!(completed["settings"]["ai"]["enabled"], true);
+    task.join().unwrap();
+    server.join().unwrap();
+}

@@ -45,6 +45,14 @@ interface IdTags {
   'account-unlock': 'form';
   'ai-error': 'p';
   'ai-model': 'select';
+  'ai-settings': 'details';
+  'ai-test-query': 'input';
+  'ai-test-title': 'input';
+  'ai-test-description': 'textarea';
+  'ai-test-run': 'button';
+  'ai-test-cancel': 'button';
+  'ai-test-progress': 'progress';
+  'ai-test-status': 'p';
   'ai-options': 'div';
   'ai-progress': 'span';
   'ai-show-all': 'button';

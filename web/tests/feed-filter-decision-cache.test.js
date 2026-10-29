@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import {searchCondition} from '../src/search-condition.ts'
 import {DecisionCache,decisionCacheKey,DECISION_CACHE_LIMIT,DECISION_CACHE_TTL} from '../src/feed-filter/decision-cache.ts'
 
 const scope={model:'deberta',revision:'a'.repeat(40),device:'wasm',dtype:'q8',filterVersion:4,condition:'electronics under 100',content:'Used phone, €80',truncated:false,eventId:'b'.repeat(64)}
@@ -64,3 +65,10 @@ test('pending writes are serialized and new decisions are retained for the next 
   cache.set(key('b'),yes);assert.equal(cache.flush(),first);assert.equal(writes.length,1);finish();await first
   const second=cache.flush();await Promise.resolve();assert.equal(writes.length,2);assert.deepEqual(writes[1].map(row=>row.key),[key('b')]);finish();await second
 })
+
+
+test('condition hashes isolate the compound-query fix without invalidating existing single-word decisions',()=>{
+  const fixed=searchCondition('fresh apples','deberta'),old=searchCondition('fresh apples','browser');
+  assert.notEqual(decisionCacheKey({...scope,condition:fixed}),decisionCacheKey({...scope,condition:old}));
+  assert.equal(decisionCacheKey({...scope,condition:searchCondition('apples','deberta')}),decisionCacheKey({...scope,condition:'This text is about apples.'}));
+});

@@ -16,6 +16,6 @@ name = "iris-market"
 path = "src/main.rs"
 
 [dependencies]
-iris-market-core = { version = "=0.1.1", path = "../market-core" }
+iris-market-core = { version = "=0.1.2", path = "../market-core" }
 serde_json.workspace = true
 anyhow.workspace = true

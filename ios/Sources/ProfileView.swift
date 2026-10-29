@@ -60,6 +60,9 @@ struct AISettingsView: View {
     @State private var owner = ""
     @State private var aiIntentEpoch = 0
     @State private var autosave: Task<Void, Never>?
+    @State private var testInput = NativeAITestInput()
+    private enum TestField: Hashable { case query, listing }
+    @FocusState private var testField: TestField?
     private var preset: NativeAIProvider { NativeAIProvider.presets.first { $0.id == presetID }! }
     private var local: Bool { settings.ai.provider == "apple" }
     private var canSave: Bool {
@@ -97,24 +100,32 @@ struct AISettingsView: View {
                         }
                         if customModel || preset.models.isEmpty { TextField("Model name", text: $settings.ai.model).marketNoAutocapitalization().autocorrectionDisabled() }
                         if settings.ai.provider != "ollama" {
-                            SecureField("API key", text: Binding(get: { apiKey }, set: { apiKey = $0; saved.keyChanged(); scheduleSave() })).marketNoAutocapitalization().autocorrectionDisabled()
+                            SecureField("API key", text: Binding(get: { apiKey }, set: { apiKey = $0; store.clearAITest(); saved.keyChanged(); scheduleSave() })).marketNoAutocapitalization().autocorrectionDisabled()
                             if let value = preset.keyURL, let url = URL(string: value) { Link(presetID == "systemone" ? "Service details" : "Get an API key", destination: url) }
                         }
                         Text(settings.ai.provider == "ollama" ? "Sends your search and public listing text to your Ollama server. Install the selected model on that server first." : "Sends your search and public listing text to this provider.").font(.caption).foregroundStyle(MarketTheme.muted)
                         if let value = preset.infoURL, let url = URL(string: value) { Link(presetID == "gemini" ? "Provider terms" : "Models and usage", destination: url).font(.caption) }
                     }
-                    Button(local ? "Check model" : "Test connection") {
-                        save { if $0 { store.runAI(type: "check_ai") } }
-                    }.disabled(store.busy || !settings.ai.enabled || !canSave || (store.demo && !local) || (local && store.appleAIUnavailableReason != nil))
+                    TextField("Test search", text: $testInput.query).focused($testField, equals: .query).accessibilityIdentifier("aiTestQuery")
+                    TextField("Example listing", text: $testInput.listing, axis: .vertical).lineLimit(2...5).focused($testField, equals: .listing).accessibilityIdentifier("aiTestListing")
+                    Text("Use sample text. This test does not change your feed.").font(.caption).foregroundStyle(MarketTheme.muted)
+                    HStack {
+                        Button("Test") { testField = nil; save { if $0 { store.testAI(testInput) } } }.accessibilityIdentifier("aiSandboxTest")
+                            .disabled(store.busy || store.aiTestBusy || !canSave || testInput.validationError != nil || (store.demo && !local) || !NativeAIReadiness.canEnable(provider: settings.ai.provider, model: settings.ai.model, endpoint: settings.ai.baseUrl, localAvailable: store.appleAIUnavailableReason == nil))
+                        if store.aiTestBusy { ProgressView(); Button("Stop") { store.clearAITest() }.accessibilityIdentifier("aiSandboxStop") }
+                    }
+                    if let result = store.aiTestResult {
+                        Text(result.summary(providerLabel: preset.label)).font(.caption).accessibilityIdentifier("aiSandboxResult")
+                        if let error = result.error { Text(error).font(.caption).foregroundStyle(MarketTheme.muted) }
+                    }
+                    if let error = store.aiTestError { Text(error).font(.caption).foregroundStyle(MarketTheme.muted).accessibilityIdentifier("aiSandboxError") }
                     if let progress = store.localAIProgress { HStack { ProgressView(); Text(progress).font(.caption); Spacer(); Button("Stop") { store.cancelLocalAI() } } }
-                    if let status = store.localAIStatus { Text(status).font(.caption).foregroundStyle(MarketTheme.muted) }
-                    if let message = store.snapshot.aiMessage { Text(message).font(.caption).foregroundStyle(MarketTheme.muted) }
                     MarketInlineError()
                 }
-            }.scrollContentBackground(.hidden).background(MarketTheme.paper).navigationTitle("AI search").marketInlineTitle()
+            }.scrollContentBackground(.hidden).background(MarketTheme.paper).marketKeyboardDismissal().navigationTitle("AI search").marketInlineTitle()
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { save(); dismiss() } } }
                 .onAppear {
-                    owner = store.snapshot.publicKey; aiIntentEpoch = store.aiIntentEpoch; store.aiPreferencesEditing = true; store.refreshAIAvailability()
+                    owner = store.snapshot.publicKey; aiIntentEpoch = store.aiIntentEpoch; store.aiPreferencesEditing = true; store.refreshAIAvailability(); store.clearAITest()
                     presetID = NativeAIProvider.matching(settings.ai).id
                     customModel = !preset.models.contains { $0.id == settings.ai.model }
                     loadKey(); saved.reset(settings); initialized = true
@@ -126,8 +137,9 @@ struct AISettingsView: View {
                     loadKey(); scheduleSave()
                 }
                 .onChange(of: settings.ai.baseUrl) { _ in if initialized { loadKey() } }
-                .onChange(of: settings) { _ in if initialized { scheduleSave() } }
-                .onDisappear { autosave?.cancel(); save(); store.aiPreferencesEditing = false }
+                .onChange(of: testInput) { _ in store.clearAITest() }
+                .onChange(of: settings) { _ in if initialized { store.clearAITest(); scheduleSave() } }
+                .onDisappear { store.clearAITest(); autosave?.cancel(); save(); store.aiPreferencesEditing = false }
         }
     }
     private func loadKey() {

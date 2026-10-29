@@ -162,6 +162,7 @@ pub struct Snapshot {
     pub status: String,
     pub error: Option<String>,
     pub ai_message: Option<String>,
+    pub ai_test_result: Option<crate::ai::TestResult>,
     pub query: String,
     pub side: String,
     pub ai_search: bool,
@@ -239,6 +240,14 @@ pub enum Command {
     CheckAi {
         #[serde(default)]
         api_key: String,
+        #[serde(default)]
+        test: Option<crate::ai::TestInput>,
+        #[serde(default)]
+        expected: Option<crate::ai::TestProvider>,
+        #[serde(default)]
+        token: Option<String>,
+        #[serde(default)]
+        clear: bool,
     },
     Contact {
         author: String,

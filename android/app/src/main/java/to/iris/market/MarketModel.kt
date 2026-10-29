@@ -75,7 +75,7 @@ data class MarketSnapshot(
     val people: Map<String, PublicPerson> = emptyMap(), val profile: PublicProfile? = null, val graphContextLoaded: Boolean = false,
     val profileListings: ProfileListings? = null,
     val localCuration: LocalCurationBatch? = null,
-    val revision: Long = 0, val aiMessage: String? = null, val savedListings: List<Listing>? = null, val aiConfigured: Boolean = true, val profileNameRequired: Boolean = false
+    val revision: Long = 0, val aiMessage: String? = null, val aiTestResult: NativeAITestResult? = null, val savedListings: List<Listing>? = null, val aiConfigured: Boolean = true, val profileNameRequired: Boolean = false
 ) {
     companion object {
         fun parse(raw: String): MarketSnapshot {
@@ -84,7 +84,7 @@ data class MarketSnapshot(
             val cs = o.optJSONArray("conversations") ?: JSONArray()
             return MarketSnapshot(
                 publicKey = o.optString("public_key"), canSign = o.optBoolean("can_sign"), messagingReady = o.optBoolean("messaging_ready"), demo = o.optBoolean("demo"),
-                status = o.optString("status", "Ready"), error = o.optional("error"), revision = o.optLong("revision"), aiMessage = o.optional("ai_message"),
+                status = o.optString("status", "Ready"), error = o.optional("error"), revision = o.optLong("revision"), aiMessage = o.optional("ai_message"), aiTestResult=o.optJSONObject("ai_test_result")?.let {NativeAITestResult.parse(it)},
                 query = o.optString("query"), side = o.optString("side", "offer"),
                 listings = (0 until ls.length()).map { Listing.parse(ls.getJSONObject(it)) }, savedCount = o.optInt("saved_count"),
                 settings = (o.optJSONObject("settings") ?: JSONObject()).toString(),
@@ -175,6 +175,11 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
     private val localModel = LocalModel(application, viewModelScope)
     val localModelState = localModel.state
     private var localCurationJob: Job? = null
+    private val mutableAITest=MutableStateFlow(NativeAITestUI())
+    val aiTest=mutableAITest.asStateFlow()
+    private val aiTestSession=NativeAITestSession()
+    private var aiTestJob: Job?=null
+    private val aiTestClearMutex=Mutex()
     @Volatile var aiPreferencesEditing = false
 
     fun downloadLocalModel() { if (!state.value.demo) localModel.download() }
@@ -192,6 +197,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
         }
     }
     private fun openSavedAccount() {
+        invalidateAITest()
         accountGeneration += 1
         aiIntentGate.advance()
         core?.shutdown();core?.close();core=null
@@ -439,6 +445,63 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
     fun searchAI(query: String, side: String) = command(JSONObject().put("type", "set_filter").put("query", query).put("side", side).put("ai_search", true)) { ai("curate") }
     fun save(id: String) = command(JSONObject().put("type", "save").put("id", id))
     fun action(type: String) = command(JSONObject().put("type", type))
+    private fun aiTestContext(): NativeAITestContext {
+        val ai=JSONObject(state.value.settings).optJSONObject("ai") ?: JSONObject()
+        return NativeAITestContext(accountGeneration,aiIntentEpoch,ai.optString("provider"),ai.optString("model"),ai.optString("base_url"),ai.optBoolean("enabled"))
+    }
+    private fun invalidateAITest(): Long {
+        val revision=aiTestSession.invalidate();aiTestJob?.cancel();aiTestJob=null;mutableAITest.value=NativeAITestUI();return revision
+    }
+    fun clearAITest() {
+        val revision=invalidateAITest();val app=core ?: return;val generation=accountGeneration
+        mutableAITest.value=NativeAITestUI(busy=true)
+        viewModelScope.launch {
+            aiTestClearMutex.withLock { withContext(Dispatchers.IO) { runCatching {app.command("{\"type\":\"check_ai\",\"clear\":true,\"token\":\"$revision\"}")} } }
+            if(accountGeneration==generation&&aiTestSession.revision==revision) mutableAITest.value=NativeAITestUI()
+        }
+    }
+    fun testAI(sample: NativeAITestInput) {
+        if(working.value || mutableAITest.value.busy || localCurationJob?.isActive==true)return
+        val revision=invalidateAITest();val context=aiTestContext()
+        sample.validationError?.let {mutableAITest.value=NativeAITestUI(error=it);return}
+        if(state.value.demo){mutableAITest.value=NativeAITestUI(error="Preview stays offline. Leave preview to test this provider.");return}
+        if(context.provider=="litert"&&!localModelState.value.available){mutableAITest.value=NativeAITestUI(error=if(localModelState.value.busy) "The on-device model is preparing. Try again when ready." else "Download and verify the on-device model in Settings first.");return}
+        if(context.provider!="litert"&&!NativeAIReadiness.canEnable(context.provider,context.model,context.endpoint,false)){mutableAITest.value=NativeAITestUI(error="Choose a model and provider URL before testing.");return}
+        val app=core ?: return
+        mutableAITest.value=NativeAITestUI(busy=true)
+        aiTestJob=viewModelScope.launch {
+            val started=System.nanoTime()
+            try {
+                val result=if(context.provider=="litert") {
+                    val matched=withTimeout(45_000){NativeAITestRunner.run(sample) {localModel.classify(it,sandbox=true)}}
+                    ensureActive()
+                    NativeAITestResult(matched,(System.nanoTime()-started)/1_000_000,context.provider,context.model)
+                } else withContext(Dispatchers.IO) { mutex.withLock {
+                    check(aiTestSession.accepts(revision,context,aiTestContext()))
+                    val settings=JSONObject(MarketSnapshot.parse(app.snapshot()).settings).getJSONObject("ai")
+                    check(settings.optString("provider")==context.provider&&settings.optString("model")==context.model&&settings.optString("base_url")==context.endpoint&&settings.optBoolean("enabled")==context.enabled)
+                    val key=secure.get(NativePreferences.keySlot(context.provider,context.endpoint))
+                    val request=JSONObject().put("type","check_ai").put("api_key",key).put("test",JSONObject().put("query",sample.query).put("listing",sample.listing)).put("token",revision.toString())
+                        .put("expected",JSONObject().put("provider",context.provider).put("model",context.model).put("base_url",context.endpoint).put("enabled",context.enabled))
+                    aiTestClearMutex.withLock {
+                        check(aiTestSession.accepts(revision,context,aiTestContext()))
+                        app.command(JSONObject().put("type","check_ai").put("clear",true).put("token",revision.toString()).toString())
+                    }
+                    val next=MarketSnapshot.parse(app.command(request.toString()))
+                    val returned=JSONObject(next.settings).getJSONObject("ai")
+                    check(returned.optString("provider")==context.provider&&returned.optString("model")==context.model&&returned.optString("base_url")==context.endpoint&&returned.optBoolean("enabled")==context.enabled)
+                    next.aiTestResult?.takeIf {it.provider==context.provider&&it.model==context.model}
+                } }
+                ensureActive()
+                if(aiTestSession.accepts(revision,context,aiTestContext())) mutableAITest.value=NativeAITestUI(result=result,error=if(result==null) "Test cancelled. Try again when ready." else null)
+            } catch(_:TimeoutCancellationException){if(aiTestSession.accepts(revision,context,aiTestContext())) mutableAITest.value=NativeAITestUI(error="The model took too long to finish this test.")}
+            catch(e:CancellationException){throw e}
+            catch(e:Exception){if(aiTestSession.accepts(revision,context,aiTestContext())) mutableAITest.value=NativeAITestUI(error=if(e.message?.contains("Stop the current search before testing.")==true) "Stop the current search before testing." else "Could not finish the test. Check this model’s settings and try again.")}
+            catch(_:LinkageError){if(aiTestSession.accepts(revision,context,aiTestContext())) mutableAITest.value=NativeAITestUI(error="This model could not load on this device.")}
+            catch(_:OutOfMemoryError){if(aiTestSession.accepts(revision,context,aiTestContext())) mutableAITest.value=NativeAITestUI(error="Not enough memory for this model.")}
+            finally {if(aiTestSession.revision==revision) {mutableAITest.value=mutableAITest.value.copy(busy=false);aiTestJob=null}}
+        }
+    }
     fun ai(type: String) {
         val provider = JSONObject(state.value.settings).optJSONObject("ai")?.optString("provider", "compatible") ?: "compatible"
         if (provider == "litert") { runLocalCuration(checkOnly = type == "check_ai"); return }
@@ -461,7 +524,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
     }
 
     private fun runLocalCuration(checkOnly: Boolean) {
-        if (state.value.demo || localCurationJob?.isActive == true) return
+        if (state.value.demo || localCurationJob?.isActive == true || mutableAITest.value.busy) return
         val previous = localCurationJob
         localCurationJob = viewModelScope.launch {
             previous?.join()
@@ -540,10 +603,13 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
         }
     }
     override fun onCleared() {
+        invalidateAITest()
+        val app=core
         super.onCleared()
-        CoroutineScope(Dispatchers.IO).launch { mutex.withLock {
-            runCatching { core?.shutdown() }; core?.close(); core = null
-        } }
+        CoroutineScope(Dispatchers.IO).launch {
+            runCatching { app?.shutdown() }
+            mutex.withLock { app?.close(); if(core===app) core = null }
+        }
     }
 }
 

@@ -11,6 +11,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -99,6 +100,10 @@ import org.json.JSONObject
 
 @Composable fun SettingsView(state:MarketSnapshot,model:MarketModel,busy:Boolean,done:()->Unit) {
     val localModel by model.localModelState.collectAsState()
+    val aiTest by model.aiTest.collectAsState()
+    val testFocus=LocalFocusManager.current
+    var testQuery by remember { mutableStateOf("bicycle") }
+    var testListing by remember { mutableStateOf("City bicycle in working condition.") }
     val initial=remember { JSONObject(state.settings) }
     val clipboard=LocalClipboardManager.current
     val imageProxy=remember { initial.optJSONObject("image_proxy") ?: JSONObject() }
@@ -129,7 +134,8 @@ import org.json.JSONObject
     val owner = remember { state.publicKey }
     var aiIntentEpoch by remember { mutableStateOf(model.aiIntentEpoch) }
     val latestSave by rememberUpdatedState(newValue = { if(owner == model.state.value.publicKey && (settingsJSON != originalSettingsJSON || replaceKey)) model.saveSettings(settings(), provider, key, replaceKey, expectedAIIntent=aiIntentEpoch,onIntentCommitted={committed -> aiIntentEpoch=maxOf(aiIntentEpoch,committed)}) {} })
-    DisposableEffect(Unit) { model.aiPreferencesEditing = true; onDispose { latestSave(); model.aiPreferencesEditing = false } }
+    DisposableEffect(Unit) { model.aiPreferencesEditing = true; onDispose { model.clearAITest(); latestSave(); model.aiPreferencesEditing = false } }
+    LaunchedEffect(settingsJSON,key,testQuery,testListing) { model.clearAITest() }
     LaunchedEffect(settingsJSON, key, replaceKey) { delay(650); if(settingsJSON != originalSettingsJSON || replaceKey) { latestSave(); replaceKey = false } }
     Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).imePadding().padding(horizontal=24.dp).padding(bottom=30.dp),verticalArrangement=Arrangement.spacedBy(14.dp)) {
         Row(verticalAlignment=Alignment.CenterVertically) {
@@ -183,7 +189,7 @@ import org.json.JSONObject
                             LocalModelPhase.REVIEWING -> "Reviewing ${localModel.reviewed} of ${localModel.total}"
                             else -> "Removing model"
                         },Modifier.weight(1f),style=MaterialTheme.typography.bodySmall)
-                        if(localModel.phase!=LocalModelPhase.DELETING) TextButton(onClick=model::cancelLocalAI) { Text("Stop") }
+                        if(localModel.phase!=LocalModelPhase.DELETING && !aiTest.busy) TextButton(onClick=model::cancelLocalAI) { Text("Stop") }
                     }
                 }
             }
@@ -203,8 +209,20 @@ import org.json.JSONObject
         preset.keyURL?.let { url -> TextButton(onClick={uri.openUri(url)}) { Text(if(presetID=="systemone") "Service details" else "Get an API key") } }
         preset.infoURL?.let { url -> TextButton(onClick={uri.openUri(url)}) { Text(if(presetID=="gemini") "Provider terms · EEA conditions apply" else "Models and usage") } }
         }
-        Button(enabled=enabled&&!busy&&!state.demo&&(provider!="litert"||localModel.available),onClick={model.saveSettings(settings(),provider,key,replaceKey,expectedAIIntent=aiIntentEpoch) { model.ai("check_ai") };replaceKey=false}) { Text(if(provider=="litert") "Check model" else "Test connection") }
-        state.aiMessage?.let { Text(it,color=Muted,style=MaterialTheme.typography.bodySmall) }
+        MarketField(testQuery,{testQuery=it},"Test search")
+        MarketField(testListing,{testListing=it},"Example listing",lines=2)
+        Text("Use sample text. This test does not change your feed.",color=Muted,style=MaterialTheme.typography.bodySmall)
+        Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)) {
+            Button(enabled=!busy&&!aiTest.busy&&!state.demo&&NativeAITestInput(testQuery,testListing).validationError==null&&NativeAIReadiness.canEnable(provider,modelName,endpoint,localModel.available),onClick={
+                testFocus.clearFocus()
+                val runTest={model.testAI(NativeAITestInput(testQuery,testListing))}
+                if(settingsJSON!=originalSettingsJSON||replaceKey) model.saveSettings(settings(),provider,key,replaceKey,expectedAIIntent=aiIntentEpoch,done=runTest) else runTest()
+                replaceKey=false
+            },modifier=Modifier.testTag("aiSandboxTest")) { Text("Test") }
+            if(aiTest.busy) { CircularProgressIndicator(Modifier.size(20.dp));TextButton(onClick={model.clearAITest()},modifier=Modifier.testTag("aiSandboxStop")){Text("Stop")} }
+        }
+        aiTest.result?.let { result -> Text(result.summary(preset.label),style=MaterialTheme.typography.bodySmall,modifier=Modifier.testTag("aiSandboxResult"));result.error?.let {Text(it,color=Muted,style=MaterialTheme.typography.bodySmall)} }
+        aiTest.error?.let { Text(it,color=Muted,style=MaterialTheme.typography.bodySmall,modifier=Modifier.testTag("aiSandboxError")) }
         Box {
             OutlinedButton(onClick={currencyMenu=true}) { Text("Display currency · $currency") }
             DropdownMenu(expanded=currencyMenu,onDismissRequest={currencyMenu=false}) { NativePreferences.currencies.forEach { choice -> DropdownMenuItem(text={Text(choice)},onClick={currency=choice;currencyMenu=false}) } }

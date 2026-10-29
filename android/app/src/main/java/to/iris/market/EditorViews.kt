@@ -130,6 +130,7 @@ import org.json.JSONObject
             Switch(checked=enabled,onCheckedChange={enabled=it},modifier=Modifier.testTag("enableAI"))
         }
         if(state.demo) Text("Preview stays offline. AI search is unavailable here.",color=Muted,style=MaterialTheme.typography.bodySmall)
+        if(provider!="litert"&&!localModel.available&&NativeAIReadiness.canSelectLocalOnTap(provider,modelName,endpoint)) Text("On-device AI needs a downloaded, verified model.",color=Muted,style=MaterialTheme.typography.bodySmall)
         Surface(color=Mint,shape=RoundedCornerShape(16.dp)) {
             Text(if(provider=="litert") "Listing searches run on this device. No cloud fallback." else "Sends your search and public listing text to this provider.",
                 Modifier.padding(16.dp),style=MaterialTheme.typography.bodySmall)

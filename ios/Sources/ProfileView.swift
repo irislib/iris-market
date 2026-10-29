@@ -72,6 +72,10 @@ struct AISettingsView: View {
             Form {
                 Section {
                     Toggle("AI search", isOn: $settings.ai.enabled).accessibilityIdentifier("enableAI")
+                    if !local && NativeAIReadiness.canSelectLocalOnTap(provider: settings.ai.provider, model: settings.ai.model, endpoint: settings.ai.baseUrl), let reason = store.appleAIUnavailableReason {
+                        Text("Apple on-device: \(reason)").font(.caption).foregroundStyle(MarketTheme.muted).accessibilityIdentifier("appleAIAvailability")
+                    }
+                    if store.demo && !local { Text("Preview stays offline. Remote AI search is unavailable here.").font(.caption).foregroundStyle(MarketTheme.muted) }
                     Picker("Provider", selection: $presetID) {
                         ForEach(NativeAIProvider.presets.filter { ["apple", "systemone"].contains($0.id) }) { Text($0.label).tag($0.id) }
                         Section("Other providers") { ForEach(NativeAIProvider.presets.filter { !["apple", "systemone"].contains($0.id) }) { Text($0.label).tag($0.id) } }

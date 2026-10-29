@@ -82,4 +82,4 @@ dialog { color:var(--ink); background:var(--bg); border:1px solid var(--line); b
 .header nav .nav{flex-shrink:0;white-space:nowrap}
 
 @media(max-width:520px){.header nav{gap:14px}}
-.ai-test { border-top:1px solid var(--line);margin-top:18px;padding-top:18px; }.ai-test h3{font-size:15px;margin:0 0 14px}.settings-dialog .ai-test label{display:block;margin-top:12px}.settings-dialog .ai-test input,.settings-dialog .ai-test textarea{display:block;width:100%;max-width:none;margin-top:8px}.ai-test progress{width:100%;margin-top:12px}#ai-test-description{margin-bottom:0}#ai-test-status{margin-top:12px}
+.ai-test { border-top:1px solid var(--line);margin-top:18px;padding-top:18px; }.ai-test h3{font-size:15px;margin:0 0 14px}#preferences-dialog .ai-test label{display:block;margin-top:12px}.settings-dialog .ai-test input,.settings-dialog .ai-test textarea{display:block;width:100%;max-width:none;margin-top:8px}.ai-test progress{width:100%;margin-top:12px}#ai-test-description{margin-bottom:0}#ai-test-status{margin-top:12px}

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {finalizeEvent,generateSecretKey} from 'nostr-tools/pure';
-import {listingDraft} from '../src/composer.ts';
+import {listingDraft,revisedListingDraft} from '../src/composer.ts';
 import {parseEvent} from '../src/market.ts';
 const values={title:'Desk',description:'Local pickup',price:'100.50',currency:'eur',location:'Helsinki',side:'offer',category:'home'};
 test('web draft signs into the same NIP99 listing shape used by live browsing',()=>{const draft=listingDraft(values,{identifier:'test-listing'});const listing=parseEvent(finalizeEvent(draft,generateSecretKey()));assert.equal(listing.price,'100.50');assert.equal(listing.currency,'EUR');assert.equal(listing.location,'Helsinki');assert.equal(listing.identifier,'test-listing');});
@@ -31,4 +31,15 @@ test('file selection validates the whole addition and successful uploads are ret
 });
 test('cancelled file preparation never starts another upload',async()=>{
  let calls=0;const selected=createAttachmentSelection(async()=>{calls++;return upload()});selected.add([new File(['x'],'x.pdf')]);const control=new AbortController();control.abort();await assert.rejects(selected.uploadAll({signal:control.signal}),{name:'AbortError'});assert.equal(calls,0);
+});
+
+test('editing keeps the address, attachment metadata and location while replacing form fields',()=>{
+ const secret=generateSecretKey(),original=listingDraft({...values,image:'https://example.com/desk.jpg'},{identifier:'stable-id',attachments:[upload()]});
+ original.tags.push(['g','ud9wr'],['t','vintage'],['image','https://example.com/second.jpg']);
+ const previous=parseEvent(finalizeEvent(original,secret));
+ const revised=revisedListingDraft({...values,title:'Oak desk',price:'95',description:previous.description,image:previous.imageUrl},previous);
+ const next=parseEvent(finalizeEvent(revised,secret));
+ assert.equal(next.id,previous.id);assert.equal(next.title,'Oak desk');assert.equal(next.price,'95');assert(next.createdAt>previous.createdAt);
+ assert.deepEqual(revised.tags.filter(t=>t[0]==='g'),[['g','ud9wr']]);assert(revised.tags.some(t=>t[0]==='imeta'));assert(revised.tags.some(t=>t[0]==='r'));assert(revised.tags.some(t=>t[0]==='t'&&t[1]==='vintage'));assert.equal(revised.tags.filter(t=>t[0]==='image').length,2);
+ assert.equal(revised.content,previous.description);assert(Object.isFrozen(previous.originalTags));assert(Object.isFrozen(previous.originalTags[0]));
 });

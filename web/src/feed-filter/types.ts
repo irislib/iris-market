@@ -1,6 +1,7 @@
 export type FeedModelId = 'qwen35' | 'deberta'
 export type FeedDevice = 'auto' | 'webgpu' | 'wasm'
-export type ProgressHandler = (message: string) => void
+export interface DownloadProgress { loaded: number; total?: number }
+export type ProgressHandler = (message: string, details?: DownloadProgress) => void
 export interface FeedModelSpec {
   label: string; downloadMB: number; requiresWebGPU: boolean
   repo: string; revision: string; dtype: 'q4' | 'q8'; files: Readonly<Record<string, string>>
@@ -12,4 +13,4 @@ export interface ClassificationResult { score: number; milliseconds: number; inp
 export interface FeedDecision extends ClassificationResult { show: boolean }
 export type FilterRequest = { type: 'load'; model: string; device: string } | { type: 'classify'; condition: string; content: string }
 export type FilterResult = FeedModelInfo | ClassificationResult
-export interface WorkerResponse { id: number; progress?: string; error?: string; result?: FilterResult }
+export interface WorkerResponse { id: number; progress?: string; progressDetails?: DownloadProgress; error?: string; result?: FilterResult }

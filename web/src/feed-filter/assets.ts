@@ -36,10 +36,25 @@ export function createPinnedModelFetch(fetchImpl: typeof fetch, { onProgress = (
       if (!metadataOnly || !range || Number(range[1]) > maxBytes) throw new Error('Unexpected partial model response.')
       return response
     }
-    if (Number(response.headers.get('content-length')) > maxBytes) throw new Error('The model download exceeds its expected size.')
-    onProgress(`Downloading ${spec.label}…`)
-    const bytes = await response.arrayBuffer()
-    if (bytes.byteLength > maxBytes) throw new Error('The model download exceeds its expected size.')
+    const declared=Number(response.headers.get('content-length'))
+    if (declared > maxBytes) throw new Error('The model download exceeds its expected size.')
+    const total=Number.isSafeInteger(declared)&&declared>0?declared:undefined
+    if(!response.body)throw new Error('The model download was empty.')
+    const reader=response.body.getReader(),chunks:Uint8Array[]=[],label=spec.label.split(' · ')[0]
+    let size=0,lastReport=0,lastPercent=-1
+    const report=(force=false)=>{
+      const percent=total?Math.floor(size/total*100):-1,time=Date.now()
+      if(!force&&time-lastReport<200&&percent===lastPercent)return
+      lastReport=time;lastPercent=percent
+      const amount=(size/1000000).toFixed(1),maximum=total?(total/1000000).toFixed(1):undefined
+      onProgress(`Downloading ${label} · ${amount}${maximum?` / ${maximum}`:''} MB${total?` · ${Math.min(100,percent)}%`:''}`,{loaded:size,...(total?{total}:{})})
+    }
+    report(true)
+    try{
+      while(true){const {done,value}=await reader.read();if(done)break;size+=value.byteLength;if(size>maxBytes)throw new Error('The model download exceeds its expected size.');chunks.push(value);report()}
+    }catch(error){try{await reader.cancel()}catch{}throw error}finally{reader.releaseLock()}
+    report(true)
+    const bytes=new Uint8Array(size);let offset=0;for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.byteLength}
     onProgress('Verifying model download…')
     const digest = await crypto.subtle.digest('SHA-256', bytes)
     const actual = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')

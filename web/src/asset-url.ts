@@ -1,3 +1,4 @@
+import { routeBase } from './route-base.ts';
 /** Own assets stay inside a static deployment directory, including Hashtree mounts. */
 export function assetUrl(path, baseURI = globalThis.document?.baseURI ?? globalThis.location?.href) {
   const relative = path.startsWith('./') ? path : `./${path}`;
@@ -5,7 +6,7 @@ export function assetUrl(path, baseURI = globalThis.document?.baseURI ?? globalT
 }
 
 export function deploymentBase(baseURI = globalThis.document?.baseURI ?? globalThis.location?.href ?? 'https://market.iris.to/') {
-  return new URL('./', baseURI);
+  return routeBase(baseURI);
 }
 
 /** Keep capability data in the fragment and use a file that static hosts already serve. */

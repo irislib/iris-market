@@ -56,3 +56,14 @@ test('gzip runtime is size-bounded and checked against the pinned unpacked diges
   assert.equal(RUNTIME.byteLength, 26861777)
   assert.equal(RUNTIME.sha256, '49871f5a4409519797e127440868a6d1923339d9185907f301a5b2a1d90af082')
 })
+
+test('weight download streams real byte progress and verifies the complete payload',async()=>{
+  const chunks=[new TextEncoder().encode('first'),new TextEncoder().encode('second')],bytes=Buffer.concat(chunks),progress=[];
+  const models={fixture:{...model,files:{'model_quantized.onnx':createHash('sha256').update(bytes).digest('hex')}}};
+  const response=()=>new Response(new ReadableStream({start(controller){for(const chunk of chunks)controller.enqueue(chunk);controller.close();}}),{headers:{'content-length':String(bytes.length)}});
+  const fetcher=createPinnedModelFetch(async()=>response(),{models,onProgress:(message,detail)=>progress.push({message,detail})});
+  assert.deepEqual(new Uint8Array(await(await fetcher(`${pinned}/onnx/model_quantized.onnx`)).arrayBuffer()),new Uint8Array(bytes));
+  assert(progress.some(item=>item.detail?.loaded===5&&item.detail.total===11));
+  assert(progress.some(item=>item.detail?.loaded===11&&item.message.includes('100%')));
+  assert.equal(progress.at(-1).message,'Verifying model download…');
+});

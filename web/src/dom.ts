@@ -80,7 +80,10 @@ interface IdTags {
   'image-settings-error': 'p';
   'image-settings-form': 'form';
   'inbox-tab': 'button';
-  'listing-dialog': 'dialog';
+  'listing-page': 'main';
+  'listing-back': 'a';
+  'profile-page': 'main';
+  'workspace-page': 'main';
   'listings': 'div';
   'load-more': 'button';
   'location': 'input';
@@ -108,7 +111,7 @@ interface IdTags {
   'posting-extension': 'button';
   'posting-remote': 'button';
   'posting-signer': 'div';
-  'preferences-dialog': 'dialog';
+  'preferences-dialog': 'section';
   'preferred-currency': 'select';
   'preview-note': 'div';
   'profile-field': 'div';
@@ -125,7 +128,7 @@ interface IdTags {
   'saved-count': 'span';
   'saved-tab': 'button';
   'search': 'input';
-  'search-mode': 'select';
+  'search-mode': 'button';
   'search-run': 'button';
   'sort': 'select';
   'tag-input': 'input';

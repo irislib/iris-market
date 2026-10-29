@@ -20,14 +20,14 @@ export function setupMap({ getListings, onSelect, onVisibilityChange = () => {},
     refresh();
     if (instance) { instance.resize(); discovery.update(instance.viewport()); return; }
     if (loading) return;
-    $('map-status').textContent = 'Loading map from Hashtree…';
+    $('map-status').textContent = 'Loading map…';
     loading = (async () => {
       try {
         const { createMarketMap } = await import('./map/index.ts');
-        const map = await createMarketMap($('map-canvas'), { listings: getListings(), dark: darkAppearance(), cacheMiB: Number($('map-cache').value), onSelect, onViewport: value => discovery.update(value), onError: error => { $('map-status').textContent = error.message; } });
+        const map = await createMarketMap($('map-canvas'), { listings: getListings(), dark: darkAppearance(), cacheMiB: Number($('map-cache').value), onSelect, onViewport: value => discovery.update(value), onError: () => { $('map-status').textContent = 'Map unavailable'; } });
         if (disposed) { await map.destroy(); return; }
         instance = map; await instance.setDark(darkAppearance()); refresh(); await stats();
-      } catch (error) { $('map-status').textContent = `Map unavailable: ${error.message}. Close and reopen Map to retry.`; }
+      } catch { $('map-status').textContent = 'Map unavailable. Close and reopen to try again.'; }
       finally { loading = null; }
     })();
   }
@@ -41,9 +41,9 @@ export function setupMap({ getListings, onSelect, onVisibilityChange = () => {},
   const watcher = matchMedia('(prefers-color-scheme: dark)'); watcher.addEventListener('change', theme);
   window.addEventListener('market-themechange', theme);
   $('map-toggle').onclick = open;
-  $('map-cache').onchange = async () => { try { await instance?.setCacheMiB(Number($('map-cache').value)); await stats(); try { localStorage.setItem('market-map-cache', $('map-cache').value); } catch {} } catch(error) { $('map-status').textContent=error.message; } };
+  $('map-cache').onchange = async () => { try { await instance?.setCacheMiB(Number($('map-cache').value)); await stats(); try { localStorage.setItem('market-map-cache', $('map-cache').value); } catch {} } catch { $('map-status').textContent='Could not change map storage.'; } };
   try { const saved = localStorage.getItem('market-map-cache'); if (['64','128','256','512'].includes(saved)) $('map-cache').value = saved; } catch {}
-  $('map-clear').onclick = async () => { try { await instance?.clearCache(); await stats(); } catch(error) { $('map-status').textContent=error.message; } };
+  $('map-clear').onclick = async () => { try { await instance?.clearCache(); await stats(); } catch { $('map-status').textContent='Could not clear downloaded maps.'; } };
   const interval = setInterval(() => { if (visible) stats().catch(() => {}); }, 5000);
   window.addEventListener('pagehide', () => { disposed = true; discovery.dispose(); clearInterval(interval); watcher.removeEventListener('change', theme); instance?.destroy(); });
   return { refresh, refreshDiscovery: () => discovery.refresh() };

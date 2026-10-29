@@ -79,7 +79,7 @@ export function parseEvent(input: NostrEvent, { now = seconds() } = {}) {
     id: `${event.pubkey}:${identifier}`, eventId: event.id, author: event.pubkey,
     identifier, title, description: event.content, price, currency, location,
     geohash: geo?.geohash ?? null, coordinates: geo?.coordinates ?? null, locationBounds: geo?.bounds ?? null,
-    category, tags: Object.freeze(tags), imageUrl, side, createdAt: event.created_at, expiration, status,
+    category, tags: Object.freeze(tags), originalTags: Object.freeze(event.tags.map(tag => Object.freeze([...tag]))), imageUrl, side, createdAt: event.created_at, expiration, status,
   })
 }
 

@@ -69,13 +69,21 @@ for (const [name, source, entry] of [['web', root, 'src/app.ts'], ['site', resol
   const results = [await build({ absWorkingDir: root, entryPoints: [resolve(source, entry)], bundle: true, minify: true, format: 'esm', target: 'es2022', outdir: dest, entryNames: 'app', chunkNames: 'chunks/[name]-[hash]', splitting: true, legalComments: 'eof', metafile: true })];
   for (const file of ['styles.css', 'icon.svg']) await copyFile(resolve(root, file), resolve(dest, file));
   await build({entryPoints:[resolve(root, 'src/theme-init.ts')],outfile:resolve(dest,'theme-init.js'),bundle:true,minify:true,target:'es2022'});
-  await copyFile(resolve(source, 'index.html'), resolve(dest, 'index.html'));
+  let routeHash='';
+  if(name==='web') {
+    const bootstrap=await build({entryPoints:[resolve(root,'src/route-init.ts')],bundle:true,minify:true,format:'iife',target:'es2022',write:false});
+    const script=bootstrap.outputFiles[0].text.trim();
+    routeHash=` 'sha256-${createHash('sha256').update(script).digest('base64')}'`;
+    const html=await readFile(resolve(source,'index.html'),'utf8');
+    await writeFile(resolve(dest,'index.html'),html.replace('<!-- route-bootstrap -->',`<script>${script}</script>`));
+  } else await copyFile(resolve(source, 'index.html'), resolve(dest, 'index.html'));
   if (name === 'site') for (const file of ['app-light.png', 'app-dark.png']) await copyFile(resolve(source, file), resolve(dest, file));
   if (name === 'web') {
     await copyFile(resolve(root, 'profiles.css'), resolve(dest, 'profiles.css'));
     await copyFile(resolve(root, 'account.css'), resolve(dest, 'account.css'));
     await copyFile(resolve(root, 'wallet.css'), resolve(dest, 'wallet.css'));
     await copyFile(resolve(root, 'orders.css'), resolve(dest, 'orders.css'));
+    await copyFile(resolve(root, 'notifications.css'), resolve(dest, 'notifications.css'));
     const graphBytes = await readFile(resolve(root, GRAPH_BOOTSTRAP.packagePath));
     if (graphBytes.byteLength !== GRAPH_BOOTSTRAP.byteLength || hash(graphBytes) !== GRAPH_BOOTSTRAP.sha256) throw new Error('Unexpected social graph bootstrap payload');
     await writeFile(resolve(dest, 'social-graph.bin'), graphBytes);
@@ -96,7 +104,7 @@ for (const [name, source, entry] of [['web', root, 'src/app.ts'], ['site', resol
     console.log(`runtime: ${binary.length} → ${compressed.length} bytes; SHA256 ${RUNTIME.sha256}`);
   }
   await writeNotices(dest, results, name === 'web');
-  const headers = `/*\n  X-Content-Type-Options: nosniff\n  Referrer-Policy: no-referrer\n  Permissions-Policy: camera=(), microphone=(), geolocation=${name === 'web' ? '(self)' : '()'}\n  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self'; img-src 'self' data: https:; connect-src 'self' wss: https://mint.coinos.io https://upload.iris.to https://api.coinbase.com https://cdn.iris.to https://huggingface.co https://*.huggingface.co https://*.hf.co https://*.xethub.hf.co; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'\n`;
+  const headers = `/*\n  X-Content-Type-Options: nosniff\n  Referrer-Policy: no-referrer\n  Permissions-Policy: camera=(), microphone=(), geolocation=${name === 'web' ? '(self)' : '()'}\n  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'${routeHash}; worker-src 'self' blob:; style-src 'self'; img-src 'self' data: https:; connect-src 'self' wss: https://mint.coinos.io https://upload.iris.to https://api.coinbase.com https://cdn.iris.to https://huggingface.co https://*.huggingface.co https://*.hf.co https://*.xethub.hf.co; object-src 'none'; base-uri ${name==='web'?"'self'":"'none'"}; frame-ancestors 'none'; form-action 'self'\n`;
   await writeFile(resolve(dest, '_headers'), headers);
   await writeFile(resolve(dest, 'robots.txt'), 'User-agent: *\nAllow: /\n');
   const largest = await checkAssetSizes(dest);

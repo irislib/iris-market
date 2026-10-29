@@ -46,7 +46,7 @@ export class FeedFilterClient {
         if (this.worker !== worker) return
         const pending = this.pending.get(data.id)
         if (!pending) return
-        if (typeof data.progress === 'string') { try { pending.progress?.(data.progress) } catch {} return }
+        if (typeof data.progress === 'string') { try { pending.progress?.(data.progress,data.progressDetails) } catch {} return }
         if (data.error) { this.dispose(String(data.error)); return }
         clearTimeout(pending.timer); pending.unlisten(); this.pending.delete(data.id)
         pending.resolve(data.result)

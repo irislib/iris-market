@@ -1,3 +1,5 @@
+import { createSurface } from './surface.ts';
+import { createUnreadTracker, orderNotifications, readingSurface } from './notifications.ts';
 import type { Shipment, ShipmentStop } from './orders.ts';
 import { byId, element as domElement, formFields } from './dom.ts';
 import { createUserRow, warmProfiles } from './people.ts';
@@ -23,9 +25,10 @@ const courierKey = (input:string) => {
 const dark = () => document.documentElement.dataset.appearance === 'dark' || (document.documentElement.dataset.appearance !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
 
 /** Private order requests are separate from chat and never imply a payment. */
-export function setupOrders({ account, isPreview = () => false, onProfile = () => {}, formatPrice = item => `${item.price || ''} ${item.currency || ''}`.trim() }: {account:ReturnType<typeof import('./account-ui.ts').setupAccount>;isPreview?:()=>boolean;onProfile?:(key:string)=>void;formatPrice?:(item:any)=>string}) {
+export function setupOrders({ account, isPreview = () => false, onProfile = () => {}, onUnread = (_count:number) => {}, page, onNavigate = (_id?:string) => {}, onClose = () => {}, formatPrice = item => `${item.price || ''} ${item.currency || ''}`.trim() }: {account:ReturnType<typeof import('./account-ui.ts').setupAccount>;isPreview?:()=>boolean;onProfile?:(key:string)=>void;onUnread?:(count:number)=>void;page?:HTMLElement;onNavigate?:(id?:string)=>void;onClose?:()=>void;formatPrice?:(item:any)=>string}) {
+  const unread=createUnreadTracker({kind:'orders',onUnread});
   let state = account.state(), view = 'history', tab = 'purchases', selected, listing, pending, busy = false, error = '', sharing, map, mapLoading, mapHost, mapOrderId, mapGeneration = 0, destroyed = false;
-  const dialog = node('dialog', undefined, 'orders-dialog'); dialog.id = 'orders-dialog'; dialog.setAttribute('aria-labelledby', 'orders-title');
+  const dialog = createSurface({className:'orders-dialog',label:'Orders',pageHost:page,onOpen:()=>onNavigate(view==='detail'?selected:undefined),onClose}); dialog.id = 'orders-dialog'; dialog.setAttribute('aria-labelledby', 'orders-title');
   const close = node('button', '×', 'dialog-close icon-button'); close.type = 'button'; close.setAttribute('aria-label', 'Close orders'); close.onclick = () => dialog.close();
   const back = node('button', '← Orders', 'text-button orders-back'); back.type = 'button'; back.onclick = () => showHistory();
   const heading = node('h2', 'Orders'); heading.id = 'orders-title';
@@ -33,7 +36,7 @@ export function setupOrders({ account, isPreview = () => false, onProfile = () =
   const body = node('div', undefined, 'orders-body');
   const failure = node('p', '', 'error orders-error'); failure.setAttribute('role', 'alert');
   const live = node('p', '', 'orders-announcement sr-only'); live.setAttribute('role', 'status');
-  dialog.append(close, back, heading, tabs, failure, body, live); document.body.append(dialog);
+  dialog.append(close, back, heading, tabs, failure, body, live);
   const orders = () => Array.isArray(state.orders) ? state.orders : [];
   const current = () => orders().find(order => order.id === selected);
   const owner = () => state.ownerPubkey;
@@ -43,9 +46,13 @@ export function setupOrders({ account, isPreview = () => false, onProfile = () =
   const action = (label, fn, primary = false) => { const button = node('button', label, `button ${primary ? 'primary' : 'secondary'}`); button.type = 'button'; button.dataset.orderAction = ''; button.onclick = fn; button.disabled = busy; return button; };
   const person = (pubkey:string, label?:string) => {
     const group = node('div', undefined, 'order-person'); if (label) group.append(node('span', label, 'small muted'));
-    if (pubkey) { warmProfiles([pubkey]); group.append(createUserRow(pubkey, { size: 32, onClick: () => { dialog.close(); onProfile(pubkey); } })); }
+    if (pubkey) { warmProfiles([pubkey]); group.append(createUserRow(pubkey, { size: 32, onClick: () => { dialog.hide(); onProfile(pubkey); } })); }
     return group;
   };
+  function syncUnread(){
+    const visible=view==='detail'&&readingSurface(dialog);
+    unread.update(state.status==='ready'&&!isPreview()?state.ownerPubkey:null,orderNotifications(state.conversations,state.orders||[]),visible?selected:null);
+  }
   function setBusy(value) { busy = value; for (const button of dialog.querySelectorAll<HTMLButtonElement>('[data-order-action]')) button.disabled = value; }
   async function perform(task) {
     if (busy) return;
@@ -65,17 +72,17 @@ export function setupOrders({ account, isPreview = () => false, onProfile = () =
     if (publish && state.status === 'ready' && state.ownerPubkey === stopped.owner) void account.messaging.updateOrder(stopped.orderId, { location: null }).catch(() => {});
   }
   function changeView(next) { if (next !== 'detail') stopLocation(); view = next; error = ''; if (next !== 'detail') dropMap(); }
-  function showHistory() { changeView('history'); selected = undefined; render(); }
+  function showHistory() { changeView('history'); selected = undefined; render(); if(dialog.open)onNavigate(); }
   function showDetail(order) {
     if (selected !== order.id) { stopLocation(); dropMap(); }
-    selected = order.id; view = 'detail'; error = ''; render();
+    selected = order.id; view = 'detail'; error = ''; render(); if(dialog.open)onNavigate(order.id);
   }
   function requestReady(intent) {
     if (isPreview()) { pending = undefined; error = 'Switch to the live market to place an order.'; view = 'history'; render(); if (!dialog.open) dialog.showModal(); return false; }
     if (state.status !== 'ready') { pending = intent; account.showAccount(); return false; }
     return true;
   }
-  function open(id) { state = account.state(); if (!requestReady({ type: 'history', id })) return; const order = id && orders().find(item => item.id === id); if (order) showDetail(order); else { showHistory(); if (id) { error = 'This order is not available on this device yet.'; render(); } } if (!dialog.open) dialog.showModal(); }
+  function open(id) { state = account.state(); if (!requestReady({ type: 'history', id })) return; const order = id && orders().find(item => item.id === id); if (order) showDetail(order); else { showHistory(); if (id) { error = 'This order is not available on this device yet.'; render(); } } if (!dialog.open) dialog.showModal(); syncUnread(); }
   function buy(value) {
     state = account.state();
     if (!requestReady({ type: 'buy', listing: value })) return;
@@ -104,7 +111,9 @@ export function setupOrders({ account, isPreview = () => false, onProfile = () =
     for (const order of rows) {
       const card = node('button', undefined, 'order-card'); card.type = 'button'; card.onclick = () => showDetail(order);
       const text = node('div', undefined, 'order-card-copy'), amount = node('div', undefined, 'order-card-aside');
-      text.append(node('span', order.items?.map(item => item.title).join(', ') || 'Order', 'order-card-title'));
+      const title=node('span', order.items?.map(item => item.title).join(', ') || 'Order', 'order-card-title');
+      if(unread.unread(order.id)){const dot=node('span',undefined,'unread-dot');dot.setAttribute('aria-hidden','true');title.append(dot,node('span','Unread update','unread-label'));}
+      text.append(title);
       text.append(node('span', `${date(order.createdAt)}${order.items?.[0]?.quantity > 1 ? ` · ${order.items[0].quantity} items` : ''}`, 'small muted'));
       amount.append(node('span', `${price(order.items?.[0] || {})}${order.items?.[0]?.quantity > 1 ? ` × ${order.items[0].quantity}` : ''}`, 'order-card-price'), node('span', statuses[order.status] || order.status, `order-status order-status-${order.status}`));
       card.append(text, amount); list.append(card);
@@ -150,7 +159,7 @@ export function setupOrders({ account, isPreview = () => false, onProfile = () =
         const row = node('li', undefined, `order-stop order-stop-${stop.status}`), marker = node('span', stop.status === 'completed' ? '✓' : String(index + 1), 'order-stop-marker'); marker.setAttribute('aria-hidden', 'true');
         const content = node('div', undefined, 'order-stop-content'); content.append(node('h4', stop.label || `Stop ${index + 1}`));
         if (stop.address) content.append(node('p', stop.address, 'small muted'));
-        content.append(node('span', stop.status === 'completed' ? 'Completed' : stop.status === 'arrived' ? 'Arrived' : 'Upcoming', 'order-stop-state small'));
+        if (!terminal(order) || stop.status !== 'pending') content.append(node('span', stop.status === 'completed' ? 'Completed' : stop.status === 'arrived' ? 'Arrived' : 'Upcoming', 'order-stop-state small'));
         if (stop.courierPubkey) content.append(person(stop.courierPubkey, 'Courier'));
         if (!terminal(order) && ['accepted', 'in-transit'].includes(order.status) && (order.seller === owner() || stop.courierPubkey === owner()) && stop.status !== 'completed') {
           const actions = node('div', undefined, 'order-stop-actions');
@@ -205,7 +214,7 @@ export function setupOrders({ account, isPreview = () => false, onProfile = () =
     if (order.status === 'requested' && selfRole === 'seller') actions.append(action('Accept order', () => update(order, { status: 'accepted' }, 'Order accepted'), true));
     if (order.status === 'accepted' && selfRole === 'seller') actions.append(action('Mark on the way', () => update(order, { status: 'in-transit' }, 'Delivery started'), true));
     if (['accepted', 'in-transit'].includes(order.status) && ['seller', 'buyer'].includes(selfRole)) actions.append(action(selfRole === 'buyer' ? 'Mark received' : 'Mark delivered', () => update(order, { status: 'delivered' }, 'Order delivered'), selfRole === 'buyer'));
-    if (['buyer', 'seller'].includes(selfRole)) actions.append(action('Message', () => { dialog.close(); void account.openChat(selfRole === 'buyer' ? order.seller : order.buyer); }));
+    if (['buyer', 'seller'].includes(selfRole)) actions.append(action('Message', () => { dialog.hide(); void account.openChat(selfRole === 'buyer' ? order.seller : order.buyer); }));
     if (!terminal(order) && ['buyer', 'seller'].includes(selfRole)) actions.append(action(order.status === 'requested' && selfRole === 'seller' ? 'Decline request' : 'Cancel order', () => update(order, { status: 'cancelled' }, 'Order cancelled')));
     if (terminal(order)) actions.append(action(order.archived ? 'Restore order' : 'Archive order', () => { void perform(async () => { await account.messaging.archiveOrder(order.id, !order.archived); live.textContent = order.archived ? 'Order restored' : 'Order archived'; }); }));
     body.append(actions);
@@ -274,6 +283,7 @@ export function setupOrders({ account, isPreview = () => false, onProfile = () =
   }
   function render() {
     if (destroyed) return;
+    syncUnread();
     heading.textContent = view === 'review' ? 'Request an order' : view === 'route' ? 'Delivery details' : view === 'detail' ? 'Order details' : 'Orders';
     back.hidden = view === 'history'; failure.textContent = error; renderTabs();
     const scrollTop = dialog.scrollTop; body.replaceChildren();
@@ -283,6 +293,7 @@ export function setupOrders({ account, isPreview = () => false, onProfile = () =
   function refresh(value = account.state()) {
     const previousOwner = state.ownerPubkey; state = value;
     if (previousOwner && (previousOwner !== state.ownerPubkey || state.status !== 'ready')) { stopLocation({ publish: false }); dropMap(); if (dialog.open) dialog.close(); }
+    syncUnread();
     const order = current();
     const sharedStop = sharing && order?.shipment?.stops?.find(stop => stop.id === sharing.stopId && stop.status !== 'completed' && (order.seller === owner() || stop.courierPubkey === owner()));
     if (sharing && (!order || terminal(order) || !sharedStop || order.archived || document.visibilityState === 'hidden')) stopLocation();
@@ -290,13 +301,14 @@ export function setupOrders({ account, isPreview = () => false, onProfile = () =
     // Preserve typing while private updates arrive in the background.
     if (dialog.open && !['review', 'route'].includes(view)) render();
   }
-  dialog.addEventListener('close', () => { stopLocation(); dropMap(); });
-  dialog.addEventListener('click', event => { if (event.target === dialog) { const rect = dialog.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) dialog.close(); } });
-  const hidden = () => { if (document.visibilityState === 'hidden') { stopLocation(); if (dialog.open && view === 'detail') render(); } };
+  dialog.addEventListener('close', () => { stopLocation(); dropMap(); syncUnread(); });
+  const hidden = () => { syncUnread(); if (document.visibilityState === 'hidden') { stopLocation(); if (dialog.open && view === 'detail') render(); } };
+  const focused=()=>{syncUnread();if(dialog.open&&view==='history')render();};
+  const uncovered=()=>queueMicrotask(focused);
   const theme = () => { map?.setDark(dark()).catch(() => {}); };
-  document.addEventListener('visibilitychange', hidden); window.addEventListener('market-themechange', theme);
+  document.addEventListener('visibilitychange', hidden);document.addEventListener('close',uncovered,true); window.addEventListener('focus',focused); window.addEventListener('market-themechange', theme);
   const appearance = matchMedia('(prefers-color-scheme: dark)'); appearance.addEventListener('change', theme);
-  account.onState?.(refresh);
-  window.addEventListener('pagehide', () => { stopLocation(); dropMap(); destroyed = true; document.removeEventListener('visibilitychange', hidden); window.removeEventListener('market-themechange', theme); appearance.removeEventListener('change', theme); });
-  return { open, buy, refresh };
+  const unsubscribe=account.onState?.(refresh);syncUnread();
+  window.addEventListener('pagehide', () => { stopLocation(); dropMap(); destroyed = true;unsubscribe?.();window.removeEventListener('focus',focused);document.removeEventListener('visibilitychange', hidden);document.removeEventListener('close',uncovered,true); window.removeEventListener('market-themechange', theme); appearance.removeEventListener('change', theme); });
+  return { open, buy, refresh, hide:()=>dialog.hide() };
 }

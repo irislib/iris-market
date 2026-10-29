@@ -42,7 +42,7 @@ export function setupListingGrid({grid, controls, button, status, makeCard, card
     grid.setAttribute('aria-busy', String(loading || Boolean(remote.loading)));
     // Re-observe after the page grows. At most three automatic batches keep the footer reachable.
     observer?.unobserve(controls);
-    if (scrolled && visible && hasMore && automatic < 3 && !loading && !remote.loading && !remote.error && shown.length) observer?.observe(controls);
+    if (scrolled && visible && hasMore && automatic < 3 && !loading && !remote.loading && !remote.error && !remote.paused && shown.length) observer?.observe(controls);
   }
   async function more(manual = false) {
     if (disposed || loading || !visible) return;

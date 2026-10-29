@@ -13,7 +13,7 @@ export function setupTheme() {
   toggles.forEach(button=>button.addEventListener('click',()=>set(button.dataset.dark==='true'?'light':'dark')));
   media.addEventListener('change',()=>{refresh();if(mode()==='system')window.dispatchEvent(new Event('market-themechange'));});
   const settings=document.getElementById('preferences-dialog') as HTMLDialogElement;
-  document.getElementById('appearance-settings')?.addEventListener('click',()=>settings?.showModal());
+  document.getElementById('appearance-settings')?.addEventListener('click',()=>{if(settings?.tagName==='DIALOG')settings.showModal();});
   settings?.querySelector('.dialog-close')?.addEventListener('click',()=>settings.close());
   refresh();
 }

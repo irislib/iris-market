@@ -44,9 +44,9 @@ export function createListingOverlay(map, listings: MapListing[] = [], dark = fa
     if (source) { if (nextKey !== featureKey) source.setData(features) }
     else map.addSource('market-listings', { type: 'geojson', data: features, cluster: true, clusterRadius: 35, clusterMaxZoom: 12 })
     featureKey = nextKey
-    if (!map.getLayer('market-clusters')) map.addLayer({ id: 'market-clusters', type: 'circle', source: 'market-listings', filter: ['has', 'point_count'], paint: { 'circle-color': '#b8e5cf', 'circle-radius': 19, 'circle-stroke-width': 2, 'circle-stroke-color': '#172d2a' } })
+    if (!map.getLayer('market-clusters')) map.addLayer({ id: 'market-clusters', type: 'circle', source: 'market-listings', filter: ['has', 'point_count'], paint: { 'circle-color': '#b8e5cf', 'circle-radius': ['case', ['boolean', ['feature-state', 'hover'], false], 21.3, 19], 'circle-radius-transition': { duration: 100, delay: 0 }, 'circle-stroke-width': 2, 'circle-stroke-color': '#172d2a' } })
     if (!map.getLayer('market-cluster-count')) map.addLayer({ id: 'market-cluster-count', type: 'symbol', source: 'market-listings', filter: ['has', 'point_count'], layout: { 'text-field': ['get', 'point_count_abbreviated'], 'text-font': ['Noto%20Sans%20Regular'], 'text-size': 12 }, paint: { 'text-color': '#172d2a' } })
-    if (!map.getLayer('market-pins')) map.addLayer({ id: 'market-pins', type: 'circle', source: 'market-listings', filter: ['!', ['has', 'point_count']], paint: { 'circle-color': '#65d3a6', 'circle-radius': 9, 'circle-stroke-width': 3, 'circle-stroke-color': currentDark ? '#f7f4eb' : '#172d2a' } })
+    if (!map.getLayer('market-pins')) map.addLayer({ id: 'market-pins', type: 'circle', source: 'market-listings', filter: ['!', ['has', 'point_count']], paint: { 'circle-color': '#65d3a6', 'circle-radius': ['case', ['boolean', ['feature-state', 'hover'], false], 10.2, 9], 'circle-radius-transition': { duration: 100, delay: 0 }, 'circle-stroke-width': 3, 'circle-stroke-color': currentDark ? '#f7f4eb' : '#172d2a' } })
     else map.setPaintProperty('market-pins', 'circle-stroke-color', currentDark ? '#f7f4eb' : '#172d2a')
   }
   const loaded = () => { ready = true; update() }
@@ -71,6 +71,7 @@ export function mapViewport(map: maplibre.Map): MapViewport | null {
 /** One hit test covers both the cluster label and circle without duplicate actions. */
 export function createListingInteractions(map, { getListings, onSelect, onError = () => {}, createPopup = () => new maplibre.Popup({ className: 'market-map-popup', maxWidth: '300px', focusAfterOpen: true }), document: doc = globalThis.document }: ListingInteractionOptions = {}) {
   let destroyed = false, revision = 0, popup
+  let hovered: string | number | undefined
   const canvas = map.getCanvas()
   const previousLabel = canvas.getAttribute('aria-label')
   canvas.setAttribute('aria-label', 'Listing map. Use arrow keys to pan. Press Enter to browse visible listings.')
@@ -121,8 +122,24 @@ export function createListingInteractions(map, { getListings, onSelect, onError 
     } catch (error) { if (!destroyed && ticket === revision) onError(error) }
   }
   const click = event => { void activate(event) }
-  const move = event => { canvas.style.cursor = hits(event.point).length ? 'pointer' : '' }
-  const leave = () => { canvas.style.cursor = '' }
+  const setHover = (id?: string | number) => {
+    if (id === hovered) return
+    // A style/source can disappear between the pointer event and this update.
+    try {
+      if (map.getSource('market-listings')) {
+        if (hovered !== undefined) map.setFeatureState({ source: 'market-listings', id: hovered }, { hover: false })
+        if (id !== undefined) map.setFeatureState({ source: 'market-listings', id }, { hover: true })
+      }
+    } catch { /* Style changes discard transient hover state. */ }
+    hovered = id
+  }
+  const move = event => {
+    const feature = hits(event.point)[0]
+    canvas.style.cursor = feature ? 'pointer' : ''
+    const id = feature?.id ?? feature?.properties?.cluster_id ?? feature?.properties?.id
+    setHover(typeof id === 'string' || typeof id === 'number' && Number.isFinite(id) ? id : undefined)
+  }
+  const leave = () => { setHover(); canvas.style.cursor = '' }
   const keydown = event => {
     if (event.target !== canvas || !['Enter', ' '].includes(event.key)) return
     event.preventDefault(); revision++
@@ -130,12 +147,12 @@ export function createListingInteractions(map, { getListings, onSelect, onError 
     const listings = getListings().filter(listing => listing.coordinates && bounds.contains(listing.coordinates)).slice(0, 1000)
     choose(listings, map.getCenter())
   }
-  map.on('click', click); map.on('mousemove', move)
+  map.on('click', click); map.on('mousemove', move); map.on('style.load', leave); map.on('movestart', leave)
   canvas.addEventListener('mouseleave', leave); canvas.addEventListener('keydown', keydown)
   return {
-    invalidate() { revision++; close() },
+    invalidate() { revision++; close(); leave() },
     destroy() {
-      destroyed = true; revision++; close(); map.off('click', click); map.off('mousemove', move)
+      destroyed = true; revision++; close(); leave(); map.off('click', click); map.off('mousemove', move); map.off('style.load', leave); map.off('movestart', leave)
       canvas.removeEventListener('mouseleave', leave); canvas.removeEventListener('keydown', keydown); canvas.style.cursor = ''
       if (previousLabel === null) canvas.removeAttribute('aria-label'); else canvas.setAttribute('aria-label', previousLabel)
     },

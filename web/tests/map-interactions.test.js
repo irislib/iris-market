@@ -18,7 +18,7 @@ class Element {
   get firstElementChild() { return this.children[0] }
 }
 function fixture(items = [listing('a'), listing('b', [25, 60.2])]) {
-  const handlers = new Map(), canvas = new Element('canvas'), selected = [], errors = [], popups = [], eases = []
+  const handlers = new Map(), canvas = new Element('canvas'), selected = [], errors = [], popups = [], eases = [], featureStates = []
   const source = { getClusterExpansionZoom: async id => { assert.equal(id, 7); return 10 }, getClusterLeaves: async (id, limit, offset) => { assert.equal(id, 7); assert.equal(limit, 1000); assert.equal(offset, 0); return items.map(pin) } }
   const bounds = { getWest: () => 24, getSouth: () => 60, getEast: () => 26, getNorth: () => 61, contains: coordinates => coordinates[0] >= 24 && coordinates[0] <= 26 }
   const map = {
@@ -27,12 +27,13 @@ function fixture(items = [listing('a'), listing('b', [25, 60.2])]) {
     on: (name, fn) => handlers.set(name, fn), off: (name, fn) => { if (handlers.get(name) === fn) handlers.delete(name) },
     queryRenderedFeatures(point, { layers }) { assert.deepEqual(layers, ['market-cluster-count', 'market-clusters', 'market-pins']); return this.features },
     easeTo: value => eases.push(value),
+    setFeatureState: (target, state) => featureStates.push({ target, state }),
   }
   const api = createListingInteractions(map, { getListings: () => items, onSelect: item => selected.push(item), onError: error => errors.push(error), document: { createElement: tag => new Element(tag) }, createPopup: () => {
     const popup = { setLngLat(value) { this.coordinates = value; return this }, setDOMContent(value) { this.content = value; return this }, addTo(value) { assert.equal(value, map); return this }, remove() { this.removed = true } }
     popups.push(popup); return popup
   } })
-  return { api, map, canvas, source, selected, errors, popups, eases, handlers, async click(features) { map.features = features; handlers.get('click')({ point: { x: 20, y: 20 } }); await tick() } }
+  return { api, map, canvas, source, selected, errors, popups, eases, handlers, featureStates, hover(features) { map.features = features; handlers.get('mousemove')({ point: { x: 20, y: 20 } }) }, async click(features) { map.features = features; handlers.get('click')({ point: { x: 20, y: 20 } }); await tick() } }
 }
 
 for (const layer of ['market-clusters', 'market-cluster-count']) test(`cluster ${layer} hit expands once using current Promise API`, async () => {
@@ -85,4 +86,38 @@ test('unchanged overlays do not rebuild the clustering index', () => {
 test('viewport reports finite geographic bounds and rejects invalid camera state', () => {
   const f = fixture(); assert.deepEqual(mapViewport(f.map), { west: 24, south: 60, east: 26, north: 61, zoom: 5 })
   f.map.zoom = NaN; assert.equal(mapViewport(f.map), null); f.api.destroy()
+})
+
+test('hover grows only the hit pin and resets the previous pin without changing selection', () => {
+  const f = fixture()
+  f.hover([pin(listing('a'))]); f.hover([pin(listing('a'))]); f.hover([pin(listing('b'))])
+  assert.equal(f.canvas.style.cursor, 'pointer')
+  assert.deepEqual(f.featureStates.map(({target, state}) => [target.id, state.hover]), [['a', true], ['a', false], ['b', true]])
+  assert.equal(f.selected.length, 0)
+  f.canvas.listeners.get('mouseleave')()
+  assert.deepEqual(f.featureStates.at(-1), { target: { source: 'market-listings', id: 'b' }, state: { hover: false } })
+  assert.equal(f.canvas.style.cursor, '')
+  f.api.destroy()
+})
+
+test('cluster hover keeps click expansion and clears on style, camera, data and teardown', async () => {
+  const f = fixture()
+  f.hover([cluster()]); await f.click([cluster()]); assert.equal(f.eases.length, 1)
+  for (const reset of [() => f.handlers.get('style.load')(), () => f.handlers.get('movestart')(), () => f.api.invalidate(), () => f.api.destroy()]) {
+    f.hover([cluster()]); reset()
+    assert.equal(f.featureStates.at(-1).target.id, 7); assert.equal(f.featureStates.at(-1).state.hover, false); assert.equal(f.canvas.style.cursor, '')
+  }
+  assert.equal(f.handlers.size, 0)
+})
+
+test('listing layer paint uses a modest hover expansion for pins and clusters', () => {
+  const handlers = new Map(), layers = new Map()
+  const map = { on: (name, fn) => handlers.set(name, fn), off() {}, getSource: () => undefined, addSource() {}, getLayer: id => layers.get(id), addLayer: layer => layers.set(layer.id, layer), setPaintProperty() {} }
+  const overlay = createListingOverlay(map, [listing('a')]); handlers.get('style.load')()
+  for (const name of ['market-pins', 'market-clusters']) {
+    const expression = layers.get(name).paint['circle-radius']
+    assert.deepEqual(expression.slice(0, 2), ['case', ['boolean', ['feature-state', 'hover'], false]])
+    assert.ok(expression[2] > expression[3] && expression[2] <= expression[3] * 1.15)
+  }
+  overlay.destroy()
 })

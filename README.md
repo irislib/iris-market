@@ -21,6 +21,8 @@ This is a development prototype. The browser includes an optional Cashu wallet; 
 
 Web: [market.iris.to](https://market.iris.to) · [App builds and CLI](https://getmarket.iris.to). Source: [GitHub](https://github.com/irislib/iris-market). Hashtree source: [iris-market](https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/iris-market).
 
+Windows currently uses the [web app](https://market.iris.to/) or the [x64 CLI download](https://github.com/irislib/iris-market/releases/download/v0.1.0-alpha.6/iris-market-v0.1.0-alpha.6-cli-x86_64-pc-windows-msvc.zip). A native Windows GUI is not implemented; Windows PWA installation and runtime have not been manually verified.
+
 The browser feed below uses real public listings. Native alpha builds share the same visual direction and use platform system fonts.
 
 ![Iris Market browser feed](site/app-light.jpg)

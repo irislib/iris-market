@@ -16,6 +16,7 @@ import { getPublicRuntime } from './nostr-runtime.ts';
 import { art } from './art.ts';
 import { renderDescription } from './description.ts';
 import { setupAI } from './ai-ui.ts';
+import { setupLongPress } from './long-press.ts';
 import { rankListings } from './ranking.ts';
 import {setupUserLocation} from './user-location.ts';
 import { setupProfiles, createRelationshipBadge } from './profile-ui.ts';
@@ -193,7 +194,16 @@ for(const currency of CURRENCIES){const option=node('option',currency==='SATS'?'
 if(!preview)rateService=setupRates({getRelays:()=>relays,onChange:()=>{render();if(focusedListing)openDetail(focusedListing,false)}});
 window.addEventListener('popstate',()=>{activateRoute();requestAnimationFrame(()=>window.scrollTo(0,history.state?.marketScroll||0));});
 userLocation=setupUserLocation({onChange:render,isPreview:preview});$('your-location-filters').append(userLocation.createControl());$('your-location-settings').append(userLocation.createControl());
-window.addEventListener('pagehide',()=>{userLocation?.dispose();discoveryAbort.abort();closeDetailReviews();closeDetailAreas();client?.close();detailClient?.close();courierClient?.close();profiles?.close({notify:false});graphAbort?.abort();rateService?.close();gridUI.dispose()});aiFilter=setupAI({autoPrepare:!preview,getCandidates:()=>aiCandidates,onChange:render,onTextSearch:query=>{submittedTextQuery=query;},fetchMoreCandidates:async()=>{
+const disposeAIOptionsGesture=setupLongPress($('search-mode'),()=>{
+  navigate(pageURL('settings',location.href));
+  const model=$('ai-model');
+  const group=model.closest('details');
+  if(group)group.open=true;
+  const label=model.closest('label');
+  if(label)label.hidden=false;
+  model.focus();
+});
+window.addEventListener('pagehide',()=>{disposeAIOptionsGesture();userLocation?.dispose();discoveryAbort.abort();closeDetailReviews();closeDetailAreas();client?.close();detailClient?.close();courierClient?.close();profiles?.close({notify:false});graphAbort?.abort();rateService?.close();gridUI.dispose()});aiFilter=setupAI({autoPrepare:!preview,getCandidates:()=>aiCandidates,onChange:render,onTextSearch:query=>{submittedTextQuery=query;},fetchMoreCandidates:async()=>{
   if(preview||savedOnly||!client)return false;
   const active=client,queryPage=active.queryPagination();
   if(queryPage.loading||queryPage.hasMore){

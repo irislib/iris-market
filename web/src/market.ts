@@ -1,12 +1,12 @@
 import { verifyEvent, type Event as NostrEvent } from 'nostr-tools/pure'
-import { locationFromTags } from './map/geohash.ts'
+import { locationFromTags, MAX_GEOHASH_QUERY_VALUES } from './map/geohash.ts'
 import { queryPublicIndex } from './nostr-runtime.ts'
 import type { Filter } from 'nostr-tools'
 import type { RuntimeQueryOptions } from 'nostr-pubsub'
 import { SeenTags, observedMarketTags } from './seen-tags.ts'
 import {publicListingCache,type PublicListingCache} from './offline-listings.ts'
 
-export const DEFAULT_RELAYS = Object.freeze(['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net'])
+export const DEFAULT_RELAYS = Object.freeze(['wss://temp.iris.to', 'wss://vault.iris.to', 'wss://relay.damus.io', 'wss://relay.snort.social', 'wss://relay.primal.net', 'wss://nos.lol'])
 export const LISTING_KIND = 30402
 export const MAX_RECORDS = 1000
 const MAX_EVENT_BYTES = 65536
@@ -16,7 +16,6 @@ const HISTORY_TIMEOUT = 12000
 const MAX_HISTORY_REQUESTS = 32
 const MAX_HISTORY_BYTES = 16 * 1024 * 1024
 const GEO_QUERY_LIMIT = 120
-const MAX_GEOHASH_VALUES = 128
 const encoder = new TextEncoder()
 const seconds = () => Math.floor(Date.now() / 1000)
 const length = value => Array.from(value).length
@@ -414,7 +413,7 @@ export class MarketRelayClient {
 
   /** Update only the map discovery subscription; received listings stay usable. */
   setGeohashes(values = []) {
-    if (!Array.isArray(values) || values.length > MAX_GEOHASH_VALUES || values.some(value => typeof value !== 'string' || !/^[0123456789bcdefghjkmnpqrstuvwxyz]{1,8}$/.test(value))) fail('Invalid map search area')
+    if (!Array.isArray(values) || values.length > MAX_GEOHASH_QUERY_VALUES || values.some(value => typeof value !== 'string' || !/^[0123456789bcdefghjkmnpqrstuvwxyz]{1,8}$/.test(value))) fail('Invalid map search area')
     const next = [...new Set(values)].sort()
     if (JSON.stringify(next) === JSON.stringify(this.geohashes)) return
     this.geohashes = next

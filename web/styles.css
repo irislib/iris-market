@@ -54,3 +54,7 @@ dialog { color:var(--ink); background:var(--bg); border:1px solid var(--line); b
 #filter-form>label:not(:first-child){margin-top:20px}#filter-form>.detail-actions{margin-top:24px}
 
 #detail-content>h1{display:flex;align-items:center;min-height:60px;padding-left:56px}
+
+.location-field{display:flex;align-items:center;gap:8px}.location-field>input,.location-field>select{flex:1;min-width:0}.locate-button{flex:0 0 44px;width:44px;height:44px;display:grid;place-items:center;border:1px solid var(--line);border-radius:12px;background:var(--soft);color:var(--muted)}.locate-button svg{width:21px;height:21px}.locate-button:hover,.locate-button[aria-pressed="true"]{color:var(--ink);background:var(--hover)}.locate-button[aria-busy="true"]{opacity:.5}
+
+.nav-unread-count{width:auto;height:auto;min-width:19px;padding:2px 5px;line-height:15px;font-size:11px;font-weight:650;color:var(--on-accent,#fff);border-radius:10px;text-align:center;vertical-align:1px}

@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { finalizeEvent, generateSecretKey } from 'nostr-tools/pure'
 import { MarketRelayClient } from '../src/market.ts'
+import { geohashQueryForViewport } from '../src/map/geohash.ts'
 import { createViewportDiscovery } from '../src/map/discovery.ts'
 
 const now = 1800000000, secret = generateSecretKey()
@@ -54,7 +55,7 @@ test('map requests respect author/tag filters, have bounded results and reconnec
     assert.equal(query.slice(2).reduce((n,filter)=>n+filter.limit,0),240)
     socket.readyState=3;app.refresh();const next=Socket.instances.at(-1);next.open()
     assert.deepEqual(next.sent.at(-1).slice(2),query.slice(2))
-    for(const bad of [['u*'],['UD9'],Array(129).fill('u'),['u'.repeat(9)],null])assert.throws(()=>app.setGeohashes(bad),/map search/)
+    for(const bad of [['u*'],['UD9'],Array(2049).fill('u'),['u'.repeat(9)],null])assert.throws(()=>app.setGeohashes(bad),/map search/)
   } finally {app.close()}
 })
 test('empty following filters never widen into map discovery',()=>{
@@ -92,4 +93,18 @@ test('settled viewport changes debounce and deduplicate without waiting on query
   discovery.refresh();callback();assert.equal(queries.length,2)
   discovery.setActive(false);assert.deepEqual(queries.at(-1),[])
   assert.equal(callback,undefined);assert(clears>=4);discovery.dispose()
+})
+
+test('moving to a city discovers an older precise-tag listing outside the recent inventory', () => {
+  const app=client(),socket=Socket.instances[0]
+  try {
+    socket.open();socket.receive(['EVENT',socket.sent[0][1],listing('recent-other-city','u6sc')])
+    app.setGeohashes(geohashQueryForViewport({west:24.75,south:60.1,east:25.15,north:60.3,zoom:11}))
+    const query=socket.sent.at(-1)
+    const event=listing('older-helsinki-only','ud9wr2')
+    assert(query.slice(2).some(filter=>filter['#g'].includes('ud9wr2')))
+    assert(JSON.stringify(query).length<24000)
+    socket.receive(['EVENT',query[1],event])
+    assert(app.listings().some(item=>item.identifier==='older-helsinki-only'))
+  } finally { app.close() }
 })

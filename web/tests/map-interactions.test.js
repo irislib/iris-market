@@ -1,6 +1,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { createListingInteractions, createListingOverlay, mapViewport } from '../src/map/index.ts'
+import { createListingInteractions, createListingOverlay, listingFeatures, mapViewport } from '../src/map/index.ts'
+import { GeoJSONVT } from '@maplibre/geojson-vt'
+import { GeoJSONWrapper, fromVectorTileJs } from '@maplibre/vt-pbf'
+import { VectorTile } from '@mapbox/vector-tile'
+import { PbfReader } from 'pbf'
 
 const listing = (id, coordinates = [24.94, 60.17]) => ({ id, title: `Listing ${id}`, coordinates })
 const pin = item => ({ type: 'Feature', properties: { id: item.id }, geometry: { type: 'Point', coordinates: item.coordinates } })
@@ -119,6 +123,48 @@ test('hover grows only the hit pin and resets the previous pin without changing 
   f.canvas.listeners.get('mouseleave')()
   assert.deepEqual(f.featureStates.at(-1), { target: { source: 'market-listings', id: 'b' }, state: { hover: false } })
   assert.equal(f.canvas.style.cursor, '')
+  f.api.destroy()
+})
+
+test('canonical pin identities survive actual vector-tile integer coercion without shared hover', () => {
+  const author='a'.repeat(64), other='123'+'b'.repeat(61)
+  const items=[listing(`${author}:one`,[10,10]),listing(`${author}:two`,[15,10]),listing(`${other}:three`,[20,10]),listing(`${other}:four`,[25,10])]
+  // This is the installed MapLibre worker's GeoJSON -> PBF -> feature path.
+  // PBF only has numeric IDs: without property promotion these addresses collide.
+  const tile=new GeoJSONVT(listingFeatures(items),{maxZoom:18}).getTile(0,0,0)
+  const decoded=Object.values(new VectorTile(new PbfReader(fromVectorTileJs(new GeoJSONWrapper(tile.features)))).layers)[0]
+  const features=Array.from({length:decoded.length},(_,i)=>decoded.feature(i))
+  assert.deepEqual(features.map(feature=>feature.id),[0,0,123,123])
+  let options;const handlers=new Map()
+  const overlay=createListingOverlay({on:(name,fn)=>handlers.set(name,fn),off(){},getSource(){},addSource(_id,value){options=value},getLayer(){},addLayer(){},setPaintProperty(){}},items)
+  handlers.get('style.load')();assert.equal(options.promoteId,'id')
+  assert.deepEqual(features.map(feature=>feature.properties[options.promoteId]),items.map(item=>item.id))
+  const f=fixture(items)
+  for(const feature of features)f.hover([feature])
+  const expected=items.flatMap((item,i)=>i?[[items[i-1].id,false],[item.id,true]]:[[item.id,true]])
+  assert.deepEqual(f.featureStates.map(({target,state})=>[target.id,state.hover]),expected)
+  assert.equal(f.selected.length,0);f.api.destroy();overlay.destroy()
+})
+
+test('overlapping pins hover only the front hit and never collide with numeric cluster IDs', () => {
+  const a=listing(`7${'a'.repeat(63)}:a`), b=listing(`7${'a'.repeat(63)}:b`), f=fixture([a,b])
+  const first={...pin(a),id:7}, second={...pin(b),id:7}
+  f.hover([first,second]);f.hover([second,first]);f.hover([cluster(),second])
+  assert.deepEqual(f.featureStates.map(({target,state})=>[target.id,state.hover]),[[a.id,true],[a.id,false],[b.id,true],[b.id,false],[7,true]])
+  assert.equal(f.selected.length,0);f.api.destroy()
+})
+
+test('missing numeric tile ID does not suppress a canonical pin and duplicate records make one feature', () => {
+  const item=listing(`${'f'.repeat(64)}:bike`),f=fixture([item])
+  f.hover([{...pin(item),id:NaN}]);assert.equal(f.featureStates.at(-1)?.target.id,item.id)
+  assert.equal(listingFeatures([item,{...item,coordinates:[25,61]}]).features.length,1)
+  f.api.destroy()
+})
+
+test('a source temporarily absent during style changes does not poison the next hover', () => {
+  const item=listing('a'),f=fixture([item]),getSource=f.map.getSource
+  f.map.getSource=()=>undefined;f.hover([pin(item)]);assert.equal(f.featureStates.length,0)
+  f.map.getSource=getSource;f.hover([pin(item)]);assert.equal(f.featureStates.at(-1)?.state.hover,true)
   f.api.destroy()
 })
 

@@ -28,7 +28,11 @@ let registered = false
 const decoder = new TextDecoder()
 
 export function listingFeatures(listings: MapListing[]) {
-  return { type: 'FeatureCollection', features: listings.slice(0, 1000).filter(listing => Array.isArray(listing.coordinates) && listing.coordinates.length === 2 && listing.coordinates.every(Number.isFinite) && Math.abs(listing.coordinates[0]) <= 180 && Math.abs(listing.coordinates[1]) <= 90).map(listing => ({
+  const seen = new Set<string>()
+  return { type: 'FeatureCollection', features: listings.slice(0, 1000).filter(listing => {
+    if (seen.has(listing.id) || !Array.isArray(listing.coordinates) || listing.coordinates.length !== 2 || !listing.coordinates.every(Number.isFinite) || Math.abs(listing.coordinates[0]) > 180 || Math.abs(listing.coordinates[1]) > 90) return false
+    seen.add(listing.id); return true
+  }).map(listing => ({
     type: 'Feature', id: listing.id, properties: { id: listing.id, title: listing.title }, geometry: { type: 'Point', coordinates: listing.coordinates },
   })) }
 }
@@ -42,7 +46,10 @@ export function createListingOverlay(map, listings: MapListing[] = [], dark = fa
     const source = map.getSource('market-listings')
     const nextKey = JSON.stringify(features)
     if (source) { if (nextKey !== featureKey) source.setData(features) }
-    else map.addSource('market-listings', { type: 'geojson', data: features, cluster: true, clusterRadius: 35, clusterMaxZoom: 12 })
+    // Vector-tile IDs are integers. Promote the canonical string property so
+    // author:identifier values survive encoding without numeric-prefix collisions.
+    // MapLibre retains generated cluster_id as the cluster's feature-state key.
+    else map.addSource('market-listings', { type: 'geojson', data: features, promoteId: 'id', cluster: true, clusterRadius: 35, clusterMaxZoom: 12 })
     featureKey = nextKey
     if (!map.getLayer('market-clusters')) map.addLayer({ id: 'market-clusters', type: 'circle', source: 'market-listings', filter: ['has', 'point_count'], paint: { 'circle-color': '#b8e5cf', 'circle-radius': ['case', ['boolean', ['feature-state', 'hover'], false], 21.3, 19], 'circle-radius-transition': { duration: 100, delay: 0 }, 'circle-stroke-width': 2, 'circle-stroke-color': '#172d2a' } })
     if (!map.getLayer('market-cluster-count')) map.addLayer({ id: 'market-cluster-count', type: 'symbol', source: 'market-listings', filter: ['has', 'point_count'], layout: { 'text-field': ['get', 'point_count_abbreviated'], 'text-font': ['Noto%20Sans%20Regular'], 'text-size': 12 }, paint: { 'text-color': '#172d2a' } })
@@ -128,17 +135,16 @@ export function createListingInteractions(map, { getListings, onSelect, onError 
     if (id === hovered) return
     // A style/source can disappear between the pointer event and this update.
     try {
-      if (map.getSource('market-listings')) {
-        if (hovered !== undefined) map.setFeatureState({ source: 'market-listings', id: hovered }, { hover: false })
-        if (id !== undefined) map.setFeatureState({ source: 'market-listings', id }, { hover: true })
-      }
-    } catch { /* Style changes discard transient hover state. */ }
-    hovered = id
+      if (!map.getSource('market-listings')) { hovered = undefined; return }
+      if (hovered !== undefined) map.setFeatureState({ source: 'market-listings', id: hovered }, { hover: false })
+      if (id !== undefined) map.setFeatureState({ source: 'market-listings', id }, { hover: true })
+      hovered = id
+    } catch { hovered = undefined /* Retry the next pointer event after a style change. */ }
   }
   const move = event => {
     const feature = hits(event.point)[0]
     canvas.style.cursor = feature ? 'pointer' : ''
-    const id = feature?.id ?? feature?.properties?.cluster_id ?? feature?.properties?.id
+    const id = feature?.properties?.cluster_id ?? feature?.properties?.id
     setHover(typeof id === 'string' || typeof id === 'number' && Number.isFinite(id) ? id : undefined)
   }
   const leave = () => { setHover(); canvas.style.cursor = '' }

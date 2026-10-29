@@ -87,6 +87,8 @@ interface IdTags {
   'listings': 'div';
   'load-more': 'button';
   'location': 'input';
+  'location-locate': 'button';
+  'ships-to-locate': 'button';
   'main': 'main';
   'map-cache': 'select';
   'map-canvas': 'div';

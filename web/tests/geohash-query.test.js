@@ -11,14 +11,15 @@ function covers(values, longitude, latitude) {
   })
 }
 function assertBounded(values) {
-  assert(values.length > 0 && values.length <= 128)
+  assert(values.length > 0 && values.length <= 2048)
   assert.deepEqual(values, [...new Set(values)].sort())
   for (const value of values) assert.match(value, /^[0123456789bcdefghjkmnpqrstuvwxyz]{1,8}$/)
 }
 
 test('world view covers every top-level cell without an unbounded query', () => {
   const values = geohashQueryForViewport({ west: -180, south: -90, east: 180, north: 90, zoom: 0 })
-  assert.deepEqual(values, [...alphabet])
+  assert.deepEqual(values.filter(value => value.length === 1), [...alphabet])
+  assert.equal(values.filter(value => value.length === 2).length, 1024)
   assert.deepEqual(geohashQueryForViewport({ west: -540, south: -100, east: 540, north: 100, zoom: 24 }), values)
 })
 
@@ -73,7 +74,7 @@ test('adjacent precision is complete and parent cells never expand area more tha
   assertBounded(values)
   const precisions = [...new Set(values.map(value => value.length))].sort()
   assert(precisions.length >= 2)
-  assert(precisions.length <= 3)
+  assert(precisions.length <= 8)
   for (const precision of precisions) {
     const group = values.filter(value => value.length === precision)
     for (const longitude of [24.7, 24.9, 25.1]) for (const latitude of [60.1, 60.2, 60.3]) assert(covers(group, longitude, latitude))
@@ -97,4 +98,12 @@ test('bounded deterministic covers remain complete across varied viewport shapes
       assert(covers(values, longitude, south + y * (north - south)), `uncovered viewport ${i}`)
     }
   }
+})
+
+// Relays compare exact tag strings: geometric coverage by a parent is not enough.
+test('city viewport includes precise single-tag listings without requiring publishers to add prefixes', () => {
+  const values = geohashQueryForViewport(helsinki)
+  assert(values.includes('ud9wr2'), 'Helsinki precision-6 listing must be requested at city zoom')
+  assertBounded(values)
+  assert(!values.includes('u'), 'do not broaden a city search to a continent')
 })

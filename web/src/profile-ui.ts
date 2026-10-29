@@ -214,5 +214,5 @@ export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCI
     } catch (error) { if (run === generation && error.name !== 'AbortError') status.textContent = error.message || 'Could not load this profile.' }
     finally { stopProgress() }
   }
-  return { open, close, refreshReviews(){reviews?.refresh()}, destroy() { destroyed = true; close(); container.replaceChildren(); if(!page)container.remove() } }
+  return { open, openReviews(pubkey:string){void open(pubkey);reviewTab?.click()}, close, refreshReviews(){reviews?.refresh()}, destroy() { destroyed = true; close(); container.replaceChildren(); if(!page)container.remove() } }
 }

@@ -167,7 +167,7 @@ export interface QueryCandidates {loading:boolean;added:number;hasMore:boolean;e
 interface RelayConnection {
   url: string; attempt: number; socket: WebSocket | null; failed: boolean; ready: boolean; subscription: string
   timer: ReturnType<typeof setTimeout> | null; retry: ReturnType<typeof setTimeout> | null
-  frameStart: number; frames: number; geoSubscription?: string | null
+  frameStart: number; frames: number; geoSubscription?: string | null; geoSubscriptions?: Set<string>
 }
 export interface MarketRelayOptions {
   relays?: readonly string[]; tags?: readonly string[]; authors?: readonly string[] | null; targetId?: string
@@ -177,6 +177,29 @@ export interface MarketRelayOptions {
   indexQuery?: ((filters:Filter[],options:RuntimeQueryOptions)=>Promise<{events:NostrEvent[];complete?:boolean}>) | null
   tagCatalogue?: SeenTags
   offlineCache?: PublicListingCache | null
+}
+
+/** Complete precision covers, split below common relay frame/subscription limits. */
+export function geographicRequests(values:readonly string[],{authors=null,tags=[]}:{authors?:readonly string[]|null;tags?:readonly string[]}={}):MarketFilter[][] {
+  const groups=new Map<number,string[]>();
+  for(const hash of values){if(!groups.has(hash.length))groups.set(hash.length,[]);groups.get(hash.length).push(hash);}
+  let selected:string[][]=[],accepted:MarketFilter[][]=[];
+  for(const [,cover] of [...groups].sort(([a],[b])=>a-b)){
+    const candidate=[...selected];for(let start=0;start<cover.length;start+=512)candidate.push(cover.slice(start,start+512));
+    const limit=Math.min(GEO_QUERY_LIMIT,Math.floor(240/candidate.length));
+    const filters:MarketFilter[]=candidate.map(cells=>({kinds:[LISTING_KIND],'#g':cells,limit,...(authors!==null?{authors}:{}),...(tags.length?{'#t':tags}:{})}));
+    const batches:MarketFilter[][]=[];let batch:MarketFilter[]=[];
+    for(const filter of filters){
+      if(batch.length&&(batch.length===8||bytes(JSON.stringify(['REQ','map-0000000000000000',...batch,filter]))>28*1024)){batches.push(batch);batch=[];}
+      batch.push(filter);
+    }
+    if(batch.length)batches.push(batch);
+    // Never trim a fine cover to its western/first cells: keep the preceding
+    // whole covers when an audience or long tags consume the frame budget.
+    if(batches.length>9||batches.some(value=>bytes(JSON.stringify(['REQ','map-0000000000000000',...value]))>28*1024))break;
+    selected=candidate;accepted=batches;
+  }
+  return accepted;
 }
 
 /** Read-only relay client. Holds no signing keys and never publishes. */
@@ -212,6 +235,7 @@ export class MarketRelayClient {
   lastVisible: string | null
   lastStatus: string
   geohashes: string[]
+  geohashSet = new Set<string>()
   geoSequence: number
   indexQuery: MarketRelayOptions['indexQuery']
   indexReads = new Set<AbortController>()
@@ -417,29 +441,31 @@ export class MarketRelayClient {
     const next = [...new Set(values)].sort()
     if (JSON.stringify(next) === JSON.stringify(this.geohashes)) return
     this.geohashes = next
+    this.geohashSet = new Set(next)
     if (!this.running) return
-    if(next.length&&this.hasInventoryQuery)this.requestIndex([{kinds:[LISTING_KIND],'#g':next,limit:GEO_QUERY_LIMIT,...(this.authors?{authors:[...this.authors]}:{}),...(this.tags.length?{'#t':[...this.tags]}:{})}])
+    if(next.length&&this.hasInventoryQuery){
+      // Keep complete precision covers in the index's smaller query budget.
+      const indexed:string[]=[];
+      for(const precision of [...new Set(next.map(value=>value.length))].sort((a,b)=>a-b)){
+        const cover=next.filter(value=>value.length===precision);if(indexed.length+cover.length>2048)break;indexed.push(...cover);
+      }
+      this.requestIndex([{kinds:[LISTING_KIND],'#g':indexed,limit:GEO_QUERY_LIMIT,...(this.authors?{authors:[...this.authors]}:{}),...(this.tags.length?{'#t':[...this.tags]}:{})}]);
+    }
     for (const connection of this.connections.values()) if (!connection.failed && connection.socket?.readyState === 1) this.requestGeohashes(connection)
   }
 
   requestGeohashes(connection: RelayConnection) {
     try {
-      if (connection.geoSubscription) connection.socket.send(JSON.stringify(['CLOSE', connection.geoSubscription]))
-      connection.geoSubscription = null
+      for(const id of connection.geoSubscriptions??[])connection.socket.send(JSON.stringify(['CLOSE',id]));
+      connection.geoSubscriptions=new Set();connection.geoSubscription = null
       if (!this.geohashes.length || !this.hasInventoryQuery) return
-      // Separate precision filters keep broad cells from consuming every result.
-      const groups = new Map<number, string[]>()
-      for (const hash of this.geohashes) {
-        if (!groups.has(hash.length)) groups.set(hash.length, [])
-        groups.get(hash.length).push(hash)
+      const batches=geographicRequests(this.geohashes,{authors:this.authors,tags:this.tags});
+      for(const filters of batches){
+        connection.geoSubscription=`map-${++this.geoSequence}`;
+        connection.geoSubscriptions.add(connection.geoSubscription);
+        connection.socket.send(JSON.stringify(['REQ',connection.geoSubscription,...filters]));
       }
-      const limit = Math.min(GEO_QUERY_LIMIT, Math.floor(240 / groups.size))
-      const filters = [...groups.values()].map(cells => ({ kinds: [LISTING_KIND], '#g': cells, limit,
-        ...(this.authors !== null ? { authors: this.authors } : {}), ...(this.tags.length ? { '#t': this.tags } : {}),
-      }))
-      connection.geoSubscription = `map-${++this.geoSequence}`
-      connection.socket.send(JSON.stringify(['REQ', connection.geoSubscription, ...filters]))
-    } catch { connection.geoSubscription = null }
+    } catch { connection.geoSubscription = null;connection.geoSubscriptions?.clear() }
   }
 
   refresh() {
@@ -498,13 +524,13 @@ export class MarketRelayClient {
       let frame
       try { frame = JSON.parse(data) } catch { return }
       if (!Array.isArray(frame)) return
-      if (connection.geoSubscription && frame[1] === connection.geoSubscription) {
+      if (connection.geoSubscriptions?.has(frame[1])) {
         // No EOSE/ACK gate: each valid event becomes visible as it arrives.
-        if (frame[0] === 'CLOSED') { connection.geoSubscription = null; return }
+        if (frame[0] === 'CLOSED') { connection.geoSubscriptions.delete(frame[1]);if(frame[1]===connection.geoSubscription)connection.geoSubscription = null;return }
         if (frame[0] !== 'EVENT' || frame.length !== 3) return
         try {
           const listing = this.parseIncoming(frame[2])
-          if (!this.matchesFeed(listing) || !frame[2].tags.some(tag => tag[0] === 'g' && this.geohashes.includes(tag[1]))) return
+          if (!this.matchesFeed(listing) || !frame[2].tags.some(tag => tag[0] === 'g' && this.geohashSet.has(tag[1]))) return
           this.acceptListing(listing)
         } catch { /* Ignore malformed or unrelated map results. */ }
         return
@@ -724,7 +750,7 @@ export class MarketRelayClient {
     clearTimeout(connection.retry)
     try {
       if (connection.socket?.readyState === 1) connection.socket.send(JSON.stringify(['CLOSE', connection.subscription]))
-      if (connection.socket?.readyState === 1 && connection.geoSubscription) connection.socket.send(JSON.stringify(['CLOSE', connection.geoSubscription]))
+      if(connection.socket?.readyState===1)for(const id of connection.geoSubscriptions??[])connection.socket.send(JSON.stringify(['CLOSE',id]));connection.geoSubscriptions?.clear()
       connection.socket?.close()
     } catch { /* Closing an already-closed socket is harmless. */ }
   }

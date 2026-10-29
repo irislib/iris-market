@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { finalizeEvent, generateSecretKey } from 'nostr-tools/pure'
-import { MarketRelayClient } from '../src/market.ts'
+import { MarketRelayClient,geographicRequests } from '../src/market.ts'
 import { geohashQueryForViewport } from '../src/map/geohash.ts'
 import { createViewportDiscovery } from '../src/map/discovery.ts'
 
@@ -55,7 +55,7 @@ test('map requests respect author/tag filters, have bounded results and reconnec
     assert.equal(query.slice(2).reduce((n,filter)=>n+filter.limit,0),240)
     socket.readyState=3;app.refresh();const next=Socket.instances.at(-1);next.open()
     assert.deepEqual(next.sent.at(-1).slice(2),query.slice(2))
-    for(const bad of [['u*'],['UD9'],Array(2049).fill('u'),['u'.repeat(9)],null])assert.throws(()=>app.setGeohashes(bad),/map search/)
+    for(const bad of [['u*'],['UD9'],Array(32769).fill('u'),['u'.repeat(9)],null])assert.throws(()=>app.setGeohashes(bad),/map search/)
   } finally {app.close()}
 })
 test('empty following filters never widen into map discovery',()=>{
@@ -108,3 +108,31 @@ test('moving to a city discovers an older precise-tag listing outside the recent
     assert(app.listings().some(item=>item.identifier==='older-helsinki-only'))
   } finally { app.close() }
 })
+
+test('a full U.S. viewport includes older p4 locations and streams every bounded query batch',()=>{
+ const viewport={west:-125,east:-66,south:24,north:50,zoom:4},hashes=geohashQueryForViewport(viewport);
+ // Real missing public locations observed in relay history: Chicago and Oklahoma.
+ for(const hash of ['dp3q','9y5q','9vg4'])assert(hashes.includes(hash));
+ const app=client(),socket=Socket.instances[0];try{
+  socket.open();const before=socket.sent.length;app.setGeohashes(hashes);
+  const requests=socket.sent.slice(before).filter(f=>f[0]==='REQ');assert(requests.length>1&&requests.length<=9);
+  assert(requests.every(f=>Buffer.byteLength(JSON.stringify(f))<=28*1024&&f.length<=10));
+  assert(requests.flatMap(f=>f.slice(2)).every(q=>q['#g'].length<=512));
+  assert(requests.flatMap(f=>f.slice(2)).reduce((sum,q)=>sum+q.limit,0)<=240);
+  for(const [i,hash]of ['dp3q','9y5q','9vg4'].entries()){
+   const request=requests.find(f=>f.slice(2).some(q=>q['#g'].includes(hash)));assert(request);
+   socket.receive(['EVENT',request[1],listing('older-us-'+i,hash)]);
+  }
+  assert.equal(app.listings().length,3);
+  app.setGeohashes(['ud9']);for(const request of requests)assert(socket.sent.some(f=>f[0]==='CLOSE'&&f[1]===request[1]));
+  socket.receive(['EVENT',requests[0][1],listing('late','dp3q')]);assert.equal(app.listings().length,3);
+ }finally{app.close();}
+});
+test('long geohashes and large audiences retain complete covers without oversized frames',()=>{
+ const hashes=geohashQueryForViewport({west:24.9401,east:24.9499,south:60.1701,north:60.1799,zoom:18});
+ const authors=Array.from({length:256},(_,i)=>i.toString(16).padStart(64,'0')),tags=Array(8).fill('🚲'.repeat(60));
+ const requests=geographicRequests(hashes,{authors,tags});assert(requests.length>0&&requests.length<=9);
+ const selected=requests.flat().flatMap(q=>q['#g']);
+ for(const length of new Set(selected.map(g=>g.length)))assert.deepEqual(selected.filter(g=>g.length===length).sort(),hashes.filter(g=>g.length===length).sort());
+ for(const filters of requests)assert(Buffer.byteLength(JSON.stringify(['REQ','map-0000000000000000',...filters]))<=28*1024);
+});

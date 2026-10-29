@@ -5,9 +5,11 @@ const $=byId;
 const keyFor = listing => listing.eventId || listing.id;
 interface SearchListing {id:string;eventId?:string;title:string;description?:string;side?:string;category?:string;location?:string;tags?:string[];price?:string|number;currency?:string}
 interface AIOptions {getCandidates:()=>SearchListing[];onChange:()=>void;onTextSearch?:(query:string)=>void;fetchMoreCandidates?:()=>Promise<boolean>;client?:Pick<FeedFilterClient,'info'|'load'|'classify'|'dispose'>;hasWebGPU?:()=>boolean}
+interface SourceRequest {epoch:number;done:boolean;more?:boolean;error?:unknown}
 export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandidates, client = new FeedFilterClient(), hasWebGPU=()=>!!globalThis.navigator&&'gpu' in globalThis.navigator }:AIOptions) {
   let scores = new Map(), showAll = false, phase:'idle'|'loading'|'searching'='idle', generation = 0, submittedQuery='', paused=false;
   let targetMatches=24,sourceExhausted=false;
+  let sourceEpoch=0,sourceRequest:SourceRequest|null=null,wakeCandidates:(()=>void)|null=null;
   const progress=element('progress');progress.id='ai-download-progress';progress.max=1;progress.hidden=true;progress.setAttribute('aria-label','Model download');
   $('ai-options').append(progress);
   const enabled = () => $('search-mode').value === 'ai';
@@ -17,12 +19,11 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
   const matchCount=()=>candidates().filter(listing=>scores.has(keyFor(listing))&&scores.get(keyFor(listing))>=threshold()).length;
   const refresh = () => {
     const candidates = getCandidates(), active = enabled(), busy=phase!=='idle';
-    const reviewed = candidates.filter(l => scores.has(keyFor(l))).length;
     const hidden = submittedQuery?candidates.filter(l => !scores.has(keyFor(l))||scores.get(keyFor(l))<threshold()).length:0;
-    const remaining = candidates.length - reviewed;
+    const matches=candidates.length-hidden,matchLabel=`${matches} ${matches===1?'match':'matches'}`;
     $('ai-options').hidden = !active;
     $('ai-summary').hidden = !active || (!submittedQuery && !busy);
-    $('ai-summary-text').textContent = busy ? $('ai-progress').textContent : `${showAll ? 'Showing all · ' : ''}${candidates.length-hidden} matches · ${reviewed} of ${candidates.length} reviewed`;
+    $('ai-summary-text').textContent = showAll ? 'Showing all listings' : phase==='loading' ? $('ai-progress').textContent : busy ? `Searching…${matches?` · ${matchLabel}`:''}` : `${paused?'Search paused · ':''}${matchLabel}`;
     $('ai-show-all').textContent = showAll ? 'Use AI matches' : 'Show all';
     $('ai-show-all').hidden = !submittedQuery||(!hidden&&!showAll&&!$('ai-error').textContent);
     $('ai-stop').hidden = !busy;
@@ -38,9 +39,33 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
     $('ai-progress').hidden=busy||!$('ai-progress').textContent;
     if(active)$('search').setAttribute('aria-describedby','ai-progress');else $('search').removeAttribute('aria-describedby');
     $('search').placeholder = active ? 'Describe what you’re looking for' : 'Search listings';
+    wakeCandidates?.();
   };
+  // Relay pages can remain pending after verified events have already arrived.
+  // Keep one source operation, but wake classification on each candidate update.
+  function requestCandidates() {
+    const request:SourceRequest={epoch:sourceEpoch,done:false};sourceRequest=request;
+    void Promise.resolve().then(()=>fetchMoreCandidates()).then(more=>{request.more=more;},error=>{request.error=error instanceof Error?error:new Error('Could not load more listings');}).then(()=>{
+      request.done=true;
+      if(request.epoch===sourceEpoch&&request.more===false)sourceExhausted=true;
+      wakeCandidates?.();
+      if(request.epoch===sourceEpoch){refresh();onChange();}
+    });
+    return request;
+  }
+  function waitForCandidates(current:number,request:SourceRequest) {
+    return new Promise<void>(resolve=>{
+      const wake=()=>{
+        if(current!==generation||request.done||matchCount()>=targetMatches||candidates().some(listing=>!scores.has(keyFor(listing)))){
+          if(wakeCandidates===wake)wakeCandidates=null;
+          resolve();
+        }
+      };
+      wakeCandidates=wake;wake();
+    });
+  }
   function stop({reset=false,unload=true}={}) {
-    generation++;if(unload)client.dispose();phase='idle';paused=!reset;progress.hidden=true;$('ai-progress').textContent='';
+    generation++;sourceEpoch++;wakeCandidates?.();if(unload)client.dispose();phase='idle';paused=!reset;progress.hidden=true;$('ai-progress').textContent='';
     if(reset){scores.clear();submittedQuery='';showAll=false;sourceExhausted=false;targetMatches=24;$('ai-error').textContent='';}
     refresh();onChange();
   }
@@ -50,8 +75,9 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
     if(continuation&&!submittedQuery)return;
     if(needsCPU()){$('ai-model').value='deberta';stop();return;}
     const current = ++generation;
+    wakeCandidates?.();
     paused=false;
-    if(!continuation){submittedQuery=$('search').value.trim();scores.clear();showAll=false;sourceExhausted=false;targetMatches=24;}
+    if(!continuation){sourceEpoch++;submittedQuery=$('search').value.trim();scores.clear();showAll=false;sourceExhausted=false;targetMatches=24;}
     else targetMatches=matchCount()+24;
     $('ai-error').textContent='';
     phase=client.info?'searching':'loading';onChange();
@@ -79,15 +105,24 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
         if (current !== generation) return;
         const item=candidates().find(listing=>!scores.has(keyFor(listing)));
         if(!item){
-          if(!fetchMoreCandidates||sourceExhausted||sourceRequests>=32)break;
-          sourceRequests++;$('ai-progress').textContent=`Finding more listings · ${matchCount()} of ${targetMatches} matches`;refresh();
-          const more=await fetchMoreCandidates();
+          if(sourceRequest?.done){
+            const completed=sourceRequest;sourceRequest=null;
+            if(completed.epoch===sourceEpoch){
+              if(completed.error)throw completed.error;
+              if(completed.more===false)sourceExhausted=true;
+            }
+            continue;
+          }
+          if(!sourceRequest){
+            if(!fetchMoreCandidates||sourceExhausted||sourceRequests>=32)break;
+            sourceRequests++;requestCandidates();
+          }
+          $('ai-progress').textContent='Searching…';refresh();
+          await waitForCandidates(current,sourceRequest);
           if(current!==generation)return;
-          if(!more){sourceExhausted=true;break;}
           continue;
         }
-        const reviewed=candidates().filter(listing=>scores.has(keyFor(listing))).length;
-        $('ai-progress').textContent = `${matchCount()} of ${targetMatches} matches · ${reviewed} reviewed`; refresh();
+        $('ai-progress').textContent = 'Searching…'; refresh();
         let score=0;
         for(const text of listingSearchTexts(item,query,$('ai-model').value)){
           const result=await client.classify(condition,text);
@@ -118,7 +153,7 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
   $('ai-stop').onclick = () => stop();
   $('ai-unload').onclick = () => stop();
   $('ai-show-all').onclick = () => { showAll = !showAll; refresh(); onChange(); };
-  window.addEventListener('pagehide', () => { generation++; client.dispose(); });
+  window.addEventListener('pagehide', () => { generation++;sourceEpoch++;wakeCandidates?.();client.dispose(); });
   const pagination=()=>{const rows=candidates(),remaining=rows.filter(listing=>!scores.has(keyFor(listing))).length;return{hasMore:enabled()&&!!submittedQuery&&!showAll&&(remaining>0||!!fetchMoreCandidates&&!sourceExhausted),loading:phase!=='idle',paused,error:$('ai-error').textContent,remaining,reviewed:rows.length-remaining,matches:matchCount(),target:targetMatches};};
   return { enabled, query:()=>submittedQuery, searching:()=>phase!=='idle', loadMore:()=>run({continuation:true}), pagination, isVisible: listing => !enabled() || showAll || !submittedQuery || scores.has(keyFor(listing))&&scores.get(keyFor(listing))>=threshold(), refresh, stop: () => stop({reset:true}) };
 }

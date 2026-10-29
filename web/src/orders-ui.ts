@@ -7,6 +7,7 @@ import { normalizePublicKey } from './social.ts';
 import { decode } from 'nostr-tools/nip19';
 import { imageUrl } from './media.ts';
 import { art } from './art.ts';
+import { setupCourierWorkspace, orderReviewParticipants, type CourierFeedOptions } from './courier-ui.ts';
 
 const terminal = order => ['delivered', 'cancelled'].includes(order.status);
 const statuses = { requested: 'Requested', accepted: 'Accepted', 'in-transit': 'On the way', delivered: 'Delivered', cancelled: 'Cancelled' };
@@ -25,7 +26,7 @@ const courierKey = (input:string) => {
 const dark = () => document.documentElement.dataset.appearance === 'dark' || (document.documentElement.dataset.appearance !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
 
 /** Private order requests are separate from chat and never imply a payment. */
-export function setupOrders({ account, isPreview = () => false, onProfile = () => {}, onUnread = (_count:number) => {}, page, onNavigate = (_id?:string,_tab?:string) => {}, onClose = () => {}, formatPrice = item => `${item.price || ''} ${item.currency || ''}`.trim() }: {account:ReturnType<typeof import('./account-ui.ts').setupAccount>;isPreview?:()=>boolean;onProfile?:(key:string)=>void;onUnread?:(count:number)=>void;page?:HTMLElement;onNavigate?:(id?:string,tab?:string)=>void;onClose?:()=>void;formatPrice?:(item:any)=>string}) {
+export function setupOrders({ account, isPreview = () => false, onProfile = () => {}, onReview = onProfile, courier, onUnread = (_count:number) => {}, page, onNavigate = (_id?:string,_tab?:string) => {}, onClose = () => {}, formatPrice = item => `${item.price || ''} ${item.currency || ''}`.trim() }: {account:ReturnType<typeof import('./account-ui.ts').setupAccount>;isPreview?:()=>boolean;onProfile?:(key:string)=>void;onReview?:(key:string)=>void;courier?:CourierFeedOptions;onUnread?:(count:number)=>void;page?:HTMLElement;onNavigate?:(id?:string,tab?:string)=>void;onClose?:()=>void;formatPrice?:(item:any)=>string}) {
   const unread=createUnreadTracker({kind:'orders',onUnread});
   let state = account.state(), view = 'history', tab = 'purchases', selected, listing, pending, busy = false, error = '', sharing, map, mapLoading, mapHost, mapOrderId, mapGeneration = 0, destroyed = false;
   const dialog = createSurface({className:'orders-dialog',label:'Orders',pageHost:page,onOpen:()=>onNavigate(view==='detail'?selected:undefined,tab),onClose}); dialog.id = 'orders-dialog'; dialog.setAttribute('aria-labelledby', 'orders-title');
@@ -49,6 +50,7 @@ export function setupOrders({ account, isPreview = () => false, onProfile = () =
     if (pubkey) { warmProfiles([pubkey]); group.append(createUserRow(pubkey, { size: 32, onClick: () => { dialog.hide(); onProfile(pubkey); } })); }
     return group;
   };
+  const courierUI=courier?setupCourierWorkspace({...courier,getOwner:()=>state.status==='ready'?owner():undefined,getOrders:orders,renderOrder:orderCard,onReviews:key=>{dialog.hide();onReview(key);},onSignIn:()=>{pending={type:'history',section:'deliveries'};account.showAccount();},isPreview}):undefined;
   function syncUnread(){
     const visible=view==='detail'&&readingSurface(dialog);
     unread.update(state.status==='ready'&&!isPreview()?state.ownerPubkey:null,orderNotifications(state.conversations,state.orders||[]),visible?selected:null);
@@ -82,15 +84,15 @@ export function setupOrders({ account, isPreview = () => false, onProfile = () =
     if (state.status !== 'ready') { pending = intent; account.showAccount(); return false; }
     return true;
   }
-  function open(id,section?:string) { if(['purchases','sales','deliveries','archived'].includes(section))tab=section;state = account.state(); if (!requestReady({ type: 'history', id, section })) return; const order = id && orders().find(item => item.id === id); if (order) showDetail(order); else { showHistory(); if (id) { error = 'This order is not available on this device yet.'; render(); } } if (!dialog.open) dialog.showModal(); syncUnread(); }
+  function open(id,section?:string) { if(['purchases','sales','deliveries','archived'].includes(section))tab=section;state = account.state(); if (!(courierUI&&tab==='deliveries'&&!id) && !requestReady({ type: 'history', id, section })) return; const order = id && orders().find(item => item.id === id); if (order) showDetail(order); else { showHistory(); if (id) { error = 'This order is not available on this device yet.'; render(); } } if (!dialog.open) dialog.showModal(); syncUnread(); }
   function buy(value) {
     state = account.state();
     if (!requestReady({ type: 'buy', listing: value })) return;
     stopLocation(); dropMap(); listing = value; view = 'review'; selected = undefined; error = ''; render(); if (!dialog.open) dialog.showModal();
   }
   function renderTabs() {
-    tabs.hidden = view !== 'history'; tabs.replaceChildren();
-    for (const [key, label] of [['purchases', 'Purchases'], ['sales', 'Sales'], ['deliveries', 'Deliveries'], ['archived', 'Archived']]) {
+    tabs.hidden = view !== 'history'||!!courier&&tab==='deliveries'; tabs.replaceChildren();
+    for (const [key, label] of [['purchases', 'Purchases'], ['sales', 'Sales'], ['deliveries', 'Courier'], ['archived', 'Archived']]) {
       const button = node('button', label); button.type = 'button'; button.setAttribute('aria-pressed', String(tab === key));
       button.onclick = () => { tab = key; error = ''; render(); if(dialog.open)onNavigate(undefined,tab); }; tabs.append(button);
     }
@@ -100,6 +102,7 @@ export function setupOrders({ account, isPreview = () => false, onProfile = () =
       .sort((a, b) => b.updatedAt - a.updatedAt);
   }
   function renderHistory() {
+    if(tab==='deliveries'&&courierUI){courierUI.refresh();body.append(courierUI.element);return;}
     const rows = filteredOrders();
     if (!rows.length) {
       const empty = node('div', undefined, 'orders-empty');
@@ -108,7 +111,10 @@ export function setupOrders({ account, isPreview = () => false, onProfile = () =
       body.append(empty); return;
     }
     const list = node('div', undefined, 'orders-list');
-    for (const order of rows) {
+    for (const order of rows) list.append(orderCard(order));
+    body.append(list);
+  }
+  function orderCard(order) {
       const card = node('button', undefined, 'order-card'); card.type = 'button'; card.onclick = () => showDetail(order);
       const text = node('div', undefined, 'order-card-copy'), amount = node('div', undefined, 'order-card-aside');
       const title=node('span', order.items?.map(item => item.title).join(', ') || 'Order', 'order-card-title');
@@ -116,9 +122,7 @@ export function setupOrders({ account, isPreview = () => false, onProfile = () =
       text.append(title);
       text.append(node('span', `${date(order.createdAt)}${order.items?.[0]?.quantity > 1 ? ` · ${order.items[0].quantity} items` : ''}`, 'small muted'));
       amount.append(node('span', `${price(order.items?.[0] || {})}${order.items?.[0]?.quantity > 1 ? ` × ${order.items[0].quantity}` : ''}`, 'order-card-price'), node('span', statuses[order.status] || order.status, `order-status order-status-${order.status}`));
-      card.append(text, amount); list.append(card);
-    }
-    body.append(list);
+      card.append(text, amount); return card;
   }
   interface FieldOptions {type?:string;value?:string|number;required?:boolean;maxLength?:number;placeholder?:string;min?:number;max?:number;step?:number|string}
   function input(label:string, options:FieldOptions & {type:'textarea'}):{wrap:HTMLLabelElement;field:HTMLTextAreaElement};
@@ -177,7 +181,7 @@ export function setupOrders({ account, isPreview = () => false, onProfile = () =
     const leg = ownStop(order);
     if (leg && ['accepted', 'in-transit'].includes(order.status)) {
       const location = node('div', undefined, 'order-location-control');
-      location.append(action(sharing?.orderId === order.id ? 'Stop sharing location' : 'Share live location', () => { if (sharing) { stopLocation(); render(); } else startLocation(order, leg); }));
+      const toggle=action(sharing?.orderId === order.id ? 'Stop sharing location' : 'Share live location', () => { if (sharing) { stopLocation(); render(); } else startLocation(order, leg); });toggle.setAttribute('aria-pressed',String(sharing?.orderId===order.id));location.append(toggle);
       location.append(node('p', sharing ? 'Sharing while this order is open.' : 'Shared privately with the people in this order.', 'small muted')); section.append(location);
     }
     return section;
@@ -220,6 +224,12 @@ export function setupOrders({ account, isPreview = () => false, onProfile = () =
     body.append(actions);
     if (order.sync === 'queued') body.append(node('p', 'Update saved. Waiting to reach the other people in this order.', 'small muted order-sync'));
     if (order.status !== 'requested' || order.shipment?.stops?.length) body.append(renderTimeline(order));
+    const reviewPeople=orderReviewParticipants(order,owner());
+    if(reviewPeople.length){
+      const section=node('section',undefined,'order-reviews');section.append(node('h3','Reviews'));
+      for(const participant of reviewPeople){const row=node('div',undefined,'order-review-person');row.append(person(participant.pubkey,participant.label),action('Review',()=>{dialog.hide();onReview(participant.pubkey);}));section.append(row);}
+      body.append(section);
+    }
     if (terminal(order)) body.append(node('p', 'Archiving only changes your history.', 'small muted order-archive-note'));
   }
   function renderRoute() {
@@ -293,6 +303,7 @@ export function setupOrders({ account, isPreview = () => false, onProfile = () =
   function refresh(value = account.state()) {
     const previousOwner = state.ownerPubkey; state = value;
     if (previousOwner && (previousOwner !== state.ownerPubkey || state.status !== 'ready')) { stopLocation({ publish: false }); dropMap(); if (dialog.open) dialog.close(); }
+    courierUI?.refresh();
     syncUnread();
     const order = current();
     const sharedStop = sharing && order?.shipment?.stops?.find(stop => stop.id === sharing.stopId && stop.status !== 'completed' && (order.seller === owner() || stop.courierPubkey === owner()));
@@ -309,6 +320,6 @@ export function setupOrders({ account, isPreview = () => false, onProfile = () =
   document.addEventListener('visibilitychange', hidden);document.addEventListener('close',uncovered,true); window.addEventListener('focus',focused); window.addEventListener('market-themechange', theme);
   const appearance = matchMedia('(prefers-color-scheme: dark)'); appearance.addEventListener('change', theme);
   const unsubscribe=account.onState?.(refresh);syncUnread();
-  window.addEventListener('pagehide', () => { stopLocation(); dropMap(); destroyed = true;unsubscribe?.();window.removeEventListener('focus',focused);document.removeEventListener('visibilitychange', hidden);document.removeEventListener('close',uncovered,true); window.removeEventListener('market-themechange', theme); appearance.removeEventListener('change', theme); });
-  return { open, buy, refresh, hide:()=>dialog.hide() };
+  window.addEventListener('pagehide', () => { stopLocation(); dropMap(); courierUI?.destroy();destroyed = true;unsubscribe?.();window.removeEventListener('focus',focused);document.removeEventListener('visibilitychange', hidden);document.removeEventListener('close',uncovered,true); window.removeEventListener('market-themechange', theme); appearance.removeEventListener('change', theme); });
+  return { open, buy, refresh, refreshCourier(){if(dialog.open&&view==='history'&&tab==='deliveries')courierUI?.refresh();}, hide:()=>dialog.hide() };
 }

@@ -18,7 +18,7 @@ export class ListingWindow {
 
 export function setupListingGrid({grid, controls, button, status, makeCard, cardKey, olderState, loadOlder}) {
   const windowed = new ListingWindow();
-  let items = [], viewKey, rendered = new Map(), automatic = 0, loading = false, disposed = false, visible = true, scrolled = false;
+  let items = [], viewKey, rendered = new Map(), automatic = 0, loading = false, loadGeneration = 0, disposed = false, visible = true, scrolled = false;
   const pagination = () => olderState?.() || {hasMore:false};
   function paint() {
     if (disposed) return;
@@ -36,7 +36,7 @@ export function setupListingGrid({grid, controls, button, status, makeCard, card
     const hasMore = localMore || remote.hasMore;
     controls.hidden = !visible || !hasMore && !loading && !remote.error && !shown.length;
     button.hidden = !hasMore && !remote.error;
-    button.disabled = loading || remote.loading;
+    button.disabled = loading || Boolean(remote.loading);
     button.textContent = loading || remote.loading ? 'Loading…' : remote.error && !localMore ? 'Try again' : 'Load more';
     status.textContent = remote.error && !localMore ? 'Could not load more listings.' : shown.length ? `${shown.length} ${shown.length===1?'listing':'listings'} shown` : '';
     grid.setAttribute('aria-busy', String(loading || Boolean(remote.loading)));
@@ -51,10 +51,11 @@ export function setupListingGrid({grid, controls, button, status, makeCard, card
     windowed.pin();
     if (windowed.ids.length < items.length) { windowed.more(); paint(); return; }
     if (!pagination().hasMore && !pagination().error) return;
-    loading = true; paint();
-    const requestedKey = viewKey;
-    try { await loadOlder(); if (requestedKey === viewKey) windowed.more(); }
-    finally { loading = false; paint(); }
+    // Reserve space now: verified rows and AI matches arrive before the request ends.
+    const current = ++loadGeneration;
+    windowed.more(); loading = true; paint();
+    try { await loadOlder(); }
+    finally { if (current === loadGeneration) { loading = false; paint(); } }
   }
   const observer = typeof IntersectionObserver === 'function' ? new IntersectionObserver(entries => {
     if (scrolled && entries.some(entry => entry.isIntersecting) && automatic < 2 && !document.querySelector('dialog[open]')) void more();
@@ -68,10 +69,10 @@ export function setupListingGrid({grid, controls, button, status, makeCard, card
   window.addEventListener('scroll', pinOnScroll, {passive:true});
   button.onclick = () => void more(true);
   return {
-    update(next, key) { if (viewKey !== key) { automatic = 0; scrolled = false; windowed.reset(); } items = next; viewKey = key; paint(); },
+    update(next, key) { if (viewKey !== key) { loadGeneration++; loading = false; automatic = 0; scrolled = false; windowed.reset(); } items = next; viewKey = key; paint(); },
     pin() { windowed.pin(); },
     setVisible(value) { visible = value; paint(); },
-    reset() { automatic = 0; scrolled = false; windowed.reset(); },
-    dispose() { disposed = true; observer?.disconnect(); window.removeEventListener('scroll', pinOnScroll); },
+    reset() { loadGeneration++; loading = false; automatic = 0; scrolled = false; windowed.reset(); },
+    dispose() { disposed = true; loadGeneration++; observer?.disconnect(); window.removeEventListener('scroll', pinOnScroll); },
   };
 }

@@ -11,7 +11,7 @@ function covers(values, longitude, latitude) {
   })
 }
 function assertBounded(values) {
-  assert(values.length > 0 && values.length <= 2048)
+  assert(values.length > 0 && values.length <= 32768)
   assert.deepEqual(values, [...new Set(values)].sort())
   for (const value of values) assert.match(value, /^[0123456789bcdefghjkmnpqrstuvwxyz]{1,8}$/)
 }

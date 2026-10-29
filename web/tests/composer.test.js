@@ -43,3 +43,12 @@ test('editing keeps the address, attachment metadata and location while replacin
  assert.deepEqual(revised.tags.filter(t=>t[0]==='g'),[['g','ud9wr']]);assert(revised.tags.some(t=>t[0]==='imeta'));assert(revised.tags.some(t=>t[0]==='r'));assert(revised.tags.some(t=>t[0]==='t'&&t[1]==='vintage'));assert.equal(revised.tags.filter(t=>t[0]==='image').length,2);
  assert.equal(revised.content,previous.description);assert(Object.isFrozen(previous.originalTags));assert(Object.isFrozen(previous.originalTags[0]));
 });
+
+ test('courier drafts carry explicit searchable tags and edits can remove them',()=>{
+ const draft=listingDraft({...values,category:'transport',tags:['courier','parcel','transport',' #Parcel ']});
+ assert.deepEqual(draft.tags.filter(tag=>tag[0]==='t').map(tag=>tag[1]),['transport','courier','parcel']);
+ const previous=parseEvent(finalizeEvent(draft,generateSecretKey()));
+ const edited=revisedListingDraft({...values,category:'transport',tags:'passenger, ride'},previous);
+ assert.deepEqual(edited.tags.filter(tag=>tag[0]==='t').map(tag=>tag[1]),['transport','passenger','ride']);
+ for(const tags of [Array.from({length:9},(_,i)=>String(i)),['x'.repeat(61)],['bad\nlabel'],[{}]])assert.throws(()=>listingDraft({...values,tags}));
+ });

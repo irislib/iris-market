@@ -2,6 +2,45 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ListingWindow, setupListingGrid } from '../src/listing-grid.ts';
 const items = n => Array.from({length:n}, (_,id) => ({id:String(id),title:String(id)}));
+function streamingGrid(t, loadOlder) {
+  const saved=Object.getOwnPropertyDescriptor(globalThis,'window');
+  globalThis.window={scrollY:0,addEventListener(){},removeEventListener(){}};
+  const grid={children:[],setAttribute(){},insertBefore(node,anchor){node.remove();this.children.splice(anchor?this.children.indexOf(anchor):this.children.length,0,node);}};
+  const button={};
+  const view=setupListingGrid({grid,controls:{},button,status:{},cardKey:item=>item.id,olderState:()=>({hasMore:true}),loadOlder,
+    makeCard:()=>({dataset:{},remove(){const index=grid.children.indexOf(this);if(index>=0)grid.children.splice(index,1);}})});
+  t.after(()=>{view.dispose();if(saved)Object.defineProperty(globalThis,'window',saved);else delete globalThis.window;});
+  return {grid,button,view};
+}
+test('the next window displays every arriving match before loading finishes',async t=>{
+  let finish,requests=0;
+  const {grid,button,view}=streamingGrid(t,()=>{requests++;return new Promise(resolve=>{finish=resolve;});});
+  view.update(items(24),'search');
+  const first=grid.children[0],pending=button.onclick();
+  view.update(items(25),'search');
+  assert.equal(grid.children.length,25,'first new match appears while the source is still busy');
+  view.update(items(31),'search');
+  assert.equal(grid.children.length,31);
+  assert.equal(grid.children[0],first,'existing cards retain their DOM and position');
+  assert.equal(button.disabled,true);
+  finish();await pending;
+  view.update(items(80),'search');
+  assert.equal(grid.children.length,48,'completion does not reserve another page');
+  assert.equal(requests,1);
+});
+test('an old load cannot block a new search or finish its loading state',async t=>{
+  const finishes=[];
+  const {grid,button,view}=streamingGrid(t,()=>new Promise(resolve=>finishes.push(resolve)));
+  view.update(items(24),'first');const first=button.onclick();
+  view.update(items(24),'second');
+  assert.equal(button.disabled,false,'changing search detaches the previous load');
+  const second=button.onclick();
+  finishes[0]();await first;
+  assert.equal(button.disabled,true,'the old completion cannot finish the new request');
+  view.update(items(26),'second');assert.equal(grid.children.length,26);
+  finishes[1]();await second;
+  assert.equal(button.disabled,false);
+});
 test('initial window is bounded; load more retains the first page despite new rankings', () => {
   const view = new ListingWindow(24), all = items(80);
   assert.equal(view.update(all,'all').length,24);

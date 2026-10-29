@@ -25,7 +25,7 @@ export function locationFromTags(tags: readonly (readonly string[])[]): GeohashC
 }
 
 const MAX_COVER_CELLS = 32
-export const MAX_GEOHASH_QUERY_VALUES = 2048
+export const MAX_GEOHASH_QUERY_VALUES = 32768
 const MAX_QUERY_PRECISION = 8
 
 function viewportBounds(viewport) {
@@ -83,7 +83,7 @@ function gridHashes(grid) {
 /**
  * Exact Nostr #g values covering a viewport, never a partial/truncated cover.
  * Start at a zoom-appropriate precision and coarsen until at most 32 cells fit.
- * Include complete finer precision covers within a bounded 2,048-value budget
+ * Include complete finer precision covers within a bounded 32,768-value budget
  * so single-tag listings are found at city/region zooms; an immediate parent
  * is included only at precision 3+ and within four times the base cover's area.
  * Relays match tags exactly. Arbitrary longer single tags remain undiscoverable

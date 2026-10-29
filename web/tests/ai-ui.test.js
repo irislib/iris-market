@@ -147,6 +147,67 @@ test('older inventory failure pauses without automatic retry or revealing unknow
   await field('search-run').onclick();assert.equal(fetches,1);assert.equal(ui.pagination().paused,true);assert.match(ui.pagination().error,/Listings unavailable/);assert.equal(ui.isVisible(bicycle),false);
 });
 
+const deferred=()=>{let resolve,reject;const promise=new Promise((done,fail)=>{resolve=done;reject=fail;});return{promise,resolve,reject};};
+async function until(check){for(let i=0;i<40&&!check();i++)await Promise.resolve();assert(check(),'expected asynchronous progress');}
+
+test('new candidates stream into classification before their source page finishes',async()=>{
+  const source=deferred(),texts=[];let fetches=0;
+  const client={info:{model:'deberta'},load:async()=>{},async classify(_condition,text){texts.push(text);return{score:.9};},dispose(){this.info=null;}};
+  const {field,ui,setRows}=fixture({rows:[],query:'bicycle',client,fetchMoreCandidates:()=>{fetches++;return source.promise;}});
+  const run=field('search-run').onclick();await until(()=>fetches===1);
+  assert.equal(field('ai-summary-text').textContent,'Searching…');
+  setRows([bicycle]);await until(()=>ui.isVisible(bicycle));
+  assert.equal(ui.searching(),true);assert.equal(field('ai-summary-text').textContent,'Searching… · 1 match');
+  const second={...bicycle,id:'second'};setRows([bicycle,second]);await until(()=>ui.isVisible(second));
+  assert.equal(field('ai-summary-text').textContent,'Searching… · 2 matches');
+  assert.equal(fetches,1,'incoming candidates do not start parallel pagination');
+  source.resolve(false);await run;
+  assert.equal(texts.length,2);assert.equal(ui.pagination().hasMore,false);
+  assert.equal(field('ai-summary-text').textContent,'2 matches');
+});
+
+test('Stop settles a source wait immediately and its late failure cannot change a new query',async()=>{
+  const source=deferred(),texts=[];let fetches=0;
+  const client={info:{model:'deberta'},async load(){this.info={model:'deberta'};},async classify(condition){texts.push(condition);return{score:.9};},dispose(){this.info=null;}};
+  const {field,ui,setRows}=fixture({rows:[],query:'bicycle',client,fetchMoreCandidates:()=>++fetches===1?source.promise:Promise.resolve(false)});
+  let stopped=false;const old=field('search-run').onclick().then(()=>{stopped=true;});await until(()=>fetches===1);
+  field('ai-stop').onclick();await until(()=>stopped);
+  assert.equal(field('ai-summary-text').textContent,'Search paused · 0 matches');
+  field('search').value='chair';const next=field('search-run').onclick();
+  setRows([{...bicycle,id:'chair',title:'Chair'}]);await until(()=>texts.length===1);
+  assert.match(texts[0],/chair/);assert.equal(fetches,1,'a new query shares the outstanding source operation');
+  source.reject(Error('Old relay failed'));await Promise.all([old,next]);
+  assert.equal(fetches,2);assert.equal(field('ai-error').textContent,'');assert.equal(ui.query(),'chair');assert.equal(ui.pagination().matches,1);
+});
+
+test('a late source failure after a full match window is handled on continuation',async()=>{
+  const source=deferred();let fetches=0;
+  const client={info:{model:'deberta'},load:async()=>{},classify:async()=>({score:.9}),dispose(){this.info=null;}};
+  const {field,ui,setRows}=fixture({rows:[],query:'bicycle',client,fetchMoreCandidates:()=>{fetches++;return source.promise;}});
+  let finished=false;const run=field('search-run').onclick().then(()=>{finished=true;});await until(()=>fetches===1);
+  setRows(Array.from({length:24},(_,i)=>({...bicycle,id:`stream-${i}`})));await until(()=>finished);await run;
+  assert.equal(ui.pagination().matches,24);assert.equal(ui.searching(),false);
+  source.reject(Error('Remaining listings unavailable'));await Promise.resolve();
+  await ui.loadMore();assert.equal(fetches,1);assert.equal(ui.pagination().paused,true);assert.match(field('ai-error').textContent,/Remaining listings unavailable/);
+  assert.equal(field('ai-summary-text').textContent,'Search paused · 24 matches');
+  field('ai-show-all').onclick();assert.equal(field('ai-summary-text').textContent,'Showing all listings');
+});
+
+test('a new query ignores stale exhaustion and reviews the final arriving page',async()=>{
+  const source=deferred(),conditions=[];let fetches=0,harness;
+  const client={info:{model:'deberta'},load:async()=>{},async classify(condition){conditions.push(condition);return{score:.9};},dispose(){this.info=null;}};
+  harness=fixture({rows:[],query:'bicycle',client,fetchMoreCandidates:()=>{
+    if(++fetches===1)return source.promise;
+    harness.setRows([{...bicycle,id:'chair',title:'Chair'}]);return Promise.resolve(false);
+  }});
+  let oldFinished=false;const old=harness.field('search-run').onclick().then(()=>{oldFinished=true;});await until(()=>fetches===1);
+  harness.field('search').value='chair';const next=harness.field('search-run').onclick();await until(()=>oldFinished);
+  assert.equal(fetches,1);source.resolve(false);await Promise.all([old,next]);
+  assert.equal(fetches,2,'stale exhaustion does not suppress the new query source');
+  assert.equal(conditions.length,1);assert.match(conditions[0],/chair/);
+  assert.equal(harness.ui.pagination().matches,1);assert.equal(harness.ui.pagination().hasMore,false);
+});
+
 test('Stop keeps confirmed matches and pagination resumes the submitted query',async()=>{
   const rows=[bicycle,{...bicycle,id:'second'}];let rejectCurrent,started,count=0;const conditions=[];
   const pending=new Promise(done=>started=done);

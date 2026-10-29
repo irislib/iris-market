@@ -58,3 +58,12 @@ test('proxy-off hero pauses on the shared canvas and fetches an animated origina
     button.onclick();assert.equal(canvas.hidden,false);assert.equal(image.hidden,true);assert.equal(button.attributes.get('aria-pressed'),'false');
   } finally {delete globalThis.window;}
 });
+
+test('details and draft previews show relative expiry while Never adds no expiry label',t=>{
+  const now=1_700_000_000;t.mock.method(Date,'now',()=>now*1000);
+  for(const draftPreview of [false,true]) {
+    const nodes=all(renderListingPage({...listing,expiration:now+604800},{...options,draftPreview}));
+    const time=nodes.find(node=>node.tag==='time');assert.equal(time.textContent,'Expires in 1 week');assert.equal(time.dateTime,new Date((now+604800)*1000).toISOString());
+  }
+  assert.equal(all(renderListingPage(listing,options)).some(node=>node.textContent?.startsWith('Expires')),false);
+});

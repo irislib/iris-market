@@ -6,7 +6,7 @@ const decoder = new TextDecoder();
 const clone = <T>(value: T): T => value === undefined ? undefined : structuredClone(value);
 export interface VaultRow {schema:number;mode:'password'|'device';version?:number;key?:CryptoKey;salt?:Uint8Array<ArrayBuffer>;iterations?:number;iv?:Uint8Array<ArrayBuffer>;ciphertext?:ArrayBuffer}
 export interface VaultBackend {read():Promise<VaultRow|undefined>;write(value:VaultRow,expectedVersion?:number):Promise<void>}
-export interface Vault {status():Promise<{exists:boolean;locked:boolean;password:boolean}>;create(initial?:Record<string,unknown>,options?:{password?:string}):Promise<void>;unlock(password?:string):Promise<boolean>;lock():void;get<T=unknown>(name:string):Promise<T|undefined>;put<T>(name:string,value:T):Promise<void>;del(name:string):Promise<void>;list(prefix?:string):Promise<string[]>;flush():Promise<void>}
+export interface Vault {status():Promise<{exists:boolean;locked:boolean;password:boolean}>;create(initial?:Record<string,unknown>,options?:{password?:string}):Promise<void>;unlock(password?:string):Promise<boolean>;lock():void;get<T=unknown>(name:string):Promise<T|undefined>;put<T>(name:string,value:T):Promise<void>;putMany(entries:readonly (readonly [string,unknown])[]):Promise<void>;del(name:string):Promise<void>;list(prefix?:string):Promise<string[]>;flush():Promise<void>}
 
 /** A single encrypted snapshot makes each store mutation durable and atomic. */
 export function indexedDbVaultBackend(indexedDBImpl = globalThis.indexedDB, databaseName = DB_NAME): VaultBackend {
@@ -126,6 +126,7 @@ export function createVault({ backend = indexedDbVaultBackend(), cryptoImpl = gl
     lock() { revision++; key = row = values = undefined; },
     get<T>(name:string) { return serial(() => { assertOpen(); return clone(values.get(name)) as T|undefined; }); },
     put(name, value) { return serial(async () => { assertOpen(); const next = new Map(values); next.set(name, clone(value)); await save(next); }); },
+    putMany(entries:readonly (readonly [string,unknown])[]) { return serial(async () => { assertOpen(); const next=new Map(values); for(const [name,value] of entries)next.set(name,clone(value)); await save(next); }); },
     del(name) { return serial(async () => { assertOpen(); const next = new Map(values); next.delete(name); await save(next); }); },
     list(prefix = '') { return serial(() => { assertOpen(); return [...values.keys()].filter(name => name.startsWith(prefix)); }); },
     flush() { return queue; },

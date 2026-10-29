@@ -15,14 +15,13 @@ export function setupProductReviews({listing,query,preview=false,onProfile=()=>{
   header.append(element('h2','Product reviews'));
   const summary=element('p','','review-summary'),notice=element('p','','small muted'),list=element('div',undefined,'review-list');
   notice.setAttribute('role','status');
-  const retry=element('button','Retry','text-button');retry.type='button';retry.hidden=true;
+  const retry=element('button','Refresh','text-button');retry.type='button';retry.hidden=true;
   panel.append(header,summary,notice,retry,list);
-  let closed=false,loaded=false,incomplete=false,reviews:ProductReview[]=[],loading:Promise<void>|undefined;
+  let closed=false,loaded=false,reviews:ProductReview[]=[],loading:Promise<void>|undefined;
   let controller:AbortController|undefined,expiryTimer:ReturnType<typeof setTimeout>|undefined;
   function draw(){
     if(closed)return;clearTimeout(expiryTimer);list.replaceChildren();
-    summary.textContent=reviews.length?`${reviews.length} ${reviews.length===1?'review':'reviews'} · Purchases not verified`:'';
-    if(!reviews.length&&loaded&&!incomplete)list.append(element('p','No product reviews found.','muted small'));
+    summary.textContent=reviews.length?`${reviews.length} ${reviews.length===1?'review':'reviews'} · Purchases not verified`:'0 reviews';
     for(const review of reviews){
       const card=element('article',undefined,'review-card'),identity=element('div',undefined,'review-header');
       identity.append(createUserRow(review.author,{size:32,className:'review-author',onClick:()=>{if(!closed)onProfile(review.author);}}));
@@ -43,19 +42,19 @@ export function setupProductReviews({listing,query,preview=false,onProfile=()=>{
   }
   function read():Promise<void> {
     if(closed||preview)return Promise.resolve();if(loading)return loading;
-    if(!query){notice.textContent='Reviews are unavailable.';return Promise.resolve();}
-    controller=new AbortController();const request=controller;notice.textContent='Loading reviews…';retry.hidden=true;
+    if(!query){notice.textContent='';loaded=true;draw();return Promise.resolve();}
+    controller=new AbortController();const request=controller;notice.textContent='';retry.hidden=true;
     loading=(async()=>{
       try {
         const result=await loadProductReviews(target,{query,signal:request.signal});if(closed||request.signal.aborted)return;
-        reviews=result.reviews;loaded=true;incomplete=result.incomplete||result.limited;
-        notice.textContent=result.incomplete?'Some reviews may be unavailable.':result.limited?'Showing recent reviews.':'';
+        reviews=result.reviews;loaded=true;
+        notice.textContent=result.limited?'Showing recent reviews.':'';
         retry.hidden=!result.incomplete;draw();
-      }catch{if(!closed&&!request.signal.aborted){notice.textContent='Couldn’t refresh reviews.';retry.hidden=false;}}
+      }catch{if(!closed&&!request.signal.aborted){notice.textContent='';retry.hidden=false;loaded=true;draw();}}
       finally{loading=undefined;}
     })();return loading;
   }
   retry.onclick=()=>void read();
-  if(preview)panel.hidden=true;
+  draw();if(preview)panel.hidden=true;
   return {element:panel,start:()=>loaded?Promise.resolve():read(),refresh:read,destroy(){closed=true;controller?.abort();clearTimeout(expiryTimer);}};
 }

@@ -4,7 +4,10 @@ import {setupServiceAreaPicker} from './service-area-ui.ts';
 import {validateServiceArea} from './service-area.ts';
 import type {ServiceAreas} from './service-area.ts';
 
-export type CourierType = 'parcel' | 'passenger' | 'both';
+import {courierListingType} from './transport-type.ts';
+import type {CourierType} from './transport-type.ts';
+export {courierListingType} from './transport-type.ts';
+export type {CourierType} from './transport-type.ts';
 type CourierSection = 'work' | 'jobs' | 'service';
 export interface CourierListing {
   id:string; author:string; title:string; side:string; category?:string; tags?:readonly string[];
@@ -38,13 +41,6 @@ const terminal=(order:Pick<OrderView,'status'>)=>['delivered','cancelled'].inclu
 const validType=(value:unknown):value is CourierType=>typeof value==='string'&&['parcel','passenger','both'].includes(value);
 const browserStorage=()=>{try{return globalThis.localStorage;}catch{return undefined;}};
 
-/** Explicit public service tags only: a request to buy a car is not a driving gig. */
-export function courierListingType(listing:CourierListing):CourierType|null {
-  const tags=new Set((listing.tags??[]).slice(0,64).map(clean));
-  const passenger=['passenger','passengers','ride','rides'].some(tag=>tags.has(tag));
-  const parcel=['parcel','parcels','delivery','deliveries'].some(tag=>tags.has(tag))||!passenger&&tags.has('courier');
-  return passenger&&parcel?'both':passenger?'passenger':parcel?'parcel':null;
-}
 export function courierListings(listings:readonly CourierListing[], {type='parcel',area='',side='request',owner,now=Math.floor(Date.now()/1000)}:{type?:CourierType;area?:string;side?:'request'|'offer';owner?:string;now?:number}={}):CourierListing[] {
   const place=clean(area),seen=new Set<string>();
   return listings.slice(0,1000).filter(listing=>{

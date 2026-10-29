@@ -16,7 +16,7 @@ export function setupProfileReviews({target,query,getAccount=()=>({canSign:false
   const summary=element('p','', 'review-summary'),write=element('button','Write review','button secondary');write.type='button';
   header.append(element('h2','Reviews'),write);
   const notice=element('p','','small muted');notice.setAttribute('role','status');
-  const retry=element('button','Retry','text-button');retry.type='button';retry.hidden=true;
+  const retry=element('button','Refresh','text-button');retry.type='button';retry.hidden=true;
   const list=element('div',undefined,'review-list'),form=element('form',undefined,'review-form');form.hidden=true;
   const publicNote=element('p','Your rating and review will be public.','review-public-note small');
   const stars=element('fieldset',undefined,'review-rating'),legend=element('legend','Rating');stars.append(legend);
@@ -38,19 +38,18 @@ export function setupProfileReviews({target,query,getAccount=()=>({canSign:false
   const cancel=element('button','Cancel','text-button');cancel.type='button';cancel.onclick=()=>{form.hidden=true;error.textContent='';};
   const actions=element('div',undefined,'profile-actions');actions.append(submit,cancel);form.append(publicNote,stars,label,text,error,actions);
   panel.append(header,summary,notice,retry,form,list);
-  let reviews:Review[]=[],closed=false,busy=false,loaded=false,incomplete=false,formOwner:string|undefined;
+  let reviews:Review[]=[],closed=false,busy=false,formOwner:string|undefined;
   let loadController:AbortController|undefined,loading:Promise<void>|undefined,reloadAfter=false;
   let pendingKey='',accountOwner:string|undefined;
   const ownReview=(owner:string|undefined)=>effectiveReviews(reviews).find(review=>review.author===owner);
   const summaryState=():ReviewSummaryView=>{
     const value=reviewSummary(reviews);
-    return {count:value.count,label:value.count?`★ ${value.average.toFixed(1)} · ${value.count} ${value.count===1?'review':'reviews'}`:loaded&&!incomplete?'No reviews yet':'Reviews'};
+    return {count:value.count,label:value.count?`★ ${value.average.toFixed(1)} · ${value.count} ${value.count===1?'review':'reviews'}`:'0 reviews'};
   };
   function draw(){
-    const account=getAccount(),value=summaryState();summary.textContent=value.count?value.label:'';onSummary(value);
+    const account=getAccount(),value=summaryState();summary.textContent=value.label;onSummary(value);
     write.hidden=preview||account.owner===target;write.disabled=busy;write.textContent=ownReview(account.owner)?'Edit review':'Write review';
     list.replaceChildren();
-    if(!reviews.length&&loaded&&!incomplete)list.append(element('p','No reviews yet.','muted small'));
     for(const review of effectiveReviews(reviews)){
       const card=element('article',undefined,'review-card'),identity=element('div',undefined,'review-header');
       identity.append(createUserRow(review.author,{size:32,className:'review-author',onClick:()=>onProfile(review.author)}));
@@ -64,15 +63,15 @@ export function setupProfileReviews({target,query,getAccount=()=>({canSign:false
   async function read(){
     if(closed||preview)return;
     if(loading){reloadAfter=true;return loading;}
-    if(!query){notice.textContent='Reviews are unavailable.';retry.hidden=true;return;}
-    const controller=new AbortController();loadController=controller;notice.textContent='Loading reviews…';retry.hidden=true;
+    if(!query){notice.textContent='';retry.hidden=true;draw();return;}
+    const controller=new AbortController();loadController=controller;notice.textContent='';retry.hidden=true;
     loading=(async()=>{
       try{
         const result=await loadReviews(target,{query,signal:controller.signal,pending:getAccount().pending});
         if(closed||controller.signal.aborted)return;
-        reviews=mergeReviews(result.reviews,cachedReviews(target,getAccount().pending));loaded=true;incomplete=result.incomplete||result.limited;
-        notice.textContent=result.incomplete?'Some reviews may be unavailable.':result.limited?'Showing recent reviews.':'';retry.hidden=!result.incomplete;draw();
-      }catch(cause){if(!closed&&!controller.signal.aborted){notice.textContent='Couldn’t refresh reviews.';retry.hidden=false;}}
+        reviews=mergeReviews(result.reviews,cachedReviews(target,getAccount().pending));
+        notice.textContent=result.limited?'Showing recent reviews.':'';retry.hidden=!result.incomplete;draw();
+      }catch(cause){if(!closed&&!controller.signal.aborted){notice.textContent='';retry.hidden=false;reviews=mergeReviews(reviews,cachedReviews(target,getAccount().pending));draw();}}
       finally{loading=undefined;if(!closed&&reloadAfter){reloadAfter=false;void read();}}
     })();return loading;
   }
@@ -106,7 +105,7 @@ export function setupProfileReviews({target,query,getAccount=()=>({canSign:false
       const parsed=parseReview(receipt.event,target);
       if(parsed.author!==account.owner||parsed.id!==getEventHash({...draft,pubkey:account.owner}))throw new Error('The signer returned a different review.');
       const review:Review={...parsed,delivery:receipt.delivery==='published'?'published':'queued'};rememberReview(review);reviews=mergeReviews(reviews,[review]);
-      form.hidden=true;loaded=true;notice.textContent=review.delivery==='queued'?'Review saved. Waiting to publish.':'Review published.';draw();
+      form.hidden=true;notice.textContent=review.delivery==='queued'?'Review saved. Waiting to publish.':'Review published.';draw();
     }catch(cause){if(!closed)error.textContent=cause.message||'Could not save this review. Try again.';}
     finally{busy=false;stars.disabled=false;text.disabled=false;cancel.disabled=false;submit.disabled=!selectedRating;if(!closed)draw();}
   };

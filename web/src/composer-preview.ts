@@ -20,7 +20,7 @@ export function createDraftFiles(files:File[],urls:Pick<typeof URL,'createObject
 
 export function renderComposerPreview(draft,files:DraftFile[],{priceNode=(listing,className)=>element('p',formatPrice(listing,{preferredCurrency:listing.currency}).primary,className)}={}) {
   const tag=(name:string)=>draft.tags.find(value=>value[0]===name);
-  const listing={title:tag('title')[1],side:tag('market')[1],category:tag('t')[1],price:tag('price')[1],currency:tag('price')[2],location:tag('location')?.[1]??'',imageUrl:tag('image')?.[1],description:draft.content,expiration:tag('expiration')?Number(tag('expiration')[1]):undefined};
+  const listing={title:tag('title')[1],side:tag('market')[1],category:tag('t')[1],price:tag('price')[1],currency:tag('price')[2],location:tag('location')?.[1]??'',imageUrl:tag('image')?.[1],description:draft.content,tags:draft.tags.filter(tag=>tag[0]==='t').map(tag=>tag[1]),expiration:tag('expiration')?Number(tag('expiration')[1]):undefined};
   const selected=listing.imageUrl?undefined:files.find(file=>file.image)?.image;
   const root=element('div',undefined,'post-preview-content');
   root.append(renderListingPage(listing,{priceNode,draftPreview:true,localImage:selected}));

@@ -32,7 +32,7 @@ function approvalErrorMessage(error) {
 }
 function signerPermissions(values) {
   if (values === undefined) return ["sign_event:37368"];
-  const supported = new Set(["sign_event:0", "sign_event:3", "sign_event:30402", "sign_event:7368", "sign_event:24242"]);
+  const supported = new Set(["sign_event:0", "sign_event:3", "sign_event:30402", "sign_event:30406", "sign_event:7368", "sign_event:24242"]);
   if (!Array.isArray(values) || !values.length || values.length > supported.size || values.some(value => !supported.has(value))) throw new Error("Unsupported signer permissions.");
   return [...new Set(values)];
 }

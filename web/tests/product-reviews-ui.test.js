@@ -36,11 +36,21 @@ test('fractional thumb values are labeled scores and never become counts or star
   assert(find(ui.element,'Recommendation score: 40%'));assert.equal(find(ui.element,'Doesn’t recommend this item'),undefined);ui.destroy();
 });
 
-test('incomplete lookup never claims no reviews; retry is bounded and complete empty results are clear',async()=>{
+test('empty and incomplete lookups show the known count without a network warning',async()=>{
   let complete=false,calls=0;
   const ui=setupProductReviews({listing,query:async()=>{calls++;return{events:[],complete};}});await ui.start();
-  assert(find(ui.element,'Some reviews may be unavailable.'));assert.equal(find(ui.element,'No product reviews found.'),undefined);
-  complete=true;await ui.refresh();assert.equal(calls,2);assert(find(ui.element,'No product reviews found.'));ui.destroy();
+  assert(find(ui.element,'0 reviews'));assert.equal(find(ui.element,'Refresh').hidden,false);
+  assert.equal(all(ui.element).some(node=>/unavailable|Couldn/.test(node.textContent)),false);
+  complete=true;await ui.refresh();assert.equal(calls,2);assert(find(ui.element,'0 reviews'));assert.equal(find(ui.element,'Refresh').hidden,true);ui.destroy();
+});
+
+test('a failed refresh preserves visible reviews without an error notice',async()=>{
+  let failed=false;const value=review(),ui=setupProductReviews({listing,query:async filters=>{
+    if(failed)throw Error('Relay disconnected');return queryFor(value)(filters);
+  }});await ui.start();failed=true;await ui.refresh();
+  assert(find(ui.element,'1 review · Purchases not verified'));assert(find(ui.element,'Recommends this item'));
+  assert.equal(all(ui.element).some(node=>/Couldn|unavailable|disconnected/.test(node.textContent)),false);
+  assert.equal(find(ui.element,'Refresh').hidden,false);ui.destroy();
 });
 
 test('navigation aborts a pending query and late results cannot repopulate the detached panel',async()=>{
@@ -53,11 +63,11 @@ test('visible expired reviews disappear without a refresh and cleanup cancels th
   const time=Date.now();t.mock.timers.enable({apis:['Date','setTimeout'],now:time});
   const ui=setupProductReviews({listing,query:queryFor(review([['expiration',String(Math.floor(time/1000)+2)]]))});await ui.start();
   assert(find(ui.element,'Recommends this item'));t.mock.timers.tick(2100);assert.equal(find(ui.element,'Recommends this item'),undefined);
-  assert(find(ui.element,'No product reviews found.'));ui.destroy();
+  assert(find(ui.element,'0 reviews'));ui.destroy();
 });
 
 test('preview and unavailable readers never trigger public queries',async()=>{
   let calls=0;const ui=setupProductReviews({listing,preview:true,query:async()=>{calls++;return{events:[]};}});await ui.start();assert.equal(calls,0);assert(ui.element.hidden);ui.destroy();
-  const unavailable=setupProductReviews({listing});await unavailable.start();assert(find(unavailable.element,'Reviews are unavailable.'));unavailable.destroy();
+  const unavailable=setupProductReviews({listing});await unavailable.start();assert(find(unavailable.element,'0 reviews'));assert.equal(all(unavailable.element).some(node=>/unavailable/.test(node.textContent)),false);unavailable.destroy();
   assert.throws(()=>setupProductReviews({listing:{...listing,author}}),/author/);
 });

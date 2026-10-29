@@ -76,6 +76,12 @@ function parseRecord(event:Event):RecordValue {
   return result;
 }
 
+export function validateShippingOptionEvent(input:Event):ShippingOption {
+  const record=parseRecord(verified(input,seconds()));
+  assert(input.kind===30406&&!record.unsupported&&record.option);
+  return record.option;
+}
+
 /** Country coverage only, not a price quote or a package/region eligibility check. */
 export function matchesShippingDestination(info:ListingShipping|undefined,value:string,{includeUnknown=false}={}):boolean {
   const country=countryCode(value);if(!country)return false;

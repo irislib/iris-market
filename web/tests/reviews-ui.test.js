@@ -53,10 +53,19 @@ test('profile lock clears an open draft; signed-out and own-profile views cannot
   assert.equal(find(self.element,'Write review').hidden,true);find(self.element,'Write review').click();assert.equal(all(self.element).find(node=>node.tag==='form').hidden,true);self.close();
 });
 
-test('an incomplete empty lookup is not presented as proof of no reviews and supports retry',async()=>{
+test('empty and incomplete lookups show the known count without a network warning',async()=>{
   let complete=false;const f=fixture({query:async()=>({events:[],complete})});await settle();
-  assert(find(f.root,'Some reviews may be unavailable.'));assert.equal(find(f.root,'No reviews yet.'),undefined);assert.equal(f.ui.summary().label,'Reviews');
-  complete=true;find(f.root,'Retry').click();await settle();assert(find(f.root,'No reviews yet.'));f.ui.close();
+  assert(find(f.root,'0 reviews'));assert.equal(f.ui.summary().label,'0 reviews');
+  assert.equal(all(f.root).some(node=>/unavailable|refresh reviews|No reviews/.test(node.textContent)),false);
+  assert.equal(find(f.root,'Refresh').hidden,false);
+  complete=true;find(f.root,'Refresh').click();await settle();assert(find(f.root,'0 reviews'));assert.equal(find(f.root,'Refresh').hidden,true);f.ui.close();
+});
+
+test('a failed background lookup keeps the known count and offers a quiet refresh',async()=>{
+  const f=fixture({query:async()=>{throw Error('Relay disconnected');}});await settle();
+  assert(find(f.root,'0 reviews'));assert.equal(f.ui.summary().count,0);
+  assert.equal(all(f.root).some(node=>/Couldn|unavailable|disconnected/.test(node.textContent)),false);
+  assert.equal(find(f.root,'Refresh').hidden,false);f.ui.close();
 });
 
 test('late lookups are aborted on navigation and do not replace an open review draft',async()=>{

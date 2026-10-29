@@ -1,6 +1,7 @@
 import { invitationBase } from '../asset-url.ts';
 import { validateUploadAuthorization } from '../upload-auth.ts';
 import { REVIEW_KIND, parseReview, validateReviewDraft } from '../reviews.ts';
+import {validateShippingOptionEvent} from '../shipping.ts';
 import { finalizeEvent, generateSecretKey, getEventHash, getPublicKey, nip19 } from 'nostr-tools';
 import { AppKeys, Invite, NdrRuntime, createPersistentNostrOutbox, hasMetadataPrivacyVersion } from 'nostr-double-ratchet';
 import { createVault } from './vault.ts';
@@ -28,6 +29,7 @@ const DEVICE_PREFIX = 'v1/device-manager/';
 const now = () => Math.floor(Date.now() / 1000);
 function publicAccountEvent(event:VerifiedEvent):boolean {
   if([0,3,30402].includes(event.kind))return true;
+  if(event.kind===30406){try{validateShippingOptionEvent(event);return true;}catch{return false;}}
   if(event.kind!==REVIEW_KIND)return false;
   try{parseReview(event);return true;}catch{return false;}
 }
@@ -256,15 +258,17 @@ export function createMessaging({ getRelays=()=>[], onChange = () => {}, vault =
     }
     return state();
   };
-  async function queuePublic(event) {
+  async function queuePublicEvents(events:VerifiedEvent[]) {
     requireReady();
-    const attempt = generation;
-    if (!publicQueue.has(event.id) && publicQueue.size >= 128) throw new Error('Too many updates are waiting to sync.');
-    const stored=structuredClone(event);
-    await vault.put(`market/public/${stored.id}`, stored);
-    check(attempt); publicQueue.set(stored.id, stored); notify(); scheduleBackground();
-    return {event:structuredClone(stored), delivery:'queued', accepted:[]};
+    const attempt=generation,stored=events.map(event=>structuredClone(event));
+    if(publicQueue.size+new Set(stored.filter(event=>!publicQueue.has(event.id)).map(event=>event.id)).size>128)throw new Error('Too many updates are waiting to sync.');
+    // Persist the complete publication before exposing any member to the worker.
+    await vault.putMany(stored.map(event=>[`market/public/${event.id}`,event] as const));
+    check(attempt);for(const event of stored)publicQueue.set(event.id,event);
+    notify();scheduleBackground();
+    return stored.map(event=>({event:structuredClone(event),delivery:'queued',accepted:[]}));
   }
+  async function queuePublic(event) { return (await queuePublicEvents([event]))[0]; }
   async function syncPublic() {
     if (syncing || status !== 'ready') return syncing;
     const attempt = generation, attempted = new Set();
@@ -468,7 +472,7 @@ export function createMessaging({ getRelays=()=>[], onChange = () => {}, vault =
       const channel = transportFactory();
       let remote;
       remote = new RemoteSigner({ runtime: channel, relays: getRelays(), bunkerLink, signal, onConnectionLink, onAuthUrl,
-        permissions: ['sign_event:0', 'sign_event:3', 'sign_event:30402', 'sign_event:7368', 'sign_event:24242'], timeoutMs: 15 * 60_000,
+        permissions: ['sign_event:0', 'sign_event:3', 'sign_event:30402', 'sign_event:30406', 'sign_event:7368', 'sign_event:24242'], timeoutMs: 15 * 60_000,
         onClose: () => {
           channel.close();
           if (postingRemote === remote) { postingRemote = postingTransport = undefined; signer = undefined; notify(); }
@@ -526,6 +530,13 @@ export function createMessaging({ getRelays=()=>[], onChange = () => {}, vault =
       const event = verifiedPrivateEvent(raw);
       if (!event || event.pubkey !== account.owner || !publicAccountEvent(event)) throw new Error('Invalid public account event.');
       return queuePublic(event);
+    },
+    async publishSignedEvents(raws) {
+      requireReady();
+      if(!Array.isArray(raws)||!raws.length||raws.length>2)throw new Error('Invalid publication.');
+      const events=raws.map(raw=>verifiedPrivateEvent(raw));
+      if(events.some(event=>!event||event.pubkey!==account.owner||!publicAccountEvent(event)))throw new Error('Invalid public account event.');
+      return queuePublicEvents(events);
     },
     async publishEvent(draft) { return this.publishSignedEvent(await signing(draft)); },
     async updateProfile({ name, picture }:{name?:string;picture?:string} = {}) {

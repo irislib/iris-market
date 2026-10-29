@@ -316,7 +316,7 @@ test('invalid saved keys are rejected before querying or signing', async () => {
 
 
 test('public signing is explicitly scoped and never fetches private device-link information', async () => {
-  const runtime = signerRuntime(), permissions = ['sign_event:0', 'sign_event:3', 'sign_event:30402']
+  const runtime = signerRuntime(), permissions = ['sign_event:0', 'sign_event:3', 'sign_event:30402', 'sign_event:30406']
   let closed = 0
   const client = clientFor(runtime, { permissions, timeoutMs: 15 * 60 * 1000, onClose: () => { closed++ } })
   try {
@@ -324,6 +324,7 @@ test('public signing is explicitly scoped and never fetches private device-link 
     assert.equal(runtime.requests[0].params[2], permissions.join(','))
     const signed = await client.signEvent({ pubkey: owner, kind: 30402, created_at: now(), tags: [['d', 'listing']], content: 'A public listing' })
     assert.equal(signed.kind, 30402)
+    const delivery=await client.signEvent({pubkey:owner,kind:30406,created_at:now(),tags:[['d','delivery']],content:''});assert.equal(delivery.kind,30406)
     assert.equal(runtime.requests.some(request => request.method === 'iris_get_link_info'), false)
     const count = runtime.publications.length
     await assert.rejects(client.signEvent(prepareSignerAuthorization(owner, newDevice, null)), /cannot approve/)

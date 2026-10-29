@@ -115,3 +115,33 @@ test('review allowlist rejects private payloads, forged signers and unsupported 
   await vault.put(`market/public/${invalid.id}`,invalid);await app.lock();await app.restore();
   assert.deepEqual(app.state().pendingReviews,[]);assert.equal(network.calls.some(call=>call.kind==='publish'&&call.value.id===invalid.id),false);
 });
+
+test('delivery and listing persist as one local publication before relay work and survive reopening', {timeout:3000}, async t=>{
+  const network=silentNetwork(),backend=memoryBackend(),vault=createVault({backend}),app=make(vault,network);t.after(()=>app.destroy());
+  await app.createAccount();
+  const option=await app.signEvent({kind:30406,created_at:Math.floor(Date.now()/1000),content:'',tags:[['d','post'],['title','Delivery'],['price','5','EUR'],['country','FI'],['service','standard']]});
+  const item=await app.signEvent({...listing,tags:[...listing.tags,['shipping_option',`30406:${option.pubkey}:post`]]});
+  const receipts=await app.publishSignedEvents([option,item]);assert.equal(receipts.length,2);assert(receipts.every(receipt=>receipt.delivery==='queued'));
+  for(const event of [option,item])assert.equal((await vault.get(`market/public/${event.id}`)).id,event.id);
+  await app.lock();await app.restore();assert.equal(app.state().pendingListings[0].id,item.id);assert.equal((await vault.get(`market/public/${option.id}`)).id,option.id);
+  const invalid=await app.signEvent({...option,kind:30406,tags:[['d','invalid']]});
+  await assert.rejects(app.publishSignedEvents([invalid,item]),/Invalid public account event/);
+});
+
+test('a failed atomic batch storage write leaves neither event locally queued',async()=>{
+  const backend=memoryBackend(),vault=createVault({backend});await vault.create();
+  const original=backend.write;backend.write=async()=>{throw Error('disk unavailable');};
+  await assert.rejects(vault.putMany([['market/public/option',{id:'option'}],['market/public/item',{id:'item'}]]));
+  assert.equal(await vault.get('market/public/option'),undefined);assert.equal(await vault.get('market/public/item'),undefined);
+  backend.write=original;
+});
+
+test('background publication cannot see either delivery event before the whole pair is durable', {timeout:3000}, async t=>{
+  const vault=createVault({backend:memoryBackend()}),save=vault.putMany.bind(vault);let pairDurable=false,observed=0;
+  vault.putMany=async entries=>{await save(entries);if(entries.some(([,event])=>event.kind===30406)){assert.equal(entries.length,2);pairDurable=true;}};
+  const app=createMessaging({vault,getRelays:()=>[],transportFactory:()=>({query:async()=>({events:[],complete:true}),publish:async event=>{if([30402,30406].includes(event.kind)){assert(pairDurable);observed++;}return {remoteAccepted:true,accepted:[]};},subscribe:()=>({close(){}}),close(){}})});t.after(()=>app.destroy());
+  await app.createAccount();
+  const option=await app.signEvent({kind:30406,created_at:Math.floor(Date.now()/1000),content:'',tags:[['d','atomic'],['title','Delivery'],['price','0','EUR'],['country','FI'],['service','standard']]});
+  const item=await app.signEvent({...listing,tags:[...listing.tags,['shipping_option',`30406:${option.pubkey}:atomic`]]});
+  await app.publishSignedEvents([option,item]);await waitFor(()=>observed===2);
+});

@@ -4,9 +4,11 @@ import {art} from './art.ts';
 import {renderDescription} from './description.ts';
 import {listingURL} from './routes.ts';
 import {listingPublishedAt,type ListingDates} from './listing-dates.ts';
+import {relativeExpiry} from './expiry.ts';
+import {courierListingType} from './transport-type.ts';
 
 interface PublicListingEvent {id:string;pubkey:string;created_at:number;kind:number;tags:readonly (readonly string[])[];content:string;sig:string}
-interface ListingPresentation extends ListingDates {title:string;side:string;category:string;price:string;currency:string;location:string;imageUrl?:string;description:string;author?:string;id?:string;rawEvent?:PublicListingEvent}
+interface ListingPresentation extends ListingDates {title:string;side:string;category:string;tags?:readonly string[];price:string;currency:string;location:string;imageUrl?:string;description:string;author?:string;id?:string;rawEvent?:PublicListingEvent}
 interface ListingPageOptions {
   saved?:boolean;onSave?:(listing:ListingPresentation)=>void;onBuy?:(listing:ListingPresentation)=>void;onProfile?:(key:string)=>void;
   priceNode:(listing:ListingPresentation,className:string)=>HTMLElement;authorRow?:(listing:ListingPresentation)=>HTMLElement;
@@ -37,14 +39,16 @@ export function renderListingPage(listing:ListingPresentation,{saved=false,onSav
   if(original&&(canvasStill||original!==still)){originalButton=node('button',undefined,'image-original-toggle');originalButton.type='button';originalButton.onclick=()=>selectImage(!showingOriginal);media.append(originalButton);}
   selectImage(false);
   const copy=node('div',undefined,'detail-copy');
-  const context=draftPreview?`${listing.side==='request'?'Buying':'Selling'} · ${listing.category}`:listing.side==='request'?'Buying':listing.category;
+  const transport=listing.category==='transport'?courierListingType(listing):null;
+  const category=transport?({parcel:'Delivery',passenger:'Passenger ride',both:'Delivery and passenger rides'}[transport]):listing.category;
+  const context=draftPreview?`${listing.side==='request'?'Buying':'Selling'} · ${category}`:listing.side==='request'?`Buying${transport?` · ${category}`:''}`:category;
   copy.append(node('div',context,'eyebrow'),node('h1',listing.title),priceNode(listing,'detail-price'),node('p',listing.location||'Anywhere','detail-place'));
   if(!draftPreview&&!isPreview&&listing.author)copy.append(authorRow(listing));
   const added=listingPublishedAt(listing),dates=node('p',undefined,'listing-dates small muted');
   const date=(label:string,seconds:number,includeTime=false)=>{const value=new Date(seconds*1000),time=node('time',`${label} ${value.toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric',...(includeTime?{hour:'numeric',minute:'2-digit'}:{})})}`);time.dateTime=value.toISOString();time.title=value.toLocaleString();return time;};
-  const hasAdded=!draftPreview&&added!==undefined,hasExpiry=Number.isSafeInteger(listing.expiration)&&listing.expiration>0;
+  const hasAdded=!draftPreview&&added!==undefined,expiry=relativeExpiry(listing.expiration),hasExpiry=expiry!==null;
   if(hasAdded)dates.append(date('Added',added));
-  if(hasExpiry){if(hasAdded)dates.append(document.createTextNode(' · '));dates.append(date('Expires',listing.expiration,true));}
+  if(hasExpiry){if(hasAdded)dates.append(document.createTextNode(' · '));const time=node('time',expiry);time.dateTime=new Date(listing.expiration*1000).toISOString();dates.append(time);}
   if(hasAdded||hasExpiry)copy.append(dates);
   if(draftPreview){copy.append(renderDescription(listing.description));wrap.append(media,copy);return wrap;}
   const actions=node('div',undefined,'detail-actions');

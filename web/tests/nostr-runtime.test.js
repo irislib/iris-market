@@ -19,6 +19,7 @@ function fixture(options={}) {
       queryEvents:options.query??(async()=>({...completion,events:[]})),
       subscribeEvents(filters,handlers){const entry={filters,handlers,closed:false};subscriptions.push(entry);return{close(){entry.closed=true}}},
       publishEvent:async()=>({accepted:false,remoteAccepted:false,queued:true,sources:[]}),
+      ingestEvents:async events=>{client.imported=events},
       setNostrSource:async source=>{client.source=source},
       close:async()=>{client.closed++},
     };clients.push(client);return client;
@@ -30,6 +31,16 @@ test('anonymous worker configuration satisfies the shared graph initialization w
   const config=publicWorkerConfig(['wss://example.test']);
   assert.equal(new SocialGraph(config.pubkey).getRoot(),GRAPH_BOOTSTRAP.root);
   assert.equal(config.pubkey,GRAPH_BOOTSTRAP.root);assert.equal('nsec' in config,false);
+  assert.deepEqual(config.reconciliation,{lookbackSeconds:7*86400});
+});
+
+test('public cache imports verify records and cannot publish or accept private events',async()=>{
+  const {runtime,clients}=fixture(),record=event();
+  await runtime.ingest([record]);assert.deepEqual(clients[0].imported,[record]);
+  await assert.rejects(runtime.ingest([event(1059)]),/Only signed public/);
+  await assert.rejects(runtime.ingest([{...record,content:'forged'}]),/Only signed public/);
+  await assert.rejects(runtime.ingest(Array(129).fill(record)),/too large/);
+  runtime.close();
 });
 
 test('a public subscription delivers verified records without waiting for EOSE',async()=>{

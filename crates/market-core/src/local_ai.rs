@@ -44,9 +44,9 @@ pub(crate) fn begin(state: &mut State) -> Result<()> {
         "Type what you are looking for in the search field"
     );
     let interests = state.query.clone();
-    let candidates = state
-        .snapshot()?
-        .listings
+    let mut listings = state.snapshot()?.listings;
+    crate::search_plan::prioritize(&mut listings, &state.search_terms);
+    let candidates = listings
         .into_iter()
         .filter(|l| l.relevance.is_none())
         .take(24)
@@ -55,6 +55,9 @@ pub(crate) fn begin(state: &mut State) -> Result<()> {
             Ok(Candidate { listing, event_id })
         })
         .collect::<Result<Vec<_>>>()?;
+    if !candidates.is_empty() {
+        state.search_plan_locked = true;
+    }
     state.local_curation = Some(Pending {
         batch: Batch {
             id: uuid::Uuid::new_v4().to_string(),
@@ -70,7 +73,12 @@ pub(crate) fn begin(state: &mut State) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn apply(state: &mut State, id: &str, decisions: Vec<Decision>) -> Result<()> {
+pub(crate) fn apply(
+    state: &mut State,
+    id: &str,
+    decisions: Vec<Decision>,
+    partial: bool,
+) -> Result<()> {
     let pending = state
         .local_curation
         .as_ref()
@@ -85,11 +93,16 @@ pub(crate) fn apply(state: &mut State, id: &str, decisions: Vec<Decision>) -> Re
         "This search has changed; try again"
     );
     ensure!(
-        decisions.len() <= 24 && decisions.len() == pending.batch.candidates.len(),
+        decisions.len() <= 24
+            && if partial {
+                !decisions.is_empty() && decisions.len() <= pending.batch.candidates.len()
+            } else {
+                decisions.len() == pending.batch.candidates.len()
+            },
         "Incomplete model response; listings remain visible"
     );
     let mut seen = HashSet::new();
-    // Validate the complete response before writing any decision. Stale signed
+    // Validate the entire supplied subset before writing any decision. Stale signed
     // revisions are omitted, never applied to their replacements.
     let mut accepted = Vec::new();
     for decision in decisions {
@@ -123,7 +136,18 @@ pub(crate) fn apply(state: &mut State, id: &str, decisions: Vec<Decision>) -> Re
         }
     }
     state.store.relevance_batch(&accepted)?;
-    state.local_curation = None;
+    if partial {
+        let pending = state.local_curation.as_mut().unwrap();
+        pending
+            .batch
+            .candidates
+            .retain(|candidate| !seen.contains(&candidate.event_id));
+        if pending.batch.candidates.is_empty() {
+            state.local_curation = None;
+        }
+    } else {
+        state.local_curation = None;
+    }
     state.status = format!("Reviewed {} listings", accepted.len());
     Ok(())
 }

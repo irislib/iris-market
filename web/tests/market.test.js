@@ -348,6 +348,22 @@ test('older pages use each relay verified cursor, exclude exact targets, and pre
   } finally { client.close() }
 })
 
+test('partial initial inventory stays visible without skipping its unconfirmed interval', async () => {
+  FakeSocket.sockets = []
+  const client = new MarketRelayClient({ relays: ['wss://one.example'], historyPageSize: 2, WebSocketImpl: FakeSocket, now: () => now }).start()
+  try {
+    const live = FakeSocket.sockets[0]; live.open()
+    live.frame(['EVENT', live.sent[0][1], signed({ identifier: 'early-outlier', createdAt: now - 50000 })])
+    assert.equal(client.listings().length, 1)
+    const pending = client.loadOlder(); await turn()
+    const page = FakeSocket.sockets[1], [, id, filter] = openHistory(page)
+    assert.equal(filter.until, now)
+    page.frame(['EVENT', id, signed({ identifier: 'newer-match', createdAt: now - 10 })])
+    assert.equal(client.listings().length, 2)
+    page.frame(['EOSE', id]); await pending
+  } finally { client.close() }
+})
+
 test('a full same-second page expands inclusively before moving to older timestamps', async () => {
   FakeSocket.sockets = []
   const items = [0,1,2].map(i => signed({ identifier: `same-${i}`, createdAt: now - 20 }))
@@ -369,6 +385,31 @@ test('a full same-second page expands inclusively before moving to older timesta
     const result = await pending
     assert.equal(result.exhausted, false); assert.equal(result.added, 2); assert.equal(client.records.size, 4)
     assert.equal(client.history.values().next().value.cursor, now - 21)
+  } finally { client.close() }
+})
+
+test('dense boundary progress survives the bounded loading window', async () => {
+  FakeSocket.sockets = []
+  const items = Array.from({length: 10}, (_, i) => signed({identifier: `dense-${i}`, createdAt: now - 20}))
+  const client = new MarketRelayClient({relays:['wss://one.example'], historyPageSize:1, maxRecords:100, WebSocketImpl:FakeSocket, now:()=>now}).start()
+  try {
+    const live = FakeSocket.sockets[0]; live.open()
+    live.frame(['EVENT', live.sent[0][1], items[0]]); live.frame(['EOSE', live.sent[0][1]])
+    const firstWindow = client.loadOlder(); await turn()
+    for (let round = 0; round < 4; round++) {
+      const socket = FakeSocket.sockets[round + 1], [, id, filter] = openHistory(socket)
+      assert.equal(filter.limit, 2 ** round)
+      for (const item of items.slice(0, filter.limit)) socket.frame(['EVENT', id, item])
+      socket.frame(['EOSE', id]); await turn()
+    }
+    assert.equal((await firstWindow).hasMore, true)
+    const nextWindow = client.loadOlder(); await turn()
+    const socket = FakeSocket.sockets[5], [, id, filter] = openHistory(socket)
+    assert.equal(filter.until, now - 20); assert.equal(filter.limit, 16)
+    for (const item of items) socket.frame(['EVENT', id, item])
+    socket.frame(['EVENT', id, signed({identifier:'past-boundary', createdAt:now - 21})])
+    socket.frame(['EOSE', id]); await nextWindow
+    assert.equal(client.listings().some(item => item.identifier === 'past-boundary'), true)
   } finally { client.close() }
 })
 

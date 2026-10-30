@@ -15,6 +15,15 @@ ORIGIN = f'http://127.0.0.1:{PORT}'
 ROUTES = re.compile(r'^/(?:invite|npub1[a-z0-9]+(?:/[^/]+)?|naddr1[a-z0-9]+|post|saved|messages(?:/[^/]+)?|orders(?:/[^/]+)?|wallet|courier|settings(?:/profile)?)?/?$')
 
 
+def configure_webkit_environment(environ=None):
+    env = os.environ if environ is None else environ
+    # WebKitGTK's optimizing WASM tier can exceed 8 GiB while compiling the
+    # pinned asyncify runtime. Keep baseline WASM/JavaScript JITs enabled.
+    # Process-local defaults preserve deliberate launcher overrides.
+    env.setdefault('JSC_useOMGJIT', 'false')
+    env.setdefault('JSC_numberOfWasmCompilerThreads', '1')
+
+
 def profile_paths(environ=None):
     env = os.environ if environ is None else environ
     home = Path(env.get('HOME', str(Path.home())))
@@ -96,6 +105,7 @@ def main():
     args = parser.parse_args()
     if not (args.assets / 'index.html').is_file() or not (args.assets / '_headers').is_file():
         parser.error('Bundled web assets are missing.')
+    configure_webkit_environment()
     import gi
     gi.require_version('Gtk', '3.0')
     gi.require_version('WebKit2', '4.1')

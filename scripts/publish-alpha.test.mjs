@@ -17,6 +17,7 @@ test('full manifest-derived inventory replaces fixed nine-file assumptions',()=>
 test('public proof binds all names, hashes, source and byte counts',()=>{
   const proof={...expected,passed:true};validatePublicProof(proof,expected);
   assert.throws(()=>validatePublicProof({...proof,files:proof.files.slice(1)},expected));
+  assert.throws(()=>validatePublicProof({...proof,files:proof.files.map(()=>proof.files[0])},expected));
   assert.throws(()=>validatePublicProof({...proof,passed:false},expected));
   assert.throws(()=>validatePublicProof({...proof,sourceCommit:'b'.repeat(40)},expected));
 });

@@ -37,4 +37,17 @@ class NativeTransportTest {
         assertFalse(search.claim("a", listOf("already-reviewed")))
         assertTrue(search.claim("a", listOf("late-arrival")))
     }
+    @Test fun boundedHistoryWindowsResetOnlyForExplicitIntent() {
+        val search = NativeSearchContinuation()
+        assertFalse(search.claimHistory("a"))
+        search.start("a")
+        assertTrue(search.claimHistory("a"))
+        assertTrue(search.claimHistory("a"))
+        assertFalse(search.claimHistory("a"))
+        search.stop()
+        assertFalse(search.claimHistory("a"))
+        search.start("a")
+        assertTrue(search.claimHistory("a"))
+    }
+
 }

@@ -12,9 +12,11 @@ pub mod orders;
 pub mod profile_listings;
 pub mod profiles;
 pub mod public_cache;
+mod public_reconcile;
 pub mod ranking;
 pub mod rates;
 mod search_discovery;
+mod search_plan;
 pub mod service_area;
 pub mod store;
 #[cfg(feature = "cashu-wallet")]
@@ -65,9 +67,18 @@ pub(crate) struct State {
     remote_ai_is_check: bool,
     buying_request: u64,
     search_request: u64,
+    search_terms: Vec<String>,
+    search_plan_applied: bool,
+    search_plan_locked: bool,
+    search_discovery: search_discovery::Discovery,
     profile_listings: Option<profile_listings::Feed>,
 }
 impl State {
+    fn reset_search_plan(&mut self) {
+        self.search_terms.clear();
+        self.search_plan_applied = false;
+        self.search_plan_locked = false;
+    }
     fn cancel_remote_ai(&mut self) {
         self.remote_ai_is_check = false;
         if let Some(cancel) = self.remote_ai_cancel.take() {
@@ -172,6 +183,12 @@ impl State {
         }
         // Keep all results in the snapshot: UI can offer a curated view without making hidden items inaccessible.
         Ok(Snapshot {
+            search_discovery: self.search_discovery.status(),
+            search_generation: self.search_request,
+            search_plan_tags: search_plan::catalog(&listings),
+            search_plan_pending: self.ai_search
+                && !self.search_plan_applied
+                && !self.search_plan_locked,
             exchange_rates: self.rates.snapshot(listing::now()),
             local_curation: self
                 .local_curation
@@ -407,6 +424,10 @@ impl Market {
             remote_ai_is_check: false,
             buying_request: 0,
             search_request: 0,
+            search_terms: Vec::new(),
+            search_plan_applied: false,
+            search_plan_locked: false,
+            search_discovery: search_discovery::Discovery::default(),
             profile_listings: None,
         };
         if demo {
@@ -422,6 +443,11 @@ impl Market {
         if !demo {
             runtime.spawn(rates::run(state.clone(), stopped.clone()));
             runtime.spawn(network::run(state.clone(), notify.clone(), stopped.clone()));
+            runtime.spawn(public_reconcile::run(
+                state.clone(),
+                notify.clone(),
+                stopped.clone(),
+            ));
             runtime.spawn(search_discovery::run(
                 state.clone(),
                 notify.clone(),
@@ -543,9 +569,18 @@ impl Market {
         s.error = None;
         match command {
             Command::BeginLocalCuration => local_ai::begin(&mut s)?,
-            Command::ApplyLocalCuration { id, decisions } => {
-                local_ai::apply(&mut s, &id, decisions)?
+            Command::ApplySearchPlan { generation, terms } => {
+                search_plan::apply(&mut s, generation, terms)?;
+                if !s.search_terms.is_empty() {
+                    s.search_discovery.more();
+                }
+                self.notify.notify_waiters();
             }
+            Command::ApplyLocalCuration {
+                id,
+                decisions,
+                partial,
+            } => local_ai::apply(&mut s, &id, decisions, partial)?,
             Command::CancelLocalCuration { id } => {
                 if s.local_curation
                     .as_ref()
@@ -580,6 +615,21 @@ impl Market {
                 // A submitted query may retrieve older public inventory even
                 // when its local filter did not change (explicit retry).
                 s.search_request = s.search_request.wrapping_add(1);
+                s.reset_search_plan();
+                let generation = s.search_request;
+                let has_query = !s.query.trim().is_empty() && !s.settings.relays.is_empty();
+                s.search_discovery.restart(generation, has_query);
+                self.notify.notify_waiters();
+            }
+            Command::ContinueSearch => {
+                if !s.query.trim().is_empty() && !s.settings.relays.is_empty() {
+                    s.search_discovery.more();
+                    self.notify.notify_waiters();
+                }
+            }
+            Command::CancelSearch => {
+                s.cancel_remote_ai();
+                s.search_discovery.stop();
                 self.notify.notify_waiters();
             }
             Command::SetSort { sort } => {
@@ -687,7 +737,9 @@ impl Market {
             }
             Command::Refresh => {
                 if !s.demo {
-                    s.search_request = s.search_request.wrapping_add(1);
+                    if !s.query.trim().is_empty() {
+                        s.search_discovery.more();
+                    }
                     if s.side == "request" {
                         s.buying_request += 1;
                     }
@@ -707,12 +759,17 @@ impl Market {
                 s.ai_test_result = None;
                 s.ai_test_token = None;
                 s.ai_check += 1;
+                s.search_request = s.search_request.wrapping_add(1);
+                s.reset_search_plan();
                 s.ai_configured = true;
                 s.local_curation = None;
                 if !settings.ai.enabled {
                     s.ai_search = false;
                 }
                 s.settings = settings;
+                let generation = s.search_request;
+                let has_query = !s.query.trim().is_empty() && !s.settings.relays.is_empty();
+                s.search_discovery.restart(generation, has_query);
                 s.status = "Settings saved".into();
                 self.notify.notify_one();
                 if changed_relays {
@@ -999,6 +1056,67 @@ impl Market {
         Ok(())
     }
 
+    fn plan_remote_search(&self, key: &str) -> Result<bool> {
+        let (settings, generation, query, catalog, cancel) = {
+            let mut s = self.state.lock().unwrap();
+            if s.demo
+                || !s.ai_search
+                || s.query.trim().is_empty()
+                || !s.settings.ai.enabled
+                || ai::is_local(&s.settings.ai)
+                || s.search_plan_applied
+                || s.search_plan_locked
+            {
+                return Ok(true);
+            }
+            let visible = s.snapshot()?.listings;
+            if visible.len() <= 12 {
+                return Ok(true);
+            }
+            let catalog = search_plan::catalog(&visible);
+            s.cancel_remote_ai();
+            let cancel = Arc::new(Notify::new());
+            s.remote_ai_cancel = Some(cancel.clone());
+            (
+                s.settings.ai.clone(),
+                s.search_request,
+                s.query.clone(),
+                catalog,
+                cancel,
+            )
+        };
+        let result = {
+            let runtime = self.runtime.lock().unwrap();
+            runtime.as_ref().context("App has closed")?.block_on(async {
+                tokio::select! { biased;
+                    _ = cancel.notified() => None,
+                    value = tokio::time::timeout(std::time::Duration::from_secs(8), ai::plan(&settings,key,&query,&catalog)) => Some(value)
+                }
+            })
+        };
+        let mut s = self.state.lock().unwrap();
+        if s.search_request != generation
+            || s.settings.ai != settings
+            || !s.remote_ai_current(&cancel)
+        {
+            return Ok(false);
+        }
+        s.remote_ai_cancel = None;
+        let terms = result
+            .and_then(|result| result.ok())
+            .and_then(|result| result.ok())
+            .unwrap_or_default();
+        if search_plan::apply(&mut s, generation, terms).is_err() {
+            search_plan::apply(&mut s, generation, Vec::new())?;
+        }
+        if !s.search_terms.is_empty() {
+            s.search_discovery.more();
+        }
+        s.revision += 1;
+        self.notify.notify_waiters();
+        Ok(true)
+    }
+
     fn curate(
         &self,
         key: &str,
@@ -1007,6 +1125,9 @@ impl Market {
         expected: Option<ai::TestProvider>,
         token: Option<String>,
     ) -> Result<()> {
+        if !check && !self.plan_remote_search(key)? {
+            return Ok(());
+        }
         let (settings, original_settings, search, candidates, ai_check, cancel) = {
             let mut s = self.state.lock().unwrap();
             if check
@@ -1053,6 +1174,11 @@ impl Market {
             } else {
                 s.snapshot()?.listings
             };
+            let mut listings = listings;
+            if !check {
+                s.search_plan_locked = true;
+                search_plan::prioritize(&mut listings, &s.search_terms);
+            }
             let candidates = listings
                 .into_iter()
                 .filter(|l| l.relevance.is_none())

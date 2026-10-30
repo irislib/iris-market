@@ -59,9 +59,11 @@ pub(crate) async fn run(state: Arc<Mutex<State>>, notify: Arc<Notify>, stopped: 
         let filter = Filter::new()
             .kind(Kind::Custom(listing::LISTING_KIND))
             .limit(300);
+        // Inclusive overlap joins bounded history with new live events.
+        let live_since = Timestamp::now();
         let subscription = bus
             .subscribe(
-                vec![filter.clone()],
+                vec![filter.clone().since(live_since)],
                 Arc::new(move |received| {
                     let mut s = consumer.lock().unwrap();
                     if let Ok(true) =
@@ -83,7 +85,10 @@ pub(crate) async fn run(state: Arc<Mutex<State>>, notify: Arc<Notify>, stopped: 
             }
         };
         if let Ok(report) = bus
-            .query(vec![filter], QueryOptions { limit: Some(300) })
+            .query(
+                vec![filter.until(live_since)],
+                QueryOptions { limit: Some(300) },
+            )
             .await
         {
             let mut s = state.lock().unwrap();

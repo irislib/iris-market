@@ -6,6 +6,7 @@ import { gzipSync } from 'node:zlib';
 import { GRAPH_BOOTSTRAP } from '../src/graph-bootstrap.ts';
 import { RUNTIME } from '../src/feed-filter/runtime.ts';
 import { buildPwa } from './pwa-build.mjs';
+import { DEFAULT_RELAYS } from '../src/market.ts';
 
 const root = resolve(import.meta.dirname, '..');
 const maxAssetBytes = 25 * 1024 * 1024;
@@ -116,7 +117,9 @@ for (const [name, source, entry] of [['web', root, 'src/app.ts'], ['site', resol
     console.log(`runtime: ${binary.length} → ${compressed.length} bytes; SHA256 ${RUNTIME.sha256}`);
   }
   await writeNotices(dest, results, name === 'web');
-  const headers = `/*\n  X-Content-Type-Options: nosniff\n  Referrer-Policy: no-referrer\n  Permissions-Policy: camera=(), microphone=(), geolocation=${name === 'web' ? '(self)' : '()'}\n  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'${routeHash}; worker-src 'self' blob:; style-src 'self'; img-src 'self' data: blob: https:; connect-src 'self' wss: https://mint.coinos.io https://upload.iris.to https://api.coinbase.com https://cdn.iris.to https://huggingface.co https://*.huggingface.co https://*.hf.co https://*.xethub.hf.co; object-src 'none'; base-uri ${name==='web'?"'self'":"'none'"}; frame-ancestors 'none'; form-action 'self'\n`;
+  // NIP-11 capability checks use HTTPS on the configured default relay hosts.
+  const relayMetadataOrigins = name === 'web' ? DEFAULT_RELAYS.map(relay => new URL(relay.replace(/^wss:/, 'https:')).origin).join(' ') : '';
+  const headers = `/*\n  X-Content-Type-Options: nosniff\n  Referrer-Policy: no-referrer\n  Permissions-Policy: camera=(), microphone=(), geolocation=${name === 'web' ? '(self)' : '()'}\n  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'${routeHash}; worker-src 'self' blob:; style-src 'self'; img-src 'self' data: blob: https:; connect-src 'self' wss: ${relayMetadataOrigins} https://mint.coinos.io https://upload.iris.to https://api.coinbase.com https://cdn.iris.to https://huggingface.co https://*.huggingface.co https://*.hf.co https://*.xethub.hf.co; object-src 'none'; base-uri ${name==='web'?"'self'":"'none'"}; frame-ancestors 'none'; form-action 'self'\n`;
   await writeFile(resolve(dest, '_headers'), headers);
   await writeFile(resolve(dest, 'robots.txt'), 'User-agent: *\nAllow: /\n');
   if (name === 'web') {

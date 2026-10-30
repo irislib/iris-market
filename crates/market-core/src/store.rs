@@ -190,6 +190,36 @@ impl Store {
         }
         Ok(listings)
     }
+    /// Raw local winning public events, including sold and expired authority.
+    /// No outbox, keys, messages or derived visible-feed projection enters sync.
+    pub(crate) fn reconciliation_snapshot(
+        &self,
+        since: u64,
+        until: u64,
+        max_records: usize,
+        max_bytes: usize,
+    ) -> Result<Vec<Event>> {
+        let mut statement = self.db.prepare(
+            "SELECT raw FROM events WHERE created_at>=?1 AND created_at<=?2 ORDER BY created_at,event_id LIMIT ?3",
+        )?;
+        let rows = statement.query_map(
+            params![since, until, max_records.saturating_add(1)],
+            |row| row.get::<_, String>(0),
+        )?;
+        let mut events = Vec::new();
+        let mut bytes = 0usize;
+        for raw in rows {
+            let raw = raw?;
+            bytes = bytes.saturating_add(raw.len());
+            anyhow::ensure!(
+                events.len() < max_records && bytes <= max_bytes,
+                "Public reconciliation snapshot exceeds its budget"
+            );
+            events.push(Event::from_json(raw)?);
+        }
+        Ok(events)
+    }
+
     pub fn event(&self, coordinate: &str) -> Result<Event> {
         let raw: String = self.db.query_row(
             "SELECT raw FROM events WHERE coordinate=?1",

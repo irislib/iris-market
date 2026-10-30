@@ -73,3 +73,24 @@ test('offline hydration stops on navigation and preserves changed-tag tombstones
   const filtered=new MarketRelayClient({relays:[],tags:['chairs'],indexQuery:null,now:()=>now,offlineCache:{load:async()=>[sold],save(){},flush:async()=>{}}})
   filtered.acceptListing(validate(active));filtered.start();await new Promise(resolve=>setTimeout(resolve,10));assert.equal(filtered.listings().length,0);filtered.close()
 })
+
+
+test('recovery loader distinguishes legitimate empty inventory from unavailable authority',async()=>{
+  const empty=cache(memoryBackend());assert.deepEqual(await empty.loadForRecovery(),[])
+  const broken=createPublicListingCache({backend:{async read(){throw Error('unavailable')},async write(){}},validate})
+  assert.deepEqual(await broken.load(),[])
+  await assert.rejects(broken.loadForRecovery(),/authority is unavailable/)
+})
+
+test('recovery loader waits for writes and rejects a failed tombstone update',async()=>{
+  const backend=memoryBackend([signed()]),store=cache(backend)
+  await store.load();backend.fail();store.save(signed({status:'sold',at:now-1}))
+  await assert.rejects(store.loadForRecovery(),/authority is unavailable/)
+  assert.deepEqual(await store.load(),[])
+})
+
+test('recovery loader keeps signed inactive authority for caller-specific admission',async()=>{
+  const sold=signed({status:'sold'}),expired=signed({id:'expired',extra:[['expiration',String(now-1)]]})
+  const store=cache(memoryBackend([sold,expired]))
+  assert.deepEqual(new Set((await store.loadForRecovery()).map(event=>event.id)),new Set([sold.id,expired.id]))
+})

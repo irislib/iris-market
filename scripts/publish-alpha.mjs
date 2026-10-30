@@ -16,7 +16,7 @@ const require = (condition, message) => { if (!condition) throw Error(message); 
 const json = async file => JSON.parse(await readFile(file, 'utf8'));
 const run = (program, args, options = {}) => execFileSync(program, args, {cwd:root, encoding:'utf8', maxBuffer:8*1024*1024, stdio:['ignore','pipe','pipe'], ...options});
 const gh = (endpoint, extra = []) => JSON.parse(run('gh', ['api', `repos/${repo}/${endpoint}`, ...extra]));
-const sameFiles = (a, b) => a.length === b.length && a.every(file => b.some(other => other.name === file.name && other.sha256 === file.sha256 && other.bytes === file.bytes));
+const sameFiles = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length === b.length && new Set(a.map(file=>file.name)).size === a.length && new Set(b.map(file=>file.name)).size === b.length && a.every(file => b.some(other => other.name === file.name && other.sha256 === file.sha256 && other.bytes === file.bytes));
 
 export function validateGitHubRelease(release, expected, draft) {
   require(release.tag_name === expected.tag && release.target_commitish === expected.sourceCommit && release.prerelease === true && release.draft === draft, 'GitHub release identity or state differs');

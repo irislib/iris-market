@@ -1,9 +1,10 @@
 import {keywordSearches,matchesLiteralSearch,listingSearchText} from './lexical-search.ts'
 import { verifyEvent, type Event as NostrEvent } from 'nostr-tools/pure'
 import { locationFromTags, MAX_GEOHASH_QUERY_VALUES } from './map/geohash.ts'
-import { queryPublicIndex } from './nostr-runtime.ts'
+import { getPublicRuntime, queryPublicIndex } from './nostr-runtime.ts'
+import { createListingRecovery } from './listing-recovery.ts'
 import type { Filter } from 'nostr-tools'
-import type { RuntimeQueryOptions } from 'nostr-pubsub'
+import { HistoryCursor, relaySource, SOURCE_PRIORITY_RELAY, type NostrVerifiedEvent, type RuntimeQueryOptions } from 'nostr-pubsub'
 import { SeenTags, observedMarketTags, TAG_LIMITS, type SearchTagExpansion } from './seen-tags.ts'
 import {publicListingCache,type PublicListingCache} from './offline-listings.ts'
 import {parseServiceAreas} from './service-area.ts'
@@ -82,7 +83,8 @@ export function parseEvent(input: NostrEvent, { now = seconds() } = {}) {
   const status = singleton(event, 'status') ?? 'active'
   if (status !== 'active' && status !== 'sold') fail('Invalid listing status')
   const originalTags = Object.freeze(event.tags.map(tag => Object.freeze([...tag])))
-  const rawEvent = Object.freeze({ id: event.id, pubkey: event.pubkey, created_at: event.created_at, kind: event.kind, tags: originalTags, content: event.content, sig: event.sig })
+  // Preserve the verification brand on this defensive, immutable wire copy.
+  const rawEvent = Object.freeze({ ...event, tags: originalTags })
   return Object.freeze({
     rawEvent, id: `${event.pubkey}:${identifier}`, eventId: event.id, author: event.pubkey,
     identifier, title, description: event.content, price, currency, location,
@@ -166,13 +168,14 @@ export interface MarketFilter {
 }
 export interface MarketPagination { loading: boolean; exhausted: boolean; limited: boolean; hasMore: boolean; error: string; added: number; records: number }
 export interface MarketStatus { state: 'closed' | 'empty' | 'live' | 'connecting' | 'offline'; connected: number; total: number; message: string }
-interface RelayHistory { initialOldest: number | null; cursor: number | null; started: boolean; exhausted: boolean; limited: boolean; requests: number }
+interface RelayHistory { initialOldest: number | null; cursor: number | null; started: boolean; exhausted: boolean; limited: boolean; requests: number; pager?: HistoryCursor }
 interface HistoryPage { error?: string; limited?: boolean; count?: number; oldest?: number | null }
-interface HistoryOptions {search?:string; tags?:readonly string[];signal?:AbortSignal;pageSize?:number;maxRequests?:number;rounds?:number;timeoutMs?:number;budget?:{bytes:number;max:number};requestBudget?:{count:number;max:number} }
+interface HistoryOptions {search?:string; tags?:readonly string[];signal?:AbortSignal;pageSize?:number;maxRequests?:number;rounds?:number;timeoutMs?:number;budget?:{bytes:number;max:number};requestBudget?:{count:number;max:number};observe?:(event:NostrVerifiedEvent)=>void }
 interface QueryTagPlan {search?:string;tags:readonly string[];history:Map<string,RelayHistory>;indexHistory:RelayHistory}
 export interface QueryCandidates {loading:boolean;added:number;hasMore:boolean;error:string;limited:boolean}
 interface RelayConnection {
   url: string; attempt: number; socket: WebSocket | null; failed: boolean; ready: boolean; subscription: string
+  initialOldest?: number | null
   timer: ReturnType<typeof setTimeout> | null; retry: ReturnType<typeof setTimeout> | null
   frameStart: number; frames: number; geoSubscription?: string | null; geoSubscriptions?: Set<string>
 }
@@ -265,6 +268,8 @@ export class MarketRelayClient {
   tagSelectionTimer:ReturnType<typeof setTimeout>|null=null
   offlineCache:PublicListingCache|null
   cacheGeneration=0
+  recovery:ReturnType<typeof createListingRecovery>|null=null
+  recoveryEnabled:boolean
   constructor({ relays = DEFAULT_RELAYS, onChange = () => {}, onStatus = () => {}, onPagination = () => {}, historyPageSize = HISTORY_PAGE_SIZE, records = new Map(), maxRecords = MAX_RECORDS, WebSocketImpl, now = seconds, targetId, tags = [], authors = null, indexQuery, indexSearch=false, tagCatalogue=observedMarketTags,offlineCache }: MarketRelayOptions = {}) {
     this.relays = validateRelays(relays)
     this.tags = feedTags(tags)
@@ -292,6 +297,7 @@ export class MarketRelayClient {
     this.pageAdded = 0
     this.lastPagination = ''
     this.WebSocket = WebSocketImpl ?? globalThis.WebSocket
+    this.recoveryEnabled=!WebSocketImpl&&typeof globalThis.Worker==='function'
     this.indexSearch=indexSearch
     this.indexQuery = indexQuery===undefined ? (WebSocketImpl ? null : (filters,options)=>queryPublicIndex(this.relays,filters,options)) : indexQuery
     this.tagCatalogue=tagCatalogue
@@ -313,6 +319,15 @@ export class MarketRelayClient {
     if(this.queryController.signal.aborted){this.queryController=new AbortController();this.queryPromise=null}
     if (this.hasQueries && typeof this.WebSocket !== 'function') fail('This browser cannot connect to message servers')
     this.running = true
+    if(this.hasInventoryQuery&&this.recoveryEnabled){
+      this.recovery=createListingRecovery({runtime:getPublicRuntime(this.relays),
+        readCache:async()=>this.offlineCache?(this.offlineCache.loadForRecovery?.()??this.offlineCache.load()):[],
+        readMemory:()=>[...this.records.values()].map(listing=>listing.rawEvent) as NostrEvent[],
+        now:()=>this.now()*1000,
+        onEvent:event=>{if(this.running)try{this.acceptListing(this.parseIncoming(event));}catch{/* Invalid or obsolete records stay hidden. */}},
+      })
+      void this.recovery.recover({kinds:[LISTING_KIND],...(this.authors?{authors:[...this.authors]}:{}),...(this.tags.length?{'#t':[...this.tags]}:{})})
+    }
     void this.restoreOffline(++this.cacheGeneration)
     if (this.hasQueries) for (const url of this.relays) this.connect(url)
     this.requestIndex()
@@ -336,6 +351,7 @@ export class MarketRelayClient {
   parseIncoming(event:NostrEvent):MarketListing {
     const listing=parseEvent(event,{now:this.now()});this.tagCatalogue.observe(event,this.now())
     this.offlineCache?.save(event)
+    this.recovery?.observe(event)
     if(this.running&&this.queryExpansion==='expanded'&&this.queryText&&this.queryTags.length<TAG_LIMITS.queryTags&&this.tagSelectionTimer===null)this.tagSelectionTimer=setTimeout(()=>{
       this.tagSelectionTimer=null;if(this.running)this.searchTags(this.queryText)
     },24)
@@ -531,6 +547,7 @@ export class MarketRelayClient {
 
   close() {
     this.running = false
+    this.recovery?.close();this.recovery=null
     this.cacheGeneration++
     this.queryController.abort()
     clearTimeout(this.tagSelectionTimer);this.tagSelectionTimer=null
@@ -582,6 +599,10 @@ export class MarketRelayClient {
       }
       if (frame[1] !== connection.subscription) return
       if (frame[0] === 'EOSE') {
+        const history = this.history.get(url)
+        // Display partial inventory immediately, but only a completed initial
+        // page establishes where older history may safely start.
+        if (history && !history.started) history.initialOldest = connection.initialOldest ?? null
         connection.ready = true
         connection.attempt = 0
         clearTimeout(connection.timer)
@@ -596,7 +617,7 @@ export class MarketRelayClient {
           // The exact shared-target query may return an ancient event alongside
           // recent inventory. It must not skip the intervening history.
           if (!history.started && !connection.ready && listing.id !== this.targetId && this.matchesFeed(listing)) {
-            history.initialOldest = Math.min(history.initialOldest ?? listing.createdAt, listing.createdAt)
+            connection.initialOldest = Math.min(connection.initialOldest ?? listing.createdAt, listing.createdAt)
           }
           this.acceptListing(listing)
         } catch { /* Untrusted malformed records never enter the visible store. */ }
@@ -674,29 +695,36 @@ export class MarketRelayClient {
   async loadOlderFrom(url: string, history: RelayHistory, options:HistoryOptions={}): Promise<HistoryPage> {
     history.started = true
     history.cursor ??= history.initialOldest ?? this.now()
-    let limit = options.pageSize??this.historyPageSize
+    if (!history.pager) {
+      const tags = options.tags ?? this.tags
+      history.pager = new HistoryCursor(url, {
+        kinds: [LISTING_KIND], until: history.cursor,
+        limit: Math.min(options.pageSize ?? this.historyPageSize, this.maxRecords),
+        ...(this.authors !== null ? {authors: [...this.authors]} : {}),
+        ...(tags.length ? {'#t': [...tags]} : {}),
+      }, this.now(), this.maxRecords)
+    }
+    const pager = history.pager, source = relaySource(url)
     // At most four reads drain a dense second (300, 600, 1000) and
     // check the next second. Never silently skip an unfilled boundary.
     for (let round = 0; round < (options.rounds??4) && this.running&&!options.signal?.aborted; round++) {
       if (this.records.size >= this.maxRecords) return { limited: true }
       if (history.requests >= (options.maxRequests??MAX_HISTORY_REQUESTS)) { history.limited = true; return { limited: true } }
       if(options.requestBudget){if(options.requestBudget.count>=options.requestBudget.max){history.limited=true;return{limited:true}}options.requestBudget.count++}
-      const until = history.cursor
+      const request = pager.beginPage()
+      if (!request) return history.limited ? {limited:true} : {}
+      const until = request.filter.until!, limit = request.filter.limit!
+      history.cursor = until
+      void this.recovery?.recover(request.filter)
       history.requests++
-      const page = await this.readHistory(url, until, limit,options)
+      const page = await this.readHistory(url, until, limit, {...options,
+        observe: event => { pager.observe(request.token, {event, source, priority: SOURCE_PRIORITY_RELAY}) },
+      })
+      const outcome = pager.finishPage(request.token, page.error || page.limited ? 'partial' : 'complete')
       if (page.error || page.limited) return page
-      if (page.count === 0) { history.exhausted = true; return {} }
-      if (page.oldest < until) { history.cursor = page.oldest; return {} }
-      // A full page entirely in the boundary second cannot establish that
-      // every event in that second arrived. Increase the limit, not the cursor.
-      if (page.count >= limit) {
-        if (limit >= this.maxRecords) { history.limited = true; return { limited: true } }
-        limit = Math.min(this.maxRecords, limit * 2)
-      } else {
-        if (until === 0) { history.exhausted = true; return {} }
-        history.cursor = until - 1
-        limit = options.pageSize??this.historyPageSize
-      }
+      if (outcome.status === 'exhausted') { history.exhausted = true; return {} }
+      if (outcome.status === 'limited') { history.limited = true; return {limited:true} }
+      if (outcome.oldest !== undefined && outcome.oldest < until) { history.cursor = outcome.oldest; return {} }
     }
     return { error: this.running ? 'History boundary needs another request.' : 'Loading stopped.' }
   }
@@ -756,6 +784,7 @@ export class MarketRelayClient {
           if (!accepted.has(listing.eventId) && accepted.size >= limit) { finish({ error: 'Older response exceeded its limit.' }); return }
           accepted.add(listing.eventId)
           oldest = Math.min(oldest ?? listing.createdAt, listing.createdAt)
+          options.observe?.(listing.rawEvent as NostrVerifiedEvent)
           this.acceptListing(listing)
           if (this.records.size >= this.maxRecords) finish({ limited: true })
         } catch { invalid = true }
@@ -767,6 +796,7 @@ export class MarketRelayClient {
 
   request(connection: RelayConnection) {
     connection.ready = false
+    connection.initialOldest = null
     clearTimeout(connection.timer)
     try {
       const filters = []

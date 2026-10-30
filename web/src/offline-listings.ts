@@ -8,6 +8,7 @@ interface ListingKey {id:string;createdAt:number;eventId:string}
 type Validate=(event:NostrEvent)=>ListingKey
 export interface PublicListingCache {
   load():Promise<NostrEvent[]>;
+  loadForRecovery?():Promise<NostrEvent[]>;
   save(event:NostrEvent):void;
   flush():Promise<void>;
 }
@@ -75,6 +76,11 @@ export function createPublicListingCache({backend,validate,maxRecords=MAX_RECORD
   }
   return{
     async load(){await initialize();return unavailable?[]:[...records.values()].map(item=>wire(item.event))},
+    async loadForRecovery(){
+      await initialize();await flush();
+      if(unavailable)throw new Error('Offline listing authority is unavailable for recovery');
+      return [...records.values()].map(item=>wire(item.event));
+    },
     save(input){
       if(unavailable)return
       let item:ReturnType<typeof checked>;try{item=checked(input)}catch{return}

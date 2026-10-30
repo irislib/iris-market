@@ -150,6 +150,10 @@ pub struct Conversation {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Snapshot {
+    pub search_discovery: crate::search_discovery::Status,
+    pub search_generation: u64,
+    pub search_plan_tags: Vec<String>,
+    pub search_plan_pending: bool,
     pub exchange_rates: crate::rates::RateSnapshot,
     pub local_curation: Option<crate::local_ai::Batch>,
     pub public_key: String,
@@ -226,9 +230,17 @@ pub enum Command {
         settings: Settings,
     },
     BeginLocalCuration,
+    ContinueSearch,
+    CancelSearch,
+    ApplySearchPlan {
+        generation: u64,
+        terms: Vec<String>,
+    },
     ApplyLocalCuration {
         id: String,
         decisions: Vec<crate::local_ai::Decision>,
+        #[serde(default)]
+        partial: bool,
     },
     CancelLocalCuration {
         id: String,

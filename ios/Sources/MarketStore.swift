@@ -165,7 +165,7 @@ final class MarketStore: ObservableObject {
         }
     }
     func command(_ value: [String: Any], expectedAIIntent: Int? = nil, urgentPreference: Bool = false, publishExpiry: NativeListingExpiry? = nil, completion: ((Bool) -> Void)? = nil) {
-        guard let app else { return }
+        guard let app else { completion?(false); return }
         do {
             let request = String(decoding: try JSONSerialization.data(withJSONObject: value), as: UTF8.self)
             alert = nil
@@ -225,7 +225,10 @@ final class MarketStore: ObservableObject {
     func filter(query: String, side: String, aiSearch: Bool = false, completion: ((Bool) -> Void)? = nil) {
         searchContinuation.stop()
         if localAIProgress != nil && (query != snapshot.query || side != snapshot.side || aiSearch != snapshot.aiSearch) { cancelLocalAI() }
-        command(["type": "set_filter", "query": query, "side": side, "ai_search": aiSearch], completion: completion)
+        command(["type": "set_filter", "query": query, "side": side, "ai_search": aiSearch]) { [weak self] success in
+            if success, let self, !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { self.searchContinuation.start(self.searchContext) }
+            completion?(success)
+        }
     }
     func searchAI(query: String, side: String) {
         filter(query: query, side: side, aiSearch: true) { success in if success { self.searchContinuation.start(self.searchContext); self.runAI(type: "curate") } }
@@ -353,7 +356,16 @@ final class MarketStore: ObservableObject {
     private var searchContext: String {
         [snapshot.publicKey, snapshot.query, snapshot.side, snapshot.settings.ai.provider, snapshot.settings.ai.model, snapshot.settings.ai.baseUrl].joined(separator: "\n")
     }
+    private func continueDiscovery() {
+        guard !busy, !aiTestBusy, localAITask == nil, localAIProgress == nil,
+              !snapshot.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let discovery = snapshot.searchDiscovery, !discovery.loading, discovery.hasMore else { return }
+        let unresolved = snapshot.aiSearch && snapshot.listings.contains { $0.relevance == nil }
+        let matches = snapshot.aiSearch ? snapshot.listings.filter { $0.relevance?.show == true }.count : snapshot.listings.count
+        if !unresolved && matches < 24 && searchContinuation.claimHistory(searchContext) { command(["type": "continue_search"]) }
+    }
     private func continueLocalSearch() {
+        continueDiscovery()
         guard !busy, !aiTestBusy, localAITask == nil, localAIProgress == nil,
               snapshot.aiSearch, snapshot.settings.ai.enabled, snapshot.settings.ai.provider == "apple",
               !snapshot.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
@@ -367,7 +379,15 @@ final class MarketStore: ObservableObject {
         do { command(["type": type, "api_key": demo ? "" : try SecureStore.read(SecureStore.aiAccount(snapshot.settings.ai)) ?? ""]) }
         catch { alert = marketErrorMessage(error) }
     }
+    func continueSearch() {
+        searchContinuation.start(searchContext)
+        command(["type": "continue_search"]) { [weak self] success in
+            if success, let self, self.snapshot.aiSearch { self.runAI(type: "curate") }
+        }
+    }
+    func cancelSearch() { command(["type": "cancel_search"], urgentPreference: true) }
     func cancelLocalAI() {
+        cancelSearch()
         searchContinuation.stop()
         localAIRequest = UUID(); localAITask?.cancel(); localAITask = nil; localAIProgress = nil; localAIStatus = nil
         if let batch = snapshot.localCuration { command(["type": "cancel_local_curation", "id": batch.id]) }
@@ -395,37 +415,60 @@ final class MarketStore: ObservableObject {
             return
         }
         let generation = accountGeneration
-        localAIProgress = "Preparing listings…"
-        command(["type": "begin_local_curation"]) { [weak self] success in
-            guard let self, self.localAIRequest == request else { return }
-            guard success, let batch = self.snapshot.localCuration else { self.localAIProgress = nil; return }
-            self.searchContinuation.record(batch.candidates.map { $0.listing.localSearchRevision })
-            let started = Date()
-            self.localAITask = Task { [weak self] in
-                defer { if self?.localAIRequest == request { self?.localAIProgress = nil; self?.localAITask = nil } }
-                var decisions: [[String: Any]] = []
-                do {
-                    for (index, candidate) in batch.candidates.enumerated() {
-                        try Task.checkCancellation()
-                        guard Date().timeIntervalSince(started) < 240 else { throw OnDeviceAI.Unavailable(message: "This search took too long.") }
-                        guard let self, self.accountGeneration == generation, self.snapshot.localCuration?.id == batch.id else { return }
-                        self.localAIProgress = "Reviewing \(index + 1) of \(batch.candidates.count)…"
-                        let l = candidate.listing
-                        let show = try await OnDeviceAI.matches(interests: batch.interests, listing: ["title": l.title, "description": String(l.description.prefix(2000)), "side": l.side, "price": l.price, "currency": l.currency, "location": l.location, "category": l.category])
-                        decisions.append(["event_id": candidate.eventId, "show": show, "reason": show ? "Matches your search" : "Does not match your search"])
-                    }
-                    guard let self, !Task.isCancelled, self.accountGeneration == generation, self.snapshot.localCuration?.id == batch.id else { return }
-                    self.command(["type": "apply_local_curation", "id": batch.id, "decisions": decisions])
-                } catch {
-                    guard let self, self.accountGeneration == generation else { return }
-                    let wasCancelled = Task.isCancelled
-                    self.command(["type": "cancel_local_curation", "id": batch.id]) { _ in
-                        if !wasCancelled && self.localAIRequest == request { self.alert = "The on-device model could not finish. Listings remain visible." }
-                    }
+        let needsPlan = snapshot.searchPlanPending == true && snapshot.listings.count > 24
+        let planGeneration = snapshot.searchGeneration
+        let originalQuery = snapshot.query
+        let observedTags = snapshot.searchPlanTags ?? []
+        localAIProgress = "Understanding your search…"
+        localAITask = Task { [weak self] in
+            defer { if self?.localAIRequest == request { self?.localAIProgress = nil; self?.localAITask = nil } }
+            guard let self else { return }
+            var batchID: String?
+            do {
+                let terms = needsPlan ? await OnDeviceAI.plan(query: originalQuery, observedTags: observedTags) : []
+                try Task.checkCancellation()
+                guard self.localAIRequest == request, self.accountGeneration == generation,
+                      self.snapshot.query == originalQuery, self.snapshot.searchGeneration == planGeneration else { return }
+                if needsPlan, let planGeneration {
+                    let accepted = await self.localCommand(["type": "apply_search_plan", "generation": planGeneration, "terms": terms])
+                    guard accepted else { return }
                 }
+                let prepared = await self.localCommand(["type": "begin_local_curation"])
+                guard prepared, let batch = self.snapshot.localCuration else { return }
+                batchID = batch.id
+                self.searchContinuation.record(batch.candidates.map { $0.listing.localSearchRevision })
+                let started = Date()
+                for (index, candidate) in batch.candidates.enumerated() {
+                    try Task.checkCancellation()
+                    guard Date().timeIntervalSince(started) < 240 else { throw OnDeviceAI.Unavailable(message: "This search took too long.") }
+                    guard self.localAIRequest == request, self.accountGeneration == generation,
+                          self.snapshot.localCuration?.id == batch.id else { return }
+                    self.localAIProgress = "Reviewing \(index + 1) of \(batch.candidates.count)…"
+                    let l = candidate.listing
+                    let show = try await OnDeviceAI.matches(interests: batch.interests, listing: ["title": l.title, "description": String(l.description.prefix(2000)), "side": l.side, "price": l.price, "currency": l.currency, "location": l.location, "category": l.category, "tags": (l.tags ?? []).prefix(24).map { String($0.prefix(60)) }.joined(separator: ", ")])
+                    try Task.checkCancellation()
+                    guard self.localAIRequest == request, self.accountGeneration == generation,
+                          self.snapshot.localCuration?.id == batch.id else { return }
+                    let applied = await self.localCommand(["type": "apply_local_curation", "id": batch.id, "partial": true,
+                        "decisions": [["event_id": candidate.eventId, "show": show, "reason": show ? "Matches your search" : "Does not match your search"]]])
+                    guard applied else { throw OnDeviceAI.Unavailable(message: "This search has changed.") }
+                }
+                if batch.candidates.isEmpty { _ = await self.localCommand(["type": "cancel_local_curation", "id": batch.id]) }
+                batchID = nil
+            } catch {
+                if self.accountGeneration == generation, let batchID {
+                    _ = await self.localCommand(["type": "cancel_local_curation", "id": batchID])
+                }
+                if !Task.isCancelled && self.localAIRequest == request { self.alert = "The on-device model could not finish. Listings remain available." }
             }
         }
     }
+    private func localCommand(_ value: [String: Any]) async -> Bool {
+        await withCheckedContinuation { continuation in
+            command(value) { continuation.resume(returning: $0) }
+        }
+    }
+
     func signIn(secret: String, completion: @escaping (Bool) -> Void) {
         guard !demo, !busy else { return }
         busy = true; alert = nil

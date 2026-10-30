@@ -10,6 +10,7 @@ export interface PublicEventRuntime {
   query(filters: Filter[], options?: RuntimeQueryOptions): Promise<RuntimeQueryResult>;
   subscribe(filters: Filter[], handlers: RuntimeSubscriptionHandlers): RuntimeSubscription;
   publish(event: Event): Promise<RuntimePublishResult>;
+  ingest(events: Event[]): Promise<void>;
   setSources(sources: RuntimeSource[]): Promise<void>;
   close(): void;
 }
@@ -18,6 +19,7 @@ export interface PublicWorkerClient {
   queryEvents(filters: Filter[], options?: RuntimeQueryOptions): Promise<RuntimeQueryResult>;
   subscribeEvents(filters: Filter[], handlers: RuntimeSubscriptionHandlers): RuntimeSubscription;
   publishEvent(event: Event): Promise<RuntimePublishResult>;
+  ingestEvents(events: Event[]): Promise<void>;
   setNostrSource(source: RuntimeSource | null): Promise<void>;
   close(): Promise<void>;
 }
@@ -30,7 +32,7 @@ const cancelled = () => new DOMException('Public request cancelled', 'AbortError
 
 /** Shared worker initializes a graph even for anonymous reads; its root must be a public key. */
 export function publicWorkerConfig(relays:readonly string[]) {
-  return {relays:[...relays],blossomServers:[],pubkey:GRAPH_BOOTSTRAP.root,storeName:'iris-market-public-events-v1'};
+  return {relays:[...relays],blossomServers:[],pubkey:GRAPH_BOOTSTRAP.root,storeName:'iris-market-public-events-v1',reconciliation:{lookbackSeconds:7*86400}};
 }
 
 function publicFilters(filters: Filter[]): Filter[] {
@@ -103,6 +105,7 @@ export async function createPublicWorkerClient(relays: readonly string[], failed
   return {
     init:()=>client.init(),queryEvents:(filters,options)=>client.queryEvents(filters,options),
     subscribeEvents:(filters,handlers)=>client.subscribeEvents(filters,handlers),publishEvent:event=>client.publishEvent(event),
+    ingestEvents:events=>client.ingestEvents(events),
     setNostrSource:source=>client.setNostrSource(source),
     close(){
       if(closing)return closing;
@@ -196,6 +199,12 @@ export function createPublicRuntime({relays,createClient,retryMs=500}: RuntimeOp
     async publish(input) {
       const event=publicEvent(input); if(!event) throw new Error('Invalid public event.');
       return (await ready()).publishEvent(event);
+    },
+    async ingest(inputs) {
+      if(!Array.isArray(inputs)||inputs.length>128)throw new Error('Public event import is too large.');
+      const events=inputs.map(publicEvent);
+      if(events.some(event=>!event))throw new Error('Only signed public records belong in this cache.');
+      await (await ready()).ingestEvents(events as Event[]);
     },
     async setSources(sources) {
       // RelayWorkerClient has one source port; a mesh provider can aggregate peers.

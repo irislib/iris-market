@@ -64,6 +64,14 @@ class DesktopTest(unittest.TestCase):
         self.assertEqual(self.get('/app.js', method='HEAD')[2], b'')
         self.assertIn(b'unregister', self.get('/sw.js')[2])
 
+    def test_engine_defaults_are_scoped_and_preserve_overrides(self):
+        environment = {}
+        APP.configure_webkit_environment(environment)
+        self.assertEqual(environment, {'JSC_useOMGJIT': 'false', 'JSC_numberOfWasmCompilerThreads': '1'})
+        override = {'JSC_useOMGJIT': 'true', 'JSC_numberOfWasmCompilerThreads': '2'}
+        APP.configure_webkit_environment(override)
+        self.assertEqual(override, {'JSC_useOMGJIT': 'true', 'JSC_numberOfWasmCompilerThreads': '2'})
+
     def test_browser_languages(self):
         self.assertEqual(APP.browser_languages(['C.UTF-8', 'C', 'POSIX']), ['en-US'])
         self.assertEqual(APP.browser_languages(['fi_FI.UTF-8', 'fi_FI', 'en_US@variant', 'C']), ['fi-FI', 'en-US'])

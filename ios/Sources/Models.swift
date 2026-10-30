@@ -1,5 +1,7 @@
 import Foundation
 
+struct SearchDiscoveryStatus: Decodable { let loading: Bool; let hasMore: Bool }
+
 struct MarketSnapshot: Decodable {
     var publicKey: String = ""
     var canSign = false
@@ -11,6 +13,10 @@ struct MarketSnapshot: Decodable {
     var query: String = ""
     var side: String = "offer"
     var aiSearch = false
+    var searchDiscovery: SearchDiscoveryStatus?
+    var searchGeneration: UInt64?
+    var searchPlanTags: [String]?
+    var searchPlanPending: Bool?
     var sort = "suggested"
     var people: [String: MarketPerson] = [:]
     var profile: PublicMarketProfile?

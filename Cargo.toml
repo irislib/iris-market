@@ -15,7 +15,7 @@ serde_json = "=1.0.149"
 thiserror = "=2.0.18"
 nostr = { version = "=0.44.8", default-features = false, features = ["std", "nip44"] }
 nostr-sdk = "=0.44.1"
-nostr-pubsub = "=0.1.19"
+nostr-pubsub = "=0.1.20"
 nostr-pubsub-relay = "=0.1.15"
 tokio = { version = "=1.53.3", features = ["rt-multi-thread", "sync", "time", "macros", "net"] }
 rusqlite = { version = "=0.31.0", features = ["bundled"] }

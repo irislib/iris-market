@@ -38,6 +38,7 @@ import org.json.JSONObject
     selected: (Listing) -> Unit, settings: () -> Unit, photoFilter: Boolean?, changePhotoFilter: (Boolean?) -> Unit) {
     var query by remember { mutableStateOf(state.query) }
     var showAll by remember { mutableStateOf(false) }
+    LaunchedEffect(state.query, state.side) { showAll = false }
     var showMap by remember { mutableStateOf(false) }
     var sortMenu by remember { mutableStateOf(false) }
     var filtersMenu by remember { mutableStateOf(false) }
@@ -46,11 +47,12 @@ import org.json.JSONObject
     val localInference = ai?.optString("provider")=="litert" && localModel.phase in setOf(LocalModelPhase.VERIFYING, LocalModelPhase.LOADING, LocalModelPhase.REVIEWING)
     val localReady = NativeAIReadiness.localReady(localModel.phase)
     val aiSearch = NativeAIReadiness.isOn(ai?.optBoolean("enabled")==true,ai?.optString("provider") ?: "",ai?.optString("model") ?: "",ai?.optString("base_url") ?: "",localReady,state.demo)
-    val canCurate = ai?.optBoolean("enabled") == true && state.aiSearch && state.error == null
-    val hiddenCount = if (canCurate) state.listings.count { it.relevanceShow == false } else 0
+    val canCurate = ai?.optBoolean("enabled") == true && state.aiSearch && state.query.isNotBlank()
+    val searching = localInference || state.searchDiscovery?.loading == true || canCurate && busy
+    val matchCount = state.listings.count { it.relevanceShow == true }
     val wantsPhotos = NativePhotoFilter.wantsPhotos(photoFilter,state.query,state.side,showMap)
     val visibleListings = state.listings.filter { listing ->
-        (!canCurate || showAll || listing.relevanceShow != false) && NativePhotoFilter.includes(listing.imageUrl,photoFilter,state.query,state.side,showMap)
+        (!canCurate || showAll || listing.relevanceShow == true) && NativePhotoFilter.includes(listing.imageUrl,photoFilter,state.query,state.side,showMap)
     }
     LazyVerticalGrid(columns = GridCells.Fixed(2), horizontalArrangement = Arrangement.spacedBy(14.dp),
         verticalArrangement = Arrangement.spacedBy(18.dp), contentPadding = PaddingValues(start=22.dp,end=22.dp,bottom=90.dp)) {
@@ -75,7 +77,7 @@ import org.json.JSONObject
                     trailingIcon = { Row(verticalAlignment = Alignment.CenterVertically) {
                         Box(Modifier.size(48.dp).combinedClickable(enabled=!busy||ai?.optBoolean("enabled")==true,role=Role.Switch,onClick={showAll=false;model.toggleAI(settings)},onLongClick=settings,onLongClickLabel="Open AI settings")
                             .semantics { contentDescription="AI search";stateDescription=if(ai?.optBoolean("enabled")==true) { if(ai?.optString("provider")=="litert"&&localModel.phase==LocalModelPhase.VERIFYING) "On, checking" else if(aiSearch) "On" else "On, unavailable" } else "Off";toggleableState=if(ai?.optBoolean("enabled")==true) ToggleableState.On else ToggleableState.Off },contentAlignment=Alignment.Center) {
-                            if(busy||localInference) CircularProgressIndicator(Modifier.size(20.dp),strokeWidth=2.dp)
+                            if(busy||searching) CircularProgressIndicator(Modifier.size(20.dp),strokeWidth=2.dp)
                             else Icon(Icons.Filled.AutoAwesome,null,tint=if(aiSearch) Forest else Muted)
                         }
                         if(query.isNotBlank()) IconButton(onClick={query="";model.filter("",state.side)},modifier=Modifier.size(36.dp)) { Icon(Icons.Filled.Close,"Clear search") }
@@ -92,7 +94,7 @@ import org.json.JSONObject
                 if(ai?.optString("provider")=="litert"&&!localModel.available&&!localInference) {
                     Text("The on-device model is not ready. Open AI settings to download or check it.",color=Muted,style=MaterialTheme.typography.bodySmall)
                 }
-                if(localInference) Column(Modifier.fillMaxWidth()) {
+                if(searching) Column(Modifier.fillMaxWidth()) {
                     if(localModel.phase==LocalModelPhase.REVIEWING && localModel.total>0) {
                         LinearProgressIndicator(progress={localModel.reviewed.toFloat()/localModel.total},modifier=Modifier.fillMaxWidth())
                     } else LinearProgressIndicator(modifier=Modifier.fillMaxWidth())
@@ -100,7 +102,7 @@ import org.json.JSONObject
                         Text(when(localModel.phase) {
                             LocalModelPhase.VERIFYING -> "Checking model"
                             LocalModelPhase.LOADING -> "Loading model"
-                            else -> "Reviewing ${localModel.reviewed} of ${localModel.total}"
+                            else -> "Searching…"
                         },Modifier.weight(1f),color=Muted,style=MaterialTheme.typography.bodySmall)
                         TextButton(onClick=model::cancelLocalAI) { Icon(Icons.Filled.Stop,null,Modifier.size(16.dp));Spacer(Modifier.width(6.dp));Text("Stop") }
                     }
@@ -124,13 +126,13 @@ import org.json.JSONObject
                         }
                     }
                 }
-                if (hiddenCount > 0) Surface(color = Mint, shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth().padding(top = 5.dp)) {
+                if (canCurate) Surface(color = Mint, shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth().padding(top = 5.dp)) {
                     Row(Modifier.padding(start = 12.dp, end = 5.dp), verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Filled.AutoAwesome, null, Modifier.size(16.dp), tint = Forest)
                         Spacer(Modifier.width(8.dp))
-                        Text(if (showAll) "Showing all listings" else "$hiddenCount less relevant ${if (hiddenCount == 1) "listing" else "listings"} hidden",
+                        Text(if (showAll) "All listings" else "$matchCount ${if (matchCount == 1) "match" else "matches"}",
                             Modifier.weight(1f), style = MaterialTheme.typography.labelSmall, color = Forest)
-                        TextButton(onClick = { showAll = !showAll }) { Text(if (showAll) "Use curation" else "Show all") }
+                        TextButton(onClick = { showAll = !showAll }) { Text(if (showAll) "Show matches" else "Show all") }
                     }
                 }
                 if (state.error != null) Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
@@ -143,11 +145,15 @@ import org.json.JSONObject
             MarketMapView(visibleListings,selected,Modifier.fillMaxWidth().height(440.dp).clip(RoundedCornerShape(20.dp)))
         }
         if (!showMap && visibleListings.isEmpty()) item(span={GridItemSpan(maxLineSpan)}) {
-            EmptyView(if(hiddenCount > 0 && !showAll) "No matching listings" else if(query.isBlank()) "No listings" else "No matches",
-                if(hiddenCount > 0 && !showAll) "Show all listings or change your AI settings." else if(query.isBlank()) "Sell something or post what you want to buy." else "Try a different search or clear the filters.",
+            if(searching) Box(Modifier.fillMaxWidth().padding(48.dp), contentAlignment=Alignment.Center) { CircularProgressIndicator() }
+            else EmptyView(if(canCurate && !showAll) "No matching listings" else if(query.isBlank()) "No listings" else "No matches",
+                if(canCurate && !showAll) "Show all listings or change your AI settings." else if(query.isBlank()) "Sell something or post what you want to buy." else "Try a different search or clear the filters.",
                 Icons.Filled.Storefront)
         }
         if(!showMap) items(visibleListings, key={it.id}) { listing -> ListingCard(listing, state.demo, {selected(listing)}, {model.save(listing.id)}) }
+        if(!showMap && (state.searchDiscovery?.hasMore == true || canCurate && state.listings.any { it.relevanceShow == null })) item(span={GridItemSpan(maxLineSpan)}) {
+            TextButton(onClick=model::continueSearch,enabled=!searching&&!busy,modifier=Modifier.fillMaxWidth().testTag("loadMoreListings")) { Text("Load more") }
+        }
     }
 }
 

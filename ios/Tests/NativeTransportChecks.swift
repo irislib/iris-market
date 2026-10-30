@@ -27,6 +27,14 @@
         search.record(["already-reviewed"])
         precondition(!search.claim("a", candidates: ["already-reviewed"]))
         precondition(search.claim("a", candidates: ["late-arrival"]))
-        print("Native transport and search continuation: 32 checks passed")
+        search.start("history")
+        precondition(search.claimHistory("history"))
+        precondition(search.claimHistory("history"))
+        precondition(!search.claimHistory("history"))
+        search.stop()
+        precondition(!search.claimHistory("history"))
+        search.start("history")
+        precondition(search.claimHistory("history"))
+        print("Native transport and search continuation checks passed")
     }
 }

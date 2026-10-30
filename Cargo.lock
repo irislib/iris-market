@@ -1683,6 +1683,7 @@ dependencies = [
  "nostr-double-ratchet",
  "nostr-identity",
  "nostr-pubsub",
+ "nostr-pubsub-reconcile",
  "nostr-pubsub-relay",
  "nostr-sdk",
  "nostr-social-graph",
@@ -2013,15 +2014,24 @@ dependencies = [
 
 [[package]]
 name = "nostr-pubsub"
-version = "0.1.19"
+version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f262309517625395b9e05b02994d10438959357ec3b617766d11c81ad8a897d"
+checksum = "d7615308044527a935027210cf62720d1ce36e49ae1fe888c0dd705c6359d4a8"
 dependencies = [
  "async-trait",
  "nostr",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "nostr-pubsub-reconcile"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ab7fcda5440ab9eced61db89fc259ee24cffd5f7547f1cdc08b86b15149aecb1"
+dependencies = [
+ "negentropy",
 ]
 
 [[package]]

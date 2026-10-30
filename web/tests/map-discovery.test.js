@@ -43,6 +43,8 @@ test('map discovery streams signed results before EOSE, preserves inventory and 
     const next=socket.sent.at(-1)[1];app.setGeohashes([])
     assert.deepEqual(socket.sent.at(-1),['CLOSE',next])
     assert.equal(app.listings().length,2)
+    assert.equal(app.history.get('wss://map.example/').initialOldest,null)
+    socket.receive(['EOSE',initial])
     assert.equal(app.history.get('wss://map.example/').initialOldest,now-10)
   } finally {app.close()}
 })

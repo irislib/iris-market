@@ -76,12 +76,13 @@ struct BrowseView: View {
     @State private var aiSettings = false
     @Binding var photoFilter: Bool?
     private let columns = [GridItem(.flexible(), spacing: 14), GridItem(.flexible(), spacing: 14)]
-    private var curationActive: Bool { store.snapshot.aiSearch && store.snapshot.settings.ai.enabled && store.snapshot.error == nil }
-    private var hiddenCount: Int { curationActive ? store.snapshot.listings.filter { $0.relevance?.show == false }.count : 0 }
+    private var curationActive: Bool { store.snapshot.aiSearch && store.snapshot.settings.ai.enabled && !store.snapshot.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var searching: Bool { store.localAIProgress != nil || store.snapshot.searchDiscovery?.loading == true || curationActive && store.busy }
+    private var matchCount: Int { store.snapshot.listings.filter { $0.relevance?.show == true }.count }
     private var wantsPhotos: Bool { NativePhotoFilter.wantsPhotos(choice: photoFilter, query: store.snapshot.query, side: store.snapshot.side, map: showMap) }
     private var visibleListings: [MarketListing] {
         store.snapshot.listings.filter { listing in
-            (!curationActive || showAllMatches || listing.relevance?.show != false) && NativePhotoFilter.includes(imageURL: listing.imageUrl, choice: photoFilter, query: store.snapshot.query, side: store.snapshot.side, map: showMap)
+            (!curationActive || showAllMatches || listing.relevance?.show == true) && NativePhotoFilter.includes(imageURL: listing.imageUrl, choice: photoFilter, query: store.snapshot.query, side: store.snapshot.side, map: showMap)
         }
     }
     var body: some View {
@@ -92,7 +93,7 @@ struct BrowseView: View {
                     TextField("Search listings", text: $query, prompt: Text("Search listings").foregroundColor(MarketTheme.muted)).font(.system(size: 14)).submitLabel(.search).accessibilityIdentifier("marketSearch")
                         .onSubmit { submitSearch() }
                     Group {
-                        if store.busy || store.localAIProgress != nil { ProgressView().controlSize(.small) }
+                        if store.busy || searching { ProgressView().controlSize(.small) }
                         else { Image(systemName: "sparkles").foregroundStyle(store.aiSearchEnabled ? MarketTheme.green : MarketTheme.muted) }
                     }.frame(width: 36, height: 40).contentShape(Rectangle())
                         .gesture(LongPressGesture(minimumDuration: 0.5).exclusively(before: TapGesture()).onEnded { value in
@@ -123,19 +124,19 @@ struct BrowseView: View {
                     } label: { Image(systemName: "line.3.horizontal.decrease.circle.fill").font(.system(size: 21)).foregroundStyle(MarketTheme.muted).frame(width: 40, height: 40) }
                         .accessibilityLabel("Filters").accessibilityValue(wantsPhotos ? "Has photos" : "All listings").accessibilityIdentifier("listingFilters")
                 }
-                if let progress = store.localAIProgress {
+                if searching {
                     HStack {
-                        Text(progress).font(.caption).foregroundStyle(MarketTheme.muted)
+                        Text("Searching…").font(.caption).foregroundStyle(MarketTheme.muted)
                         Spacer()
                         Button("Cancel") { store.cancelLocalAI() }.font(.caption)
                     }.accessibilityIdentifier("localAIProgress")
                 }
-                if hiddenCount > 0 {
+                if curationActive {
                     HStack {
-                        Text(showAllMatches ? "All listings visible" : "\(hiddenCount) \(hiddenCount == 1 ? "listing" : "listings") filtered out")
+                        Text(showAllMatches ? "All listings" : "\(matchCount) \(matchCount == 1 ? "match" : "matches")")
                             .font(.system(size: 12)).foregroundStyle(MarketTheme.muted)
                         Spacer()
-                        Button(showAllMatches ? "Curated view" : "Show all") { showAllMatches.toggle() }
+                        Button(showAllMatches ? "Show matches" : "Show all") { showAllMatches.toggle() }
                             .font(.system(size: 12, weight: .semibold)).accessibilityIdentifier("toggleCuratedView")
                     }
                 }
@@ -154,16 +155,26 @@ struct BrowseView: View {
                 if showMap && !store.demo {
                     MarketMapView(listings: visibleListings, onSelect: { selected = $0 }).frame(height: 440).clipShape(RoundedRectangle(cornerRadius: 20))
                 } else if !store.ready { ProgressView("Loading listings…").frame(maxWidth: .infinity).padding(.vertical, 50) }
-                else if visibleListings.isEmpty {
+                else if visibleListings.isEmpty && searching {
+                    ProgressView().frame(maxWidth: .infinity).padding(.vertical, 50)
+                } else if visibleListings.isEmpty {
                     MarketEmptyState(symbol: query.isEmpty ? "square.grid.2x2" : "magnifyingglass", title: query.isEmpty ? "No listings" : "No results", description: query.isEmpty ? "Sell something or post what you want to buy." : "Try another search or post what you want to buy.")
                 } else {
                     LazyVGrid(columns: columns, alignment: .leading, spacing: 21) {
                         ForEach(visibleListings) { listing in ListingCard(listing: listing, open: { selected = listing }, save: { store.save(listing) }) }
                     }
                 }
+                if !showMap && (store.snapshot.searchDiscovery?.hasMore == true || curationActive && store.snapshot.listings.contains { $0.relevance == nil }) {
+                    Button("Load more") { store.continueSearch() }
+                        .disabled(searching || store.busy)
+                        .frame(maxWidth: .infinity)
+                        .accessibilityIdentifier("loadMoreListings")
+                }
                 if store.demo { Text("Sample listings · nothing here will be published").font(.system(size: 10)).foregroundStyle(MarketTheme.muted).frame(maxWidth: .infinity).padding(.top, 8).padding(.bottom, 20) }
             }.padding(.horizontal, 23)
         }.marketKeyboardDismissal()
+            .onChange(of: store.snapshot.query) { _ in showAllMatches = false }
+            .onChange(of: store.snapshot.side) { _ in showAllMatches = false }
             .refreshable { store.command(["type": "refresh"]) }
             .sheet(isPresented: $aiSettings) { AISettingsView(settings: store.snapshot.settings).marketSheetScope() }
     }

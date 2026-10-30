@@ -352,6 +352,7 @@ impl Market {
         let profile_name_required = !demo
             && owner_keys.is_some()
             && local_profile.is_none()
+            && !store.profile_setup_complete(owner)?
             && store
                 .initial_authorization()?
                 .is_some_and(|event| event.pubkey == owner);
@@ -643,51 +644,59 @@ impl Market {
                 anyhow::ensure!(!s.demo, "Leave Preview to create your profile");
                 let name = name.trim();
                 anyhow::ensure!(
-                    !name.is_empty()
-                        && name.chars().count() <= 100
-                        && !name.chars().any(char::is_control),
+                    name.chars().count() <= 100 && !name.chars().any(char::is_control),
                     "Enter a name of up to 100 characters"
                 );
-                let owner = s.owner.to_hex();
-                let previous = s.profiles.metadata_event(&owner).cloned();
-                anyhow::ensure!(
-                    s.profile_name_required || previous.is_some(),
-                    "Load your profile before editing its name"
-                );
-                let mut metadata = match &previous {
-                    Some(event) => serde_json::from_str::<serde_json::Value>(&event.content)?
-                        .as_object()
-                        .cloned()
-                        .context("Existing profile metadata cannot be edited")?,
-                    None => serde_json::Map::new(),
-                };
-                metadata.insert("name".into(), name.into());
-                metadata.insert("display_name".into(), name.into());
-                let at = listing::now().max(
-                    previous
-                        .as_ref()
-                        .map(|event| event.created_at.as_secs().saturating_add(1))
-                        .unwrap_or(0),
-                );
-                anyhow::ensure!(
-                    at <= listing::now() + 600,
-                    "The latest profile date is ahead. Try again later"
-                );
-                let event = nostr::EventBuilder::new(
-                    nostr::Kind::Metadata,
-                    serde_json::to_string(&metadata)?,
-                )
-                .custom_created_at(nostr::Timestamp::from(at))
-                .sign_with_keys(
-                    s.owner_keys
-                        .as_ref()
-                        .context("Approve this change with your profile key")?,
-                )?;
-                s.store.queue_profile_metadata(&event)?;
-                let _ = s.profiles.ingest_public(event);
+                if name.is_empty() {
+                    anyhow::ensure!(
+                        s.profile_name_required,
+                        "Enter a name of up to 100 characters"
+                    );
+                    s.store.complete_profile_setup(s.owner)?;
+                } else {
+                    let owner = s.owner.to_hex();
+                    let previous = s.profiles.metadata_event(&owner).cloned();
+                    anyhow::ensure!(
+                        s.profile_name_required
+                            || previous.is_some()
+                            || s.store.profile_setup_complete(s.owner)?,
+                        "Load your profile before editing its name"
+                    );
+                    let mut metadata = match &previous {
+                        Some(event) => serde_json::from_str::<serde_json::Value>(&event.content)?
+                            .as_object()
+                            .cloned()
+                            .context("Existing profile metadata cannot be edited")?,
+                        None => serde_json::Map::new(),
+                    };
+                    metadata.insert("name".into(), name.into());
+                    metadata.insert("display_name".into(), name.into());
+                    let at = listing::now().max(
+                        previous
+                            .as_ref()
+                            .map(|event| event.created_at.as_secs().saturating_add(1))
+                            .unwrap_or(0),
+                    );
+                    anyhow::ensure!(
+                        at <= listing::now() + 600,
+                        "The latest profile date is ahead. Try again later"
+                    );
+                    let event = nostr::EventBuilder::new(
+                        nostr::Kind::Metadata,
+                        serde_json::to_string(&metadata)?,
+                    )
+                    .custom_created_at(nostr::Timestamp::from(at))
+                    .sign_with_keys(
+                        s.owner_keys
+                            .as_ref()
+                            .context("Approve this change with your profile key")?,
+                    )?;
+                    s.store.queue_profile_metadata(&event)?;
+                    let _ = s.profiles.ingest_public(event);
+                }
                 s.profile_name_required = false;
                 s.status = "Profile saved".into();
-                self.notify.notify_one();
+                self.notify.notify_waiters();
             }
             Command::Publish { draft } => {
                 if s.demo {

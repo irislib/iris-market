@@ -151,7 +151,14 @@ pub(crate) async fn run(state: Arc<Mutex<State>>, notify: Arc<Notify>, stopped: 
                 }
                 s.revision += 1;
             }
-            let pending = state.lock().unwrap().store.pending().unwrap_or_default();
+            let pending = {
+                let s = state.lock().unwrap();
+                if s.profile_name_required {
+                    Vec::new()
+                } else {
+                    s.store.pending().unwrap_or_default()
+                }
+            };
             let mut confirmed = 0;
             for event in pending {
                 if stopped.load(Ordering::Acquire) {
@@ -379,6 +386,15 @@ pub(crate) async fn run_private(
         HashMap::new();
     let mut previous_relays = Vec::new();
     while !stopped.load(Ordering::Acquire) {
+        // A generated local identity is still a visitor until explicit setup.
+        // Preserve its journal, but create no private subscriptions or sends.
+        if state.lock().unwrap().profile_name_required {
+            for (_, (bus, _sub)) in connections.drain() {
+                bus.client().shutdown().await;
+            }
+            tokio::select! { _=notify.notified()=>{}, _=tokio::time::sleep(Duration::from_secs(5))=>{} }
+            continue;
+        }
         let (relays, scopes, pending) = {
             let mut s = state.lock().unwrap();
             let relays = s.settings.relays.clone();

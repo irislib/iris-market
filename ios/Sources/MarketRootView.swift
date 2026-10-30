@@ -2,16 +2,20 @@ import SwiftUI
 
 struct MarketRootView: View {
     @EnvironmentObject private var store: MarketStore
-    @Environment(\.colorScheme) private var colorScheme
     @AppStorage("market.appearance") private var appearance = MarketAppearance.system.rawValue
     @State private var tab = MarketTab.browse
     @State private var compose = false
     @State private var transport = false
+    @State private var aiSettings = false
     @State private var selected: MarketListing?
     @State private var photoFilter: Bool?
     enum MarketTab: String, CaseIterable {
-        case browse = "Explore", saved = "Saved", orders = "Orders", inbox = "Inbox", profile = "Profile"
-        var symbol: String { switch self { case .browse: return "square.grid.2x2.fill"; case .saved: return "heart.fill"; case .orders: return "shippingbox.fill"; case .inbox: return "bubble.left.and.bubble.right.fill"; case .profile: return "person.crop.circle.fill" } }
+        case browse = "Explore", saved = "Saved", orders = "Orders", inbox = "Inbox", profile = "Profile", settings = "Settings"
+        var symbol: String { switch self { case .browse: return "square.grid.2x2.fill"; case .saved: return "heart.fill"; case .orders: return "shippingbox.fill"; case .inbox: return "bubble.left.and.bubble.right.fill"; case .profile: return "person.crop.circle.fill"; case .settings: return "gearshape.fill" } }
+    }
+    private var hasProfile: Bool { store.ready && !store.demo && store.snapshot.profileNameRequired != true && !store.snapshot.publicKey.isEmpty }
+    private var ownPerson: MarketPerson {
+        store.snapshot.people[store.snapshot.publicKey] ?? MarketPerson(author: store.snapshot.publicKey, name: NativeProfileNames.name(seed: store.snapshot.publicKey), pictureUrl: nil, connection: MarketPerson.unnamed(store.snapshot.publicKey).connection)
     }
     var body: some View {
         VStack(spacing: 0) {
@@ -20,12 +24,28 @@ struct MarketRootView: View {
                 Text("iris market").font(.system(size: 23, weight: .semibold)).tracking(-0.8).foregroundStyle(MarketTheme.ink)
                 if store.demo { Text("PREVIEW").font(.system(size: 9, weight: .bold)).tracking(1).padding(.horizontal, 7).padding(.vertical, 5).background(MarketTheme.peach.opacity(0.65), in: Capsule()).accessibilityIdentifier("previewBadge") }
                 Spacer(minLength: 2)
-                Button { appearance = (colorScheme == .dark ? MarketAppearance.light : .dark).rawValue } label: {
-                    Image(systemName: colorScheme == .dark ? "sun.max.fill" : "moon.fill").frame(width: 32, height: 41).foregroundStyle(MarketTheme.muted)
-                }.accessibilityLabel(colorScheme == .dark ? "Use light appearance" : "Use dark appearance").accessibilityIdentifier("themeToggle")
-                Button { transport = true } label: { Image(systemName: "car.fill").frame(width: 32, height: 41).foregroundStyle(MarketTheme.muted) }.accessibilityLabel("Transport workspace").accessibilityIdentifier("openTransport")
-                Button { compose = true } label: { Image(systemName: "plus").font(.system(size: 20, weight: .medium)).frame(width: 41, height: 41).background(MarketTheme.action, in: Circle()).foregroundStyle(MarketTheme.onAction) }
+                Button { if store.snapshot.profileNameRequired == true && !store.demo { store.requestProfileSetup() } else { compose = true } } label: { Image(systemName: "plus").font(.system(size: 20, weight: .medium)).frame(width: 41, height: 41).background(MarketTheme.action, in: Circle()).foregroundStyle(MarketTheme.onAction) }
                     .accessibilityLabel("Create a listing").accessibilityIdentifier("createListing")
+                Menu {
+                    if hasProfile {
+                        Button { tab = .profile } label: { Label("\(ownPerson.displayName) · View profile", systemImage: "person.crop.circle.fill") }
+                    } else if !store.demo {
+                        Button { store.requestProfileSetup() } label: { Label("Sign in", systemImage: "person.crop.circle.fill") }.disabled(!store.ready)
+                    }
+                    Divider()
+                    Button { transport = true } label: { Label("Transport", systemImage: "car.fill") }.accessibilityIdentifier("openTransport")
+                    Button { tab = .settings } label: { Label("Settings", systemImage: "gearshape.fill") }
+                    Button { aiSettings = true } label: { Label("AI settings", systemImage: "sparkles") }
+                    Divider()
+                    Picker("Appearance", selection: $appearance) {
+                        Label("Light", systemImage: "sun.max.fill").tag(MarketAppearance.light.rawValue)
+                        Label("Dark", systemImage: "moon.fill").tag(MarketAppearance.dark.rawValue)
+                        Label("System", systemImage: "circle.lefthalf.filled").tag(MarketAppearance.system.rawValue)
+                    }
+                } label: {
+                    if hasProfile { UserAvatar(person: ownPerson, size: 34).frame(width: 41, height: 41) }
+                    else { Image(systemName: "ellipsis").font(.system(size: 20, weight: .semibold)).frame(width: 41, height: 41).foregroundStyle(MarketTheme.muted) }
+                }.menuIndicator(.hidden).accessibilityLabel("Menu").accessibilityIdentifier("mainMenu")
             }.padding(.horizontal, 23).padding(.top, 10).padding(.bottom, 16)
             Group {
                 switch tab {
@@ -33,13 +53,14 @@ struct MarketRootView: View {
                 case .saved: SavedView(selected: $selected)
                 case .orders: OrdersView()
                 case .inbox: InboxView()
-                case .profile: ProfileView()
+                case .profile: AuthorProfileView(author: store.snapshot.publicKey, onClose: { tab = .browse })
+                case .settings: ProfileView()
                 }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
             VStack(spacing: 0) {
                 Rectangle().fill(MarketTheme.line.opacity(0.8)).frame(height: 1)
                 HStack(spacing: 0) {
-                    ForEach(MarketTab.allCases, id: \.self) { item in
+                    ForEach([MarketTab.browse, .saved, .orders, .inbox], id: \.self) { item in
                         Button {
                             if tab != item {
                                 tab = item
@@ -58,7 +79,8 @@ struct MarketRootView: View {
                 }
             }.background(MarketTheme.paper)
         }.background(MarketTheme.paper)
-            .sheet(isPresented: Binding(get: { store.snapshot.profileNameRequired == true && !store.demo }, set: { _ in })) { ProfileNameEntryView().environmentObject(store) }
+            .sheet(isPresented: Binding(get: { store.profileSetupRequested && store.activeSheetCount == 0 }, set: { if !$0 { store.dismissProfileSetup() } })) { ProfileNameEntryView().environmentObject(store) }
+            .sheet(isPresented: $aiSettings) { AISettingsView(settings: store.snapshot.settings).marketSheetScope() }
             .sheet(isPresented: $transport) { CourierWorkspaceView().marketSheetScope() }
             .sheet(isPresented: $compose) { NewListingView().marketSheetScope() }
             .sheet(item: $selected) { listing in ListingDetailView(listing: listing, onContact: { tab = .inbox }, onOrder: { tab = .orders }).marketSheetScope() }
@@ -248,15 +270,41 @@ struct SavedView: View {
 
 struct ProfileNameEntryView: View {
     @EnvironmentObject private var store: MarketStore
+    @Environment(\.dismiss) private var dismiss
     @State private var name = ""
+    @FocusState private var nameFocused: Bool
+    @State private var existingProfile = false
+    private func close() { store.dismissProfileSetup(); dismiss() }
     var body: some View {
-        VStack(alignment: .leading, spacing: 24) {
-            IrisMark().frame(width: 48, height: 48)
-            Text("What should we call you?").font(.system(size: 30, weight: .semibold))
-            Text("Choose a public name for your market profile.").foregroundStyle(MarketTheme.muted)
-            TextField(NativeProfileNames.name(seed: store.snapshot.publicKey), text: $name).textFieldStyle(.roundedBorder).accessibilityIdentifier("profileName")
-            Button("Continue") { store.command(["type": "update_profile", "name": name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? NativeProfileNames.name(seed: store.snapshot.publicKey) : name.trimmingCharacters(in: .whitespacesAndNewlines)]) }.buttonStyle(.borderedProminent).disabled(store.busy).accessibilityIdentifier("completeProfileName")
-            MarketInlineError()
-        }.padding(28).frame(maxWidth: .infinity, maxHeight: .infinity).background(MarketTheme.paper).interactiveDismissDisabled()
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 24) {
+                IrisMark().frame(width: 48, height: 48)
+                Text("What should we call you?").font(.system(size: 30, weight: .semibold))
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Your name (optional)").font(.subheadline).foregroundStyle(MarketTheme.muted)
+                    TextField(NativeProfileNames.name(seed: store.snapshot.publicKey), text: $name)
+                    .textContentType(.nickname).submitLabel(.continue).textFieldStyle(.roundedBorder).focused($nameFocused)
+                    .accessibilityIdentifier("profileName").onSubmit { complete() }
+                }
+                Button("Continue") { complete() }.buttonStyle(PrimaryButton()).disabled(store.busy || !store.ready).accessibilityIdentifier("completeProfileName")
+                Button("Existing profile") { existingProfile = true }.frame(maxWidth: .infinity)
+                MarketInlineError()
+                Spacer(minLength: 0)
+            }.padding(28).padding(.top, 24).frame(maxWidth: .infinity, maxHeight: .infinity).background(MarketTheme.paper)
+                .navigationTitle("Sign in").marketInlineTitle()
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { close() } } }
+                .sheet(isPresented: $existingProfile) { AccountSignInView().environmentObject(store) }
+                .onChange(of: store.snapshot.profileNameRequired) { required in if required != true { close() } }
+                .task {
+                    #if os(macOS)
+                    nameFocused = true
+                    #endif
+                }
+        }
+    }
+    private func complete() {
+        guard store.ready && !store.busy else { return }
+        let chosen = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        store.command(["type": "update_profile", "name": chosen]) { success in if success { close() } }
     }
 }

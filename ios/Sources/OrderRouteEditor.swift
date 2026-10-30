@@ -73,8 +73,8 @@ private struct StopEditor: View {
             Menu {
                 Button("No courier") { stop.courier = "" }
                 Button("I'll handle this stop") { stop.courier = owner }
-                ForEach(people.values.filter { $0.author != owner }.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }.prefix(80)) { person in
-                    Button { stop.courier = person.author } label: { Text(person.name) }
+                ForEach(people.values.filter { $0.author != owner }.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }.prefix(80)) { person in
+                    Button { stop.courier = person.author } label: { Text(person.displayName) }
                 }
             } label: { Label(stop.courier.isEmpty ? "Assign courier" : "Change courier", systemImage: "person.crop.circle") }.font(.system(size: 13, weight: .medium))
         }.textFieldStyle(.plain).padding(18).background(MarketTheme.surface, in: RoundedRectangle(cornerRadius: 20))

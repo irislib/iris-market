@@ -477,6 +477,45 @@ fn fresh_name_commits_locally_queues_and_restores_without_relay_ack() {
 }
 
 #[test]
+fn blank_fresh_setup_is_owner_scoped_durable_and_never_queues_metadata() {
+    let dir = tempfile::tempdir().unwrap();
+    offline(dir.path());
+    let secret = iris_market_core::generate_secret_key();
+    let owner = nostr::Keys::parse(&secret).unwrap().public_key();
+    let app = Market::open_fresh(dir.path(), &secret).unwrap();
+    let before = Store::open(&dir.path().join("market.sqlite")).unwrap();
+    let queued = before.pending().unwrap().len();
+    let state: Value = serde_json::from_str(
+        &app.command(r#"{"type":"update_profile","name":"  "}"#)
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(state["profile_name_required"], false);
+    assert!(before.profile_setup_complete(owner).unwrap());
+    assert!(
+        !before
+            .profile_setup_complete(nostr::Keys::generate().public_key())
+            .unwrap()
+    );
+    assert!(before.profile_metadata(&owner.to_hex()).unwrap().is_none());
+    assert_eq!(before.pending().unwrap().len(), queued);
+    assert!(
+        before
+            .pending()
+            .unwrap()
+            .iter()
+            .all(|event| event.kind != nostr::Kind::Metadata)
+    );
+    app.shutdown();
+    drop(app);
+    let reopened = Market::open_fresh(dir.path(), &secret).unwrap();
+    let state: Value = serde_json::from_str(&reopened.snapshot().unwrap()).unwrap();
+    assert_eq!(state["profile_name_required"], false);
+    assert!(before.profile_metadata(&owner.to_hex()).unwrap().is_none());
+    reopened.shutdown();
+}
+
+#[test]
 fn imported_name_edit_preserves_signed_metadata_and_does_not_require_signup() {
     let dir = tempfile::tempdir().unwrap();
     offline(dir.path());

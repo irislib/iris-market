@@ -1,8 +1,12 @@
 import SwiftUI
 
 extension MarketPerson {
+    var displayName: String {
+        let value = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty || value == "Unnamed user" ? NativeProfileNames.name(seed: author) : value
+    }
     static func unnamed(_ author: String) -> MarketPerson {
-        MarketPerson(author: author, name: "Unnamed user", pictureUrl: nil, connection: MarketConnection(badge: nil, followDistance: nil, followedByFriends: 0, description: ""))
+        MarketPerson(author: author, name: NativeProfileNames.name(seed: author), pictureUrl: nil, connection: MarketConnection(badge: nil, followDistance: nil, followedByFriends: 0, description: ""))
     }
 }
 
@@ -39,7 +43,7 @@ struct UserAvatar: View {
 struct UserName: View {
     let person: MarketPerson
     var body: some View {
-        HStack(spacing: 5) { Text(person.name.isEmpty ? "Unnamed user" : person.name).lineLimit(1); ConnectionBadge(connection: person.connection) }
+        HStack(spacing: 5) { Text(person.displayName).lineLimit(1); ConnectionBadge(connection: person.connection) }
     }
 }
 

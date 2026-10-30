@@ -11,7 +11,7 @@ struct ProfileView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 25) {
-                Text("Profile").font(.system(size: 30, weight: .medium)).tracking(-1).foregroundStyle(MarketTheme.ink)
+                Text("Settings").font(.system(size: 30, weight: .medium)).tracking(-1).foregroundStyle(MarketTheme.ink)
                 VStack(spacing: 0) {
                     profileRow("Sign in", symbol: "person.crop.circle.badge.checkmark") { signIn = true }.disabled(store.demo)
                     Divider().padding(.leading, 61)
@@ -36,7 +36,7 @@ struct ProfileView: View {
                 if store.demo { Label("Preview mode uses sample listings and stays offline.", systemImage: "eye").font(.system(size: 12)).foregroundStyle(MarketTheme.muted) }
             }.padding(23)
         }.sheet(isPresented: $transport) { CourierWorkspaceView().marketSheetScope() }
-            .sheet(isPresented: $signIn) { AccountSignInView().marketSheetScope() }
+            .sheet(isPresented: $signIn) { if store.snapshot.profileNameRequired == true { ProfileNameEntryView() } else { AccountSignInView().marketSheetScope() } }
             .sheet(isPresented: $aiSettings) { AISettingsView(settings: store.snapshot.settings).marketSheetScope() }
             .sheet(isPresented: $publicProfile) { AuthorProfileView(author: store.snapshot.publicKey).marketSheetScope() }
             .sheet(isPresented: $connectionSettings) { ConnectionSettingsView(settings: store.snapshot.settings).marketSheetScope() }

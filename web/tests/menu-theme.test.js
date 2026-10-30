@@ -1,11 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { setupTheme } from '../src/theme.ts';
-import { setupHeaderMenu } from '../src/menu.ts';
+import { setupHeaderMenu, setupHeaderIdentity } from '../src/menu.ts';
 
 class Element extends EventTarget {
-  constructor() { super(); this.children=[]; this.dataset={}; this.attributes=new Map(); this.hidden=false; }
+  constructor() { super(); this.children=[]; this.dataset={}; this.attributes=new Map(); this.hidden=false; this.classes=new Set(); this.classList={toggle:(name,on)=>on?this.classes.add(name):this.classes.delete(name)}; }
   append(...children) { for (const child of children) { child.parent=this; this.children.push(child); } }
+  get childNodes() { return this.children; }
+  replaceChildren(...children) { this.children=[]; this.append(...children); }
   contains(child) { return child===this || this.children.some(node=>node.contains(child)); }
   setAttribute(name,value) { this.attributes.set(name,String(value)); }
   focus() { document.activeElement=this; emit(document,'focusin',{target:this}); }
@@ -15,7 +17,7 @@ class Element extends EventTarget {
     return this.parent?.closest(selector) ?? null;
   }
   querySelectorAll() { return this.children; }
-  querySelector() { return this.children[0]; }
+  querySelector(selector='') { return this.children.find(child=>!selector.includes(':not([hidden])') || !child.hidden); }
 }
 function emit(target,type,properties={}) {
   const event=new Event(type,{cancelable:true});
@@ -76,4 +78,30 @@ test('blocked storage still changes appearance and disposal removes global menu 
   const f=fixture({storageBlocked:true,mode:'invalid'});assert.equal(f.theme.get(),'system');f.theme.set('dark');assert.equal(f.theme.get(),'dark');
   emit(f.trigger,'click');f.close();assert.equal(f.panel.hidden,true);emit(f.trigger,'click');assert.equal(f.panel.hidden,true);
   emit(f.window,'storage',{key:'market-appearance',newValue:'light'});assert.equal(f.theme.get(),'dark');
+});
+
+function identityFixture() {
+  const signIn=new Element(),trigger=new Element(),icon=new Element(),profile=new Element();trigger.append(icon);profile.hidden=true;
+  const document=new EventTarget();document.getElementById=id=>({'account-button':signIn,'header-menu-button':trigger,'profile-menu':profile}[id]);document.createElement=()=>new Element();
+  Object.assign(globalThis,{document});const visited=[];
+  const identity=setupHeaderIdentity({createAvatar:(key,{size})=>{const image=new Element();image.dataset.personAvatar=key;image.width=size;return image;},createUserName:key=>{const label=new Element();label.dataset.personName=key;label.textContent='Cached name';return label;},onProfile:key=>visited.push(key)});
+  return{signIn,trigger,icon,profile,identity,visited};
+}
+
+test('signed-in avatar is the only header account control and profile is the first menu action',()=>{
+  const f=identityFixture();f.identity.render({status:'ready',ownerPubkey:'alice',displayName:'Alice'});
+  assert.equal(f.signIn.hidden,true);assert.equal(f.trigger.children.length,1);assert.equal(f.trigger.children[0].dataset.personAvatar,'alice');assert.equal(f.profile.hidden,false);
+  const [avatar,copy]=f.profile.children;assert.equal(avatar.width,36);assert.equal(copy.children[0].textContent,'Alice');assert.equal(copy.children[0].dataset.personName,undefined);assert.equal(copy.children[1].textContent,'View profile');assert.deepEqual(f.visited,[]);
+  f.profile.onclick();assert.deepEqual(f.visited,['alice']);
+});
+
+test('visitor and locked states restore Sign in plus the ellipsis without a stale profile action',()=>{
+  const f=identityFixture();f.identity.render({status:'ready',ownerPubkey:'alice'});assert.equal(f.profile.children[1].children[0].dataset.personName,'alice');
+  f.identity.render({status:'locked',ownerPubkey:'alice'});assert.equal(f.signIn.hidden,false);assert.deepEqual(f.trigger.children,[f.icon]);assert.equal(f.profile.hidden,true);assert.equal(f.profile.onclick,null);assert.deepEqual(f.visited,[]);
+  f.identity.render({status:'signed-out'});assert.equal(f.signIn.hidden,false);assert.deepEqual(f.trigger.children,[f.icon]);assert.equal(f.profile.children.length,0);
+});
+
+test('opening a visitor menu skips hidden profile and listings actions',()=>{
+  const f=fixture();const hidden=new Element();hidden.hidden=true;f.panel.children.unshift(hidden);hidden.parent=f.panel;
+  emit(f.trigger,'click');assert.equal(f.document.activeElement,f.settings);f.close();
 });

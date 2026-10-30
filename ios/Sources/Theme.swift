@@ -84,11 +84,16 @@ struct ListingPlaceholder: View {
 struct MarketSheetScope: ViewModifier {
     @EnvironmentObject private var store: MarketStore
     @State private var registered = false
+    @State private var id = UUID()
     func body(content: Content) -> some View {
         content.onAppear {
-            if !registered { registered = true; store.activeSheetCount += 1 }
+            if !registered { registered = true; store.registerSheet(id) }
         }.onDisappear {
-            if registered { registered = false; store.activeSheetCount = max(0, store.activeSheetCount - 1) }
+            if registered { registered = false; store.unregisterSheet(id) }
+        }.sheet(isPresented: Binding(get: {
+            store.profileSetupRequested && store.activeSheetID == id
+        }, set: { if !$0 { store.dismissProfileSetup() } })) {
+            ProfileNameEntryView().environmentObject(store).marketSheetFrame()
         }
     }
 }

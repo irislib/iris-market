@@ -1,11 +1,13 @@
 import { createSurface } from './surface.ts';
+import { setupHeaderIdentity } from './menu.ts';
+import { createProfileWithOptionalName } from './profile-setup.ts';
 import { createUnreadTracker, conversationNotifications, readingSurface } from './notifications.ts';
 import { byId, element as domElement, formFields } from './dom.ts';
 import { createChatDrafts } from './chat-drafts.ts';
 import { captureInvitation } from './asset-url.ts';
 import { npubEncode } from 'nostr-tools/nip19';
 import { createMessaging } from './messaging/client.ts';
-import { createAvatar, createUserRow, nameFor, personFor, warmProfiles, resetPeople } from './people.ts';
+import { createAvatar, createUserName, createUserRow, nameFor, personFor, warmProfiles, resetPeople } from './people.ts';
 import { normalizePublicKey } from './social.ts';
 import { cacheProfileMetadata } from './profiles.ts';
 import { containsCashu, parsePaymentNote, renderPaymentNote, renderCashuContent } from './cashu-content.ts';
@@ -27,7 +29,7 @@ export function setupAccount({getRelays,isPreview,onIdentity=()=>{},onProfile=()
   if(incomingInvitation)history.replaceState(null,'',incomingInvitation.cleanURL);
   let state:AccountState={status:'signed-out',devices:[],conversations:[]}, busy=false, selected=null, pendingInbox=false, signingOnly=false, loginView='new', controller;
   const account=dialog(`<button data-close class="dialog-close icon-button" aria-label="Close profile">×</button><h2>Your profile</h2><div id="account-person"></div><p id="account-status" class="small muted" role="status"></p><p id="account-error" class="error" role="alert"></p>
-  <div id="account-login"><form id="account-create" class="profile-start"><label for="account-name">Your name</label><input id="account-name" placeholder="Name" autocomplete="nickname" autofocus maxlength="80" required><button class="button primary">Continue</button></form><button id="account-existing-toggle" class="text-button profile-existing">Existing profile</button>
+  <div id="account-login"><form id="account-create" class="profile-start"><label for="account-name">Name <span class="muted">· optional</span></label><input id="account-name" placeholder="Name" autocomplete="nickname" autofocus maxlength="80"><button class="button primary">Continue</button></form><button id="account-existing-toggle" class="text-button profile-existing">Existing profile</button>
   <div id="account-existing" hidden><button id="account-extension" class="button secondary">Browser extension</button><button id="account-link-device" class="button secondary">Link this device</button><details class="account-option" id="account-remote-option"><summary>Remote signer</summary><form id="account-remote"><label for="account-bunker">Connection link <span class="muted">· optional</span></label><input id="account-bunker" placeholder="bunker://…" autocomplete="off"><button class="button secondary">Connect signer</button></form><div id="account-connect" hidden><p class="small muted">Approve this link on your other device.</p><input id="account-connect-link" readonly aria-label="Signer connection link"><button id="account-copy-connect" class="text-button">Copy connection link</button><a id="account-open-connect" class="text-button" target="_blank" rel="noopener noreferrer">Open signer</a><button id="account-cancel-connect" class="text-button">Cancel</button></div></details>
   <details class="account-option" id="account-key-option"><summary>Private key</summary><form id="account-key-form"><label for="account-key">Private key</label><input id="account-key" type="password" placeholder="nsec…" autocomplete="off" spellcheck="false" required><button class="button secondary">Continue</button></form></details><button id="account-existing-back" class="text-button">Back</button></div></div>
   <form id="account-unlock" hidden><label for="account-password">Password</label><input id="account-password" type="password" autocomplete="current-password"><button class="button primary">Continue</button></form>
@@ -35,6 +37,7 @@ export function setupAccount({getRelays,isPreview,onIdentity=()=>{},onProfile=()
   const inbox=dialog(`<button data-close class="dialog-close icon-button" aria-label="Close messages">×</button><h2>Messages</h2><div class="chat-shell"><aside class="chat-sidebar"><form id="chat-new"><label class="sr-only" for="chat-recipient">User ID or private invitation</label><input id="chat-recipient" placeholder="User ID or invitation" autocomplete="off"><button class="button secondary" aria-label="Start conversation">New</button></form><div id="chat-list"></div></aside><section class="chat-main"><div id="chat-person"></div><div id="chat-messages" role="log" aria-live="polite"></div><p id="chat-status" class="small muted" role="status"></p><p id="chat-error" class="error" role="alert"></p><form id="chat-send"><label class="sr-only" for="chat-text">Message</label><textarea id="chat-text" placeholder="Message" rows="2" maxlength="8000"></textarea><button id="chat-send-button" class="button primary">Send</button></form></section></div>`, 'Messages',{pageHost:messagePage,onOpen:()=>onMessagePage(selected||undefined),onClose:onMessageClose});
   inbox.classList.add('inbox-dialog');
   const $=byId;
+  const headerIdentity=setupHeaderIdentity({createAvatar,createUserName,onProfile});
   const profileCopy=value=>String(value).replace(/\baccounts\b/gi,'profiles').replace(/\baccount\b/gi,'profile');
   const fail=error=>{ $('account-error').textContent=profileCopy(error.message||String(error)); };
   const withBusy=async task=>{if(busy)return;busy=true;$('account-error').textContent='';try{return await task()}catch(error){fail(error);throw error}finally{busy=false;renderAccount()}};
@@ -60,7 +63,7 @@ export function setupAccount({getRelays,isPreview,onIdentity=()=>{},onProfile=()
     $('account-person').replaceChildren(...(state.ownerPubkey?[createUserRow(state.ownerPubkey,{size:44})]:[]));
     const ownName=$('account-person').querySelector<HTMLElement>('.user-name');if(ownName&&state.displayName){delete ownName.dataset.personName;ownName.textContent=state.displayName;}
     $('account-backup').hidden=state.mode!=='local'; $('posting-signer').hidden=state.canSign;
-    const nav=$('account-button'); nav.replaceChildren(...(ready&&state.ownerPubkey?[createAvatar(state.ownerPubkey)]:[document.createTextNode('Sign in')]));nav.setAttribute('aria-label',ready?'Your profile':'Sign in');
+    headerIdentity.render(state);
     $('account-devices').replaceChildren(...state.devices.map((device,index)=>{const row=el('div',undefined,'device-row');row.append(el('span',device.current?'This device':`Linked device ${index+1}`));if(!device.current&&state.canSign){const button=el('button','Revoke','text-button');button.onclick=()=>withBusy(()=>messaging.revokeDevice(device.pubkey)).catch(()=>{});row.append(button)}return row}));
     for(const button of account.querySelectorAll<HTMLButtonElement>('form button,#account-extension,#account-link-device,#account-existing-toggle,#account-existing-back'))button.disabled=busy;
     $('account-name').disabled=busy;
@@ -110,8 +113,7 @@ export function setupAccount({getRelays,isPreview,onIdentity=()=>{},onProfile=()
   $('account-existing-toggle').onclick=()=>{loginView='existing';$('account-error').textContent='';renderAccount();};
   $('account-existing-back').onclick=()=>{controller?.abort();loginView='new';$('account-key').value='';$('account-error').textContent='';renderAccount();};
   $('account-extension').onclick=()=>login(()=>signingOnly?messaging.connectExtensionSigner():messaging.loginWithExtension({}));
-  $('account-create').onsubmit=event=>{event.preventDefault();const name=$('account-name').value.trim();if(!name){$('account-name').setCustomValidity('Enter your name.');$('account-name').reportValidity();return}login(async()=>{await messaging.createAccount({});await messaging.updateProfile({name});resetPeople();warmProfiles([state.ownerPubkey]);})};
-  $('account-name').oninput=()=>$('account-name').setCustomValidity('');
+  $('account-create').onsubmit=event=>{event.preventDefault();const name=$('account-name').value;login(async()=>{await createProfileWithOptionalName(messaging,name);resetPeople();warmProfiles([state.ownerPubkey]);})};
   $('account-key-form').onsubmit=event=>{event.preventDefault();const key=$('account-key').value;$('account-key').value='';login(()=>messaging.loginWithKey({key}));};
   $('account-unlock').onsubmit=event=>{event.preventDefault();const password=$('account-password').value;$('account-password').value='';login(()=>messaging.unlock(password));};
   $('account-remote').onsubmit=event=>{event.preventDefault();controller?.abort();controller=new AbortController();login(async()=>{await messaging[signingOnly?'connectPostingSigner':'loginWithSigner']({bunkerLink:$('account-bunker').value.trim()||undefined,signal:controller.signal,onConnectionLink:link=>{$('account-connect').hidden=false;$('account-connect-link').value=link;$('account-open-connect').href=link;},onAuthUrl:url=>{if(new URL(url).protocol==='https:'){$('account-connect').hidden=false;$('account-open-connect').href=url;$('account-open-connect').textContent='Approve connection';}}});controller=undefined;$('account-connect').hidden=true;})};
@@ -135,7 +137,7 @@ export function setupAccount({getRelays,isPreview,onIdentity=()=>{},onProfile=()
   const refreshUnread=()=>{syncUnread();if(inbox.open)renderInbox();};
   const uncovered=()=>queueMicrotask(refreshUnread);
   document.addEventListener('visibilitychange',refreshUnread);document.addEventListener('close',uncovered,true);window.addEventListener('focus',refreshUnread);
-  $('account-button').onclick=()=>state.ownerPubkey?onProfile(state.ownerPubkey):showAccount();$('inbox-tab').onclick=showInbox;
+  $('account-button').onclick=()=>showAccount();$('inbox-tab').onclick=showInbox;
   if(!isPreview())void messaging.restore().then(value=>{state=value;renderAccount();if(pendingInvite)showAccount();}).catch(error=>{fail(error);if(pendingInvite)showAccount();}); else renderAccount();
   window.addEventListener('pagehide',()=>{document.removeEventListener('visibilitychange',refreshUnread);document.removeEventListener('close',uncovered,true);window.removeEventListener('focus',refreshUnread);controller?.abort();messaging.destroy();});
   return { messaging, state:()=>state, showAccount, showInbox, openChat, composeMessage, hideInbox:()=>inbox.hide(), closeAccount:()=>account.hide(), hideAccount:()=>account.hide(), onReady:listener=>readyListeners.add(listener), onState:listener=>{stateListeners.add(listener);return()=>stateListeners.delete(listener)} };

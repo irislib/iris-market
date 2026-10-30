@@ -7,7 +7,10 @@ final class MarketStore: ObservableObject {
     @Published private(set) var ready = false
     @Published private(set) var busy = false
     @Published var alert: String?
-    @Published var activeSheetCount = 0
+    @Published private(set) var activeSheetCount = 0
+    @Published private(set) var activeSheetID: UUID?
+    @Published private(set) var profileSetupRequested = false
+    private var profileSheets = NativeProfileSheetStack()
     @Published var activeOrderID: String?
     @Published private(set) var deviceLinkURL: String?
     private var deviceLink: MarketDeviceLink?
@@ -54,7 +57,18 @@ final class MarketStore: ObservableObject {
         if next.revision >= snapshot.revision {
             if next.settings.ai != snapshot.settings.ai { invalidateAITest() }
             snapshot = next
+            if next.profileNameRequired != true || demo { dismissProfileSetup() }
         }
+    }
+    func requestProfileSetup() {
+        if ready && !demo && snapshot.profileNameRequired == true { profileSetupRequested = true }
+    }
+    func dismissProfileSetup() { profileSetupRequested = false }
+    func registerSheet(_ id: UUID) {
+        profileSheets.register(id); activeSheetCount = profileSheets.ids.count; activeSheetID = profileSheets.top
+    }
+    func unregisterSheet(_ id: UUID) {
+        profileSheets.unregister(id); activeSheetCount = profileSheets.ids.count; activeSheetID = profileSheets.top
     }
     func refreshAIAvailability() {
         appleAIUnavailableReason = appleAvailability()
@@ -106,7 +120,7 @@ final class MarketStore: ObservableObject {
         localAIRequest = UUID(); localAITask?.cancel(); localAITask = nil; localAIProgress = nil; localAIStatus = nil
         let previous = app
         invalidateAITest()
-        app = nil; ready = false; activeOrderID = nil; stopPolling(); accountGeneration += 1; operationCount = 0; busy = false
+        app = nil; ready = false; activeOrderID = nil; dismissProfileSetup(); stopPolling(); accountGeneration += 1; operationCount = 0; busy = false
         _ = aiIntentGate.advance()
         let generation = accountGeneration
         queue.async { [weak self] in
@@ -166,6 +180,9 @@ final class MarketStore: ObservableObject {
     }
     func command(_ value: [String: Any], expectedAIIntent: Int? = nil, urgentPreference: Bool = false, publishExpiry: NativeListingExpiry? = nil, completion: ((Bool) -> Void)? = nil) {
         guard let app else { completion?(false); return }
+        if NativeProfileSetupGate.requiresSetup(command: value["type"] as? String ?? "", nameRequired: snapshot.profileNameRequired == true, demo: demo) {
+            requestProfileSetup(); completion?(false); return
+        }
         do {
             let request = String(decoding: try JSONSerialization.data(withJSONObject: value), as: UTF8.self)
             alert = nil

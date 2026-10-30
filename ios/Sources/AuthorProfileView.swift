@@ -20,7 +20,8 @@ struct AuthorProfileView: View {
     @State private var history: [String] = []
     @State private var selection: String?
     @State private var selectedListing: MarketListing?
-    init(author: String) { _author = State(initialValue: author) }
+    private let onClose: (() -> Void)?
+    init(author: String, onClose: (() -> Void)? = nil) { _author = State(initialValue: author); self.onClose = onClose }
     private var profile: PublicMarketProfile? { store.snapshot.profile?.person.author == author ? store.snapshot.profile : nil }
     var body: some View {
         NavigationStack {
@@ -82,7 +83,7 @@ struct AuthorProfileView: View {
             }.background(MarketTheme.paper).navigationTitle("Profile").marketInlineTitle()
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) { if !history.isEmpty { Button("Back") { switchAuthor(history.removeLast()) } } }
-                    ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+                    ToolbarItem(placement: .confirmationAction) { Button("Done") { if let onClose { onClose() } else { dismiss() } } }
                 }
                 .sheet(item: $selectedListing) { listing in ListingDetailView(listing: listing).marketSheetScope() }
                 .task(id: author) { store.command(["type": "load_profile", "author": author]) }

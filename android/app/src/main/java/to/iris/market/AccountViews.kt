@@ -97,11 +97,11 @@ import org.json.JSONObject
 
 @Composable fun ProfileView(state:MarketSnapshot,busy:Boolean,settings:()->Unit,switchMode:()->Unit,model:MarketModel,appearance:Appearance,changeAppearance:(Appearance)->Unit,openProfile:()->Unit,openTransport:()->Unit = {}) {
     var signIn by remember {mutableStateOf(false)}
-    if(signIn) { AccountSignInView(model,busy){signIn=false};return }
+    if(signIn) { if(state.profileNameRequired) ProfileSetupView(model,busy){signIn=false} else AccountSignInView(model,busy){signIn=false};return }
     val ai=remember(state.settings){JSONObject(state.settings).optJSONObject("ai")?:JSONObject()}
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal=24.dp).padding(bottom=35.dp),verticalArrangement=Arrangement.spacedBy(16.dp)) {
         Spacer(Modifier.height(7.dp))
-        Text("Profile",style=MaterialTheme.typography.headlineMedium)
+        Text("Settings",style=MaterialTheme.typography.headlineMedium)
         Row(verticalAlignment=Alignment.CenterVertically,modifier=Modifier.padding(vertical=10.dp)) {
             UserAvatar(state.people[state.publicKey] ?: PublicPerson.unnamed(state.publicKey),70.dp)
             Spacer(Modifier.width(17.dp));Column { Text(if(state.demo) "Preview profile" else "Your profile",style=MaterialTheme.typography.titleLarge,fontWeight=FontWeight.SemiBold)

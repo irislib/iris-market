@@ -51,6 +51,25 @@ impl Store {
             .transpose()?
             .unwrap_or(false))
     }
+    /// Local setup consent is independent of optional public profile metadata.
+    pub fn profile_setup_complete(&self, owner: nostr::PublicKey) -> Result<bool> {
+        Ok(self
+            .db
+            .query_row(
+                "SELECT value='true' FROM preferences WHERE key=?1",
+                [format!("profile-setup-complete:{}", owner.to_hex())],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or(false))
+    }
+    pub fn complete_profile_setup(&self, owner: nostr::PublicKey) -> Result<()> {
+        self.db.execute(
+            "INSERT OR REPLACE INTO preferences VALUES (?1,'true')",
+            [format!("profile-setup-complete:{}", owner.to_hex())],
+        )?;
+        Ok(())
+    }
     pub fn profile_metadata(&self, owner: &str) -> Result<Option<Event>> {
         let raw: Option<String> = self
             .db

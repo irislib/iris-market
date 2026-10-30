@@ -23,6 +23,9 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
+val PublicPerson.displayName: String
+    get() = name.trim().takeUnless { it.isEmpty() || it == "Unnamed user" } ?: NativeProfileNames.name(author)
+
 @Composable fun UserAvatar(person: PublicPerson, size: Dp = 40.dp) {
     val photo by produceState<android.graphics.Bitmap?>(null, person.pictureUrl) {
         value = person.pictureUrl?.let { withContext(Dispatchers.IO) { loadPhoto(it) } }
@@ -44,7 +47,7 @@ import kotlinx.coroutines.withContext
 
 @Composable fun UserName(person: PublicPerson, style: TextStyle = MaterialTheme.typography.bodyMedium) {
     Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(5.dp)) {
-        Text(person.name.ifBlank { "Unnamed user" },Modifier.weight(1f,false),style=style,fontWeight=FontWeight.Medium,maxLines=1,overflow=TextOverflow.Ellipsis)
+        Text(person.displayName,Modifier.weight(1f,false),style=style,fontWeight=FontWeight.Medium,maxLines=1,overflow=TextOverflow.Ellipsis)
         ConnectionBadge(person.connection)
     }
 }

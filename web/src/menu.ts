@@ -17,7 +17,7 @@ export function setupHeaderMenu() {
   function open() {
     panel.hidden = false;
     trigger.setAttribute('aria-expanded', 'true');
-    panel.querySelector<HTMLElement>('button, a[href]')?.focus();
+    panel.querySelector<HTMLElement>('button:not([hidden]):not(:disabled), a[href]:not([hidden])')?.focus();
   }
   const inside = (target: EventTarget | null) => !!target &&
     (trigger.contains(target as Node) || panel.contains(target as Node));
@@ -42,4 +42,41 @@ export function setupHeaderMenu() {
   close();
   trigger.setAttribute('aria-expanded', 'false');
   return { close, destroy() { close(); cleanups.splice(0).forEach(cleanup => cleanup()); } };
+}
+
+interface HeaderIdentityState { status: string; ownerPubkey?: string | null; displayName?: string }
+interface HeaderIdentityOptions {
+  createAvatar: (key: string, options: { size: number }) => HTMLElement;
+  createUserName: (key: string) => HTMLElement;
+  onProfile: (key: string) => void;
+}
+/** The same disclosure button shows an avatar after local profile restoration. */
+export function setupHeaderIdentity({ createAvatar, createUserName, onProfile }: HeaderIdentityOptions) {
+  const signIn = document.getElementById('account-button');
+  const trigger = document.getElementById('header-menu-button');
+  const profile = document.getElementById('profile-menu');
+  if (!signIn || !trigger || !profile) return { render(_state: HeaderIdentityState) {} };
+  const visitorIcon = Array.from(trigger.childNodes);
+  function render(state: HeaderIdentityState) {
+    const owner = state.status === 'ready' ? state.ownerPubkey : null;
+    signIn.hidden = !!owner;
+    profile.hidden = !owner;
+    trigger.classList.toggle('header-account-menu', !!owner);
+    if (!owner) {
+      trigger.replaceChildren(...visitorIcon);
+      profile.replaceChildren();
+      profile.onclick = null;
+      return;
+    }
+    trigger.replaceChildren(createAvatar(owner, { size: 28 }));
+    const copy = document.createElement('span'), name = createUserName(owner), caption = document.createElement('span');
+    copy.className = 'header-profile-copy';
+    if (state.displayName) { name.textContent = state.displayName; delete name.dataset.personName; }
+    caption.className = 'header-profile-caption';
+    caption.textContent = 'View profile';
+    copy.append(name, caption);
+    profile.replaceChildren(createAvatar(owner, { size: 36 }), copy);
+    profile.onclick = () => onProfile(owner);
+  }
+  return { render };
 }

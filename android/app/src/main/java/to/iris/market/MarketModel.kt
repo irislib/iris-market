@@ -176,6 +176,10 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
     val state = mutable.asStateFlow()
     private val working = MutableStateFlow(false)
     val busy = working.asStateFlow()
+    private val mutableProfileSetupRequested = MutableStateFlow(false)
+    val profileSetupRequested = mutableProfileSetupRequested.asStateFlow()
+    fun requestProfileSetup() { if (!state.value.demo && state.value.profileNameRequired) mutableProfileSetupRequested.value = true }
+    fun dismissProfileSetup() { mutableProfileSetupRequested.value = false }
     private val alert = MutableStateFlow<String?>(null)
     val notice = alert.asStateFlow()
     @Volatile private var active = true
@@ -219,6 +223,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
     }
     private fun openSavedAccount() {
         invalidateAITest()
+        dismissProfileSetup()
         accountGeneration += 1
         aiIntentGate.advance()
         core?.shutdown();core?.close();core=null
@@ -362,6 +367,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
     fun setActive(value: Boolean) { active = value; if (!value) cancelLocalAI() }
     private fun publishSnapshot(next: MarketSnapshot) {
         mutable.update { previous -> if(previous.publicKey==next.publicKey&&next.revision<previous.revision) previous else next }
+        if (!state.value.profileNameRequired || state.value.demo) dismissProfileSetup()
         viewModelScope.launch { continueLocalSearch() }
     }
     private fun refreshSnapshot(reset: Boolean = false) { core?.let {
@@ -373,6 +379,10 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
     fun publishListing(draft: JSONObject, expiry: NativeListingExpiry, onSuccess: () -> Unit) = submit(JSONObject().put("type","publish").put("draft",JSONObject(draft.toString())), onSuccess, null, publishExpiry=expiry)
     fun orderCommand(request: JSONObject, onSuccess: () -> Unit = {}, onError: (String) -> Unit) = submit(request, onSuccess, onError)
     private fun submit(request: JSONObject, onSuccess: (() -> Unit)?, onError: ((String) -> Unit)?, expectedAIIntent: Long? = null, publishExpiry: NativeListingExpiry? = null) {
+        if (NativeProfileSetupGate.requiresSetup(request.optString("type"), state.value.profileNameRequired, state.value.demo)) {
+            requestProfileSetup(); onError?.invoke("Sign in to continue."); return
+        }
+        val generation = accountGeneration
         if (request.optString("type") in setOf("set_filter", "set_settings")) cancelLocalAI()
         val preferenceEpoch = if(request.optString("type")=="set_settings") expectedAIIntent ?: aiIntentEpoch else null
         viewModelScope.launch {
@@ -380,6 +390,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
             try {
                 withContext(Dispatchers.IO) {
                     mutex.withLock {
+                        if (generation != accountGeneration) throw CancellationException("Profile changed")
                         val app = core ?: error("Not ready")
                         if(preferenceEpoch!=null) {
                             val next=aiIntentGate.perform(preferenceEpoch) {

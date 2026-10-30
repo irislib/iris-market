@@ -6,6 +6,7 @@ import { createMessaging, canPublishToDevice } from '../src/messaging/client.ts'
 import { createVault } from '../src/messaging/vault.ts';
 import { prepareSignerAuthorization } from '../src/messaging/authorization.ts';
 import { buildReviewDraft } from '../src/reviews.ts';
+import { createProfileWithOptionalName } from '../src/profile-setup.ts';
 
 function memoryBackend() {
   let row;
@@ -144,4 +145,21 @@ test('background publication cannot see either delivery event before the whole p
   const option=await app.signEvent({kind:30406,created_at:Math.floor(Date.now()/1000),content:'',tags:[['d','atomic'],['title','Delivery'],['price','0','EUR'],['country','FI'],['service','standard']]});
   const item=await app.signEvent({...listing,tags:[...listing.tags,['shipping_option',`30406:${option.pubkey}:atomic`]]});
   await app.publishSignedEvents([option,item]);await waitFor(()=>observed===2);
+});
+
+for (const name of ['', ' \t\n ']) test(`optional name ${JSON.stringify(name)} creates no profile metadata`, {timeout:3000}, async t=>{
+  const network=silentNetwork(),vault=createVault({backend:memoryBackend()}),app=make(vault,network);t.after(()=>app.destroy());
+  let updates=0;const update=app.updateProfile.bind(app);app.updateProfile=value=>{updates++;return update(value);};
+  await createProfileWithOptionalName(app,name);const owner=app.state().ownerPubkey;assert.ok(owner);assert.equal(updates,0);
+  assert.equal(app.state().displayName,undefined);assert.equal(app.state().profileEvent,undefined);assert.equal(await vault.get('market/profile-patch'),undefined);
+  const stored=await vault.get('market/account');assert.equal(stored.displayName,undefined);assert.equal(stored.profileEvent,undefined);
+  await app.lock();const restored=await app.restore();assert.equal(restored.ownerPubkey,owner);assert.equal(restored.displayName,undefined);assert.equal(restored.profileEvent,undefined);
+  assert.equal(network.calls.some(call=>call.kind==='publish'&&call.value.kind===0),false);
+});
+
+test('explicit optional name is trimmed and updates the new profile once', {timeout:3000}, async t=>{
+  const network=silentNetwork(),vault=createVault({backend:memoryBackend()}),app=make(vault,network);t.after(()=>app.destroy());
+  const updates=[];const update=app.updateProfile.bind(app);app.updateProfile=value=>{updates.push(value);return update(value);};
+  await createProfileWithOptionalName(app,'  Alice  ');assert.deepEqual(updates,[{name:'Alice'}]);assert.equal(app.state().displayName,'Alice');
+  await waitFor(()=>app.state().profileEvent);assert.equal(app.state().profileEvent.kind,0);assert.equal(JSON.parse(app.state().profileEvent.content).name,'Alice');
 });

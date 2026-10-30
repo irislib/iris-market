@@ -1,3 +1,5 @@
+import {createChatPickerState,revealChatPicker} from './chat-picker-state.ts';
+import {visibleChatMessageIds} from './chat-visibility.ts';
 import {configuredLocalTestMint} from './wallet/mints.ts';
 import {groupMessageThreads,messageThreadKey,type MessageContext} from './message-context.ts';
 import { createSurface } from './surface.ts';
@@ -23,6 +25,7 @@ function dialog(markup:string, name:string, options:Parameters<typeof createSurf
 type AccountState = Partial<ReturnType<ReturnType<typeof createMessaging>['state']>> & {status:string;devices:Array<{pubkey:string;current:boolean}>;conversations:Array<{pubkey:string;messages:any[]}>};
 interface AccountOptions {listingTitle?:(coordinate:string)=>string|undefined;getRelays:()=>string[];isPreview:()=>boolean;onIdentity?:(key:string,status:string,previous:string,pending:any[])=>void;onProfile?:(key:string)=>void;onOrder?:(id:string)=>void;onToken?:(token:string)=>unknown;onUnread?:(count:number)=>void;accountPage?:HTMLElement;onAccountPage?:()=>void;onAccountClose?:()=>void;messagePage?:HTMLElement;onMessagePage?:(peer?:string)=>void;onMessageClose?:()=>void}
 export function setupAccount({listingTitle=()=>undefined,getRelays,isPreview,onIdentity=()=>{},onProfile=()=>{},onOrder=()=>{},onToken=()=>{},onUnread=()=>{},accountPage,onAccountPage=()=>{},onAccountClose=()=>{},messagePage,onMessagePage=()=>{},onMessageClose=()=>{}}:AccountOptions) {
+  const pickerState=createChatPickerState();
   const unread=createUnreadTracker({kind:'messages',onUnread});
   const readyListeners=new Set<()=>void>(), stateListeners=new Set<(state:AccountState)=>void>();
   let drafts=createChatDrafts(), inboxRevision=0, pendingDraft='';
@@ -46,14 +49,24 @@ export function setupAccount({listingTitle=()=>undefined,getRelays,isPreview,onI
   const profileCopy=value=>String(value).replace(/\baccounts\b/gi,'profiles').replace(/\baccount\b/gi,'profile');
   const fail=error=>{ $('account-error').textContent=profileCopy(error.message||String(error)); };
   const withBusy=async task=>{if(busy)return;busy=true;$('account-error').textContent='';try{return await task()}catch(error){fail(error);throw error}finally{busy=false;renderAccount()}};
+  const receiptSettings=el('details',undefined,'settings-section');receiptSettings.append(el('summary','Messages'));
+  const receiptError=el('p','','error small');receiptError.setAttribute('role','alert');
+  const receiptInputs={} as Record<'delivered'|'seen',HTMLInputElement>;
+  for(const [key,title] of [['delivered','Send delivery receipts'],['seen','Send read receipts']] as const){const label=el('label',title,'checkbox-label'),input=el('input');input.type='checkbox';input.checked=true;input.onchange=()=>{receiptError.textContent='';void messaging.setReceiptPreferences({[key]:input.checked}).catch(()=>{input.checked=state.receiptPreferences?.[key]!==false;receiptError.textContent='Could not save this preference. Try again.';});};label.append(input);receiptInputs[key]=input;receiptSettings.append(label);}
+  receiptSettings.append(receiptError);
+  receiptSettings.append(el('p','Let people know when their messages reach you or are visible on your screen. Saved per profile on this device.','small muted'));
+  document.querySelector('#preferences-dialog')?.append(receiptSettings);
+  let readFrame:number|undefined;
+  function scheduleSeen(){if(readFrame!==undefined)return;readFrame=requestAnimationFrame(()=>{readFrame=undefined;if(state.status!=='ready'||!selected)return;const ids=visibleChatMessageIds(inbox,$('chat-messages'));syncUnread();if(ids.length)void messaging.markSeen(selected,ids).catch(()=>{});});}
   const messaging=createMessaging({developerMint:configuredLocalTestMint(),getRelays,onChange:value=>{const previous=state.ownerPubkey;state=value;if(previous&&(previous!==value.ownerPubkey||['locked','signed-out'].includes(value.status))){inboxRevision++;drafts=createChatDrafts();pendingDraft='';selected=null;selectedContext=undefined;$('chat-text').value='';$('chat-messages').replaceChildren();}syncUnread();for(const listener of stateListeners)listener(value);if(value.profileEvent)cacheProfileMetadata(value.profileEvent,{relays:getRelays()});if(value.canSign)queueMicrotask(()=>{for(const listener of readyListeners)listener()});warmProfiles([value.ownerPubkey,...value.conversations.map(c=>c.pubkey)].filter(Boolean));renderAccount();renderInbox();onIdentity(value.ownerPubkey,value.status,previous,value.pendingListings||[]);if(pendingInbox&&value.status==='ready'){pendingInbox=false;account.hide();showInbox();if(selected)void messaging.open(selected).catch(error=>{$('chat-error').textContent=error.message;})}}});
   function syncUnread(){
     const visible=readingSurface(inbox);
-    const visibleIds=selectedThreadKey!=='*'?state.conversations.find(c=>c.pubkey===selected)?.messages.filter(m=>messageThreadKey(m)===selectedThreadKey).map(m=>m.id):undefined;
+    const visibleIds=visibleChatMessageIds(inbox,$('chat-messages'));
     unread.update(state.status==='ready'&&!isPreview()?state.ownerPubkey:null,conversationNotifications(state.conversations),visible?selected:null,visibleIds);
   }
   function renderAccount(){
     const ready=state.status==='ready', locked=state.status==='locked';
+    for(const key of ['delivered','seen'] as const){receiptInputs[key].checked=state.receiptPreferences?.[key]!==false;receiptInputs[key].disabled=!ready;}
     if(locked&&state.needsLogin)loginView='existing';
     const existing=loginView==='existing'||signingOnly;
     $('account-open-invite').hidden=!pendingInvite;account.querySelector('h2').textContent=pendingInvite?'Private chat invitation':locked?'Continue with your profile':ready&&!signingOnly?'Your profile':'Existing profile';
@@ -102,6 +115,7 @@ export function setupAccount({listingTitle=()=>undefined,getRelays,isPreview,onI
     const allMessages=state.conversations.find(c=>c.pubkey===selected)?.messages||[];
     const messages=selectedThreadKey!=='*'?allMessages.filter(m=>messageThreadKey(m)===selectedThreadKey):allMessages;
     const area=$('chat-messages'), nearBottom=area.scrollHeight-area.scrollTop-area.clientHeight<100;
+    pickerState.capture(selectionKey(),area);
     area.replaceChildren(...messages.map(message=>{
       const item=el('div',undefined,`chat-message ${message.mine?'mine':''}`),body=el('div'),active=()=>inbox.open&&revision===inboxRevision&&state.status==='ready';
       const payment=parsePaymentNote(message.text);
@@ -110,13 +124,21 @@ export function setupAccount({listingTitle=()=>undefined,getRelays,isPreview,onI
         body.append(el('p','Cashu token','muted'));
         void renderCashuContent(message.text,{isActive:active,onToken:token=>{if(!active())return;inbox.hide();return onToken(token);}}).then(content=>{if(active()){body.replaceChildren(content);if(nearBottom)area.scrollTop=area.scrollHeight;}}).catch(()=>{if(active())body.replaceChildren(el('p','Token unavailable. Reopen this conversation to retry.','muted'));});
       }else body.append(el('p',message.text));
-      item.append(body);
+      item.dataset.messageId=message.id;item.dataset.mine=String(message.mine);item.append(body);
       if(typeof message.orderId==='string'&&message.orderId.length<=160){const order=el('button','View order','button secondary chat-order-link');order.type='button';order.onclick=()=>{if(active()){inbox.hide();onOrder(message.orderId)}};item.append(order);}
-      const time=new Date(message.createdAt*1000).toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'});item.append(el('span',`${time}${message.mine?' · '+message.delivery:''}`,'small muted'));return item;
+      const metadata=el('div',undefined,'chat-message-meta'),date=new Date(message.createdAt*1000),time=el('time',date.toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'}));time.dateTime=date.toISOString();time.title=date.toLocaleString();metadata.append(time);
+      if(message.mine){const labels={queued:'Queued',sent:'Sent',delivered:'Delivered',seen:'Seen'},status=el('span',labels[message.delivery]||'Sent','chat-delivery');status.setAttribute('aria-label','Message '+(labels[message.delivery]||'Sent').toLowerCase());metadata.append(status);}
+      const reactions=el('div',undefined,'chat-reactions');reactions.setAttribute('role','group');reactions.setAttribute('aria-label','Message reactions');
+      const react=(emoji:string)=>{if(!selected||!active())return;const openPicker=item.querySelector<HTMLDetailsElement>('.chat-reaction-picker');if(openPicker)openPicker.open=false;void messaging.react(selected,message.id,emoji).catch(error=>{$('chat-error').textContent=error.message;});};
+      for(const reaction of message.reactions||[]){const chip=el('button',reaction.emoji+' '+reaction.count,'chat-reaction-chip');chip.type='button';chip.setAttribute('aria-pressed',String(reaction.reacted_by_me));chip.setAttribute('aria-label',`${reaction.emoji}, ${reaction.count} ${reaction.count===1?'reaction':'reactions'}${reaction.reacted_by_me?', including yours':''}`);chip.disabled=!state.canSend;chip.onclick=()=>react(reaction.emoji);reactions.append(chip);}
+      const picker=el('details',undefined,'chat-reaction-picker'),toggle=el('summary','☺');picker.dataset.messageId=message.id;picker.open=pickerState.isOpen(message.id);toggle.setAttribute('aria-label','React to message');picker.append(toggle);const options=el('div',undefined,'chat-reaction-options');options.setAttribute('role','group');options.setAttribute('aria-label','Choose a reaction');
+      for(const [emoji,label] of [['👍','Thumbs up'],['❤️','Heart'],['😂','Laugh'],['🎉','Celebrate'],['😮','Surprised'],['🙏','Thanks']]){const button=el('button',emoji);button.type='button';button.setAttribute('aria-label',label);button.disabled=!state.canSend;button.onclick=()=>{picker.open=false;react(emoji);};options.append(button);}picker.append(options);picker.ontoggle=()=>{if(picker.open&&active())requestAnimationFrame(()=>{if(picker.open&&active())revealChatPicker(area,options);});};metadata.append(picker);item.append(metadata);if(reactions.childElementCount)item.append(reactions);return item;
     }));
+    pickerState.restoreFocus(area);
     if(!selected)area.append(el('p','Choose a conversation or enter a user ID.','muted chat-empty'));
     if(nearBottom)area.scrollTop=area.scrollHeight;
     $('chat-send').hidden=!selected;$('chat-send-button').disabled=!state.canSend;
+    scheduleSeen();
     $('chat-status').textContent=!selected&&pendingDraft?'Choose a conversation for your draft.':selected&&!state.canSend?'Messages will sync when connected.':'';
   }
   function showAccount({posting=false}={}){if(isPreview()){$('account-error').textContent='Switch to the live market to sign in.'}signingOnly=false;if(!busy)loginView='new';renderAccount();account.showModal();if(!$('account-create').hidden)$('account-name').focus();if(posting&&readyForPostingSigner())$('account-status').textContent='Connect a signer to post.'}
@@ -161,12 +183,13 @@ export function setupAccount({listingTitle=()=>undefined,getRelays,isPreview,onI
   $('chat-new').onsubmit=event=>{event.preventDefault();const input=$('chat-recipient').value.trim();$('chat-error').textContent='';(async()=>{selectChat(input.includes('://')?await messaging.acceptInvite(input):normalizePublicKey(input));await messaging.open(selected);$('chat-recipient').value='';renderInbox();})().catch(error=>{$('chat-error').textContent=error.message;});};
   $('chat-send').onsubmit=event=>{event.preventDefault();const text=$('chat-text').value.trim(),peer=selected,context=selectedContext,key=selectionKey();if(!text||!peer)return;$('chat-send-button').disabled=true;$('chat-error').textContent='';messaging.send(peer,text,context).then(()=>{drafts.clear(key);if(selectionKey()===key&&$('chat-text').value.trim()===text)$('chat-text').value='';}).catch(error=>{$('chat-error').textContent=error.message;}).finally(()=>{$('chat-send-button').disabled=!state.canSend;});};
   for(const [id,mode] of [['chat-threads',true],['chat-people',false]] as const)$(id).onclick=()=>{threadMode=mode;try{localStorage.setItem('market-message-grouping',mode?'threads':'people');}catch{}if(selected)selectChat(selected);renderInbox();};
-  inbox.addEventListener('close',()=>{inboxRevision++;syncUnread();});
+  inbox.addEventListener('close',()=>{pickerState.reset();inboxRevision++;syncUnread();});
   const refreshUnread=()=>{syncUnread();if(inbox.open)renderInbox();};
   const uncovered=()=>queueMicrotask(refreshUnread);
+  $('chat-messages').addEventListener('scroll',scheduleSeen,{passive:true});window.addEventListener('resize',scheduleSeen);
   document.addEventListener('visibilitychange',refreshUnread);document.addEventListener('close',uncovered,true);window.addEventListener('focus',refreshUnread);
   $('account-button').onclick=()=>showAccount();$('inbox-tab').onclick=showInbox;
   if(!isPreview())void messaging.restore().then(value=>{state=value;renderAccount();if(pendingInvite)showAccount();}).catch(error=>{fail(error);if(pendingInvite)showAccount();}); else renderAccount();
-  window.addEventListener('pagehide',()=>{document.removeEventListener('visibilitychange',refreshUnread);document.removeEventListener('close',uncovered,true);window.removeEventListener('focus',refreshUnread);controller?.abort();messaging.destroy();});
+  window.addEventListener('pagehide',()=>{if(readFrame!==undefined)cancelAnimationFrame(readFrame);window.removeEventListener('resize',scheduleSeen);$('chat-messages').removeEventListener('scroll',scheduleSeen);receiptSettings.remove();document.removeEventListener('visibilitychange',refreshUnread);document.removeEventListener('close',uncovered,true);window.removeEventListener('focus',refreshUnread);controller?.abort();messaging.destroy();});
   return { messaging, state:()=>state, showAccount, showInbox, openChat, composeMessage, hideInbox:()=>inbox.hide(), closeAccount:()=>account.hide(), hideAccount:()=>account.hide(), onReady:listener=>readyListeners.add(listener), onState:listener=>{stateListeners.add(listener);return()=>stateListeners.delete(listener)} };
 }

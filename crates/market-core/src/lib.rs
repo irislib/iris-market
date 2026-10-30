@@ -192,8 +192,16 @@ impl State {
                 && !self.search_plan_applied
                 && !self.search_plan_locked,
             exchange_rates: self.rates.snapshot(listing::now()),
-            sats_display_price: self.rates.convert("1", "SATS", &self.settings.currency, listing::now()),
-            supported_currencies: rates::CURRENCIES.iter().map(|code| (*code).to_owned()).collect(),
+            sats_display_price: self.rates.convert(
+                "1",
+                "SATS",
+                &self.settings.currency,
+                listing::now(),
+            ),
+            supported_currencies: rates::CURRENCIES
+                .iter()
+                .map(|code| (*code).to_owned())
+                .collect(),
             local_curation: self
                 .local_curation
                 .as_ref()
@@ -240,7 +248,9 @@ impl State {
                                     text: m.text,
                                     mine: m.mine,
                                     created_at: m.created_at,
+                                    created_at_ms: m.created_at_ms,
                                     delivery: m.delivery,
+                                    reactions: m.reactions,
                                     order_id: m.order_id,
                                     cashu: m.cashu,
                                 })
@@ -286,14 +296,21 @@ impl Market {
         let snapshot = if state.profile_name_required || state.demo {
             mobile_push::PushSnapshot::default()
         } else {
-            state.messaging.as_ref().map(|m| m.push_snapshot().map_err(anyhow::Error::msg)).transpose()?.unwrap_or_default()
+            state
+                .messaging
+                .as_ref()
+                .map(|m| m.push_snapshot().map_err(anyhow::Error::msg))
+                .transpose()?
+                .unwrap_or_default()
         };
         Ok(serde_json::to_string(&snapshot)?)
     }
     pub fn ingest_push_payload(&self, payload: &str) -> Result<()> {
         let event = mobile_push::payload_event(payload).context("Invalid private notification")?;
         let mut state = self.state.lock().unwrap();
-        if state.profile_name_required || state.demo { return Ok(()); }
+        if state.profile_name_required || state.demo {
+            return Ok(());
+        }
         if let Some(messaging) = state.messaging.as_mut() {
             messaging.receive(&event).map_err(anyhow::Error::msg)?;
             state.revision += 1;
@@ -357,7 +374,15 @@ impl Market {
         authorization: Option<nostr::Event>,
         demo: bool,
     ) -> Result<Self> {
-        Self::open_identity_private(data_dir, data_dir, owner, owner_keys, device_keys, authorization, demo)
+        Self::open_identity_private(
+            data_dir,
+            data_dir,
+            owner,
+            owner_keys,
+            device_keys,
+            authorization,
+            demo,
+        )
     }
     /// The public database stays local; only private state may use a platform-shared directory.
     pub fn open_identity_private(
@@ -407,6 +432,14 @@ impl Market {
                 .map_err(anyhow::Error::msg)?,
             )
         };
+        if let Some(messaging) = messaging.as_mut() {
+            messaging
+                .set_receipt_preferences(
+                    settings.send_delivery_receipts,
+                    settings.send_read_receipts,
+                )
+                .map_err(anyhow::Error::msg)?;
+        }
         if let Some(messaging) = messaging.as_mut()
             && let Some(contact) = messaging
                 .registered_contact_event()
@@ -562,7 +595,9 @@ impl Market {
                 }
                 return self.curate(&api_key, true, test, expected, token);
             }
-            Command::Contact { author, listing_id } => return self.contact(&author, listing_id.as_deref()),
+            Command::Contact { author, listing_id } => {
+                return self.contact(&author, listing_id.as_deref());
+            }
             Command::AcceptInvite { invite } => return self.accept_invite(&invite),
             Command::LoadProfile { author } => return self.load_profile(Some(author)),
             Command::LoadProfileFollowers { author } => {
@@ -809,6 +844,14 @@ impl Market {
                 ai::validate(&settings.ai)?;
                 image_proxy::validate(&settings.image_proxy)?;
                 rates::validate_currency(&settings.currency)?;
+                if let Some(messaging) = s.messaging.as_mut() {
+                    messaging
+                        .set_receipt_preferences(
+                            settings.send_delivery_receipts,
+                            settings.send_read_receipts,
+                        )
+                        .map_err(anyhow::Error::msg)?;
+                }
                 let changed_relays = s.settings.relays != settings.relays;
                 s.store.save_settings(&settings)?;
                 s.cancel_remote_ai();
@@ -850,22 +893,45 @@ impl Market {
                         .map_err(anyhow::Error::msg)?,
                 );
             }
+            Command::ToggleReaction {
+                peer_id,
+                message_id,
+                emoji,
+            } => {
+                s.messaging
+                    .as_mut()
+                    .context("Leave Preview to react")?
+                    .toggle_reaction(&peer_id, &message_id, &emoji)
+                    .map_err(anyhow::Error::msg)?;
+                self.notify.notify_waiters();
+            }
             Command::MarkMessagesRead { message_ids } => {
                 if let Some(messaging) = s.messaging.as_mut() {
-                    messaging.mark_messages_read(&message_ids).map_err(anyhow::Error::msg)?;
+                    messaging
+                        .mark_messages_read(&message_ids)
+                        .map_err(anyhow::Error::msg)?;
+                    self.notify.notify_waiters();
                 }
             }
             Command::SetPushEnabled { enabled } => {
                 if let Some(messaging) = s.messaging.as_mut() {
-                    messaging.set_push_enabled(enabled).map_err(anyhow::Error::msg)?;
+                    messaging
+                        .set_push_enabled(enabled)
+                        .map_err(anyhow::Error::msg)?;
                 }
             }
             Command::MarkNotificationsPresented { event_ids } => {
                 if let Some(messaging) = s.messaging.as_mut() {
-                    messaging.mark_notifications_presented(&event_ids).map_err(anyhow::Error::msg)?;
+                    messaging
+                        .mark_notifications_presented(&event_ids)
+                        .map_err(anyhow::Error::msg)?;
                 }
             }
-            Command::SendMessage { peer_id, text, context } => {
+            Command::SendMessage {
+                peer_id,
+                text,
+                context,
+            } => {
                 s.messaging
                     .as_mut()
                     .context("Leave Preview to send messages")?

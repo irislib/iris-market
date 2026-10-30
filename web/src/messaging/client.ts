@@ -1,3 +1,4 @@
+import {rumorMilliseconds,messageMilliseconds} from '../message-timestamp.ts';
 import {contextTags,messageContext,orderContext,validMessageContext,type MessageContext} from '../message-context.ts';
 import { invitationBase } from '../asset-url.ts';
 import { validateUploadAuthorization } from '../upload-auth.ts';
@@ -9,6 +10,7 @@ import { createVault } from './vault.ts';
 import { createPrivateTransport, verifiedPrivateEvent } from './transport.ts';
 import { RemoteSigner } from './remote-signer.ts';
 import { authorizeSignerDevice, fetchSignerRoster, prepareSignerAuthorization, selectSignerRoster, validateSignerAuthorization } from './authorization.ts';
+import {createChatControls,applyChatControl,messageReactions,deliveryRank,type ReceiptPreferences,type ReactionSummary,type ChatControlMeta} from './chat-controls.ts';
 import { createOrderBook, isOrderMessage } from '../orders.ts';
 import type { Event, UnsignedEvent, VerifiedEvent } from 'nostr-tools';
 import type { NostrPublishContext, Rumor, OnEventMeta } from 'nostr-double-ratchet';
@@ -17,8 +19,8 @@ import type { PrivateTransport } from './transport.ts';
 import type { DeliveryPlace, DeliveryRequest, OrderListing, OrderPatch, OrderView } from '../orders.ts';
 type AccountMode='local'|'extension'|'linked';
 interface AccountRecord {owner:string;mode:AccountMode;deviceSecret:number[];ownerSecret?:number[];proof?:VerifiedEvent;installed?:boolean;freshOwner?:boolean;displayName?:string;profileEvent?:VerifiedEvent}
-export interface ChatMessage {id:string;text:string;mine:boolean;createdAt:number;expiresAt?:number;delivery:'queued'|'sent'|'received';orderId?:string;context?:MessageContext;system?:boolean}
-export interface MessagingState {status:string;error:string;password:boolean;ownerPubkey?:string;devicePubkey?:string;displayName?:string;pendingPublic:number;chatStatus:string;profileEvent?:VerifiedEvent;pendingListings:VerifiedEvent[];pendingReviews:VerifiedEvent[];orders:OrderView[];canSend:boolean;canSign:boolean;mode?:AccountMode;needsLogin:boolean;devices:{pubkey:string;current:boolean}[];conversations:{pubkey:string;messages:ChatMessage[]}[]}
+export interface ChatMessage {id:string;text:string;mine:boolean;createdAt:number;createdAtMs?:number;expiresAt?:number;delivery:'queued'|'sent'|'delivered'|'seen'|'received';reactions?:ReactionSummary[];_chat?:ChatControlMeta;orderId?:string;context?:MessageContext;system?:boolean}
+export interface MessagingState {receiptPreferences:ReceiptPreferences;status:string;error:string;password:boolean;ownerPubkey?:string;devicePubkey?:string;displayName?:string;pendingPublic:number;chatStatus:string;profileEvent?:VerifiedEvent;pendingListings:VerifiedEvent[];pendingReviews:VerifiedEvent[];orders:OrderView[];canSend:boolean;canSign:boolean;mode?:AccountMode;needsLogin:boolean;devices:{pubkey:string;current:boolean}[];conversations:{pubkey:string;messages:ChatMessage[]}[]}
 type AccountSigner=(event:UnsignedEvent)=>Event|Promise<Event>;
 interface BrowserSigner {getPublicKey():Promise<string>;signEvent:AccountSigner}
 interface MessagingOptions {developerMint?:string;getRelays?:()=>string[];onChange?:(state:MessagingState)=>void;vault?:Vault;transportFactory?:()=>PrivateTransport;extension?:()=>BrowserSigner|undefined}
@@ -61,7 +63,7 @@ export function messageProjection(rumor:Rumor, from:string, meta:OnEventMeta, ow
   const mine = meta?.isSelf === true || meta?.senderOwnerPubkey === owner;
   const pubkey = mine ? rumor.tags.find(tag => tag[0] === 'p')?.[1] ?? owner : meta?.senderOwnerPubkey ?? from;
   if (!HEX.test(pubkey) || !HEX.test(rumor.id)) return null;
-  return { pubkey, message: { id: rumor.id, text: rumor.content, mine, createdAt: rumor.created_at,
+  return { pubkey, message: { id: rumor.id, text: rumor.content, mine, createdAt: rumor.created_at,...(rumorMilliseconds(rumor)!==undefined?{createdAtMs:rumorMilliseconds(rumor)}:{}),
     ...(expiry ? { expiresAt: Number(expiry) } : {}), context:messageContext(rumor.tags), delivery: mine ? 'sent' : 'received' } };
 }
 
@@ -74,9 +76,11 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
   let publicQueue = new Map<string,VerifiedEvent>(), profilePatch:{name:string;picture?:string};
   let conversations = new Map<string,ChatMessage[]>();
   let orders:ReturnType<typeof createOrderBook>, syncingOrders:Promise<void>;
-  let messageWrites = Promise.resolve();
+  let controls:ReturnType<typeof createChatControls>,syncingControls:Promise<void>;
+  let messageWrites = Promise.resolve(),lastChatMs=0;
   const state = ():MessagingState => ({ status, error, password: !!savedStatus?.password,
     ownerPubkey: account?.owner, devicePubkey: runtime?.getState().currentDevicePubkey ?? (account?.deviceSecret ? getPublicKey(Uint8Array.from(account.deviceSecret)) : undefined),
+    receiptPreferences:controls?.preferences()??{delivered:true,seen:true},
     displayName: profilePatch?.name ?? account?.displayName, pendingPublic: publicQueue.size + (profilePatch ? 1 : 0), chatStatus,
     profileEvent: account?.profileEvent ? structuredClone(account.profileEvent) : undefined,
     pendingListings: [...publicQueue.values()].filter(event => event.kind === 30402).map(event => structuredClone(event)),
@@ -86,7 +90,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
     canSign: !!signer && status === 'ready', mode: account?.mode, needsLogin: status === 'locked' && !account?.ownerSecret,
     devices: runtime?.getState().registeredDevices.map(device => ({ pubkey: device.identityPubkey,
       current: device.identityPubkey === runtime.getState().currentDevicePubkey })) ?? [],
-    conversations: [...conversations].map(([pubkey, messages]) => ({ pubkey, messages: messages.filter(message => !message.expiresAt || message.expiresAt > now()).map(message => ({ ...message })) })) });
+    conversations: [...conversations].map(([pubkey, messages]) => ({ pubkey, messages: messages.filter(message => !message.expiresAt || message.expiresAt > now()).map(({_chat,...message}) => ({ ...message,reactions:messageReactions({...message,_chat},account?.owner) })) })) });
   const validOrderContext=(id:string,peer:string)=>{
     const order=orders?.state().find(order=>order.id===id);
     if(!order)return false;
@@ -117,11 +121,18 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
       const previous = conversations.get(pubkey) ?? [];
       const index = previous.findIndex(existing => existing.id === message.id);
       const next = [...previous];
-      if (index === -1) next.push(message); else next[index] = { ...next[index], ...message };
-      next.sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+      let combined=index<0?structuredClone(message):{...next[index],...message,_chat:next[index]._chat};
+      if(index>=0&&message.mine&&deliveryRank(next[index].delivery)>deliveryRank(combined.delivery))combined.delivery=next[index].delivery;
+      const pending=controls?.pendingFor(pubkey,message.id)??[];
+      for(const control of pending)combined=applyChatControl(combined,control,account.owner,pubkey);
+      if(index===-1)next.push(combined);else next[index]=combined;
+      // Stable sorting preserves existing order when legacy timestamps tie.
+      next.sort((a, b) => messageMilliseconds(a)-messageMilliseconds(b));
+      if(combined.mine)lastChatMs=Math.max(lastChatMs,messageMilliseconds(combined));
       if (next.length > 1000) throw new Error('This conversation has reached its local storage limit.');
       await vault.put(`market/messages/${pubkey}`, next);
       check(attempt); conversations.set(pubkey, next); notify();
+      await controls?.settled(pending);
     });
     messageWrites = operation.catch(() => {});
     return operation;
@@ -174,7 +185,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
         await orders?.sent(innerEventId, context?.recipientDeviceOwnerPubkey ?? context?.recipientOwnerPubkey);
         for (const [peer, messages] of conversations) {
           const message = messages.find(item => item.id === innerEventId && item.mine);
-          if (message && (!message.orderId || (context?.recipientDeviceOwnerPubkey ?? context?.recipientOwnerPubkey)===peer)) await saveMessage(peer, { ...message, delivery: 'sent' });
+          if (message && (context?.recipientDeviceOwnerPubkey ?? context?.recipientOwnerPubkey)===peer) await saveMessage(peer, { ...message, delivery: 'sent' });
         }
       }, onError: report,
     });
@@ -227,8 +238,18 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
       onPublishError: report, appKeysFetchTimeoutMs: 6000, appKeysFastTimeoutMs: 1500,
     });
     runtime.onStateChange(() => { if (attempt === generation) notify(); });
-    runtime.onDurableSessionEvent([14], async (rumor, from, meta) => {
+    runtime.onDurableSessionEvent([14,7,15], async (rumor, from, meta) => {
       check(attempt);
+      if(rumor.kind===7||rumor.kind===15){
+        const sender=meta?.senderOwnerPubkey;if(!HEX.test(sender??''))return;
+        const targets=rumor.tags.filter(t=>t[0]==='e').map(t=>t[1]);
+        const selfPeer=rumor.tags.find(t=>t[0]==='p')?.[1]??[...conversations].find(([,messages])=>messages.some(message=>targets.includes(message.id)))?.[0];
+        const peer=sender===account.owner?selfPeer:sender;
+        if(!peer||!conversations.has(peer))return;
+        const accepted=await controls.receive(rumor,sender,peer);
+        for(const target of new Set(accepted.map(c=>c.target))){const message=conversations.get(peer)?.find(m=>m.id===target);if(message)await saveMessage(peer,message);}
+        return;
+      }
       const projection = messageProjection(rumor, from, meta, account.owner);
       if (isOrderMessage(rumor)) {
         // A transport/device key or a claimed JSON field never grants order roles.
@@ -236,7 +257,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
         const senderDevice=meta?.senderDevicePubkey??meta?.fromDeviceId;
         const accepted = projection && HEX.test(sender ?? '') ? await orders?.receive(rumor, sender, senderDevice) : null;
         if(accepted)await pruneOrderQueues();
-        if (accepted && !accepted.location) await saveMessage(projection.pubkey, { ...projection.message, orderId: accepted.orderId,context:orderContext(accepted.orderId),system:true });
+        if (accepted && !accepted.location) {await saveMessage(projection.pubkey, { ...projection.message, orderId: accepted.orderId,context:orderContext(accepted.orderId),system:true });if(!projection.message.mine&&meta?.senderOwnerPubkey===projection.pubkey)await sendReceipt(projection.pubkey,[projection.message.id],'delivered').catch(report);}
         return;
       }
       if (projection) {
@@ -244,6 +265,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
         if(context?.order_id&&!validOrderContext(context.order_id,projection.pubkey))delete projection.message.context;
         projection.message.orderId=projection.message.context?.order_id;
         await saveMessage(projection.pubkey, projection.message);
+        if(!projection.message.mine&&meta?.senderOwnerPubkey===projection.pubkey)await sendReceipt(projection.pubkey,[projection.message.id],'delivered').catch(report);
       }
     });
     for (const key of await vault.list('market/messages/')) conversations.set(key.slice('market/messages/'.length), await vault.get<ChatMessage[]>(key));
@@ -347,14 +369,27 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
       } else await startRuntime();
       check(attempt);
       for(const pubkey of conversations.keys())void runtime?.setupUser(pubkey).catch(report);
-      void syncOrders();
+      void syncOrders();void syncControls();
     })().catch(()=>{if(attempt===generation&&status==='ready'){chatStatus='pending';notify();}}).finally(()=>{if(attempt===generation)activation=undefined;});
     return activation;
   }
   function scheduleBackground() {
     if(status!=='ready'||controller?.signal.aborted)return;
-    void activateChat();void syncPublic();void syncProfile();void syncOrders();
+    void activateChat();void syncPublic();void syncProfile();void syncOrders();void syncControls();
     if(!retryTimer){retryTimer=setTimeout(()=>{retryTimer=undefined;scheduleBackground();},15000);retryTimer.unref?.();}
+  }
+  async function sendReceipt(peer:string,ids:string[],type:'delivered'|'seen'){
+    if(!controls?.preferences()[type])return;
+    const eligible=ids.filter(id=>{const message=conversations.get(peer)?.find(m=>m.id===id);return message&&!message.mine&&(message._chat?.sentReceipt!=='seen'&&(type==='seen'||message._chat?.sentReceipt!=='delivered'));}).slice(0,128);
+    if(!eligible.length)return;await controls.receipt(peer,eligible,type);
+    for(const id of eligible){const message=conversations.get(peer)?.find(m=>m.id===id);if(message)await saveMessage(peer,message);}
+    queueMicrotask(()=>void syncControls());
+  }
+  async function syncControls(){
+    if(syncingControls||!controls||!state().canSend)return syncingControls;
+    const attempt=generation,book=controls,activeRuntime=runtime,attempted=new Set<string>();
+    syncingControls=(async()=>{for(const job of book.jobs()){check(attempt);attempted.add(job.rumor.id);await activeRuntime.sendEvent(job.peer,job.rumor);check(attempt);await book.handed(job.rumor.id);}})().catch(report).finally(()=>{if(attempt===generation){syncingControls=undefined;if(book.jobs().some(job=>!attempted.has(job.rumor.id)))queueMicrotask(()=>void syncControls());}});
+    return syncingControls;
   }
   async function syncOrders() {
     if(syncingOrders || !orders || !state().canSend)return syncingOrders;
@@ -371,7 +406,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
           // background discovery/encryption step. Retries reuse its ID and tags.
           await activeRuntime.sendEvent(job.recipient,job.rumor);check(attempt);
           await book.handed(job.id);
-          if(job.action!=='location')await saveMessage(job.recipient,{id:job.id,text:job.rumor.content,mine:true,createdAt:job.rumor.created_at,delivery:book.jobs().some(item=>item.id===job.id)?'queued':'sent',orderId:job.orderId,context:orderContext(job.orderId),system:true});
+          if(job.action!=='location')await saveMessage(job.recipient,{id:job.id,text:job.rumor.content,mine:true,createdAt:job.rumor.created_at,...(rumorMilliseconds(job.rumor)!==undefined?{createdAtMs:rumorMilliseconds(job.rumor)}:{}),delivery:book.jobs().some(item=>item.id===job.id)?'queued':'sent',orderId:job.orderId,context:orderContext(job.orderId),system:true});
         }catch{check(attempt);report();}
       }
     })().catch(()=>{}).finally(()=>{if(attempt===generation){syncingOrders=undefined;if(book.jobs().some(job=>!job.handed&&!attempted.has(job.id)))queueMicrotask(()=>void syncOrders());}});
@@ -389,10 +424,12 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
       signer=enrollmentSigner=draft=>finalizeEvent(draft,ownerSecret);
     }
     controller??=new AbortController();transport??=transportFactory();
+    controls=createChatControls({vault,owner:account.owner,device:getPublicKey(Uint8Array.from(account.deviceSecret)),check:()=>check(attempt)});await controls.load();check(attempt);
     conversations.clear();
     for(const key of await vault.list('market/messages/'))conversations.set(key.slice('market/messages/'.length),await vault.get<ChatMessage[]>(key));
     orders=createOrderBook({vault,developerMint,owner:account.owner,device:getPublicKey(Uint8Array.from(account.deviceSecret)),notify,check:()=>check(attempt)});
     await orders.load();check(attempt);
+    for(const [peer,messages] of conversations)for(const message of messages)if(controls.pendingFor(peer,message.id).length)await saveMessage(peer,message);
     publicQueue=new Map();
     for(const key of await vault.list('market/public/')){const event=verifiedPrivateEvent(await vault.get(key));if(event&&event.pubkey===account.owner&&(publicAccountEvent(event)||(event.kind===37368&&event.id===account.proof?.id)))publicQueue.set(event.id,event);}
     profilePatch=await vault.get<{name:string;picture?:string}>('market/profile-patch');
@@ -467,7 +504,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
       const closing = outbox?.close(); runtime?.close(); transport?.close();
       await closing; await messageWrites; await vault.flush();
       ownerSecret?.fill(0); runtime = outbox = transport = ownerSecret = undefined;
-      await orders?.flush();orders=undefined;syncingOrders=undefined;
+      await orders?.flush();await controls?.flush();controls=undefined;syncingControls=undefined;orders=undefined;syncingOrders=undefined;
       authorizationChecked = false; conversations.clear();activation=syncing=syncingProfile=undefined;clearTimeout(retryTimer);retryTimer=undefined;controller=undefined;signer=enrollmentSigner=undefined;
       return openLocal();
     },
@@ -510,11 +547,20 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
       if (!state().canSend) throw new Error('This device is not authorized to send.');
       if (!HEX.test(pubkey) || typeof text !== 'string' || !text.trim() || text.length > 16_000) throw new Error('Write a message of up to 16,000 characters.');
       if(context&&(!validMessageContext(context)||context.order_id&&!validOrderContext(context.order_id,pubkey)))throw new Error('This order is not shared with this person.');
-      const rumor = await runtime.sendMessage(pubkey, text, {tags:contextTags(context)});
+      if(!conversations.has(pubkey)){await vault.put(`market/messages/${pubkey}`,[]);conversations.set(pubkey,[]);}
+      lastChatMs=Math.max(Date.now(),lastChatMs+1,...(conversations.get(pubkey)??[]).filter(message=>message.mine).map(message=>messageMilliseconds(message)+1));
+      const rumor = await runtime.sendMessage(pubkey, text, {tags:[...contextTags(context),['ms',String(lastChatMs)]]});
       const diagnostics = await runtime.queuedMessageDiagnostics(rumor.id);
-      await saveMessage(pubkey, { id: rumor.id, text, context,orderId:context?.order_id,mine: true, createdAt: rumor.created_at, delivery: diagnostics.length ? 'queued' : 'sent' });
+      await saveMessage(pubkey, { id: rumor.id, text, context,orderId:context?.order_id,mine: true, createdAt: rumor.created_at,...(rumorMilliseconds(rumor)!==undefined?{createdAtMs:rumorMilliseconds(rumor)}:{}), delivery: diagnostics.some(entry=>entry.ownerPubkey===pubkey) ? 'queued' : 'sent' });
       return rumor.id;
     },
+    async react(peer:string,messageId:string,emoji:string){
+      requireReady();if(!state().canSend)throw Error('This device is not authorized to send.');
+      const message=conversations.get(peer)?.find(m=>m.id===messageId);if(!message)throw Error('Message not found in this conversation.');
+      await controls.reaction(peer,message,emoji);await saveMessage(peer,message);scheduleBackground();
+    },
+    async markSeen(peer:string,messageIds:string[]){requireReady();if(!HEX.test(peer)||!Array.isArray(messageIds)||messageIds.length>128)throw Error('Choose visible messages in this conversation.');await sendReceipt(peer,messageIds,'seen');},
+    async setReceiptPreferences(patch:Partial<ReceiptPreferences>){requireReady();await controls.setPreferences(patch);notify();},
     async requestOrder(listing:OrderListing, options?:{quantity?:number;note?:string;deliveryRequest?:DeliveryRequest}) { requireReady();const order=await orders.request(listing,options);scheduleBackground();return order; },
     async requestDelivery(sourceOrderId:string, serviceListing:OrderListing, destination:DeliveryPlace) { requireReady();const order=await orders.requestDelivery(sourceOrderId,serviceListing,destination);scheduleBackground();return order; },
     async updateOrder(id:string, patch:OrderPatch) { requireReady();const order=await orders.update(id,patch);await pruneOrderQueues();scheduleBackground();return order; },
@@ -565,9 +611,9 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
     async lock() {
       generation++; clearTimeout(retryTimer);retryTimer=undefined;enrollmentRemote?.close();enrollmentRemote=undefined;activation=syncing=syncingProfile=undefined; postingRemote?.close(); postingTransport?.close(); postingRemote = postingTransport = undefined; controller?.abort(); const closing = outbox?.close(); runtime?.close(); transport?.close();
       await closing;
-      await messageWrites; await orders?.flush(); await vault.flush(); vault.lock();
+      await messageWrites; await orders?.flush();await controls?.flush(); await vault.flush(); vault.lock();
       ownerSecret?.fill(0); account = runtime = transport = outbox = signer = ownerSecret = undefined;
-      conversations.clear();orders=undefined;syncingOrders=undefined;publicQueue.clear();profilePatch=undefined;enrollmentSigner=undefined;controller=undefined;authorizationChecked = false;status='locked';chatStatus='connecting';error='';notify();
+      conversations.clear();lastChatMs=0;controls=undefined;syncingControls=undefined;orders=undefined;syncingOrders=undefined;publicQueue.clear();profilePatch=undefined;enrollmentSigner=undefined;controller=undefined;authorizationChecked = false;status='locked';chatStatus='connecting';error='';notify();
     },
     async destroy() { await this.lock(); },
   };

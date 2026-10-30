@@ -5,7 +5,9 @@
 //! use fresh, send-only anonymous connections, never those used for public Market
 //! listings or for receiving. Only acknowledge an outbound event after a relay OK.
 
+mod controls;
 pub mod mobile_push;
+pub use controls::Reaction;
 
 use std::{
     collections::BTreeMap,
@@ -56,7 +58,11 @@ pub struct Message {
     pub text: String,
     pub mine: bool,
     pub created_at: u64,
+    #[serde(default)]
+    pub created_at_ms: u64,
     pub delivery: String,
+    #[serde(default)]
+    pub reactions: Vec<Reaction>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub order_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -153,6 +159,10 @@ struct PendingContactMessage {
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct PrivateState {
+    #[serde(default)]
+    controls: controls::Controls,
+    #[serde(default)]
+    last_message_ms: u64,
     conversations: BTreeMap<String, Conversation>,
     outbox: BTreeMap<String, QueuedPublish>,
     seen: Vec<String>,
@@ -530,7 +540,9 @@ impl Messaging {
                 // visible messages, but never retry a removed device's copies.
                 let peer = event.pubkey.to_hex();
                 this.state.outbox.retain(|_, queued| queued.peer_id != peer);
-                this.state.pending_contact_messages.retain(|_, queued| queued.peer_id != peer);
+                this.state
+                    .pending_contact_messages
+                    .retain(|_, queued| queued.peer_id != peer);
                 if let Some(thread) = this.state.conversations.get_mut(&peer) {
                     for message in &mut thread.messages {
                         if message.mine && message.delivery == "pending" {
@@ -567,18 +579,40 @@ impl Messaging {
         self.transaction(|this| this.ensure_conversation(&peer.to_hex()))
     }
 
+    fn next_message_millis(&mut self) -> u64 {
+        let clock = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            .min(u64::MAX as u128) as u64;
+        let next = clock.max(self.state.last_message_ms.saturating_add(1));
+        self.state.last_message_ms = next;
+        next
+    }
+
     pub fn send(&mut self, peer_id: &str, text: &str) -> MessagingResult<()> {
         self.send_with_context(peer_id, text, None)
     }
 
-    pub fn send_with_context(&mut self, peer_id: &str, text: &str, context: Option<crate::conversation_context::MessageContext>) -> MessagingResult<()> {
+    pub fn send_with_context(
+        &mut self,
+        peer_id: &str,
+        text: &str,
+        context: Option<crate::conversation_context::MessageContext>,
+    ) -> MessagingResult<()> {
         self.require_authorization()?;
-        if let Some(value) = &context { value.validate().map_err(str::to_string)?; }
+        if let Some(value) = &context {
+            value.validate().map_err(str::to_string)?;
+        }
 
         let peer = PublicKey::parse(peer_id).map_err(|_| "Invalid conversation".to_string())?;
         let id = peer.to_hex();
         if let Some(order_id) = context.as_ref().and_then(|c| c.order_id.as_ref()) {
-            if !self.state.orders.context_participant(order_id, &self.owner.to_hex(), &id) {
+            if !self
+                .state
+                .orders
+                .context_participant(order_id, &self.owner.to_hex(), &id)
+            {
                 return Err("This order is not shared with this person".into());
             }
         }
@@ -596,31 +630,17 @@ impl Messaging {
             if this.state.outbox.len() + this.state.pending_contact_messages.len() >= MAX_OUTBOX {
                 return Err("Connect to send queued messages before sending more".into());
             }
-            let now = now();
+            let millis = this.next_message_millis();
+            let now = millis / 1000;
+            let mut rumor = UnsignedEvent::from_json(serde_json::json!({"pubkey":this.keys.public_key(),"kind":14,"created_at":now,"content":text,"tags":[["p",id],["ms",millis.to_string()]]}).to_string()).map_err(protocol_error)?;
+            if let Some(value) = &context { rumor.tags.push(value.tag()?); }
+            rumor.ensure_id();
             if !this.contact_recipient_ready(peer) {
-                // The pinned protocol requires a recipient list before accepting
-                // a send. Save the exact rumor locally, encrypted and bounded,
-                // until signed discovery can hand it to that unchanged engine.
-                let mut millis = SystemTime::now().duration_since(UNIX_EPOCH).map_err(protocol_error)?.as_millis() as u64;
-                let rumor = loop {
-                    let mut rumor = UnsignedEvent::from_json(serde_json::json!({"pubkey":this.owner,"kind":14,"created_at":now,"content":text,"tags":[["p",id],["ms",millis.to_string()]]}).to_string()).map_err(protocol_error)?;
-                    if let Some(value) = &context { rumor.tags.push(value.tag()?); }
-                    rumor.ensure_id();
-                    let message_id = rumor.id.as_ref().ok_or("Private message identity is unavailable")?.to_hex();
-                    if !this.state.conversations.values().any(|thread| thread.messages.iter().any(|message| message.id == message_id)) { break rumor; }
-                    millis = millis.saturating_add(1);
-                };
                 let message_id = rumor.id.as_ref().ok_or("Private message identity is unavailable")?.to_hex();
                 this.state.pending_contact_messages.insert(message_id.clone(), PendingContactMessage { peer_id: id.clone(), rumor });
-                return this.append(&id, Message { id:message_id, order_id:context.as_ref().and_then(|value|value.order_id.clone()), context, text, mine:true, created_at:now, delivery:"pending".into(), cashu:None });
+                return this.append(&id, Message { id:message_id, order_id:context.as_ref().and_then(|value|value.order_id.clone()), context, text, mine:true, created_at:now, created_at_ms:millis, delivery:"pending".into(), cashu:None, reactions:Vec::new() });
             }
-            let result = if let Some(value) = &context {
-                let mut rumor = UnsignedEvent::from_json(serde_json::json!({"pubkey":this.keys.public_key(),"kind":14,"created_at":now,"content":text,"tags":[["p",id],["ms",(now * 1000).to_string()]]}).to_string()).map_err(protocol_error)?;
-                rumor.tags.push(value.tag()?);
-                this.engine.send_direct_unsigned_event(peer, &id, rumor, UnixSeconds(now)).map_err(protocol_error)?
-            } else {
-                this.engine.send_direct_text(peer, &id, &text, None, UnixSeconds(now)).map_err(protocol_error)?
-            };
+            let result = this.engine.send_direct_unsigned_event(peer, &id, rumor, UnixSeconds(now)).map_err(protocol_error)?;
             this.queue_effects(result.effects)?;
             this.append(
                 &id,
@@ -631,8 +651,10 @@ impl Messaging {
                     text,
                     mine: true,
                     created_at: now,
+                    created_at_ms: millis,
                     delivery: "pending".into(),
                     cashu: None,
+                reactions: Vec::new(),
                 },
             )?;
             Ok(())
@@ -662,7 +684,11 @@ impl Messaging {
             let owner =
                 if invite.owner_public_key.is_some() || invite.inviter_owner_pubkey.is_some() {
                     invite_owner(&invite)?
-                } else if self.state.conversations.contains_key(&event.pubkey.to_hex()) {
+                } else if self
+                    .state
+                    .conversations
+                    .contains_key(&event.pubkey.to_hex())
+                {
                     // A locally requested legacy owner may sign its own public
                     // invitation without a separate device-roster announcement.
                     event.pubkey
@@ -683,9 +709,12 @@ impl Messaging {
                 };
             if let Some(heads) = self.state.authorization_heads.get(&owner.to_hex()) {
                 let mut verified = VerifiedAppKeysIndex::default();
-                if heads.len() != 1 || verified.ingest(heads[0].clone(), now()).is_err()
+                if heads.len() != 1
+                    || verified.ingest(heads[0].clone(), now()).is_err()
                     || verified.membership(owner, event.pubkey) != DeviceMembership::Authorized
-                { return Err("Device invitation is not authorized by its owner".into()); }
+                {
+                    return Err("Device invitation is not authorized by its owner".into());
+                }
             }
             if owner != self.owner
                 && event.pubkey == owner
@@ -695,7 +724,9 @@ impl Messaging {
             {
                 // Reuse signature, invitation ownership, roster/revocation and
                 // local authorization checks; never treat discovery as approval.
-                return self.accept_public_contact_event(event, &owner.to_hex()).map(|_| ());
+                return self
+                    .accept_public_contact_event(event, &owner.to_hex())
+                    .map(|_| ());
             }
             if (owner != self.owner && !self.state.conversations.contains_key(&owner.to_hex()))
                 || !self
@@ -767,11 +798,16 @@ impl Messaging {
             .has_due_pending_retry_work(iris_chat_protocol::NdrUnixSeconds(now()))
             && !self.state.orders.jobs.iter().any(|job| !job.handed)
             && self.state.pending_invites.is_empty()
-            && !self.state.pending_contact_messages.values().any(|queued| PublicKey::from_hex(&queued.peer_id).is_ok_and(|peer| self.contact_recipient_ready(peer)))
+            && !self.has_control_work()
+            && !self.state.pending_contact_messages.values().any(|queued| {
+                PublicKey::from_hex(&queued.peer_id)
+                    .is_ok_and(|peer| self.contact_recipient_ready(peer))
+            })
         {
             return Ok(());
         }
         self.transaction(|this| {
+            this.send_control_jobs()?;
             this.retry_invitations()?;
             this.send_pending_contacts()?;
             this.send_order_jobs()?;
@@ -788,39 +824,77 @@ impl Messaging {
 
     fn contact_recipient_ready(&self, peer: PublicKey) -> bool {
         let snapshot = self.engine.session_manager_snapshot();
-        let Some(user) = snapshot.users.iter().find(|user| user.owner_pubkey.to_bytes() == peer.to_bytes()) else { return false; };
-        let Some(roster) = &user.roster else { return false; };
+        let Some(user) = snapshot
+            .users
+            .iter()
+            .find(|user| user.owner_pubkey.to_bytes() == peer.to_bytes())
+        else {
+            return false;
+        };
+        let Some(roster) = &user.roster else {
+            return false;
+        };
         let verified_devices = self.engine.known_device_identity_pubkeys_for_owner(peer);
         let mut signed = VerifiedAppKeysIndex::default();
-        let has_signed_heads = if let Some(heads) = self.state.authorization_heads.get(&peer.to_hex()) {
-            if heads.len() != 1 || signed.ingest(heads[0].clone(), now()).is_err() { return false; }
-            true
-        } else { false };
+        let has_signed_heads =
+            if let Some(heads) = self.state.authorization_heads.get(&peer.to_hex()) {
+                if heads.len() != 1 || signed.ingest(heads[0].clone(), now()).is_err() {
+                    return false;
+                }
+                true
+            } else {
+                false
+            };
         // Preserve prepared legacy private-invitation handshakes, even before
         // their roster appears in the engine's signed-device projection. A
         // locally opened unknown profile has neither this roster nor a target.
         user.devices.iter().any(|device| {
             let key = PublicKey::from_slice(&device.device_pubkey.to_bytes()).ok();
-            device.authorized && !device.is_stale
-                && roster.devices().iter().any(|entry| entry.device_pubkey == device.device_pubkey)
-                && key.is_some_and(|key| if has_signed_heads {
-                    signed.membership(peer, key) == DeviceMembership::Authorized
-                } else { key == peer || verified_devices.contains(&key) })
-                && (device.public_invite.is_some() || device.active_session.is_some() || !device.inactive_sessions.is_empty())
+            device.authorized
+                && !device.is_stale
+                && roster
+                    .devices()
+                    .iter()
+                    .any(|entry| entry.device_pubkey == device.device_pubkey)
+                && key.is_some_and(|key| {
+                    if has_signed_heads {
+                        signed.membership(peer, key) == DeviceMembership::Authorized
+                    } else {
+                        key == peer || verified_devices.contains(&key)
+                    }
+                })
+                && (device.public_invite.is_some()
+                    || device.active_session.is_some()
+                    || !device.inactive_sessions.is_empty())
         })
     }
 
     fn send_pending_contacts(&mut self) -> MessagingResult<()> {
-        if !self.can_send() { return Ok(()); }
+        if !self.can_send() {
+            return Ok(());
+        }
         for (id, queued) in self.state.pending_contact_messages.clone() {
-            if self.state.outbox.len() >= MAX_OUTBOX.saturating_sub(16) { break; }
+            if self.state.outbox.len() >= MAX_OUTBOX.saturating_sub(16) {
+                break;
+            }
             let peer = PublicKey::from_hex(&queued.peer_id).map_err(protocol_error)?;
-            if !self.contact_recipient_ready(peer) { continue; }
+            if !self.contact_recipient_ready(peer) {
+                continue;
+            }
             if let Some(context) = crate::conversation_context::from_rumor(&queued.rumor)
                 && let Some(order) = context.order_id
-                && !self.state.orders.context_participant(&order, &self.owner.to_hex(), &queued.peer_id)
-            { continue; }
-            let result = self.engine.send_direct_unsigned_event(peer, &queued.peer_id, queued.rumor, UnixSeconds(now())).map_err(protocol_error)?;
+                && !self.state.orders.context_participant(
+                    &order,
+                    &self.owner.to_hex(),
+                    &queued.peer_id,
+                )
+            {
+                continue;
+            }
+            let result = self
+                .engine
+                .send_direct_unsigned_event(peer, &queued.peer_id, queued.rumor, UnixSeconds(now()))
+                .map_err(protocol_error)?;
             self.queue_effects(result.effects)?;
             self.state.pending_contact_messages.remove(&id);
         }
@@ -836,6 +910,7 @@ impl Messaging {
             .collect::<Vec<_>>();
         for conversation in &mut items {
             for message in &mut conversation.messages {
+                message.reactions = self.reactions_for(&conversation.id, &message.id);
                 let (text, payment) = cashu_content(&message.text);
                 message.text = text;
                 if message.cashu.is_none() {
@@ -846,8 +921,8 @@ impl Messaging {
         items.sort_by(|a, b| {
             b.messages
                 .last()
-                .map(|m| m.created_at)
-                .cmp(&a.messages.last().map(|m| m.created_at))
+                .map(message_sort_millis)
+                .cmp(&a.messages.last().map(message_sort_millis))
                 .then(a.id.cmp(&b.id))
         });
         items
@@ -908,17 +983,22 @@ impl Messaging {
             }
             self.ensure_conversation(&job.recipient)?;
             if job.action != "location" {
+                let created_at_ms = message_millis(&job.rumor);
                 self.append(
                     &job.recipient,
                     Message {
                         id: job.id,
-                        context: Some(crate::conversation_context::MessageContext::for_order(&job.order_id)),
+                        context: Some(crate::conversation_context::MessageContext::for_order(
+                            &job.order_id,
+                        )),
                         text: job.rumor.content,
                         mine: true,
                         created_at: job.rumor.created_at.as_secs(),
+                        created_at_ms,
                         delivery: "pending".into(),
                         order_id: Some(job.order_id),
                         cashu: None,
+                        reactions: Vec::new(),
                     },
                 )?;
             }
@@ -1120,7 +1200,7 @@ impl Messaging {
                         .iter_mut()
                         .find(|message| message.id == inner_id)
                 {
-                    message.delivery = "sent".into();
+                    controls::advance_delivery(message, "sent");
                 }
             }
             Ok(())
@@ -1209,10 +1289,9 @@ impl Messaging {
                 "Conversation storage limit reached; existing messages were preserved".into(),
             );
         }
-        thread.messages.push(message);
-        thread
-            .messages
-            .sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
+        thread.messages.push(message.clone());
+        thread.messages.sort_by_key(message_sort_millis);
+        self.controls_after_append(peer, &message)?;
         Ok(())
     }
 
@@ -1290,13 +1369,70 @@ impl Messaging {
         inner
             .verify_id()
             .map_err(|_| "Invalid private message identity".to_string())?;
-        if inner.kind != Kind::from(14) {
-            return Ok(());
-        }
         // Iris Chat JS writes the authenticated device key into kind-14 rumors.
         // The shared engine has already resolved that device to its signed owner.
         if inner.pubkey != message.sender && Some(inner.pubkey) != message.sender_device {
             return Err("Private message author does not match the authenticated sender".into());
+        }
+        if matches!(inner.kind.as_u16(), 7 | 15) {
+            let device = message.sender_device.unwrap_or(message.sender);
+            if device != message.sender
+                && !self
+                    .engine
+                    .owner_device_binding_is_verified(message.sender, device)
+            {
+                return Err(
+                    "Private control device is not bound to its authenticated owner".into(),
+                );
+            }
+            if let Some(heads) = self.state.authorization_heads.get(&message.sender.to_hex()) {
+                let mut signed = VerifiedAppKeysIndex::default();
+                if heads.len() != 1
+                    || signed.ingest(heads[0].clone(), now()).is_err()
+                    || signed.membership(message.sender, device) != DeviceMembership::Authorized
+                {
+                    return Err("Private control device is not authorized".into());
+                }
+            }
+            let peer = if message.sender == self.owner {
+                message.conversation_owner.or_else(|| {
+                    let targets = inner
+                        .tags
+                        .iter()
+                        .filter(|tag| tag.as_slice().first().is_some_and(|key| key == "e"))
+                        .filter_map(|tag| tag.as_slice().get(1))
+                        .collect::<Vec<_>>();
+                    if targets.len() != 1 {
+                        return None;
+                    }
+                    let peers = self
+                        .state
+                        .conversations
+                        .values()
+                        .filter(|thread| {
+                            thread
+                                .messages
+                                .iter()
+                                .any(|stored| stored.id == *targets[0])
+                        })
+                        .filter_map(|thread| PublicKey::from_hex(&thread.id).ok())
+                        .collect::<Vec<_>>();
+                    if peers.len() == 1 {
+                        Some(peers[0])
+                    } else {
+                        None
+                    }
+                })
+            } else {
+                Some(message.sender)
+            };
+            if let Some(peer) = peer {
+                return self.accept_control(&peer.to_hex(), &message.sender.to_hex(), &inner);
+            }
+            return Ok(());
+        }
+        if inner.kind != Kind::from(14) {
+            return Ok(());
         }
         if inner.content.len() > MAX_MESSAGE_BYTES {
             return Err("Received message is too long".into());
@@ -1309,7 +1445,16 @@ impl Messaging {
         };
         let id = inner.id.ok_or("Private message has no ID")?.to_hex();
         let mut context = crate::conversation_context::from_rumor(&inner);
-        if context.as_ref().and_then(|c| c.order_id.as_ref()).is_some_and(|id| !self.state.orders.context_participant(id, &self.owner.to_hex(), &peer.to_hex())) {
+        if context
+            .as_ref()
+            .and_then(|c| c.order_id.as_ref())
+            .is_some_and(|id| {
+                !self
+                    .state
+                    .orders
+                    .context_participant(id, &self.owner.to_hex(), &peer.to_hex())
+            })
+        {
             context = None;
         }
         let order_id = if crate::orders::is_order_message(&inner) {
@@ -1326,23 +1471,28 @@ impl Messaging {
             if location {
                 return Ok(());
             }
-            context = Some(crate::conversation_context::MessageContext::for_order(&order_id));
+            context = Some(crate::conversation_context::MessageContext::for_order(
+                &order_id,
+            ));
             Some(order_id)
         } else {
             context.as_ref().and_then(|c| c.order_id.clone())
         };
+        let created_at_ms = message_millis(&inner);
         let stored = Message {
-                id,
-                context,
-                // Retain the exact received text encrypted, including additional
-                // payment tokens. conversations() hides bearer text in the UI.
-                text: inner.content,
-                mine,
-                created_at: inner.created_at.as_secs(),
-                delivery: if mine { "sent" } else { "received" }.into(),
-                order_id,
-                cashu: None,
-            };
+            id,
+            context,
+            // Retain the exact received text encrypted, including additional
+            // payment tokens. conversations() hides bearer text in the UI.
+            text: inner.content,
+            mine,
+            created_at: inner.created_at.as_secs(),
+            created_at_ms,
+            delivery: if mine { "sent" } else { "received" }.into(),
+            order_id,
+            cashu: None,
+            reactions: Vec::new(),
+        };
         self.append(&peer.to_hex(), stored.clone())?;
         // Optional notification caching must never roll back a valid private message.
         let _ = self.cache_notification(message.event_id.as_deref(), &peer.to_hex(), &stored);
@@ -1559,5 +1709,154 @@ impl StorageAdapter for EncryptedStore {
             .into_iter()
             .filter(|key| key.starts_with(prefix))
             .collect())
+    }
+}
+
+fn message_sort_millis(message: &Message) -> u64 {
+    if message.created_at_ms == 0 {
+        message.created_at.saturating_mul(1000)
+    } else {
+        message.created_at_ms
+    }
+}
+fn message_millis(rumor: &UnsignedEvent) -> u64 {
+    let values = rumor
+        .tags
+        .iter()
+        .filter(|tag| tag.as_slice().first().is_some_and(|key| key == "ms"))
+        .collect::<Vec<_>>();
+    if values.len() == 1 && values[0].as_slice().len() == 2 {
+        if let Ok(ms) = values[0].as_slice()[1].parse::<u64>() {
+            // Preserve private subsecond precision; malformed/implausible tags fall back to the signed second.
+            let wall_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+                .min(u64::MAX as u128) as u64;
+            if ms <= wall_ms.saturating_add(300_000)
+                && ms.abs_diff(rumor.created_at.as_secs().saturating_mul(1000)) <= 300_000
+            {
+                return ms;
+            }
+        }
+    }
+    rumor.created_at.as_secs().saturating_mul(1000)
+}
+
+#[cfg(test)]
+mod chronology_tests {
+    use super::*;
+    fn fixture_message(id: &str, text: &str, seconds: u64) -> Message {
+        Message {
+            id: id.into(),
+            context: None,
+            text: text.into(),
+            mine: false,
+            created_at: seconds,
+            created_at_ms: 0,
+            delivery: "received".into(),
+            order_id: None,
+            cashu: None,
+            reactions: Vec::new(),
+        }
+    }
+    #[test]
+    fn millisecond_rows_and_legacy_ties_survive_out_of_order_delivery_and_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let owner = Keys::generate();
+        let peer = Keys::generate();
+        let p = peer.public_key().to_hex();
+        let seconds = now();
+        let mut chat = Messaging::open(dir.path(), owner.clone()).unwrap();
+        for (offset, text) in [(800, "later"), (100, "earlier")] {
+            let mut rumor=UnsignedEvent::from_json(serde_json::json!({"pubkey":peer.public_key(),"kind":14,"created_at":seconds,"content":text,"tags":[["ms",(seconds*1000+offset).to_string()]]}).to_string()).unwrap();
+            rumor.ensure_id();
+            chat.transaction(|chat| {
+                chat.apply_delivery(ProtocolDecryptedMessage {
+                    sender: peer.public_key(),
+                    sender_device: None,
+                    conversation_owner: None,
+                    created_at_secs: seconds,
+                    content: rumor.as_json(),
+                    event_id: None,
+                })
+            })
+            .unwrap();
+        }
+        let rows = &chat.conversations()[0].messages;
+        assert_eq!(
+            rows.iter().map(|row| row.text.as_str()).collect::<Vec<_>>(),
+            vec!["earlier", "later"]
+        );
+        assert_eq!(rows[0].created_at_ms, seconds * 1000 + 100);
+        let legacy_peer = Keys::generate().public_key().to_hex();
+        chat.transaction(|chat| {
+            chat.append(
+                &legacy_peer,
+                fixture_message(&"ff".repeat(32), "legacy-first", seconds),
+            )?;
+            chat.append(
+                &legacy_peer,
+                fixture_message(&"00".repeat(32), "legacy-second", seconds),
+            )
+        })
+        .unwrap();
+        drop(chat);
+        let chat = Messaging::open(dir.path(), owner).unwrap();
+        let rows = chat
+            .conversations()
+            .into_iter()
+            .find(|thread| thread.id == p)
+            .unwrap()
+            .messages;
+        assert_eq!(
+            rows.iter().map(|row| row.text.as_str()).collect::<Vec<_>>(),
+            vec!["earlier", "later"]
+        );
+        let rows = chat
+            .conversations()
+            .into_iter()
+            .find(|thread| thread.id == legacy_peer)
+            .unwrap()
+            .messages;
+        assert_eq!(
+            rows.iter().map(|row| row.text.as_str()).collect::<Vec<_>>(),
+            vec!["legacy-first", "legacy-second"]
+        );
+    }
+    #[test]
+    fn rapid_identical_outgoing_messages_keep_unique_monotonic_ms_across_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let owner = Keys::generate();
+        let peer = Keys::generate().public_key().to_hex();
+        let mut chat = Messaging::open(dir.path(), owner.clone()).unwrap();
+        chat.open_contact(&peer).unwrap();
+        // Keep every allocation in one synthetic second even if the wall clock ticks.
+        chat.transaction(|chat| {
+            chat.state.last_message_ms = (now() + 2) * 1000;
+            Ok(())
+        })
+        .unwrap();
+        for _ in 0..20 {
+            chat.send(&peer, "identical fast message").unwrap();
+        }
+        let rows = chat.conversations()[0].messages.clone();
+        assert_eq!(rows.len(), 20);
+        assert!(
+            rows.windows(2)
+                .all(|pair| pair[0].created_at_ms < pair[1].created_at_ms
+                    && pair[0].id != pair[1].id)
+        );
+        let last = rows.last().unwrap().created_at_ms;
+        drop(chat);
+        let mut chat = Messaging::open(dir.path(), owner).unwrap();
+        chat.send(&peer, "identical fast message").unwrap();
+        let rows = chat.conversations()[0].messages.clone();
+        assert_eq!(rows.len(), 21);
+        assert!(rows.last().unwrap().created_at_ms > last);
+        for message in rows {
+            let queued = &chat.state.pending_contact_messages[&message.id];
+            assert_eq!(message_millis(&queued.rumor), message.created_at_ms);
+        }
     }
 }

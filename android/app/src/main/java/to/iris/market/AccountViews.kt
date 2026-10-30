@@ -3,6 +3,8 @@ package to.iris.market
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -21,6 +23,10 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.collect
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -31,6 +37,14 @@ private data class InboxThread(val conversation:Conversation,val key:String,val 
     val id:String get()=conversation.id+"|"+key
     val latestActivity:Long get()=messages.maxOfOrNull {it.createdAt} ?: 0L
 }
+
+internal data class MessageViewportItem(val id:String,val offset:Int,val size:Int)
+internal fun visibleIncomingMessages(items:List<MessageViewportItem>,start:Int,end:Int,incoming:Set<String>):List<String> = items.filter { item ->
+    val shown=minOf(item.offset+item.size,end)-maxOf(item.offset,start)
+    item.id in incoming&&item.size>0&&shown>=minOf(24,maxOf(1,item.size/2))
+}.map {it.id}
+internal fun messageDeliveryLabel(value:String?)=when(value){"pending"->"Pending";"queued"->"Queued";"sent"->"Sent";"delivered"->"Delivered";"seen"->"Seen";"failed"->"Not sent";else->""}
+private val messageEmoji=listOf("❤️","👍","😂","🎉","😮","😢")
 
 /** A view-scoped read lease. Lifecycle loss stops new batches and notification suppression. */
 internal class VisibleThreadReads(
@@ -151,15 +165,24 @@ private fun inboxContextTitle(context:MessageContext?,state:MarketSnapshot):Stri
         accountAllowed={accountID.isNotBlank()&&model.state.value.publicKey==accountID&&!model.state.value.demo},
         setActiveContext={peer,key->if(model.state.value.publicKey==accountID)model.setActivePushContext(peer,key)},
         markRead={ids,complete->model.markMessagesRead(ids,complete)})}
-    val incoming=c.messages.filterNot {it.mine}.map {it.id}
-    val currentIncoming by rememberUpdatedState(incoming)
-    val currentlyVisible by rememberUpdatedState(visible)
+    val listState=rememberLazyListState()
+    var reactionTarget by remember {mutableStateOf<String?>(null)}
+    var visibleIncoming by remember {mutableStateOf<List<String>>(emptyList())}
+    val currentIncoming by rememberUpdatedState(c.messages.filterNot {it.mine}.map {it.id}.toSet())
+    val currentlyVisible by rememberUpdatedState(visible&&reactionTarget==null)
     DisposableEffect(lifecycle,reads){
-        val observer=LifecycleEventObserver {_,_->reads.update(currentlyVisible&&lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED),currentIncoming)}
+        val observer=LifecycleEventObserver {_,_->reads.update(currentlyVisible&&lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED),visibleIncoming)}
         lifecycle.addObserver(observer)
         onDispose {lifecycle.removeObserver(observer);reads.close()}
     }
-    LaunchedEffect(visible,incoming,reads){reads.update(visible&&lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED),incoming)}
+    LaunchedEffect(listState,reads,c.messages.map {it.id}) {
+        snapshotFlow {
+            val layout=listState.layoutInfo
+            visibleIncomingMessages(layout.visibleItemsInfo.map {MessageViewportItem(it.key.toString(),it.offset,it.size)},layout.viewportStartOffset,layout.viewportEndOffset,currentIncoming)
+        }.distinctUntilChanged().collect {ids->visibleIncoming=ids;reads.update(currentlyVisible&&lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED),ids)}
+    }
+    LaunchedEffect(visible,reactionTarget,visibleIncoming,reads){reads.update(visible&&reactionTarget==null&&lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED),visibleIncoming)}
+    fun react(id:String,emoji:String){if(!visible||!lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)||model.state.value.publicKey!=accountID)return;model.command(JSONObject().put("type","toggle_reaction").put("peer_id",c.id).put("message_id",id).put("emoji",emoji));reactionTarget=null}
     val drafts by model.messageDrafts.collectAsState()
     val draftKey=NativeMessageDrafts.key(accountID.ifBlank {model.state.value.publicKey},c.id,context?.key ?: "general")
     val message=drafts[draftKey].orEmpty()
@@ -170,7 +193,7 @@ private fun inboxContextTitle(context:MessageContext?,state:MarketSnapshot):Stri
         }
         context?.orderId?.let { id -> TextButton(onClick={openOrder(id)}) { Text(contextTitle) } }
         if(context?.listing!=null)Text(contextTitle,color=Muted,style=MaterialTheme.typography.bodySmall,modifier=Modifier.padding(vertical=8.dp))
-        LazyColumn(Modifier.weight(1f).fillMaxWidth(),contentPadding=PaddingValues(vertical=18.dp),verticalArrangement=Arrangement.spacedBy(10.dp)) {
+        LazyColumn(Modifier.weight(1f).fillMaxWidth(),state=listState,contentPadding=PaddingValues(vertical=18.dp),verticalArrangement=Arrangement.spacedBy(10.dp)) {
             items(c.messages,key={it.id}) { m ->
                 Row(Modifier.fillMaxWidth(),horizontalArrangement=if(m.mine) Arrangement.End else Arrangement.Start) {
                     Surface(color=if(m.mine) Action else White,contentColor=if(m.mine) OnInk else Ink,
@@ -178,6 +201,18 @@ private fun inboxContextTitle(context:MessageContext?,state:MarketSnapshot):Stri
                         Column(Modifier.padding(horizontal=15.dp,vertical=12.dp)) {
                             if(m.cashu != null) PaymentMessage(m.cashu,m.mine) else Text(m.text,style=MaterialTheme.typography.bodyLarge)
                             m.orderId?.let { id -> TextButton(onClick={openOrder(id)},colors=ButtonDefaults.textButtonColors(contentColor=if(m.mine) OnInk else Ink)) { Text("View order") } }
+                            Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(6.dp)) {
+                                if(m.createdAt>0)Text(java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT).format(java.util.Date(m.createdAt*1000)),style=MaterialTheme.typography.labelSmall)
+                                if(m.mine)Text(messageDeliveryLabel(m.delivery),style=MaterialTheme.typography.labelSmall)
+                                Box {
+                                    IconButton(onClick={reactionTarget=m.id},enabled=!busy,modifier=Modifier.size(28.dp)){Icon(Icons.Filled.AddReaction,"React to message",Modifier.size(16.dp))}
+                                    DropdownMenu(expanded=reactionTarget==m.id,onDismissRequest={reactionTarget=null}){messageEmoji.forEach {emoji->DropdownMenuItem(text={Text(emoji)},onClick={react(m.id,emoji)})}}
+                                }
+                            }
+                            if(m.reactions.isNotEmpty())Row(Modifier.horizontalScroll(rememberScrollState()),horizontalArrangement=Arrangement.spacedBy(5.dp)) {
+                                m.reactions.forEach {reaction->FilterChip(selected=reaction.reactedByMe,onClick={react(m.id,reaction.emoji)},enabled=!busy,
+                                    modifier=Modifier.semantics {contentDescription="${reaction.emoji}, ${reaction.count} reactions. ${if(reaction.reactedByMe)"Selected; tap to remove" else "Tap to react"}"},label={Text("${reaction.emoji} ${reaction.count}")})}
+                            }
                         }
                     }
                 }
@@ -222,6 +257,12 @@ private fun inboxContextTitle(context:MessageContext?,state:MarketSnapshot):Stri
             }
         }
         NativePushToggle(model,state)
+        val receiptSettings=remember(state.settings){JSONObject(state.settings)}
+        Text("Message receipts",style=MaterialTheme.typography.titleMedium)
+        listOf("send_delivery_receipts" to "Send delivery receipts","send_read_receipts" to "Send read receipts").forEach {(key,label)->
+            Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {Text(label,Modifier.weight(1f));Switch(checked=receiptSettings.optBoolean(key,true),enabled=!busy&&!state.demo,onCheckedChange={value->model.command(JSONObject().put("type","set_settings").put("settings",JSONObject(state.settings).put(key,value)))})}
+        }
+
         val localModel by model.localModelState.collectAsState()
         if(ai.optBoolean("enabled")) Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
             if(ai.optString("provider")=="litert" && localModel.phase in setOf(LocalModelPhase.VERIFYING,LocalModelPhase.LOADING,LocalModelPhase.REVIEWING)) {

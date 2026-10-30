@@ -75,7 +75,8 @@ data class MessageContext(val threadId:String,val orderId:String?=null,val listi
     companion object { fun order(id:String)=MessageContext(id.substringAfterLast(':'),id)
         fun parse(value:JSONObject)=MessageContext(value.getString("thread_id"),value.optional("order_id"),value.optional("listing")) }
 }
-data class Message(val id: String, val text: String, val mine: Boolean, val orderId: String? = null, val cashu: CashuPayment? = null,val context:MessageContext?=null,val createdAt:Long=0L) {
+data class MessageReaction(val emoji:String,val count:Int,val reactedByMe:Boolean)
+data class Message(val id: String, val text: String, val mine: Boolean, val orderId: String? = null, val cashu: CashuPayment? = null,val context:MessageContext?=null,val createdAt:Long=0L,val delivery:String?=null,val reactions:List<MessageReaction> = emptyList()) {
     val threadKey:String get()=orderId?.let { "order:$it" }?:context?.key?:"general"
 }
 data class Conversation(val id: String, val name: String, val messages: List<Message>)
@@ -115,7 +116,7 @@ data class MarketSnapshot(
                     val c = cs.getJSONObject(i); val ms = c.optJSONArray("messages") ?: JSONArray()
                     Conversation(c.getString("id"), c.optString("name", "Conversation"),
                         (0 until ms.length()).map { j -> val m = ms.getJSONObject(j)
-                            Message(m.getString("id"), m.optString("text"), m.optBoolean("mine"), m.optional("order_id"), m.optJSONObject("cashu")?.let(CashuPayment::parse),m.optJSONObject("context")?.let(MessageContext::parse),createdAt=m.optLong("created_at",0L)) })
+                            Message(m.getString("id"), m.optString("text"), m.optBoolean("mine"), m.optional("order_id"), m.optJSONObject("cashu")?.let(CashuPayment::parse),m.optJSONObject("context")?.let(MessageContext::parse),createdAt=m.optLong("created_at",0L),delivery=m.optional("delivery"),reactions=m.optJSONArray("reactions")?.let { values -> (0 until values.length()).map { i -> values.getJSONObject(i).let { reaction -> MessageReaction(reaction.getString("emoji"),reaction.getInt("count"),reaction.optBoolean("reacted_by_me")) } } } ?: emptyList()) })
                 }, invite = o.optional("invite"), aiSearch = o.optBoolean("ai_search"), sort = o.optString("sort", "suggested"),
                 liveLocationSupported = o.optBoolean("live_location_supported", false),
                 orders = o.optJSONArray("orders")?.let { a -> (0 until a.length()).map { MarketOrder.parse(a.getJSONObject(it)) } } ?: emptyList(),

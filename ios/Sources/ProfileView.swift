@@ -29,6 +29,11 @@ struct ProfileView: View {
                 #if os(iOS)
                 Toggle("Private notifications",isOn:Binding(get:{store.pushEnabled},set:{store.setPushEnabled($0)})).disabled(store.demo || store.snapshot.profileNameRequired == true || !NativePushStorage.configured)
                 #endif
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Message receipts").font(.system(size: 14, weight: .semibold))
+                    Toggle("Send delivery receipts", isOn: Binding(get: { store.snapshot.settings.sendDeliveryReceipts }, set: { value in var settings = store.snapshot.settings; settings.sendDeliveryReceipts = value; store.saveSettings(settings, key: "", replaceKey: false) }))
+                    Toggle("Send read receipts", isOn: Binding(get: { store.snapshot.settings.sendReadReceipts }, set: { value in var settings = store.snapshot.settings; settings.sendReadReceipts = value; store.saveSettings(settings, key: "", replaceKey: false) }))
+                }.padding(20).background(MarketTheme.surface, in: RoundedRectangle(cornerRadius: 23)).disabled(store.demo || store.busy)
                 Picker("Display currency", selection: Binding(get: { store.snapshot.settings.currency }, set: { value in
                     var settings = store.snapshot.settings; settings.currency = value
                     store.saveSettings(settings, key: "", replaceKey: false)

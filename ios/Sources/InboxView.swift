@@ -115,6 +115,11 @@ struct InvitationView: View {
     }
 }
 
+private struct MessageFramesKey: PreferenceKey {
+    static var defaultValue: [String: CGRect] = [:]
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) { value.merge(nextValue(), uniquingKeysWith: { _, next in next }) }
+}
+
 struct ConversationView: View {
     @EnvironmentObject private var store: MarketStore
     @Environment(\.dismiss) private var dismiss
@@ -123,6 +128,9 @@ struct ConversationView: View {
     @State private var appeared = false
     @State private var foreground = false
     @State private var displayedAccount = ""
+    @Environment(\.marketSheetID) private var sheetID
+    @State private var viewportIncoming = Set<String>()
+    @State private var reactionMessageID: String?
     @State private var markedIDs = Set<String>()
     @State private var markingRead = false
     var context: MarketMessageContext? = nil
@@ -139,7 +147,7 @@ struct ConversationView: View {
     @State private var orderID: String?
     private var current: MarketConversation { store.snapshot.conversations.first(where: { $0.id == conversation.id }) ?? conversation }
     private var visibleMessages: [MarketMessage] { threadKey == "*" ? current.messages : current.messages.filter { $0.threadKey == threadKey } }
-    private var incomingIDs: [String] { visibleMessages.filter { !$0.mine }.map(\.id) }
+    private var incomingIDs: [String] { visibleMessages.filter { !$0.mine && viewportIncoming.contains($0.id) }.map(\.id) }
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
@@ -147,8 +155,9 @@ struct ConversationView: View {
                     Button { orderID = id } label: { Text(inboxContextTitle(context, snapshot: store.snapshot)).font(.system(size: 14, weight: .medium)).lineLimit(2).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.vertical, 12) }
                 } else if context?.listing != nil { Text(inboxContextTitle(context, snapshot: store.snapshot)).font(.system(size: 13)).foregroundStyle(MarketTheme.muted).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.vertical, 12) }
                 ScrollViewReader { proxy in
+                    GeometryReader { viewport in
                     ScrollView {
-                        VStack(spacing: 13) {
+                        LazyVStack(spacing: 13) {
                             Label("Private conversation", systemImage: "lock.fill").font(.system(size: 11)).foregroundStyle(MarketTheme.muted).padding(.vertical, 15)
                             ForEach(visibleMessages) { message in
                                 HStack {
@@ -159,14 +168,30 @@ struct ConversationView: View {
                                             if message.text != "Cashu payment" && !message.text.isEmpty { Text(message.text).font(.system(size: 15)).lineSpacing(3) }
                                         } else { Text(message.text).font(.system(size: 16)).lineSpacing(3) }
                                         if let id = message.orderId { Button("View order") { orderID = id }.font(.system(size: 13, weight: .semibold)) }
-                                        if message.mine && message.delivery == "queued" { Text("Waiting to send").font(.system(size: 10)).foregroundStyle(MarketTheme.muted) }
+                                        messageFooter(message)
+                                        if !(message.reactions ?? []).isEmpty {
+                                            HStack(spacing: 6) {
+                                                ForEach(message.reactions ?? [], id: \.emoji) { reaction in
+                                                    Button { react(message.id, emoji: reaction.emoji) } label: { Text(reaction.emoji + " " + String(reaction.count)).font(.system(size: 12)) }
+                                                        .buttonStyle(.bordered).disabled(store.busy || store.demo).tint(reaction.reactedByMe ? MarketTheme.green : MarketTheme.muted)
+                                                        .accessibilityLabel(reaction.emoji + ", " + String(reaction.count) + " reactions")
+                                                        .accessibilityValue(reaction.reactedByMe ? "Selected. Tap to remove your reaction." : "Tap to react.")
+                                                }
+                                            }
+                                        }
                                     }.padding(.horizontal, 16).padding(.vertical, 13)
                                         .foregroundStyle(MarketTheme.ink).background(message.mine ? MarketTheme.mint : MarketTheme.surface, in: RoundedRectangle(cornerRadius: 20))
                                     if !message.mine { Spacer(minLength: 42) }
                                 }.id(message.id)
+                                    .background { GeometryReader { row in Color.clear.preference(key: MessageFramesKey.self, value: [message.id: row.frame(in: .named("messageViewport"))]) } }
                             }
                         }.padding(.horizontal, 21).padding(.bottom, 16)
-                    }.onChange(of: visibleMessages.count) { _ in if let last = visibleMessages.last { withAnimation { proxy.scrollTo(last.id, anchor: .bottom) } } }
+                    }.coordinateSpace(name: "messageViewport")
+                        .onPreferenceChange(MessageFramesKey.self) { frames in
+                            viewportIncoming = NativeMessagePresentation.visibleIncoming(frames: frames, viewport: viewport.size, incoming: Set(visibleMessages.filter { !$0.mine }.map(\.id)))
+                        }
+                        .onChange(of: visibleMessages.count) { _ in if let last = visibleMessages.last { withAnimation { proxy.scrollTo(last.id, anchor: .bottom) } } }
+                    }
                 }
                 MarketInlineError().padding(.horizontal, 18)
                 HStack(spacing: 10) {
@@ -181,14 +206,37 @@ struct ConversationView: View {
                 .sheet(isPresented: Binding(get: { orderID != nil }, set: { if !$0 { orderID = nil } })) { if let orderID { OrderDetailView(orderID: orderID).marketSheetScope() } }
                 .onAppear { displayedAccount = store.snapshot.publicKey; appeared = true; foreground = scenePhase == .active; updateVisibleReadState() }
                 .onDisappear { appeared = false; foreground = false; clearActiveContext() }
+                .onChange(of: store.activeSheetID) { _ in updateVisibleReadState() }
+                .onChange(of: store.profileSetupRequested) { _ in updateVisibleReadState() }
                 .onChange(of: incomingIDs) { _ in updateVisibleReadState() }
                 .onChange(of: scenePhase) { value in foreground = value == .active; updateVisibleReadState() }
+                .onChange(of: reactionMessageID) { _ in updateVisibleReadState() }
                 .onChange(of: orderID) { _ in updateVisibleReadState() }
                 .onChange(of: store.snapshot.publicKey) { _ in appeared = false; clearActiveContext(); dismiss() }
         }
     }
     private var foregroundVisible: Bool {
-        appeared && foreground && orderID == nil && !store.demo && store.ready && !displayedAccount.isEmpty && displayedAccount == store.snapshot.publicKey && store.snapshot.conversations.contains(where: { $0.id == conversation.id })
+        appeared && foreground && orderID == nil && reactionMessageID == nil && !store.profileSetupRequested && (sheetID == nil ? store.activeSheetCount == 0 : store.activeSheetID == sheetID) && !store.demo && store.ready && !displayedAccount.isEmpty && displayedAccount == store.snapshot.publicKey && store.snapshot.conversations.contains(where: { $0.id == conversation.id })
+    }
+    private func react(_ id: String, emoji: String) {
+        guard appeared, foreground, orderID == nil, !store.profileSetupRequested, (sheetID == nil ? store.activeSheetCount == 0 : store.activeSheetID == sheetID), !store.demo, displayedAccount == store.snapshot.publicKey else { return }
+        store.command(["type": "toggle_reaction", "peer_id": conversation.id, "message_id": id, "emoji": emoji])
+    }
+    private func messageFooter(_ message: MarketMessage) -> some View {
+        HStack(spacing: 6) {
+            if message.createdAt > 0 { Text(Date(timeIntervalSince1970: Double(message.createdAt)), style: .time) }
+            if message.mine { Text(NativeMessagePresentation.delivery(message.delivery)) }
+            Spacer(minLength: 4)
+            Button { reactionMessageID = message.id } label: { Image(systemName: "face.smiling") }
+                .buttonStyle(.plain).accessibilityLabel("React to message").disabled(store.demo || store.busy)
+                .popover(isPresented: Binding(get: { reactionMessageID == message.id }, set: { if !$0 { reactionMessageID = nil } })) {
+                    HStack(spacing: 12) {
+                        ForEach(NativeMessagePresentation.emoji, id: \.self) { emoji in
+                            Button { react(message.id, emoji: emoji); reactionMessageID = nil } label: { Text(emoji).font(.title2) }.buttonStyle(.plain).accessibilityLabel("React " + emoji)
+                        }
+                    }.padding(20)
+                }
+        }.font(.system(size: 10)).foregroundStyle(MarketTheme.muted)
     }
     private func clearActiveContext() {
         if store.activePushPeerID == conversation.id && store.activePushThreadID == threadKey { store.setActivePushContext(peerID: nil, threadID: nil) }

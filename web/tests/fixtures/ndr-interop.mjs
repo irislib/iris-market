@@ -2,7 +2,7 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import assert from 'node:assert/strict';
-import { AppKeys, NdrRuntime } from 'nostr-double-ratchet';
+import { AppKeys, NdrRuntime, buildReactionRumor, buildReceiptRumor, parseReaction, parseReceipt } from 'nostr-double-ratchet';
 import { finalizeEvent, generateSecretKey, getPublicKey, matchFilter, verifyEvent } from 'nostr-tools';
 
 const [directory, phase] = process.argv.slice(2);
@@ -28,7 +28,12 @@ const runtime = new NdrRuntime({ storage, appKeysFetchTimeoutMs: 200, appKeysFas
   nostrSign: async event => finalizeEvent(event, ownerSecret),
   nostrPublish: async event => { const signed = event.sig ? event : finalizeEvent(event, ownerSecret); assert(verifyEvent(structuredClone(signed))); outgoing.set(signed.id, signed); return signed; },
 });
-runtime.onDurableSessionEvent([14], async rumor => { if (!state.received.includes(rumor.content)) state.received.push(rumor.content); });
+state.rumors ??= [];
+runtime.onDurableSessionEvent([14, 7, 15], async rumor => {
+  if (!state.rumors.some(item => item.id === rumor.id)) state.rumors.push(rumor);
+  if (rumor.kind === 14 && !state.received.includes(rumor.content)) state.received.push(rumor.content);
+});
+let nativeHello, webHello;
 try {
   await runtime.initManagers();
   const manager = await runtime.initSessionManager(owner);
@@ -47,7 +52,31 @@ try {
     const deadline = Date.now() + 5000;
     while (!state.received.includes(expected) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
     assert(state.received.includes(expected), `Missing Rust message: ${expected}`);
-    if (phase === 'reply') { await runtime.setupUser(rust.owner_public_key); await runtime.sendMessage(rust.owner_public_key, 'Hello from web Market'); }
+    if (phase === 'reply') {
+      await runtime.setupUser(rust.owner_public_key);
+      nativeHello = state.rumors.find(item => item.kind === 14 && item.content === expected);
+      assert(nativeHello?.id);
+      webHello = await runtime.sendMessage(rust.owner_public_key, 'Hello from web Market');
+      state.webHelloId = webHello.id;
+      state.boundaryMessageIds = [webHello.id];
+      for (let index = 1; index < 256; index++) {
+        const message = await runtime.sendMessage(rust.owner_public_key, `Receipt boundary message ${index}`);
+        state.boundaryMessageIds.push(message.id);
+      }
+      assert.equal(new Set(state.boundaryMessageIds).size, 256);
+      for (const type of ['delivered', 'seen']) await runtime.sendEvent(rust.owner_public_key, buildReceiptRumor(type, [nativeHello.id], { pubkey: device, nowMs: Date.now(), tags: [['p', rust.owner_public_key]] }));
+      await runtime.sendEvent(rust.owner_public_key, buildReactionRumor(nativeHello.id, '🇫🇮', { pubkey: device, nowMs: Date.now(), tags: [['p', rust.owner_public_key]] }));
+    } else {
+      const seenBatches = () => state.rumors.map(item => parseReceipt(item)).filter(receipt => receipt?.type === 'seen' && receipt.messageIds.some(id => state.boundaryMessageIds.includes(id)));
+      const seen = () => { const ids = new Set(seenBatches().flatMap(receipt => receipt.messageIds)); return state.boundaryMessageIds.every(id => ids.has(id)); };
+      const reacted = () => state.rumors.some(item => { const reaction = parseReaction(item); return reaction?.messageId === state.webHelloId && reaction.emoji === '👍'; });
+      const controlsDeadline = Date.now() + 5000;
+      while ((!seen() || !reacted()) && Date.now() < controlsDeadline) await new Promise(resolve => setTimeout(resolve, 10));
+      assert(seen(), 'Missing native seen receipt for a member of the 256-message boundary burst');
+      assert.equal(seenBatches().length, 2, 'Native must split the 256-message read action into two receipts');
+      assert(seenBatches().every(receipt => receipt.messageIds.length === 128), 'Every outgoing native receipt batch must have 128 targets');
+      assert(reacted(), 'Missing native emoji reaction');
+    }
     await new Promise(resolve => setTimeout(resolve, 100));
   }
   const invite = [...outgoing.values()].find(event => event.kind === 30078);
@@ -56,8 +85,13 @@ try {
   await write('js-state.json', state);
   await write(phase === 'bootstrap' ? 'js-input-1.json' : phase === 'reply' ? 'js-input-2.json' : 'js-result.json', {
     authorization: state.authorization, invite, incoming: phase === 'bootstrap' ? [] : [...outgoing.values()],
-    ...(phase === 'reply' ? { expected_text: 'Hello from web Market' } : {}),
+    ...(phase === 'reply' ? {
+      expected_text: 'Hello from web Market', mark_read: state.boundaryMessageIds,
+      toggle_reactions: [{ message_id: webHello.id, emoji: '👍' }],
+      expected_controls: [{ message_id: nativeHello.id, delivery: 'seen', reaction_emoji: '🇫🇮', reaction_count: 1 }],
+    } : {}),
     send_text: phase === 'bootstrap' ? 'Hello from native Market' : 'Native reply received', received: state.received,
   });
-  process.stdout.write(JSON.stringify({ phase, ownerIsSeparateDevice: owner !== device, signedOutgoing: outgoing.size, received: state.received.length }) + '\n');
+  for (const event of outgoing.values()) assert(![7, 14, 15].includes(event.kind), 'Private content leaked as a public event');
+  process.stdout.write(JSON.stringify({ phase, ownerIsSeparateDevice: owner !== device, signedOutgoing: outgoing.size, received: state.received.length, privateControls: state.rumors.filter(item => [7, 15].includes(item.kind)).length, boundarySeenTargets: phase === 'verify' ? state.boundaryMessageIds.length : 0 }) + '\n');
 } finally { runtime.close(); ownerSecret.fill(0); deviceSecret.fill(0); }

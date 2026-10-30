@@ -18,7 +18,7 @@ fn exchange(a: &mut Messaging, b: &mut Messaging) {
         }
         a.retry().unwrap();
         b.retry().unwrap();
-        if count == 0 {
+        if count == 0 && a.pending_outbound().is_empty() && b.pending_outbound().is_empty() {
             break;
         }
     }
@@ -449,24 +449,204 @@ fn marketplace_thread_context_is_encrypted_and_survives_restart() {
     let mut b = Messaging::open(bd.path(), bk.clone()).unwrap();
     b.accept_invite(&a.invite().unwrap()).unwrap();
     exchange(&mut a, &mut b);
-    let context = MessageContext { thread_id: uuid::Uuid::new_v4().to_string(), order_id: None,
-        listing: Some(format!("30402:{}:city-cycle",ak.public_key())) };
-    b.send_with_context(&ak.public_key().to_hex(),"Can I collect this tomorrow?",Some(context.clone())).unwrap();
-    let events=b.pending_outbound();
+    let context = MessageContext {
+        thread_id: uuid::Uuid::new_v4().to_string(),
+        order_id: None,
+        listing: Some(format!("30402:{}:city-cycle", ak.public_key())),
+    };
+    b.send_with_context(
+        &ak.public_key().to_hex(),
+        "Can I collect this tomorrow?",
+        Some(context.clone()),
+    )
+    .unwrap();
+    let events = b.pending_outbound();
     assert!(!events.is_empty());
     for event in &events {
-        let wire=event.as_json();
+        let wire = event.as_json();
         assert!(!wire.contains(&context.thread_id));
         assert!(!wire.contains(context.listing.as_ref().unwrap()));
         assert!(!wire.contains("iris-market-context"));
         assert!(!wire.contains("collect this tomorrow"));
     }
-    exchange(&mut a,&mut b);
+    exchange(&mut a, &mut b);
     drop(a);
-    let a=Messaging::open(ad.path(),ak).unwrap();
-    let conversations=a.conversations();
-    let message=conversations.iter().find(|c|c.id==bk.public_key().to_hex()).unwrap().messages.last().unwrap();
-    assert_eq!(message.context,Some(context));
-    let unknown_order=MessageContext::for_order(&format!("{}:{}", bk.public_key(), uuid::Uuid::new_v4()));
-    assert!(b.send_with_context(&a.device_public_key().to_hex(),"unrelated",Some(unknown_order)).is_err());
+    let a = Messaging::open(ad.path(), ak).unwrap();
+    let conversations = a.conversations();
+    let message = conversations
+        .iter()
+        .find(|c| c.id == bk.public_key().to_hex())
+        .unwrap()
+        .messages
+        .last()
+        .unwrap();
+    assert_eq!(message.context, Some(context));
+    let unknown_order =
+        MessageContext::for_order(&format!("{}:{}", bk.public_key(), uuid::Uuid::new_v4()));
+    assert!(
+        b.send_with_context(
+            &a.device_public_key().to_hex(),
+            "unrelated",
+            Some(unknown_order)
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn encrypted_peer_receipts_reactions_and_preferences_are_durable_without_loops() {
+    let ad = TempDir::new().unwrap();
+    let bd = TempDir::new().unwrap();
+    let ak = Keys::generate();
+    let bk = Keys::generate();
+    let mut a = Messaging::open(ad.path(), ak.clone()).unwrap();
+    let mut b = Messaging::open(bd.path(), bk.clone()).unwrap();
+    b.accept_invite(&a.invite().unwrap()).unwrap();
+    exchange(&mut a, &mut b);
+    b.send(&ak.public_key().to_hex(), "Establish bidirectional fixture")
+        .unwrap();
+    exchange(&mut a, &mut b);
+    a.send(&bk.public_key().to_hex(), "Receipt and emoji fixture")
+        .unwrap();
+    let id = a.conversations()[0]
+        .messages
+        .iter()
+        .find(|message| message.mine)
+        .unwrap()
+        .id
+        .clone();
+    let subject = |m: &Messaging| {
+        m.conversations()[0]
+            .messages
+            .iter()
+            .find(|message| message.id == id)
+            .unwrap()
+            .clone()
+    };
+    for event in a.pending_outbound() {
+        b.receive(&event).unwrap();
+        a.acknowledge_published(&event.id.to_hex()).unwrap();
+    }
+    assert_eq!(
+        subject(&a).delivery,
+        "sent",
+        "a relay acknowledgement is not peer delivery"
+    );
+    b.retry().unwrap();
+    let delivered_wire = b.pending_outbound();
+    assert!(!delivered_wire.is_empty());
+    for event in &delivered_wire {
+        assert_ne!(event.kind.as_u16(), 15);
+        assert!(!event.as_json().contains("delivered"));
+    }
+    exchange(&mut a, &mut b);
+    assert_eq!(subject(&a).delivery, "delivered");
+    b.mark_messages_read(&[id.clone()]).unwrap();
+    exchange(&mut a, &mut b);
+    assert_eq!(subject(&a).delivery, "seen");
+    b.toggle_reaction(&ak.public_key().to_hex(), &id, "❤️")
+        .unwrap();
+    exchange(&mut a, &mut b);
+    assert_eq!(subject(&a).reactions[0].count, 1);
+    assert!(!subject(&a).reactions[0].reacted_by_me);
+    a.toggle_reaction(&bk.public_key().to_hex(), &id, "❤️")
+        .unwrap();
+    exchange(&mut a, &mut b);
+    assert_eq!(subject(&b).reactions[0].count, 2);
+    assert!(subject(&b).reactions[0].reacted_by_me);
+    a.toggle_reaction(&bk.public_key().to_hex(), &id, "❤️")
+        .unwrap();
+    exchange(&mut a, &mut b);
+    assert_eq!(subject(&a).reactions[0].count, 1);
+    assert!(!subject(&a).reactions[0].reacted_by_me);
+    b.toggle_reaction(&ak.public_key().to_hex(), &id, "❤️")
+        .unwrap();
+    exchange(&mut a, &mut b);
+    assert!(subject(&a).reactions.is_empty());
+    assert!(subject(&b).reactions.is_empty());
+    for event in delivered_wire {
+        a.receive(&event).unwrap();
+    }
+    assert_eq!(subject(&a).delivery, "seen");
+    assert_eq!(a.conversations()[0].messages.len(), 2);
+    assert_eq!(b.conversations()[0].messages.len(), 2);
+    assert!(a.pending_outbound().is_empty());
+    assert!(b.pending_outbound().is_empty());
+    b.set_receipt_preferences(false, false).unwrap();
+    drop(b);
+    let mut b = Messaging::open(bd.path(), bk.clone()).unwrap();
+    a.send(&bk.public_key().to_hex(), "Receipt preferences are off")
+        .unwrap();
+    exchange(&mut a, &mut b);
+    let next = a.conversations()[0]
+        .messages
+        .iter()
+        .find(|message| message.mine && message.id != id)
+        .unwrap()
+        .id
+        .clone();
+    b.mark_messages_read(&[next.clone()]).unwrap();
+    exchange(&mut a, &mut b);
+    assert_eq!(
+        a.conversations()[0]
+            .messages
+            .iter()
+            .find(|message| message.id == next)
+            .unwrap()
+            .delivery,
+        "sent"
+    );
+}
+
+#[test]
+fn rapid_encrypted_messages_keep_sender_order_for_both_peers_after_restart() {
+    let ad = TempDir::new().unwrap();
+    let bd = TempDir::new().unwrap();
+    let ak = Keys::generate();
+    let bk = Keys::generate();
+    let mut a = Messaging::open(ad.path(), ak.clone()).unwrap();
+    let mut b = Messaging::open(bd.path(), bk.clone()).unwrap();
+    b.accept_invite(&a.invite().unwrap()).unwrap();
+    exchange(&mut a, &mut b);
+    b.send(&ak.public_key().to_hex(), "Warm the paired session")
+        .unwrap();
+    exchange(&mut a, &mut b);
+    let wanted = (0..35).map(|n| format!("burst-{n:02}")).collect::<Vec<_>>();
+    for text in &wanted {
+        a.send(&bk.public_key().to_hex(), text).unwrap();
+    }
+    a.send(&bk.public_key().to_hex(), "identical final message")
+        .unwrap();
+    a.send(&bk.public_key().to_hex(), "identical final message")
+        .unwrap();
+    let rows = a.conversations()[0]
+        .messages
+        .iter()
+        .filter(|m| m.mine)
+        .cloned()
+        .collect::<Vec<_>>();
+    assert!(
+        rows.windows(2)
+            .all(|pair| pair[0].created_at_ms < pair[1].created_at_ms && pair[0].id != pair[1].id)
+    );
+    exchange(&mut a, &mut b);
+    drop(a);
+    drop(b);
+    let a = Messaging::open(ad.path(), ak).unwrap();
+    let b = Messaging::open(bd.path(), bk).unwrap();
+    for chat in [&a, &b] {
+        let rows = chat.conversations()[0].messages.clone();
+        let texts = rows
+            .iter()
+            .filter(|m| m.text.starts_with("burst-"))
+            .map(|m| m.text.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(texts, wanted);
+        assert_eq!(
+            rows.iter()
+                .filter(|m| m.text == "identical final message")
+                .count(),
+            2
+        );
+    }
 }

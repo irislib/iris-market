@@ -13,6 +13,24 @@ struct Input {
     send_text: Option<String>,
     expected_order: Option<String>,
     order_patch: Option<serde_json::Value>,
+    #[serde(default)]
+    mark_read: Vec<String>,
+    #[serde(default)]
+    toggle_reactions: Vec<ReactionCommand>,
+    #[serde(default)]
+    expected_controls: Vec<ExpectedControl>,
+}
+#[derive(Deserialize)]
+struct ReactionCommand {
+    message_id: String,
+    emoji: String,
+}
+#[derive(Deserialize)]
+struct ExpectedControl {
+    message_id: String,
+    delivery: Option<String>,
+    reaction_emoji: Option<String>,
+    reaction_count: Option<usize>,
 }
 #[test]
 #[ignore = "requires JS NdrRuntime fixture producer; no live accounts or relays"]
@@ -65,6 +83,37 @@ fn javascript_runtime_wire_roundtrip() {
             market.update_order(&expected, patch).unwrap();
         }
     }
+    if !input.mark_read.is_empty() {
+        market.mark_messages_read(&input.mark_read).unwrap();
+    }
+    for reaction in input.toggle_reactions {
+        market
+            .toggle_reaction(
+                &input.authorization.pubkey.to_hex(),
+                &reaction.message_id,
+                &reaction.emoji,
+            )
+            .unwrap();
+    }
+    for expected in input.expected_controls {
+        let conversations = market.conversations();
+        let message = conversations
+            .iter()
+            .flat_map(|thread| thread.messages.iter())
+            .find(|message| message.id == expected.message_id)
+            .expect("expected private control target");
+        if let Some(delivery) = expected.delivery {
+            assert_eq!(message.delivery, delivery);
+        }
+        if let Some(emoji) = expected.reaction_emoji {
+            let reaction = message
+                .reactions
+                .iter()
+                .find(|reaction| reaction.emoji == emoji)
+                .expect("expected private emoji reaction");
+            assert_eq!(reaction.count, expected.reaction_count.unwrap_or(1));
+        }
+    }
     if let Some(text) = input.send_text {
         market
             .send(&input.authorization.pubkey.to_hex(), &text)
@@ -76,7 +125,7 @@ fn javascript_runtime_wire_roundtrip() {
         assert_ne!(event.pubkey, keys.public_key());
     }
     let invite = market.public_contact_event().unwrap();
-    fs::write(output,serde_json::to_vec_pretty(&serde_json::json!({"owner_public_key":keys.public_key().to_hex(),"authorization":authorization,"invite":invite,"outgoing":outgoing,"received":received,"orders":market.orders()})).unwrap()).unwrap();
+    fs::write(output,serde_json::to_vec_pretty(&serde_json::json!({"owner_public_key":keys.public_key().to_hex(),"authorization":authorization,"invite":invite,"outgoing":outgoing,"received":received,"orders":market.orders(),"conversations":market.conversations()})).unwrap()).unwrap();
     for event in outgoing {
         market.acknowledge_published(&event.id.to_hex()).unwrap();
     }

@@ -30,6 +30,9 @@ final class MarketStore: ObservableObject {
     private let inferenceQueue = DispatchQueue(label: "to.iris.market.inference", qos: .userInitiated)
     private let enrollmentQueue = DispatchQueue(label: "to.iris.market.enrollment", qos: .utility)
     private var app: MarketApp?
+    #if DEBUG
+    private var messageFixture = NativeMessageFixture()
+    #endif
     private var timer: Timer?
     @Published private(set) var pushEnabled = false
     @Published var pushRoute: NativePushRoute?
@@ -72,6 +75,9 @@ final class MarketStore: ObservableObject {
         snapshot.settings.ai.enabled ? (aiSearchEnabled ? "On" : "On, unavailable") : "Off"
     }
     private func acceptSnapshot(_ next: MarketSnapshot) {
+        #if DEBUG
+        let next = messageFixture.project(next)
+        #endif
         if next.revision >= snapshot.revision {
             if next.settings.ai != snapshot.settings.ai { invalidateAITest() }
             snapshot = next
@@ -210,7 +216,13 @@ final class MarketStore: ObservableObject {
                 let snapshot = try MarketJSON.decoder().decode(MarketSnapshot.self, from: Data(initial.utf8))
                 Task { @MainActor in
                     guard let self, self.accountGeneration == generation else { app.shutdown(); return }
-                    self.app = app; self.snapshot = snapshot; self.ready = true
+                    self.app = app
+                    #if DEBUG
+                    self.snapshot = self.messageFixture.project(snapshot)
+                    #else
+                    self.snapshot = snapshot
+                    #endif
+                    self.ready = true
                     self.pushPublicDirectory = publicDirectory; self.pushDeviceSecret = notificationDeviceSecret
                     self.pushEnabled = !demo && !NativeTestStorage.enabled && NativePushStorage.configured && UserDefaults.standard.bool(forKey:"market.notifications.\(snapshot.publicKey)")
                     #if os(iOS)
@@ -248,6 +260,11 @@ final class MarketStore: ObservableObject {
         }
     }
     func command(_ value: [String: Any], expectedAIIntent: Int? = nil, urgentPreference: Bool = false, publishExpiry: NativeListingExpiry? = nil, completion: ((Bool) -> Void)? = nil) {
+        #if DEBUG
+        if NativeMessageFixture.enabled && messageFixture.apply(value) {
+            snapshot = messageFixture.project(snapshot); completion?(true); return
+        }
+        #endif
         guard let app else { completion?(false); return }
         if NativeProfileSetupGate.requiresSetup(command: value["type"] as? String ?? "", nameRequired: snapshot.profileNameRequired == true, demo: demo) {
             requestProfileSetup(); completion?(false); return

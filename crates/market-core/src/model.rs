@@ -114,8 +114,17 @@ pub struct Settings {
     // Missing in an existing saved record means preserve that user's choice.
     #[serde(default = "currency_already_initialized")]
     pub currency_initialized: bool,
+    #[serde(default = "receipts_enabled")]
+    pub send_delivery_receipts: bool,
+    #[serde(default = "receipts_enabled")]
+    pub send_read_receipts: bool,
 }
-fn currency_already_initialized() -> bool { true }
+fn currency_already_initialized() -> bool {
+    true
+}
+fn receipts_enabled() -> bool {
+    true
+}
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -131,6 +140,8 @@ impl Default for Settings {
             image_proxy: ImageProxySettings::default(),
             currency: "USD".into(),
             currency_initialized: false,
+            send_delivery_receipts: true,
+            send_read_receipts: true,
         }
     }
 }
@@ -143,7 +154,11 @@ pub struct Message {
     pub text: String,
     pub mine: bool,
     pub created_at: u64,
+    #[serde(default)]
+    pub created_at_ms: u64,
     pub delivery: String,
+    #[serde(default)]
+    pub reactions: Vec<crate::messaging::Reaction>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub order_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -283,11 +298,20 @@ pub enum Command {
     AcceptInvite {
         invite: String,
     },
+    ToggleReaction {
+        peer_id: String,
+        message_id: String,
+        emoji: String,
+    },
     MarkMessagesRead {
         message_ids: Vec<String>,
     },
-    SetPushEnabled { enabled: bool },
-    MarkNotificationsPresented { event_ids: Vec<String> },
+    SetPushEnabled {
+        enabled: bool,
+    },
+    MarkNotificationsPresented {
+        event_ids: Vec<String>,
+    },
     SendMessage {
         peer_id: String,
         text: String,

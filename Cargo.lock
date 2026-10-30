@@ -1681,6 +1681,7 @@ dependencies = [
  "iris-chat-protocol",
  "nostr",
  "nostr-double-ratchet",
+ "nostr-double-ratchet-pairwise-codec",
  "nostr-identity",
  "nostr-pubsub",
  "nostr-pubsub-reconcile",

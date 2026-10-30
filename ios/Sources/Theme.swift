@@ -81,12 +81,16 @@ struct ListingPlaceholder: View {
     }
 }
 
+private struct MarketSheetIDKey: EnvironmentKey { static let defaultValue: UUID? = nil }
+extension EnvironmentValues {
+    var marketSheetID: UUID? { get { self[MarketSheetIDKey.self] } set { self[MarketSheetIDKey.self] = newValue } }
+}
 struct MarketSheetScope: ViewModifier {
     @EnvironmentObject private var store: MarketStore
     @State private var registered = false
     @State private var id = UUID()
     func body(content: Content) -> some View {
-        content.onAppear {
+        content.environment(\.marketSheetID, id).onAppear {
             if !registered { registered = true; store.registerSheet(id) }
         }.onDisappear {
             if registered { registered = false; store.unregisterSheet(id) }

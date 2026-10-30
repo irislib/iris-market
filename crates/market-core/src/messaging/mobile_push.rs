@@ -120,7 +120,10 @@ impl Messaging {
             )
             .map_err(storage_error)
     }
-    pub fn mark_messages_read(&mut self, ids: &[String]) -> MessagingResult<()> {
+    pub(super) fn mark_notification_messages_read(
+        &mut self,
+        ids: &[String],
+    ) -> MessagingResult<()> {
         if ids.len() > 256 {
             return Err("Choose up to 256 messages".into());
         }

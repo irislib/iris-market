@@ -124,8 +124,10 @@ struct MarketSettings: Codable, Equatable {
     var imageProxy: ImageProxySettings = .init()
     var currency = "USD"
     var currencyInitialized = true
+    var sendDeliveryReceipts = true
+    var sendReadReceipts = true
     init() {}
-    private enum CodingKeys: String, CodingKey { case relays, ai, imageProxy, currency, currencyInitialized }
+    private enum CodingKeys: String, CodingKey { case relays, ai, imageProxy, currency, currencyInitialized, sendDeliveryReceipts, sendReadReceipts }
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         relays = try values.decodeIfPresent([String].self, forKey: .relays) ?? relays
@@ -133,6 +135,8 @@ struct MarketSettings: Codable, Equatable {
         imageProxy = try values.decodeIfPresent(ImageProxySettings.self, forKey: .imageProxy) ?? imageProxy
         currency = try values.decodeIfPresent(String.self, forKey: .currency) ?? currency
         currencyInitialized = try values.decodeIfPresent(Bool.self, forKey: .currencyInitialized) ?? true
+        sendDeliveryReceipts = try values.decodeIfPresent(Bool.self, forKey: .sendDeliveryReceipts) ?? true
+        sendReadReceipts = try values.decodeIfPresent(Bool.self, forKey: .sendReadReceipts) ?? true
     }
 }
 struct ImageProxySettings: Codable, Equatable {
@@ -172,6 +176,7 @@ struct MarketMessage: Decodable, Identifiable, Hashable {
     let mine: Bool
     let createdAt: Int64
     let delivery: String?
+    var reactions: [NativeMessageReaction]? = nil
     let orderId: String?
     var context: MarketMessageContext? = nil
     var threadKey: String { orderId.map { "order:" + $0 } ?? context?.key ?? "general" }

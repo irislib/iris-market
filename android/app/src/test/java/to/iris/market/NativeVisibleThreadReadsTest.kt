@@ -34,3 +34,17 @@ class NativeVisibleThreadReadsTest {
         f.reads.update(true,ids);assertEquals(listOf(ids,ids),f.batches)
     }
 }
+
+class MessageViewportTest {
+    @org.junit.Test fun offscreenAndThinEdgeRowsNeverBecomeSeen() {
+        val rows=listOf(MessageViewportItem("old",-100,60),MessageViewportItem("visible",30,60),MessageViewportItem("new",450,60),MessageViewportItem("edge",395,60),MessageViewportItem("mine",100,60))
+        org.junit.Assert.assertEquals(listOf("visible"),visibleIncomingMessages(rows,0,400,setOf("old","visible","new","edge")))
+        org.junit.Assert.assertEquals(emptyList<String>(),visibleIncomingMessages(listOf(MessageViewportItem("tiny",400,1)),0,400,setOf("tiny")))
+    }
+    @org.junit.Test fun receiptsDistinguishRelaySentFromRecipientDeliveredAndSeen() {
+        org.junit.Assert.assertEquals("Sent",messageDeliveryLabel("sent"))
+        org.junit.Assert.assertEquals("Delivered",messageDeliveryLabel("delivered"))
+        org.junit.Assert.assertEquals("Seen",messageDeliveryLabel("seen"))
+        org.junit.Assert.assertEquals("Queued",messageDeliveryLabel("queued"))
+    }
+}

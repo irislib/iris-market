@@ -1,9 +1,27 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {previousRelease, publicationRecord, recordFrom, validateGitHubRelease, validatePublicProof} from './publish-alpha.mjs';
+import {lookupGitHubRelease, previousRelease, publicationRecord, recordFrom, validateGitHubRelease, validatePublicProof} from './publish-alpha.mjs';
 
 const expected={tag:'v0.1.3-alpha.1',sourceCommit:'a'.repeat(40),files:Array.from({length:11},(_,index)=>({name:`asset-${index}`,bytes:index+1,sha256:String(index%10).repeat(64)}))};
 const github=()=>({tag_name:expected.tag,target_commitish:expected.sourceCommit,draft:true,prerelease:true,assets:expected.files.map(file=>({name:file.name,size:file.bytes,digest:`sha256:${file.sha256}`,state:'uploaded'}))});
+
+test('draft omitted by the tag endpoint is reused from the authenticated inventory',()=>{
+  const draft=github();
+  const notFound=()=>{throw Object.assign(new Error('Not found'),{stderr:'gh: Not Found (HTTP 404)'});};
+  assert.equal(lookupGitHubRelease(expected.tag,notFound,()=>[{tag_name:'other'},draft]),draft);
+  assert.equal(lookupGitHubRelease(expected.tag,notFound,()=>[]),undefined);
+  assert.throws(()=>lookupGitHubRelease(expected.tag,notFound,()=>[draft,{...draft}]),/Multiple releases/);
+});
+
+test('release lookup does not reinterpret other failures as a missing draft',()=>{
+  const draft=github();
+  const unexpectedList=()=>{throw Error('inventory should not be read');};
+  assert.equal(lookupGitHubRelease(expected.tag,()=>draft,unexpectedList),draft);
+  for(const stderr of ['gh: Forbidden (HTTP 403)','gh: Bad Gateway (HTTP 502)','connection failed']) {
+    const failure=Object.assign(new Error(stderr),{stderr});
+    assert.throws(()=>lookupGitHubRelease(expected.tag,()=>{throw failure;},unexpectedList),error=>error===failure);
+  }
+});
 
 test('full manifest-derived inventory replaces fixed nine-file assumptions',()=>{
   validateGitHubRelease(github(),expected,true);

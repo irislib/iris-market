@@ -19,7 +19,7 @@ const gh = (endpoint, extra = []) => JSON.parse(run('gh', ['api', `repos/${repo}
 const sameFiles = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length === b.length && new Set(a.map(file=>file.name)).size === a.length && new Set(b.map(file=>file.name)).size === b.length && a.every(file => b.some(other => other.name === file.name && other.sha256 === file.sha256 && other.bytes === file.bytes));
 
 export function validateGitHubRelease(release, expected, draft) {
-  require(release.tag_name === expected.tag && release.target_commitish === expected.sourceCommit && release.prerelease === true && release.draft === draft, 'GitHub release identity or state differs');
+  require(release && release.tag_name === expected.tag && release.target_commitish === expected.sourceCommit && release.prerelease === true && release.draft === draft, 'GitHub release identity or state differs');
   require(release.assets.length === expected.files.length && expected.files.every(file => release.assets.some(asset => asset.name === file.name && asset.state === 'uploaded' && asset.size === file.bytes && asset.digest === `sha256:${file.sha256}`)), 'GitHub assets differ from the accepted inventory');
   return release;
 }
@@ -59,6 +59,17 @@ async function downloadProof(url, file) {
   require(bytes===file.bytes && hash.digest('hex')===file.sha256,'Public artifact differs from accepted bytes');
   return {...file,url,passed:true};
 }
+export function lookupGitHubRelease(tag, get = value => gh(`releases/tags/${value}`), list = () => JSON.parse(run('gh', ['api', `repos/${repo}/releases?per_page=100`, '--paginate', '--slurp'])).flat()) {
+  try { return get(tag); }
+  catch (error) {
+    if (!/\(HTTP 404\)/.test(String(error.stderr ?? ''))) throw error;
+    // GitHub's tag endpoint can omit drafts. Check the authenticated inventory
+    // before creating anything, including releases beyond its first page.
+    const matches = list().filter(release => release.tag_name === tag);
+    require(matches.length <= 1, 'Multiple releases use this tag; preserve and inspect them');
+    return matches[0];
+  }
+}
 async function github(operation, options, expected) {
   if(operation==='github-verify') {
     const release=validateGitHubRelease(await publicJSON(`https://api.github.com/repos/${repo}/releases/tags/${expected.tag}`),expected,false);
@@ -76,22 +87,20 @@ async function github(operation, options, expected) {
   if(operation==='github-draft') {
     require(options.notes,'Draft creation requires --notes');
     const stat=await lstat(options.notes);require(stat.isFile() && !stat.isSymbolicLink() && stat.size<=1024*1024,'Release notes must be a regular bounded file');
-    let release;
-    try { release=gh(`releases/tags/${expected.tag}`); }
-    catch(error) {
-      if(!String(error.stderr??'').includes('404')) throw error;
+    let release=lookupGitHubRelease(expected.tag);
+    if (!release) {
       run('gh',['release','create',expected.tag,'--repo',repo,'--verify-tag','--target',expected.sourceCommit,'--draft','--prerelease','--title',`Iris Market ${expected.tag}`,'--notes-file',path.resolve(options.notes)]);
-      release=gh(`releases/tags/${expected.tag}`);
+      release=lookupGitHubRelease(expected.tag);
     }
-    require(release.draft && release.prerelease && release.target_commitish===expected.sourceCommit,'Existing release is not this draft; no assets replaced');
+    require(release && release.draft && release.prerelease && release.target_commitish===expected.sourceCommit,'Existing release is not this draft; no assets replaced');
     require(release.assets.every(asset=>expected.files.some(file=>file.name===asset.name && file.bytes===asset.size && asset.digest===`sha256:${file.sha256}`)),'Existing draft assets differ; no assets replaced');
     const missing=expected.files.filter(file=>!release.assets.some(asset=>asset.name===file.name));
     if(missing.length)run('gh',['release','upload',expected.tag,'--repo',repo,...missing.map(file=>path.join(options.assets,file.name))]);
-    release=validateGitHubRelease(gh(`releases/tags/${expected.tag}`),expected,true);
+    release=validateGitHubRelease(lookupGitHubRelease(expected.tag),expected,true);
     await save(path.join(options.assets,'github-draft-verification.json'),{...expected,passed:true,releaseId:release.id});
     return;
   }
-  const release=validateGitHubRelease(gh(`releases/tags/${expected.tag}`),expected,true);
+  const release=validateGitHubRelease(lookupGitHubRelease(expected.tag),expected,true);
   const published=validateGitHubRelease(gh(`releases/${release.id}`,['--method','PATCH','-F','draft=false','-F','prerelease=true']),expected,false);
   await save(path.join(options.assets,'github-publication.json'),{...expected,published:true,releaseURL:published.html_url,publishedAt:published.published_at});
 }

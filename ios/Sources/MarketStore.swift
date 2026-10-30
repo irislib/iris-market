@@ -37,6 +37,7 @@ final class MarketStore: ObservableObject {
     var activePushThreadID: String?
     private var pushPublicDirectory: URL?
     private var pushIntent = 0
+    private var pushSyncSequence: UInt64 = 0
     private var pushDeviceSecret: String?
     #if os(iOS)
     private let pushRuntime = NativePushRuntime()
@@ -138,7 +139,8 @@ final class MarketStore: ObservableObject {
         #if os(iOS)
         if pushEnabled, !snapshot.publicKey.isEmpty {
             let previousOwner = snapshot.publicKey
-            Task { await pushRuntime.sync(owner:previousOwner,filtersJSON:"{}",enabled:false,token:nil) }
+            pushSyncSequence += 1; let sequence = pushSyncSequence
+            Task { await pushRuntime.sync(owner:previousOwner,filtersJSON:"{}",enabled:false,token:nil,sequence:sequence) }
         }
         if !demo { NativePushCredentials.remove() }
         #endif
@@ -672,10 +674,14 @@ final class MarketStore: ObservableObject {
     func syncPush() {
         #if os(iOS)
         guard !demo, ready, let app, !snapshot.publicKey.isEmpty else { return }
-        let owner = snapshot.publicKey, enabled = pushEnabled, token = MarketPushDelegate.token
+        let owner = snapshot.publicKey, generation = accountGeneration, intent = pushIntent
         queue.async { [weak self] in
             guard let filters = try? app.pushSnapshot() else { return }
-            Task { @MainActor in guard let self, self.snapshot.publicKey == owner else { return }; await self.pushRuntime.sync(owner:owner,filtersJSON:filters,enabled:enabled,token:token) }
+            Task { @MainActor in
+                guard let self,self.accountGeneration == generation,self.pushIntent == intent,self.snapshot.publicKey == owner,self.app === app else { return }
+                self.pushSyncSequence += 1
+                await self.pushRuntime.sync(owner:owner,filtersJSON:filters,enabled:self.pushEnabled,token:MarketPushDelegate.token,sequence:self.pushSyncSequence)
+            }
         }
         #endif
     }

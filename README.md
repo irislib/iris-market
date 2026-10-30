@@ -328,6 +328,23 @@ Order requests and updates are structured payloads inside existing Iris Chat dou
 
 Browser live courier location is optional, works only while the delivery view is visible, and stops on close, lock, completion or a one-hour limit. Samples are limited to one every fifteen seconds; only the latest position is retained in the order projection, with a two-minute freshness limit. Superseded or expired pending positions are discarded and location updates are omitted from chat history. Expiration cannot force another participant to delete data already received. Native clients display received locations and route updates but do not start GPS sharing yet. Background location tracking and automated travel-time estimates are not implemented.
 
+### Try a transport demo locally
+
+With the locked web dependencies installed, run:
+
+```sh
+npm run build --prefix web
+npm run demo:transport --prefix web
+```
+
+Open the local `/demo` URL printed by the command. Choose a parcel delivery (separate shop and drone courier) or a passenger ride (one driver). Create a test profile with an optional name, then choose **Buy → Request order**. The bot accepts and runs a two-minute simulated approach, pickup and arrival. Orders shows the map, ETA and stop updates; Message opens the private conversation. Cancellation stops the simulation. All routes are fictional Helsinki coordinates, with no real booking, delivery, payment or device location.
+
+The demo uses the actual signed listing, encrypted messaging and private-order implementations. Its relay and bots run only on loopback, keep their state in memory and never forward events to public relays. Browser connections are restricted to the local demo and the public map-file CDN; map files may remain cached. Each launch chooses fresh local ports so a browser profile from a previous demo is not restored against an empty relay. Bot identities and active journeys reset when the process stops; browser data is left intact. Stop it with Ctrl+C. `MARKET_DEMO_PORT` and `MARKET_DEMO_RELAY_PORT` can override the automatic ports; use a fresh browser profile if deliberately reusing an old demo origin.
+
+Replies are scripted unless you explicitly set `MARKET_DEMO_MODEL` to an already installed Ollama model before starting the demo. It calls only the local Ollama endpoint, with a short timeout and scripted fallback. It never downloads a model. Model output becomes bounded plain chat text; it cannot call tools, alter orders, control the simulated position or authorize payments.
+
+Web AI search displays completed evaluation counts such as **0 matches · 120 checked**, including while paused or finished. Counts reset on clearing or submitting a new query. Model loading and waiting for more listings are labeled separately. This counter currently applies to web; native completed-evaluation tracking is not yet exposed.
+
 Chat recognizes Cashu tokens locally and displays amount and mint, with explicit controls to show or copy the token or open it in the wallet. Parsing a token does not establish that it is valid or unspent. Receiving funds still requires the wallet’s review and confirmation. Wallet payment notes are sender-reported records, not independent payment proofs, and never mark an order paid automatically.
 
 The native owner/device adapter uses these canonical records and has passed fresh core tests, strict Clippy and a host-library build. An actual JavaScript↔Rust roundtrip passed in both directions with separate owner/device identities. Swift/Kotlin bindings match that library. The latest native appearance and onboarding changes still need a fresh platform UI build. Privately shared invitation capabilities are never added to public listings.

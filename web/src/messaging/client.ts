@@ -17,7 +17,7 @@ import type { PrivateTransport } from './transport.ts';
 import type { OrderListing, OrderPatch, OrderView } from '../orders.ts';
 type AccountMode='local'|'extension'|'linked';
 interface AccountRecord {owner:string;mode:AccountMode;deviceSecret:number[];ownerSecret?:number[];proof?:VerifiedEvent;installed?:boolean;freshOwner?:boolean;displayName?:string;profileEvent?:VerifiedEvent}
-export interface ChatMessage {id:string;text:string;mine:boolean;createdAt:number;expiresAt?:number;delivery:'queued'|'sent'|'received';orderId?:string;context?:MessageContext}
+export interface ChatMessage {id:string;text:string;mine:boolean;createdAt:number;expiresAt?:number;delivery:'queued'|'sent'|'received';orderId?:string;context?:MessageContext;system?:boolean}
 export interface MessagingState {status:string;error:string;password:boolean;ownerPubkey?:string;devicePubkey?:string;displayName?:string;pendingPublic:number;chatStatus:string;profileEvent?:VerifiedEvent;pendingListings:VerifiedEvent[];pendingReviews:VerifiedEvent[];orders:OrderView[];canSend:boolean;canSign:boolean;mode?:AccountMode;needsLogin:boolean;devices:{pubkey:string;current:boolean}[];conversations:{pubkey:string;messages:ChatMessage[]}[]}
 type AccountSigner=(event:UnsignedEvent)=>Event|Promise<Event>;
 interface BrowserSigner {getPublicKey():Promise<string>;signEvent:AccountSigner}
@@ -236,7 +236,7 @@ export function createMessaging({ getRelays=()=>[], onChange = () => {}, vault =
         const senderDevice=meta?.senderDevicePubkey??meta?.fromDeviceId;
         const accepted = projection && HEX.test(sender ?? '') ? await orders?.receive(rumor, sender, senderDevice) : null;
         if(accepted)await pruneOrderQueues();
-        if (accepted && !accepted.location) await saveMessage(projection.pubkey, { ...projection.message, orderId: accepted.orderId,context:orderContext(accepted.orderId) });
+        if (accepted && !accepted.location) await saveMessage(projection.pubkey, { ...projection.message, orderId: accepted.orderId,context:orderContext(accepted.orderId),system:true });
         return;
       }
       if (projection) {
@@ -371,7 +371,7 @@ export function createMessaging({ getRelays=()=>[], onChange = () => {}, vault =
           // background discovery/encryption step. Retries reuse its ID and tags.
           await activeRuntime.sendEvent(job.recipient,job.rumor);check(attempt);
           await book.handed(job.id);
-          if(job.action!=='location')await saveMessage(job.recipient,{id:job.id,text:job.rumor.content,mine:true,createdAt:job.rumor.created_at,delivery:book.jobs().some(item=>item.id===job.id)?'queued':'sent',orderId:job.orderId,context:orderContext(job.orderId)});
+          if(job.action!=='location')await saveMessage(job.recipient,{id:job.id,text:job.rumor.content,mine:true,createdAt:job.rumor.created_at,delivery:book.jobs().some(item=>item.id===job.id)?'queued':'sent',orderId:job.orderId,context:orderContext(job.orderId),system:true});
         }catch{check(attempt);report();}
       }
     })().catch(()=>{}).finally(()=>{if(attempt===generation){syncingOrders=undefined;if(book.jobs().some(job=>!job.handed&&!attempted.has(job.id)))queueMicrotask(()=>void syncOrders());}});

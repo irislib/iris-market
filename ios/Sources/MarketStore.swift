@@ -10,6 +10,7 @@ final class MarketStore: ObservableObject {
     @Published private(set) var snapshot: MarketSnapshot = .empty
     @Published private(set) var ready = false
     @Published private(set) var busy = false
+    @Published var messageDrafts = NativeMessageDrafts()
     @Published var alert: String?
     @Published private(set) var activeSheetCount = 0
     @Published private(set) var activeSheetID: UUID?

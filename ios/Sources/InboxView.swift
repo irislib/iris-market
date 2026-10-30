@@ -128,7 +128,15 @@ struct ConversationView: View {
     @State private var markingRead = false
     var context: MarketMessageContext? = nil
     var threadKey = "*"
-    @State private var text = ""
+    private var draftKey: NativeMessageDrafts.Key {
+        .init(account: displayedAccount, peer: conversation.id, context: context?.key ?? threadKey)
+    }
+    private var text: Binding<String> {
+        Binding(get: { store.messageDrafts[draftKey] }, set: { value in
+            guard displayedAccount == store.snapshot.publicKey else { return }
+            store.messageDrafts[draftKey] = value
+        })
+    }
     @State private var orderID: String?
     private var current: MarketConversation { store.snapshot.conversations.first(where: { $0.id == conversation.id }) ?? conversation }
     private var visibleMessages: [MarketMessage] { threadKey == "*" ? current.messages : current.messages.filter { $0.threadKey == threadKey } }
@@ -163,8 +171,8 @@ struct ConversationView: View {
                 }
                 MarketInlineError().padding(.horizontal, 18)
                 HStack(spacing: 10) {
-                    TextField("Write a message…", text: $text, prompt: Text("Write a message…").foregroundColor(MarketTheme.muted), axis: .vertical).lineLimit(1...5).padding(14).background(MarketTheme.surface, in: RoundedRectangle(cornerRadius: 20)).accessibilityIdentifier("messageInput")
-                    Button { send() } label: { Image(systemName: "arrow.up").font(.system(size: 18, weight: .semibold)).foregroundStyle(MarketTheme.onAction).frame(width: 44, height: 44).background(MarketTheme.action, in: Circle()) }.disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.busy || store.demo).accessibilityLabel("Send message")
+                    TextField("Write a message…", text: text, prompt: Text("Write a message…").foregroundColor(MarketTheme.muted), axis: .vertical).lineLimit(1...5).padding(14).background(MarketTheme.surface, in: RoundedRectangle(cornerRadius: 20)).accessibilityIdentifier("messageInput")
+                    Button { send() } label: { Image(systemName: "arrow.up").font(.system(size: 18, weight: .semibold)).foregroundStyle(MarketTheme.onAction).frame(width: 44, height: 44).background(MarketTheme.action, in: Circle()) }.disabled(text.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.busy || store.demo).accessibilityLabel("Send message")
                 }.padding(16)
             }.background(MarketTheme.paper).navigationTitle("").marketInlineTitle()
                 .toolbar {
@@ -201,9 +209,11 @@ struct ConversationView: View {
         }
     }
     private func send() {
-        let pending = text
+        let pending = text.wrappedValue
+        let key = draftKey
+        guard !key.account.isEmpty, key.account == store.snapshot.publicKey else { return }
         var request: [String: Any] = ["type": "send_message", "peer_id": conversation.id, "text": pending]
         if let context, let value = try? MarketJSON.object(context) { request["context"] = value }
-        store.command(request) { if $0 { text = "" } }
+        store.command(request) { store.messageDrafts.sent(pending, for: key, success: $0) }
     }
 }

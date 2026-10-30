@@ -343,6 +343,20 @@ The demo uses the actual signed listing, encrypted messaging and private-order i
 
 Replies are scripted unless you explicitly set `MARKET_DEMO_MODEL` to an already installed Ollama model before starting the demo. It calls only the local Ollama endpoint, with a short timeout and scripted fallback. It never downloads a model. Model output becomes bounded plain chat text; it cannot call tools, alter orders, control the simulated position or authorize payments.
 
+To keep the demos running on macOS, install and test a small local model, build the web app, then install the launchd user service from a clean, committed checkout:
+
+```sh
+ollama pull gemma3:1b
+npm run build --prefix web
+npm run demo:service --prefix web -- install
+```
+
+The service defaults to `http://127.0.0.1:4193/demo`, starts at login and restarts after an exit. It runs while the Mac is awake and the user session is available; it does not change sleep settings. `demo:service -- status`, `stop`, `start` and `restart` manage only this service. Reinstall explicitly after source updates; the installer bundles an accepted source revision and copies its web assets into a private versioned runtime rather than running from a changing development checkout. Older installations and state are preserved.
+
+Persistent mode retains the three bot identities, encrypted order/chat vaults, reply backlog and journey progress across restarts. The bounded relay stores verified signed records and encrypted messages locally; it drops expired relay records. Private order state retains the latest tracking position, which becomes stale after two minutes. Vaults use a dedicated local password file, with private directory/file permissions; this does not protect against other code already running as the same OS user. A graceful restart preserves queued replies; a crash precisely between sending and recording completion can duplicate a reply. All demo data remains separate from the live marketplace.
+
+The service uses the existing Ollama Mac app, checks its local endpoint, loads only the configured installed model and keeps it warm for quick replies. If Ollama is unavailable it attempts to open that app, while the scripted demo continues. It neither downloads models automatically nor starts another competing Ollama server. `MARKET_DEMO_MODEL` selects a different installed model when installing. Runtime health, model availability and generated-versus-scripted reply counts are available at `/_demo/status`, without exposing message contents or keys. The HTTP server and relay bind only to loopback; no public relay, LAN or Internet endpoint is created. On this single Mac, launchd avoids a Docker VM while keeping direct access to the native Ollama runtime.
+
 Web AI search displays completed evaluation counts such as **0 matches · 120 checked**, including while paused or finished. Counts reset on clearing or submitting a new query. Model loading and waiting for more listings are labeled separately. This counter currently applies to web; native completed-evaluation tracking is not yet exposed.
 
 Chat recognizes Cashu tokens locally and displays amount and mint, with explicit controls to show or copy the token or open it in the wallet. Parsing a token does not establish that it is valid or unspent. Receiving funds still requires the wallet’s review and confirmation. Wallet payment notes are sender-reported records, not independent payment proofs, and never mark an order paid automatically.

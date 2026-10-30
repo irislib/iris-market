@@ -22,7 +22,7 @@ export function simulationAt(scenario: DemoScenario, elapsedMs: number, duration
   const progress = clamp(elapsedMs/durationMs);
   const stage: DemoStage = progress < .25 ? 'to_pickup' : progress < .35 ? 'pickup' : progress < 1 ? 'to_dropoff' : 'complete';
   const position = stage==='to_pickup' ? interpolate(scenario.start,scenario.pickup.coordinates,progress/.25) : stage==='pickup' ? [...scenario.pickup.coordinates] as Coordinates : interpolate(scenario.pickup.coordinates,scenario.dropoff.coordinates,(progress-.35)/.65);
-  const pickupStatus = progress < .25 ? 'pending' : progress < .35 ? 'arrived' : 'completed';
+  const pickupStatus:'pending'|'arrived'|'completed' = progress < .25 ? 'pending' : progress < .35 ? 'arrived' : 'completed';
   return {progress,stage,position,activeStopId:progress < .35 ? scenario.pickup.id : scenario.dropoff.id,
     stops:[{...scenario.pickup,coordinates:[...scenario.pickup.coordinates] as Coordinates,kind:'pickup' as const,status:pickupStatus},{...scenario.dropoff,coordinates:[...scenario.dropoff.coordinates] as Coordinates,kind:'dropoff' as const,status:progress===1?'completed' as const:'pending' as const}],
     label: stage==='to_pickup'?'Simulated approach to pickup':stage==='pickup'?(scenario.kind==='ride'?'Simulated passenger boarding':'Simulated parcel pickup'):stage==='to_dropoff'?'Simulated travel to dropoff':'Simulation complete'};

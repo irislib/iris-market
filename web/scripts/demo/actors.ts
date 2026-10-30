@@ -11,7 +11,7 @@ type Kind = 'delivery'|'ride';
 const now = () => Math.floor(Date.now()/1000);
 
 /** Real signed listings, private orders and NDR chat; only the journeys are simulated. */
-export async function startDemoActors({relay,origin,durationMs=120000,model='',tickMs=2000,stateDir,password}:{relay:string;origin:string;durationMs?:number;model?:string;tickMs?:number;stateDir?:string;password?:string}) {
+export async function startDemoActors({relay,origin,durationMs=120000,model='',tickMs=2000,stateDir,password,modelReady=()=>true}:{relay:string;origin:string;durationMs?:number;model?:string;tickMs?:number;stateDir?:string;password?:string;modelReady?:()=>boolean}) {
   if(!/^ws:\/\/127\.0\.0\.1:\d+$/.test(relay))throw new Error('Demo actors require a loopback relay.');
   if(stateDir&&(!password||password.length<8))throw new Error('Persistent demos require a vault password.');
   const vaults=[];
@@ -34,7 +34,12 @@ export async function startDemoActors({relay,origin,durationMs=120000,model='',t
   for(const id of saved?.answered??[])answered.add(id);
   for(const item of saved?.replies??[]){const client=clients[item.actor];if(client)replies.push({...item,client});}
   for(const item of saved?.journeys??[]){const seller=sellers.find(value=>value.kind===item.kind);if(seller&&Number.isFinite(item.start))journeys.set(item.id,{seller,start:item.start,stage:item.stage});}
-  const persist=()=>vaults[0].put('demo/runtime',{answered:[...answered].slice(-2000),replies:replies.slice(0,8).map(({client,...item})=>({...item,actor:clients.indexOf(client)})),journeys:[...journeys].slice(0,8).map(([id,item])=>({id,kind:item.seller.kind,start:item.start,stage:item.stage}))});
+  let persistedRuntime=JSON.stringify(saved??null);
+  const persist=()=>{
+    const value={answered:[...answered].slice(-2000),replies:replies.slice(0,8).map(({client,...item})=>({...item,actor:clients.indexOf(client)})),journeys:[...journeys].slice(0,8).map(([id,item])=>({id,kind:item.seller.kind,start:item.start,stage:item.stage}))};
+    const encoded=JSON.stringify(value);if(encoded===persistedRuntime)return Promise.resolve();
+    persistedRuntime=encoded;return vaults[0].put('demo/runtime',value).catch(error=>{persistedRuntime='';throw error;});
+  };
   const listings=[];
   for(const seller of sellers) {
     const author=seller.client.state().ownerPubkey!;
@@ -111,7 +116,7 @@ export async function startDemoActors({relay,origin,durationMs=120000,model='',t
     try {while(replies.length&&!closing) {
       const item=replies[0]!;
       const replyStarted=Date.now();
-      const result=await demoReply({model,prompt:`You are the ${item.role}. Answer this visitor's message about the simulated journey: ${item.text}`,fallback:'This is a simulation. Request a free demo order to follow the journey on the map. No payment or real delivery is involved.',signal:abort.signal});
+      const result=await demoReply({model:modelReady()?model:'',prompt:`You are the ${item.role}. Answer this visitor's message about the simulated journey: ${item.text}`,fallback:'This is a simulation. Request a free demo order to follow the journey on the map. No payment or real delivery is involved.',signal:abort.signal});
       replyStatistics[result.source]++;replyStatistics.lastSource=result.source;replyStatistics.lastLatencyMs=Date.now()-replyStarted;
       if(!closing){await item.client.send(item.peer,result.text,item.context);replies.shift();await persist();}
     }}catch(error){if(!closing){errors.push(error instanceof Error?error.message:String(error));if(errors.length>10)errors.shift();}}finally{replyBusy=false;}

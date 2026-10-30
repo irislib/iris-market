@@ -155,3 +155,30 @@ fn cashu_structural_metadata_is_unverified_and_bearer_is_hidden() {
     assert_eq!(text, "Cashu payment");
     assert!(parsed.is_none());
 }
+
+#[test]
+fn actual_order_ids_keep_request_reply_context_and_reject_unrelated_peers() {
+    use iris_market_core::conversation_context::MessageContext;
+    let ad = TempDir::new().unwrap();
+    let bd = TempDir::new().unwrap();
+    let ak = Keys::generate();
+    let bk = Keys::generate();
+    let outsider = Keys::generate();
+    let mut buyer = Messaging::open(ad.path(), ak.clone()).unwrap();
+    let mut seller = Messaging::open(bd.path(), bk.clone()).unwrap();
+    seller.accept_invite(&buyer.invite().unwrap()).unwrap();
+    exchange(&mut buyer, &mut seller);
+    let id = buyer.request_order(&listing(&bk), 1, "Synthetic order context").unwrap();
+    exchange(&mut buyer, &mut seller);
+    let context = MessageContext::for_order(&id);
+    context.validate().unwrap();
+    assert_eq!(context.thread_id, id.split_once(':').unwrap().1);
+    buyer.send_with_context(&bk.public_key().to_hex(), "Synthetic order inquiry", Some(context.clone())).unwrap();
+    exchange(&mut buyer, &mut seller);
+    let incoming = seller.conversations().into_iter().flat_map(|c| c.messages).find(|m| m.text == "Synthetic order inquiry").unwrap();
+    assert_eq!(incoming.context, Some(context.clone()));
+    seller.send_with_context(&ak.public_key().to_hex(), "Synthetic order reply", incoming.context).unwrap();
+    exchange(&mut buyer, &mut seller);
+    assert!(buyer.conversations().iter().flat_map(|c| &c.messages).any(|m| m.text == "Synthetic order reply" && m.context == Some(context.clone())));
+    assert!(buyer.send_with_context(&outsider.public_key().to_hex(), "Must not escape the order", Some(context)).unwrap_err().contains("not shared"));
+}

@@ -17,10 +17,12 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
-@Composable fun CourierWorkspaceView(state: MarketSnapshot, model: MarketModel, openListing: (Listing) -> Unit, openOrder: (String) -> Unit, announce: (NativeTransportType, String) -> Unit, close: () -> Unit) {
+@Composable fun CourierWorkspaceView(state: MarketSnapshot, model: MarketModel, openListing: (Listing) -> Unit, openOrder: (String) -> Unit, announce: (NativeTransportType, String, String?) -> Unit, close: () -> Unit) {
     var section by remember { mutableStateOf("work") }
     var type by remember { mutableStateOf(NativeTransportType.PARCEL) }
     var area by remember { mutableStateOf("") }
+    var serviceAreas by remember { mutableStateOf<String?>(null) }
+    var chooseServiceAreas by remember { mutableStateOf(false) }
     var appliedArea by remember { mutableStateOf("") }
     val previousFilter = remember { Triple(state.query, state.side, state.aiSearch) }
     LaunchedEffect(section) { if (section != "jobs") model.filter("", if (section == "service") "offer" else "request") }
@@ -31,6 +33,7 @@ import androidx.compose.ui.unit.dp
             (if (section == "service") listing.side == "offer" && listing.author == state.publicKey else listing.side == "request" && listing.author != state.publicKey) &&
             (appliedArea.isBlank() || listing.location.contains(appliedArea, ignoreCase = true))
     }
+    if (chooseServiceAreas) ServiceAreaEditor(serviceAreas, { serviceAreas = it }, { chooseServiceAreas = false })
     Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp).padding(bottom = 30.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Transport", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
@@ -67,7 +70,8 @@ import androidx.compose.ui.unit.dp
                 TextButton(onClick = { model.command(org.json.JSONObject().put("type", "refresh")) }) { Text("Refresh") }
             }
             if (section == "service") {
-                Button(onClick = { announce(type, appliedArea) }, modifier = Modifier.fillMaxWidth().testTag("announceTransport")) { Icon(Icons.Filled.Add, null); Spacer(Modifier.width(8.dp)); Text("Announce your service") }
+                OutlinedButton(onClick = { chooseServiceAreas = true }, enabled = !state.demo, modifier = Modifier.fillMaxWidth().testTag("chooseTransportServiceAreas")) { Icon(Icons.Filled.Map, null); Spacer(Modifier.width(8.dp)); Text(if(serviceAreas == null) "Choose service areas" else "Edit service areas") }
+                Button(onClick = { announce(type, area.trim(), serviceAreas) }, modifier = Modifier.fillMaxWidth().testTag("announceTransport")) { Icon(Icons.Filled.Add, null); Spacer(Modifier.width(8.dp)); Text("Announce your service") }
                 Text("Create a public listing with your service area, rates and availability. Exact routes stay in private orders.", color = Muted, style = MaterialTheme.typography.bodySmall)
             } else Text("Public requests · agree on the route and price privately before taking a job.", color = Muted, style = MaterialTheme.typography.bodySmall)
             if (listings.isEmpty()) Text(if (section == "service") "No service listings. Tell people where and when you can help." else "No matching requests. Try another area or service type.", color = Muted)

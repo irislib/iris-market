@@ -617,6 +617,12 @@ fn message_text(event: &Envelope, order: &Order) -> String {
     }
 }
 impl OrderBook {
+    pub(crate) fn context_participant(&self, id: &str, owner: &str, peer: &str) -> bool {
+        self.records.get(id).is_some_and(|record| {
+            let people = recipients(&record.order);
+            people.iter().any(|p| p == owner) && people.iter().any(|p| p == peer)
+        })
+    }
     pub(crate) fn participants(&self) -> BTreeSet<String> {
         self.records
             .values()

@@ -21,19 +21,96 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import org.json.JSONObject
 
-@Composable fun InboxView(state:MarketSnapshot,model:MarketModel,busy:Boolean,openOrder:(String)->Unit) {
-    var selected by remember { mutableStateOf<String?>(null) }
+private data class InboxThread(val conversation:Conversation,val key:String,val context:MessageContext?,val messages:List<Message>) {
+    val id:String get()=conversation.id+"|"+key
+    val latestActivity:Long get()=messages.maxOfOrNull {it.createdAt} ?: 0L
+}
+
+/** A view-scoped read lease. Lifecycle loss stops new batches and notification suppression. */
+internal class VisibleThreadReads(
+    private val peer:String,private val key:String,
+    private val accountAllowed:()->Boolean,
+    private val setActiveContext:(String?,String?)->Unit,
+    private val markRead:(List<String>,(Boolean)->Unit)->Unit
+) {
+    private var visible=false
+    private var closed=false
+    private var inflight=false
+    private var incoming:List<String> = emptyList()
+    private val marked=mutableSetOf<String>()
+    fun update(active:Boolean,ids:List<String>) {
+        val allowed=active&&!closed&&accountAllowed()
+        if(visible&&!allowed)setActiveContext(null,null)
+        visible=allowed;incoming=ids
+        if(allowed){setActiveContext(peer,key);markNext()}
+    }
+    private fun markNext() {
+        if(!visible||closed||inflight||!accountAllowed())return
+        val batch=incoming.filterNot {it in marked}.take(256)
+        if(batch.isEmpty())return
+        marked.addAll(batch);inflight=true
+        markRead(batch){success->
+            inflight=false
+            if(accountAllowed()){if(success)markNext() else marked.removeAll(batch.toSet())}
+        }
+    }
+    fun close(){update(false,emptyList());closed=true}
+}
+
+/** Available snapshot data only: no profile, listing or relay request on inbox open. */
+private fun inboxContextTitle(context:MessageContext?,state:MarketSnapshot):String {
+    context?.orderId?.let {id->
+        val title=state.orders.firstOrNull {it.id==id}?.items?.map {it.title.trim()}?.filter {it.isNotEmpty()}?.joinToString(", ").orEmpty()
+        return if(title.isEmpty()) "Order" else "Order · $title"
+    }
+    val address=context?.listing ?: return "Conversation"
+    val coordinate=address.removePrefix("30402:")
+    val title=(state.listings+(state.savedListings ?: emptyList())+(state.profileListings?.listings ?: emptyList())).firstOrNull {it.id==coordinate}?.title?.trim().orEmpty()
+    return title.ifEmpty {"Listing inquiry"}
+}
+
+@Composable fun InboxView(state:MarketSnapshot,model:MarketModel,busy:Boolean,openOrder:(String)->Unit,visible:Boolean=true) {
+    var selected by remember(state.publicKey) { mutableStateOf<String?>(null) }
+    var selectedThread by remember(state.publicKey) { mutableStateOf("*") }
+    var selectedContext by remember(state.publicKey) { mutableStateOf<MessageContext?>(null) }
+    val preferences=androidx.compose.ui.platform.LocalContext.current.getSharedPreferences("market-display",android.content.Context.MODE_PRIVATE)
+    var groupByThreads by remember { mutableStateOf(preferences.getBoolean("message-threads",true)) }
+    val threads=state.conversations.flatMap { c ->
+        if(!groupByThreads)listOf(InboxThread(c,"*",null,c.messages))
+        else if(c.messages.isEmpty())listOf(InboxThread(c,"general",null,emptyList()))
+        else c.messages.groupBy { it.threadKey }.map { (key,messages) -> InboxThread(c,key,messages.first().context?:messages.first().orderId?.let(MessageContext::order),messages) }
+    }.sortedWith(compareByDescending<InboxThread> {it.latestActivity}.thenBy {it.id})
     var pasted by remember { mutableStateOf("") };var showConnect by remember { mutableStateOf(false) }
     val clipboard=LocalClipboardManager.current
+    val route by model.pushRoute.collectAsStateWithLifecycle()
+    val lifecycle=LocalLifecycleOwner.current.lifecycle
+    var resumed by remember(lifecycle){mutableStateOf(lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))}
+    DisposableEffect(lifecycle){val observer=LifecycleEventObserver {_,_->resumed=lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)};lifecycle.addObserver(observer);onDispose {lifecycle.removeObserver(observer)}}
+    LaunchedEffect(route,state.revision,visible,resumed){
+        val pending=route
+        if(visible&&resumed&&pending!=null&&pending.orderID==null&&state.conversations.any {it.id==pending.peerID}){
+            val key=pending.threadID?.let {"thread:$it"} ?: "general"
+            selected=pending.peerID;selectedThread=key
+            selectedContext=state.conversations.first {it.id==pending.peerID}.messages.firstOrNull {it.threadKey==key}?.context ?: pending.threadID?.let {MessageContext(it)}
+            model.consumePushRoute()
+        }
+    }
     val conversation=state.conversations.firstOrNull{it.id==selected}
     if(conversation != null) {
-        ConversationView(conversation,state.people[conversation.id] ?: PublicPerson.unnamed(conversation.id),model,busy,openOrder){selected=null};return
+        ConversationView(if(selectedThread=="*")conversation else conversation.copy(messages=conversation.messages.filter { it.threadKey==selectedThread }),state.people[conversation.id] ?: PublicPerson.unnamed(conversation.id),model,busy,openOrder,selectedContext,state.publicKey,selectedThread,visible,inboxContextTitle(selectedContext,state)){selected=null};return
     }
     Column(Modifier.fillMaxSize().padding(horizontal=22.dp)) {
         Row(Modifier.padding(top=15.dp,bottom=8.dp).fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
             Text("Inbox",style=MaterialTheme.typography.headlineMedium)
+        }
+        Row(horizontalArrangement=Arrangement.spacedBy(8.dp),modifier=Modifier.padding(top=8.dp)) {
+            listOf(true to "Threads",false to "People").forEach { (threads,label) -> FilterChip(selected=groupByThreads==threads,onClick={groupByThreads=threads;preferences.edit().putBoolean("message-threads",threads).apply()},label={Text(label)}) }
         }
         Row(horizontalArrangement=Arrangement.spacedBy(8.dp),modifier=Modifier.padding(vertical=12.dp)) {
             OutlinedButton(onClick={showConnect=!showConnect},shape=CircleShape) { Icon(Icons.Filled.Link,null,Modifier.size(18.dp));Spacer(Modifier.width(6.dp));Text("Connect") }
@@ -55,23 +132,42 @@ import org.json.JSONObject
         }
         if(state.conversations.isEmpty()) EmptyView("No conversations","Open a listing to send a private enquiry, or connect with an invitation.",Icons.Filled.Forum)
         else LazyColumn(verticalArrangement=Arrangement.spacedBy(10.dp),contentPadding=PaddingValues(bottom=30.dp)) {
-            items(state.conversations,key={it.id}) { c ->
-                Surface(color=White,shape=RoundedCornerShape(20.dp),modifier=Modifier.fillMaxWidth().clickable{selected=c.id}) {
-                    Box(Modifier.padding(16.dp)) { UserRow(state.people[c.id] ?: PublicPerson.unnamed(c.id),c.messages.lastOrNull()?.text ?: "No messages",47.dp) }
-
+            items(threads,key={it.id}) { thread ->
+                val c=thread.conversation
+                Surface(color=White,shape=RoundedCornerShape(20.dp),modifier=Modifier.fillMaxWidth().clickable{selected=c.id;selectedThread=thread.key;selectedContext=thread.context}) {
+                    Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(6.dp)) {
+                        UserRow(state.people[c.id] ?: PublicPerson.unnamed(c.id),thread.messages.lastOrNull()?.text ?: "No messages",47.dp)
+                        if(groupByThreads)Text(inboxContextTitle(thread.context,state),color=Muted,style=MaterialTheme.typography.bodySmall,maxLines=1,overflow=TextOverflow.Ellipsis,modifier=Modifier.padding(start=59.dp))
+                    }
                 }
             }
         }
     }
 }
 
-@Composable fun ConversationView(c:Conversation,person:PublicPerson,model:MarketModel,busy:Boolean,openOrder:(String)->Unit,back:()->Unit) {
-    var message by remember(c.id) { mutableStateOf("") }
+@Composable fun ConversationView(c:Conversation,person:PublicPerson,model:MarketModel,busy:Boolean,openOrder:(String)->Unit,context:MessageContext?=null,accountID:String="",threadKey:String="*",visible:Boolean=true,contextTitle:String="Conversation",back:()->Unit) {
+    val lifecycle=LocalLifecycleOwner.current.lifecycle
+    val reads=remember(model,accountID,c.id,threadKey){VisibleThreadReads(c.id,threadKey,
+        accountAllowed={accountID.isNotBlank()&&model.state.value.publicKey==accountID&&!model.state.value.demo},
+        setActiveContext={peer,key->if(model.state.value.publicKey==accountID)model.setActivePushContext(peer,key)},
+        markRead={ids,complete->model.markMessagesRead(ids,complete)})}
+    val incoming=c.messages.filterNot {it.mine}.map {it.id}
+    val currentIncoming by rememberUpdatedState(incoming)
+    val currentlyVisible by rememberUpdatedState(visible)
+    DisposableEffect(lifecycle,reads){
+        val observer=LifecycleEventObserver {_,_->reads.update(currentlyVisible&&lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED),currentIncoming)}
+        lifecycle.addObserver(observer)
+        onDispose {lifecycle.removeObserver(observer);reads.close()}
+    }
+    LaunchedEffect(visible,incoming,reads){reads.update(visible&&lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED),incoming)}
+    var message by remember(c.id,context?.key) { mutableStateOf("") }
     Column(Modifier.fillMaxSize().padding(horizontal=18.dp).imePadding()) {
         Row(verticalAlignment=Alignment.CenterVertically) {
             IconButton(onClick=back){Icon(Icons.Filled.ArrowBack,"Back to inbox")}
             Box(Modifier.weight(1f)) { UserRow(person,"Private conversation",32.dp) }
         }
+        context?.orderId?.let { id -> TextButton(onClick={openOrder(id)}) { Text(contextTitle) } }
+        if(context?.listing!=null)Text(contextTitle,color=Muted,style=MaterialTheme.typography.bodySmall,modifier=Modifier.padding(vertical=8.dp))
         LazyColumn(Modifier.weight(1f).fillMaxWidth(),contentPadding=PaddingValues(vertical=18.dp),verticalArrangement=Arrangement.spacedBy(10.dp)) {
             items(c.messages,key={it.id}) { m ->
                 Row(Modifier.fillMaxWidth(),horizontalArrangement=if(m.mine) Arrangement.End else Arrangement.Start) {
@@ -89,7 +185,7 @@ import org.json.JSONObject
             OutlinedTextField(value=message,onValueChange={message=it},placeholder={Text("Write a message")},modifier=Modifier.weight(1f),
                 shape=RoundedCornerShape(23.dp),maxLines=4,colors=OutlinedTextFieldDefaults.colors(unfocusedBorderColor=Line))
             FilledIconButton(enabled=message.isNotBlank()&&!busy,onClick={
-                model.command(JSONObject().put("type","send_message").put("peer_id",c.id).put("text",message.trim())){message=""}
+                model.command(JSONObject().put("type","send_message").put("peer_id",c.id).put("text",message.trim()).apply { context?.let { put("context",it.json()) } }){message=""}
             }) { Icon(Icons.Filled.ArrowUpward,"Send message") }
         }
     }
@@ -120,6 +216,7 @@ import org.json.JSONObject
                 }
             }
         }
+        NativePushToggle(model,state)
         val localModel by model.localModelState.collectAsState()
         if(ai.optBoolean("enabled")) Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
             if(ai.optString("provider")=="litert" && localModel.phase in setOf(LocalModelPhase.VERIFYING,LocalModelPhase.LOADING,LocalModelPhase.REVIEWING)) {

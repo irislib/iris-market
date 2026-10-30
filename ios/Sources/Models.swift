@@ -155,6 +155,13 @@ struct MarketConversation: Decodable, Identifiable, Hashable {
     let name: String
     let messages: [MarketMessage]
 }
+struct MarketMessageContext: Codable, Hashable {
+    let threadId: String
+    var orderId: String? = nil
+    var listing: String? = nil
+    static func order(_ id: String) -> Self { .init(threadId: String(id.split(separator: ":").last ?? Substring(id)), orderId: id) }
+    var key: String { orderId.map { "order:" + $0 } ?? "thread:" + threadId }
+}
 struct MarketMessage: Decodable, Identifiable, Hashable {
     let id: String
     let text: String
@@ -162,6 +169,8 @@ struct MarketMessage: Decodable, Identifiable, Hashable {
     let createdAt: Int64
     let delivery: String?
     let orderId: String?
+    var context: MarketMessageContext? = nil
+    var threadKey: String { orderId.map { "order:" + $0 } ?? context?.key ?? "general" }
     let cashu: CashuPayment?
 }
 

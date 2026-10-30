@@ -131,6 +131,8 @@ impl Default for Settings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<crate::conversation_context::MessageContext>,
     pub id: String,
     pub text: String,
     pub mine: bool,
@@ -263,15 +265,23 @@ pub enum Command {
     },
     Contact {
         author: String,
-        listing_id: String,
+        #[serde(default)]
+        listing_id: Option<String>,
     },
     CreateInvite,
     AcceptInvite {
         invite: String,
     },
+    MarkMessagesRead {
+        message_ids: Vec<String>,
+    },
+    SetPushEnabled { enabled: bool },
+    MarkNotificationsPresented { event_ids: Vec<String> },
     SendMessage {
         peer_id: String,
         text: String,
+        #[serde(default)]
+        context: Option<crate::conversation_context::MessageContext>,
     },
     RequestOrder {
         listing_id: String,

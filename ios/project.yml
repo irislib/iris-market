@@ -12,6 +12,11 @@ settings:
     SWIFT_VERSION: "5.0"
     CODE_SIGN_STYLE: Automatic
     ENABLE_USER_SCRIPT_SANDBOXING: YES
+    MARKET_APS_ENVIRONMENT: development
+    MARKET_PUSH_CONFIGURED: NO
+  configs:
+    Release:
+      MARKET_APS_ENVIRONMENT: production
 schemes:
   IrisMarket:
     build:
@@ -41,6 +46,8 @@ targets:
         PRODUCT_NAME: IrisMarket
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_FILE: Info.plist
+        CODE_SIGN_ENTITLEMENTS: Market.entitlements
+        APS_ENVIRONMENT: "$(MARKET_APS_ENVIRONMENT)"
         "CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]": Simulator.entitlements
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: YES
@@ -49,6 +56,8 @@ targets:
         embed: false
       - sdk: Security.framework
       - sdk: libsqlite3.tbd
+      - target: MarketNotificationService
+        embed: true
 
   IrisMarketUITests:
     type: bundle.ui-testing
@@ -62,3 +71,25 @@ targets:
         TEST_TARGET_NAME: IrisMarket
     dependencies:
       - target: IrisMarket
+
+  MarketNotificationService:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: NotificationService
+        excludes: ["*.plist", "*.entitlements"]
+      - path: Sources/NativePushShared.swift
+      - path: Bindings
+        excludes: ["*.h", "*.modulemap"]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: to.iris.market.NotificationService
+        INFOPLIST_FILE: NotificationService/Info.plist
+        CODE_SIGN_ENTITLEMENTS: NotificationService/NotificationService.entitlements
+        "CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]": Simulator.entitlements
+        SKIP_INSTALL: YES
+    dependencies:
+      - framework: Frameworks/IrisMarketCore.xcframework
+        embed: false
+      - sdk: Security.framework
+      - sdk: libsqlite3.tbd

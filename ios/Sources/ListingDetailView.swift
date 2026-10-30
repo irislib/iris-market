@@ -72,9 +72,11 @@ struct NewListingView: View {
     @State private var imageURL = ""
     @State private var expiry: NativeListingExpiry = .never
     @State private var transport: NativeTransportType? = nil
-    @State private var destinationArea = ""
+    @State private var serviceAreas: MarketServiceAreas?
+    @State private var chooseServiceAreas = false
     @State private var reviewPublish = false
-    init(transport: NativeTransportType? = nil, area: String = "") {
+    init(transport: NativeTransportType? = nil, area: String = "", serviceAreas: MarketServiceAreas? = nil) {
+        _serviceAreas = State(initialValue: serviceAreas)
         _transport = State(initialValue: transport)
         _location = State(initialValue: area)
         _category = State(initialValue: transport == nil ? "Other" : "Transport")
@@ -102,8 +104,8 @@ struct NewListingView: View {
                     Picker("Expires in", selection: $expiry) { ForEach(NativeListingExpiry.presets, id: \.self) { Text($0.label).tag($0) } }.accessibilityIdentifier("listingExpiry")
                     TextField(transport == nil ? "Town, area, or remote" : "Pickup area", text: $location, prompt: Text(transport == nil ? "Town, area, or remote" : "Pickup area").foregroundColor(MarketTheme.muted)).accessibilityIdentifier("listingLocation")
                     if transport != nil && category == "Transport" {
-                        TextField("Destination area · optional", text: $destinationArea).accessibilityIdentifier("transportDestinationArea")
-                        Text("Name your pickup and destination areas. Agree on exact addresses privately.").font(.footnote).foregroundStyle(MarketTheme.muted)
+                        Button { chooseServiceAreas = true } label: { Label(serviceAreas == nil ? "Choose pickup and destination areas" : "Edit service areas", systemImage: "map.fill") }.disabled(store.demo).accessibilityIdentifier("transportServiceAreas")
+                        Text("Search a place, drop a pin, and choose your range. Boundaries become public only when you publish.").font(.footnote).foregroundStyle(MarketTheme.muted)
                     }
                     TextField("Photo URL (optional)", text: $imageURL, prompt: Text("Photo URL (optional)").foregroundColor(MarketTheme.muted)).marketNoAutocapitalization().autocorrectionDisabled().marketURLKeyboard()
                 }
@@ -113,7 +115,7 @@ struct NewListingView: View {
                     else { Text("Your listing will be public, and people can contact you privately. Keep exact addresses and private contact details out of your listing.").font(.system(size: 13)).foregroundStyle(MarketTheme.muted) }
                     MarketInlineError()
                     Button { reviewPublish = true } label: { HStack { Spacer(); if store.busy { ProgressView() } else { Text("Publish listing").fontWeight(.semibold) }; Spacer() }.padding(.vertical, 8) }
-                        .disabled(store.demo || store.busy || !store.snapshot.canSign || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty).accessibilityIdentifier("publishListing")
+                        .disabled(store.demo || store.busy || !store.snapshot.canSign || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || category == "Transport" && transport != nil && serviceAreas == nil).accessibilityIdentifier("publishListing")
                 }
             }.scrollContentBackground(.hidden).background(MarketTheme.paper).marketKeyboardDismissal().navigationTitle("New listing").marketInlineTitle()
                 .toolbar {
@@ -122,6 +124,7 @@ struct NewListingView: View {
                     ToolbarItemGroup(placement: .keyboard) { Spacer(); Button("Done") { entryFocused = false }.accessibilityIdentifier("dismissKeyboard") }
                     #endif
                 }
+            .sheet(isPresented: $chooseServiceAreas) { ServiceAreaEditor(areas: $serviceAreas).marketSheetScope() }
             .confirmationDialog("Publish this listing?", isPresented: $reviewPublish, titleVisibility: .visible) {
                 Button("Publish listing") { publish() }
                 Button("Keep editing", role: .cancel) { }
@@ -129,8 +132,8 @@ struct NewListingView: View {
         }
     }
     private func publish() {
-        let serviceDetails = transport != nil && category == "Transport" ? "\n\nPickup area: \(location)\nDestination area: \(destinationArea)" : ""
-        let draft: [String: Any] = ["title": title, "description": description + serviceDetails, "side": side, "price": price, "currency": currency, "location": location, "category": category, "tags": category == "Transport" ? (transport?.tags ?? []) : [], "image_url": imageURL.isEmpty ? NSNull() : imageURL as Any]
+        var draft: [String: Any] = ["title": title, "description": description, "side": side, "price": price, "currency": currency, "location": location, "category": category, "tags": category == "Transport" ? (transport?.tags ?? []) : [], "image_url": imageURL.isEmpty ? NSNull() : imageURL as Any]
+        if category == "Transport", let serviceAreas, let data = try? JSONEncoder().encode(serviceAreas), let geometry = try? JSONSerialization.jsonObject(with: data) { draft["service_areas"] = geometry }
         store.command(["type": "publish", "draft": draft], publishExpiry: expiry) { if $0 { dismiss() } }
     }
 }

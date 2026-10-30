@@ -2,6 +2,7 @@ import SwiftUI
 
 struct MarketRootView: View {
     @EnvironmentObject private var store: MarketStore
+    @Environment(\.scenePhase) private var scenePhase
     @AppStorage("market.appearance") private var appearance = MarketAppearance.system.rawValue
     @State private var tab = MarketTab.browse
     @State private var compose = false
@@ -63,6 +64,7 @@ struct MarketRootView: View {
                     ForEach([MarketTab.browse, .saved, .orders, .inbox], id: \.self) { item in
                         Button {
                             if tab != item {
+                                store.consumePushRoute()
                                 tab = item
                                 if item == .saved { store.filter(query: "", side: "all") }
                                 else if item == .browse { store.filter(query: "", side: "offer") }
@@ -84,7 +86,21 @@ struct MarketRootView: View {
             .sheet(isPresented: $transport) { CourierWorkspaceView().marketSheetScope() }
             .sheet(isPresented: $compose) { NewListingView().marketSheetScope() }
             .sheet(item: $selected) { listing in ListingDetailView(listing: listing, onContact: { tab = .inbox }, onOrder: { tab = .orders }).marketSheetScope() }
+            .onAppear { openPushRoute() }
+            .onChange(of: store.pushRoute) { _ in openPushRoute() }
+            .onChange(of: scenePhase) { _ in openPushRoute() }
+            .onChange(of: store.snapshot.revision) { _ in openPushRoute() }
+            .onChange(of: store.activeSheetCount) { _ in openPushRoute() }
             .alert("Unable to complete action", isPresented: Binding(get: { store.alert != nil && store.activeSheetCount == 0 }, set: { if !$0 { store.alert = nil } })) { Button("OK", role: .cancel) { store.alert = nil } } message: { Text(store.alert ?? "") }
+    }
+    private func openPushRoute() {
+        guard scenePhase == .active, store.ready, !store.demo, store.snapshot.profileNameRequired != true, let route = store.pushRoute else { return }
+        compose = false; transport = false; aiSettings = false; selected = nil
+        if let id = route.orderID {
+            tab = .orders
+            guard store.activeSheetCount == 0, store.snapshot.orders.contains(where: { $0.id == id }) else { return }
+            store.activeOrderID = id; store.consumePushRoute()
+        } else { tab = .inbox }
     }
 }
 

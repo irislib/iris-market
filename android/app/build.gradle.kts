@@ -1,4 +1,5 @@
 plugins {
+    id("com.google.gms.google-services")
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
 }
@@ -47,6 +48,8 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach 
 }
 dependencyLocking { lockAllConfigurations() }
 dependencies {
+    implementation(platform("com.google.firebase:firebase-bom:34.4.0"))
+    implementation("com.google.firebase:firebase-messaging")
     implementation("androidx.core:core-ktx:1.17.0")
     implementation("androidx.activity:activity-compose:1.11.0")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.4")

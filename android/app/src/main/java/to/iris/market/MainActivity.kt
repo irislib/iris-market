@@ -23,6 +23,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -37,6 +40,7 @@ class MainActivity : ComponentActivity() {
     }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState); enableEdgeToEdge()
+        marketModel.handlePushIntent(intent)
         setContent {
             val preferences = remember { getSharedPreferences("market-appearance", MODE_PRIVATE) }
             var appearance by remember { mutableStateOf(Appearance.entries.firstOrNull {
@@ -63,6 +67,7 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+    override fun onNewIntent(intent:Intent){super.onNewIntent(intent);setIntent(intent);marketModel.handlePushIntent(intent)}
     override fun onResume() { super.onResume(); marketModel.setActive(true) }
     override fun onPause() { marketModel.setActive(false); super.onPause() }
 }
@@ -84,8 +89,21 @@ fun MarketAppView(model: MarketModel, appearance: Appearance, changeAppearance: 
     var menuExpanded by remember { mutableStateOf(false) }
     var serviceType by remember { mutableStateOf<NativeTransportType?>(null) }
     var serviceArea by remember { mutableStateOf("") }
+    var serviceAreas by remember { mutableStateOf<String?>(null) }
     var settings by remember { mutableStateOf(false) }
     var photoFilter by remember { mutableStateOf<Boolean?>(null) }
+    val pushRoute by model.pushRoute.collectAsStateWithLifecycle()
+    val lifecycle=LocalLifecycleOwner.current.lifecycle
+    var resumed by remember(lifecycle){mutableStateOf(lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))}
+    DisposableEffect(lifecycle){val observer=LifecycleEventObserver {_,_->resumed=lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)};lifecycle.addObserver(observer);onDispose {lifecycle.removeObserver(observer)}}
+    LaunchedEffect(pushRoute,resumed,state.publicKey,state.revision){
+        val route=pushRoute
+        if(resumed&&!state.demo&&!state.profileNameRequired&&route!=null){
+            selected=null;reviewListing=null;profileAuthor=null;posting=false;transport=false;settings=false
+            if(route.orderID!=null){tab=3;if(state.orders.any {it.id==route.orderID}){orderId=route.orderID;model.consumePushRoute()}}
+            else {orderId=null;tab=2}
+        }
+    }
     val hasProfile = !state.demo && !state.profileNameRequired && state.publicKey.isNotBlank()
     val ownPerson = state.people[state.publicKey] ?: PublicPerson.unnamed(state.publicKey).copy(name=NativeProfileNames.name(state.publicKey))
     Scaffold(
@@ -96,6 +114,7 @@ fun MarketAppView(model: MarketModel, appearance: Appearance, changeAppearance: 
                     "Inbox" to Icons.Filled.ChatBubble, "Orders" to Icons.Filled.ReceiptLong).forEachIndexed { index, (label, icon) ->
                     NavigationBarItem(selected = tab == index, onClick = {
                         if (tab != index) {
+                            model.consumePushRoute()
                             tab = index
                             if (index == 1) model.filter("", "all")
                             else if (index == 0) model.filter("", "offer")
@@ -106,7 +125,7 @@ fun MarketAppView(model: MarketModel, appearance: Appearance, changeAppearance: 
                 }
             }
         }, floatingActionButton = {
-            if (tab == 0 || tab == 1) FloatingActionButton(onClick = { serviceType = null; serviceArea = ""; if (state.profileNameRequired && !state.demo) model.requestProfileSetup() else posting = true }, containerColor = Action,
+            if (tab == 0 || tab == 1) FloatingActionButton(onClick = { serviceType = null; serviceArea = ""; serviceAreas = null; if (state.profileNameRequired && !state.demo) model.requestProfileSetup() else posting = true }, containerColor = Action,
                 contentColor = OnInk, shape = CircleShape) { Icon(Icons.Filled.Add, "Create listing") }
         }
     ) { inset ->
@@ -143,7 +162,7 @@ fun MarketAppView(model: MarketModel, appearance: Appearance, changeAppearance: 
             when (tab) {
                 0 -> BrowseView(state, model, busy, selected = { selected = it }, settings = { settings = true }, photoFilter=photoFilter, changePhotoFilter={photoFilter=it})
                 1 -> SavedView(state, model, selected = { selected = it })
-                2 -> InboxView(state, model, busy, openOrder = { orderId = it })
+                2 -> InboxView(state, model, busy, openOrder = { orderId = it }, visible = orderId==null&&selected==null&&profileAuthor==null&&!posting&&!transport&&!settings&&!profileSetupRequested)
                 3 -> OrdersView(state, openOrder = { orderId = it })
                 4 -> PublicProfileView(state.publicKey, state, model, openListing={selected=it}, message={author -> model.command(org.json.JSONObject().put("type","contact").put("author",author)) {tab=2} }) {tab=0}
                 5 -> ProfileView(state, busy, { settings = true }, { switchMode(!state.demo) }, model, appearance, changeAppearance, openProfile={profileAuthor=state.publicKey},openTransport={transport=true})
@@ -174,10 +193,10 @@ fun MarketAppView(model: MarketModel, appearance: Appearance, changeAppearance: 
         }
     }
     if (posting) ModalBottomSheet(onDismissRequest = { posting = false }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = Cream) {
-        PostListing(state, model, busy, transportType = serviceType, initialArea = serviceArea) { posting = false }
+        PostListing(state, model, busy, transportType = serviceType, initialArea = serviceArea, initialServiceAreas = serviceAreas) { posting = false }
     }
     if (transport) ModalBottomSheet(onDismissRequest = { transport = false }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = Cream) {
-        CourierWorkspaceView(state, model, openListing = { selected = it; transport = false }, openOrder = { orderId = it; transport = false }, announce = { type, area -> serviceType = type; serviceArea = area; transport = false; posting = true }) { transport = false }
+        CourierWorkspaceView(state, model, openListing = { selected = it; transport = false }, openOrder = { orderId = it; transport = false }, announce = { type, area, areas -> serviceType = type; serviceArea = area; serviceAreas = areas; transport = false; posting = true }) { transport = false }
     }
     if (settings) ModalBottomSheet(onDismissRequest = { settings = false }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = Cream) {
         SettingsView(state, model, busy) { settings = false }

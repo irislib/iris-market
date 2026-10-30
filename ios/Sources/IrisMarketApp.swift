@@ -2,6 +2,9 @@ import SwiftUI
 
 @main
 struct IrisMarketApp: App {
+    #if os(iOS)
+    @UIApplicationDelegateAdaptor(MarketPushDelegate.self) private var pushDelegate
+    #endif
     @AppStorage("market.appearance") private var appearance = "system"
     @StateObject private var store = MarketStore(demo: ProcessInfo.processInfo.arguments.contains("--demo"))
     @Environment(\.scenePhase) private var phase

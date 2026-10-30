@@ -9,6 +9,8 @@ struct CourierWorkspaceView: View {
     @State private var appliedArea = ""
     @State private var selected: MarketListing?
     @State private var order: TransportOrderSelection?
+    @State private var serviceAreas: MarketServiceAreas?
+    @State private var chooseServiceAreas = false
     @State private var compose = false
     @State private var inbox = false
     @State private var previousFilter: (query: String, side: String, ai: Bool)?
@@ -43,6 +45,7 @@ struct CourierWorkspaceView: View {
                             Button("Apply") { appliedArea = area.trimmingCharacters(in: .whitespacesAndNewlines) }
                         }.padding(14).background(MarketTheme.surface, in: RoundedRectangle(cornerRadius: 15))
                         if section == "service" {
+                            Button { chooseServiceAreas = true } label: { Label(serviceAreas == nil ? "Choose service areas" : "Edit service areas", systemImage: "map.fill") }.disabled(store.demo).accessibilityIdentifier("chooseTransportServiceAreas")
                             Button { compose = true } label: { Label("Announce your service", systemImage: "plus.circle.fill") }.buttonStyle(PrimaryButton()).accessibilityIdentifier("announceTransport")
                             Text("Create a public listing with your service area, rates and availability. Exact routes stay in private orders.").font(.footnote).foregroundStyle(MarketTheme.muted)
                         } else { Text("Public requests · agree on the route and price privately before taking a job.").font(.footnote).foregroundStyle(MarketTheme.muted) }
@@ -74,7 +77,8 @@ struct CourierWorkspaceView: View {
                 }
                 .sheet(item: $selected) { listing in ListingDetailView(listing: listing, onContact: { inbox = true }, onOrder: { section = "jobs" }).marketSheetScope() }
                 .sheet(item: $order) { value in OrderDetailView(orderID: value.id).marketSheetScope() }
-                .sheet(isPresented: $compose) { NewListingView(transport: type, area: appliedArea).marketSheetScope() }
+                .sheet(isPresented: $chooseServiceAreas) { ServiceAreaEditor(areas: $serviceAreas).marketSheetScope() }
+                .sheet(isPresented: $compose) { NewListingView(transport: type, area: area.trimmingCharacters(in: .whitespacesAndNewlines), serviceAreas: serviceAreas).marketSheetScope() }
                 .sheet(isPresented: $inbox) { NavigationStack { InboxView().navigationTitle("Inbox").toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { inbox = false } } } }.marketSheetScope() }
         }
     }

@@ -1,21 +1,60 @@
 import SwiftUI
 
+private struct InboxThread: Identifiable {
+    let conversation: MarketConversation
+    let key: String
+    let context: MarketMessageContext?
+    let messages: [MarketMessage]
+    var id: String { conversation.id + "|" + key }
+    var latestActivity: Int64 { messages.map(\.createdAt).max() ?? 0 }
+}
+
+/// Resolve only already available titles; opening the inbox never fetches a listing.
+private func inboxContextTitle(_ context: MarketMessageContext?, snapshot: MarketSnapshot) -> String {
+    if let id = context?.orderId {
+        let title = snapshot.orders.first(where: { $0.id == id })?.items.map(\.title).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.joined(separator: ", ") ?? ""
+        return title.isEmpty ? "Order" : "Order · " + title
+    }
+    guard let address = context?.listing else { return "Conversation" }
+    let coordinate = address.hasPrefix("30402:") ? String(address.dropFirst(6)) : address
+    let listings = snapshot.listings + (snapshot.savedListings ?? []) + (snapshot.profileListings?.listings ?? [])
+    let title = listings.first(where: { $0.id == coordinate })?.title.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return title.isEmpty ? "Listing inquiry" : title
+}
+
 struct InboxView: View {
     @EnvironmentObject private var store: MarketStore
+    @Environment(\.scenePhase) private var scenePhase
     @State private var showInvitation = false
-    @State private var selected: MarketConversation?
+    @State private var selected: InboxThread?
+    @AppStorage("market.messageGrouping") private var grouping = "threads"
+    private var threads: [InboxThread] {
+        store.snapshot.conversations.flatMap { conversation -> [InboxThread] in
+            if grouping == "people" { return [InboxThread(conversation: conversation, key: "*", context: nil, messages: conversation.messages)] }
+            let groups = Dictionary(grouping: conversation.messages, by: \.threadKey)
+            if groups.isEmpty { return [InboxThread(conversation: conversation, key: "general", context: nil, messages: [])] }
+            return groups.map { key, messages in
+                InboxThread(conversation: conversation, key: key, context: messages.first?.context ?? messages.first?.orderId.map(MarketMessageContext.order), messages: messages)
+            }.sorted { $0.latestActivity == $1.latestActivity ? $0.id < $1.id : $0.latestActivity > $1.latestActivity }
+        }.sorted { $0.latestActivity == $1.latestActivity ? $0.id < $1.id : $0.latestActivity > $1.latestActivity }
+    }
+    private func title(_ thread: InboxThread) -> String { inboxContextTitle(thread.context, snapshot: store.snapshot) }
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 23) {
                 HStack(alignment: .firstTextBaseline) { Text("Inbox").font(.system(size: 30, weight: .medium)).tracking(-1); Spacer(); Button { showInvitation = true } label: { Image(systemName: "square.and.pencil").font(.system(size: 20)) }.accessibilityLabel("Connect with an invitation") }
+                Picker("Group conversations", selection: $grouping) { Text("Threads").tag("threads"); Text("People").tag("people") }.pickerStyle(.segmented)
                 if store.snapshot.conversations.isEmpty {
                     MarketEmptyState(symbol: "bubble.left.and.bubble.right", title: "No conversations", description: "Send a private enquiry from a listing or exchange an invitation.")
                     Button { showInvitation = true } label: { Text("Connect with an invitation") }.buttonStyle(PrimaryButton())
                 } else {
                     VStack(spacing: 0) {
-                        ForEach(store.snapshot.conversations) { conversation in
-                            Button { selected = conversation } label: {
-                                UserRow(person: store.snapshot.people[conversation.id] ?? .unnamed(conversation.id), subtitle: conversation.messages.last?.text ?? "No messages", size: 48).padding(.vertical, 17)
+                        ForEach(threads) { thread in
+                            Button { selected = thread } label: {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    UserRow(person: store.snapshot.people[thread.conversation.id] ?? .unnamed(thread.conversation.id), subtitle: thread.messages.last?.text ?? "No messages", size: 48)
+                                    if grouping == "threads" { Text(title(thread)).font(.system(size: 12)).foregroundStyle(MarketTheme.muted).lineLimit(1).padding(.leading, 60) }
+                                }.padding(.vertical, 17)
                             }.buttonStyle(.plain)
                             Divider().overlay(MarketTheme.line)
                         }
@@ -25,7 +64,22 @@ struct InboxView: View {
             }.padding(23)
         }.foregroundStyle(MarketTheme.ink)
             .sheet(isPresented: $showInvitation) { InvitationView().marketSheetScope() }
-            .sheet(item: $selected) { conversation in ConversationView(conversation: conversation).marketSheetScope() }
+            .sheet(item: $selected) { thread in ConversationView(conversation: thread.conversation, context: thread.context, threadKey: thread.key).id(store.snapshot.publicKey + "|" + thread.id).marketSheetScope() }
+            .onAppear { openPushConversation() }
+            .onChange(of: store.pushRoute) { _ in openPushConversation() }
+            .onChange(of: store.snapshot.revision) { _ in openPushConversation() }
+            .onChange(of: store.activeSheetCount) { _ in openPushConversation() }
+            .onChange(of: scenePhase) { _ in openPushConversation() }
+            .onChange(of: store.snapshot.publicKey) { _ in selected = nil }
+    }
+    private func openPushConversation() {
+        guard scenePhase == .active, store.ready, !store.demo, let route = store.pushRoute, route.orderID == nil,
+              store.activeSheetCount == 0 || selected != nil,
+              let conversation = store.snapshot.conversations.first(where: { $0.id == route.peerID }) else { return }
+        let key = route.threadID.map { "thread:" + $0 } ?? "general"
+        let context = conversation.messages.first(where: { $0.threadKey == key })?.context ?? route.threadID.map { MarketMessageContext(threadId: $0) }
+        selected = InboxThread(conversation: conversation, key: key, context: context, messages: conversation.messages.filter { $0.threadKey == key })
+        store.consumePushRoute()
     }
 }
 
@@ -66,17 +120,30 @@ struct ConversationView: View {
     @EnvironmentObject private var store: MarketStore
     @Environment(\.dismiss) private var dismiss
     let conversation: MarketConversation
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var appeared = false
+    @State private var foreground = false
+    @State private var displayedAccount = ""
+    @State private var markedIDs = Set<String>()
+    @State private var markingRead = false
+    var context: MarketMessageContext? = nil
+    var threadKey = "*"
     @State private var text = ""
     @State private var orderID: String?
     private var current: MarketConversation { store.snapshot.conversations.first(where: { $0.id == conversation.id }) ?? conversation }
+    private var visibleMessages: [MarketMessage] { threadKey == "*" ? current.messages : current.messages.filter { $0.threadKey == threadKey } }
+    private var incomingIDs: [String] { visibleMessages.filter { !$0.mine }.map(\.id) }
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
+                if let id = context?.orderId {
+                    Button { orderID = id } label: { Text(inboxContextTitle(context, snapshot: store.snapshot)).font(.system(size: 14, weight: .medium)).lineLimit(2).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.vertical, 12) }
+                } else if context?.listing != nil { Text(inboxContextTitle(context, snapshot: store.snapshot)).font(.system(size: 13)).foregroundStyle(MarketTheme.muted).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.vertical, 12) }
                 ScrollViewReader { proxy in
                     ScrollView {
                         VStack(spacing: 13) {
                             Label("Private conversation", systemImage: "lock.fill").font(.system(size: 11)).foregroundStyle(MarketTheme.muted).padding(.vertical, 15)
-                            ForEach(current.messages) { message in
+                            ForEach(visibleMessages) { message in
                                 HStack {
                                     if message.mine { Spacer(minLength: 42) }
                                     VStack(alignment: .leading, spacing: 12) {
@@ -92,7 +159,7 @@ struct ConversationView: View {
                                 }.id(message.id)
                             }
                         }.padding(.horizontal, 21).padding(.bottom, 16)
-                    }.onChange(of: current.messages.count) { _ in if let last = current.messages.last { withAnimation { proxy.scrollTo(last.id, anchor: .bottom) } } }
+                    }.onChange(of: visibleMessages.count) { _ in if let last = visibleMessages.last { withAnimation { proxy.scrollTo(last.id, anchor: .bottom) } } }
                 }
                 MarketInlineError().padding(.horizontal, 18)
                 HStack(spacing: 10) {
@@ -105,8 +172,38 @@ struct ConversationView: View {
                     ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
                 }
                 .sheet(isPresented: Binding(get: { orderID != nil }, set: { if !$0 { orderID = nil } })) { if let orderID { OrderDetailView(orderID: orderID).marketSheetScope() } }
-                .onChange(of: store.snapshot.publicKey) { _ in dismiss() }
+                .onAppear { displayedAccount = store.snapshot.publicKey; appeared = true; foreground = scenePhase == .active; updateVisibleReadState() }
+                .onDisappear { appeared = false; foreground = false; clearActiveContext() }
+                .onChange(of: incomingIDs) { _ in updateVisibleReadState() }
+                .onChange(of: scenePhase) { value in foreground = value == .active; updateVisibleReadState() }
+                .onChange(of: orderID) { _ in updateVisibleReadState() }
+                .onChange(of: store.snapshot.publicKey) { _ in appeared = false; clearActiveContext(); dismiss() }
         }
     }
-    private func send() { let pending = text; store.command(["type": "send_message", "peer_id": conversation.id, "text": pending]) { if $0 { text = "" } } }
+    private var foregroundVisible: Bool {
+        appeared && foreground && orderID == nil && !store.demo && store.ready && !displayedAccount.isEmpty && displayedAccount == store.snapshot.publicKey && store.snapshot.conversations.contains(where: { $0.id == conversation.id })
+    }
+    private func clearActiveContext() {
+        if store.activePushPeerID == conversation.id && store.activePushThreadID == threadKey { store.setActivePushContext(peerID: nil, threadID: nil) }
+    }
+    private func updateVisibleReadState() {
+        guard foregroundVisible else { clearActiveContext(); return }
+        store.setActivePushContext(peerID: conversation.id, threadID: threadKey)
+        guard !markingRead else { return }
+        let batch = Array(incomingIDs.filter { !markedIDs.contains($0) }.prefix(256))
+        guard !batch.isEmpty else { return }
+        let account = displayedAccount
+        markingRead = true; markedIDs.formUnion(batch)
+        store.command(["type": "mark_messages_read", "message_ids": batch]) { success in
+            markingRead = false
+            guard account == store.snapshot.publicKey else { return }
+            if success { updateVisibleReadState() } else { markedIDs.subtract(batch) }
+        }
+    }
+    private func send() {
+        let pending = text
+        var request: [String: Any] = ["type": "send_message", "peer_id": conversation.id, "text": pending]
+        if let context, let value = try? MarketJSON.object(context) { request["context"] = value }
+        store.command(request) { if $0 { text = "" } }
+    }
 }

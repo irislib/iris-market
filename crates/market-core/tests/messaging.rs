@@ -437,3 +437,36 @@ fn iris_chat_owner_proof_connects_to_market_public_invite_without_identity_leaka
             .any(|text| text.contains("And back again"))
     );
 }
+
+#[test]
+fn marketplace_thread_context_is_encrypted_and_survives_restart() {
+    use iris_market_core::conversation_context::MessageContext;
+    let ad = TempDir::new().unwrap();
+    let bd = TempDir::new().unwrap();
+    let ak = Keys::generate();
+    let bk = Keys::generate();
+    let mut a = Messaging::open(ad.path(), ak.clone()).unwrap();
+    let mut b = Messaging::open(bd.path(), bk.clone()).unwrap();
+    b.accept_invite(&a.invite().unwrap()).unwrap();
+    exchange(&mut a, &mut b);
+    let context = MessageContext { thread_id: uuid::Uuid::new_v4().to_string(), order_id: None,
+        listing: Some(format!("30402:{}:city-cycle",ak.public_key())) };
+    b.send_with_context(&ak.public_key().to_hex(),"Can I collect this tomorrow?",Some(context.clone())).unwrap();
+    let events=b.pending_outbound();
+    assert!(!events.is_empty());
+    for event in &events {
+        let wire=event.as_json();
+        assert!(!wire.contains(&context.thread_id));
+        assert!(!wire.contains(context.listing.as_ref().unwrap()));
+        assert!(!wire.contains("iris-market-context"));
+        assert!(!wire.contains("collect this tomorrow"));
+    }
+    exchange(&mut a,&mut b);
+    drop(a);
+    let a=Messaging::open(ad.path(),ak).unwrap();
+    let conversations=a.conversations();
+    let message=conversations.iter().find(|c|c.id==bk.public_key().to_hex()).unwrap().messages.last().unwrap();
+    assert_eq!(message.context,Some(context));
+    let unknown_order=MessageContext::for_order(&format!("{}:{}", bk.public_key(), uuid::Uuid::new_v4()));
+    assert!(b.send_with_context(&a.device_public_key().to_hex(),"unrelated",Some(unknown_order)).is_err());
+}

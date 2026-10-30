@@ -1,5 +1,9 @@
 import Foundation
 import SwiftUI
+#if os(iOS)
+import UIKit
+import UserNotifications
+#endif
 
 @MainActor
 final class MarketStore: ObservableObject {
@@ -26,6 +30,16 @@ final class MarketStore: ObservableObject {
     private let enrollmentQueue = DispatchQueue(label: "to.iris.market.enrollment", qos: .utility)
     private var app: MarketApp?
     private var timer: Timer?
+    @Published private(set) var pushEnabled = false
+    @Published var pushRoute: NativePushRoute?
+    var activePushPeerID: String?
+    var activePushThreadID: String?
+    private var pushPublicDirectory: URL?
+    private var pushIntent = 0
+    private var pushDeviceSecret: String?
+    #if os(iOS)
+    private let pushRuntime = NativePushRuntime()
+    #endif
     private var localAITask: Task<Void, Never>?
     private var localAIRequest = UUID()
     private var searchContinuation = NativeSearchContinuation()
@@ -59,6 +73,7 @@ final class MarketStore: ObservableObject {
         if next.revision >= snapshot.revision {
             if next.settings.ai != snapshot.settings.ai { invalidateAITest() }
             snapshot = next
+            syncPush()
             if next.profileNameRequired != true || demo { dismissProfileSetup() }
         }
     }
@@ -119,8 +134,16 @@ final class MarketStore: ObservableObject {
     }
     private func open() {
         let demo = self.demo
+        #if os(iOS)
+        if pushEnabled, !snapshot.publicKey.isEmpty {
+            let previousOwner = snapshot.publicKey
+            Task { await pushRuntime.sync(owner:previousOwner,filtersJSON:"{}",enabled:false,token:nil) }
+        }
+        if !demo { NativePushCredentials.remove() }
+        #endif
         localAIRequest = UUID(); localAITask?.cancel(); localAITask = nil; localAIProgress = nil; localAIStatus = nil
         let previous = app
+        pushRoute = nil; activePushPeerID = nil; activePushThreadID = nil
         invalidateAITest()
         app = nil; ready = false; activeOrderID = nil; dismissProfileSetup(); stopPolling(); accountGeneration += 1; operationCount = 0; busy = false
         _ = aiIntentGate.advance()
@@ -140,36 +163,67 @@ final class MarketStore: ObservableObject {
                 let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
                 let baseFolder = base.appendingPathComponent(demo ? "IrisMarketPreview" : "IrisMarket", isDirectory: true)
                 let app: MarketApp
+                var publicDirectory = baseFolder
+                var notificationDeviceSecret = secret
                 if !demo, let owner = try SecureStore.read("active.account") {
                     guard let bundle = try NativeAccountBundle.load(owner) else { throw SecureStore.StorageError.status(-25300) }
                     let folder = bundle.legacy ? baseFolder : baseFolder.appendingPathComponent("accounts/\(bundle.ownerPublicKey)", isDirectory: true)
                     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-                    app = try MarketApp.withIdentity(dataDir: folder.path, ownerPublicKey: bundle.ownerPublicKey, ownerSecret: bundle.ownerSecret, deviceSecret: bundle.deviceSecret, authorization: bundle.authorization)
+                    publicDirectory = folder; notificationDeviceSecret = bundle.deviceSecret
+                    if let shared = NativePushStorage.directory(owner:bundle.ownerPublicKey), FileManager.default.fileExists(atPath:shared.appendingPathComponent("private-messages/messages.sqlite3").path) {
+                        guard !FileManager.default.fileExists(atPath:folder.appendingPathComponent("private-messages/messages.sqlite3").path) else { throw CocoaError(.fileWriteFileExists) }
+                        app = try MarketApp.withSharedPrivateStore(dataDir:folder.path,privateDataDir:shared.path,ownerPublicKey:bundle.ownerPublicKey,ownerSecret:bundle.ownerSecret,deviceSecret:bundle.deviceSecret,authorization:bundle.authorization)
+                    } else { app = try MarketApp.withIdentity(dataDir: folder.path, ownerPublicKey: bundle.ownerPublicKey, ownerSecret: bundle.ownerSecret, deviceSecret: bundle.deviceSecret, authorization: bundle.authorization) }
                 } else {
                     try FileManager.default.createDirectory(at: baseFolder, withIntermediateDirectories: true)
-                    if !demo, try SecureStore.read("identity.bootstrap") == publicKeyForSecret(secret: secret) {
+                    let owner = try publicKeyForSecret(secret:secret)
+                    if !demo, let shared = NativePushStorage.directory(owner:owner), FileManager.default.fileExists(atPath:shared.appendingPathComponent("private-messages/messages.sqlite3").path) {
+                        guard !FileManager.default.fileExists(atPath:baseFolder.appendingPathComponent("private-messages/messages.sqlite3").path) else { throw CocoaError(.fileWriteFileExists) }
+                        app = try MarketApp.withSharedPrivateStore(dataDir:baseFolder.path,privateDataDir:shared.path,ownerPublicKey:owner,ownerSecret:secret,deviceSecret:secret,authorization:nil)
+                    } else if !demo, try SecureStore.read("identity.bootstrap") == publicKeyForSecret(secret: secret) {
                         app = try MarketApp.freshProfile(dataDir: baseFolder.path, secretKey: secret)
                         try SecureStore.remove("identity.bootstrap")
                     } else { app = try MarketApp(dataDir: baseFolder.path, secretKey: secret, demo: demo) }
                 }
-                let initial = try app.command(request: #"{"type":"set_filter","query":"","side":"offer","ai_search":false}"#)
+                if !demo {
+                    let owner = try MarketJSON.decoder().decode(MarketSnapshot.self,from:Data(try app.snapshot().utf8)).publicKey
+                    for payload in NativePushPendingFile.drain(owner:owner) { try? app.ingestPushPayload(payload:payload) }
+                }
+                var initial = try app.command(request: #"{"type":"set_filter","query":"","side":"offer","ai_search":false}"#)
+                let ownerForPush = try MarketJSON.decoder().decode(MarketSnapshot.self, from:Data(initial.utf8)).publicKey
+                if !demo {
+                    initial = try app.command(request:"{\"type\":\"set_push_enabled\",\"enabled\":\(UserDefaults.standard.bool(forKey:"market.notifications.\(ownerForPush)") && NativePushStorage.configured)}")
+                }
                 let snapshot = try MarketJSON.decoder().decode(MarketSnapshot.self, from: Data(initial.utf8))
                 Task { @MainActor in
                     guard let self, self.accountGeneration == generation else { app.shutdown(); return }
-                    self.app = app; self.snapshot = snapshot; self.ready = true; self.startPolling()
+                    self.app = app; self.snapshot = snapshot; self.ready = true
+                    self.pushPublicDirectory = publicDirectory; self.pushDeviceSecret = notificationDeviceSecret
+                    self.pushEnabled = !demo && NativePushStorage.configured && UserDefaults.standard.bool(forKey:"market.notifications.\(snapshot.publicKey)")
+                    #if os(iOS)
+                    if !demo { MarketPushDelegate.store = self }
+                    if self.pushEnabled, let shared = NativePushStorage.directory(owner:snapshot.publicKey) {
+                        try? NativePushCredentials(owner:snapshot.publicKey,deviceSecret:notificationDeviceSecret,directory:shared.path).save()
+                        UIApplication.shared.registerForRemoteNotifications()
+                    }
+                    #endif
+                    self.startPolling(); self.syncPush()
+                    #if os(iOS)
+                    if let pending = MarketPushDelegate.pendingTap { MarketPushDelegate.pendingTap = nil; Task { await self.receivePush(pending,tapped:true) } }
+                    #endif
                 }
             } catch { Task { @MainActor in self?.alert = marketErrorMessage(error) } }
         }
     }
     func startPolling() {
         guard ready else { return }
-        refreshAIAvailability()
+        refreshAIAvailability(); syncPush()
         guard timer == nil else { return }
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refreshSnapshot() }
         }
     }
-    func stopPolling() { timer?.invalidate(); timer = nil; searchContinuation.stop() }
+    func stopPolling() { timer?.invalidate(); timer = nil; searchContinuation.stop(); activePushPeerID = nil; activePushThreadID = nil }
     private func refreshSnapshot() {
         guard let app else { return }
         let generation = accountGeneration
@@ -611,6 +665,87 @@ final class MarketStore: ObservableObject {
         }
     }
     func closeDeviceLink() { deviceLinkURL = nil; deviceLink = nil; linkingSecret = nil }
+
+    func consumePushRoute() { pushRoute = nil }
+    func setActivePushContext(peerID:String?,threadID:String?) { activePushPeerID = peerID; activePushThreadID = threadID }
+    func syncPush() {
+        #if os(iOS)
+        guard !demo, ready, let app, !snapshot.publicKey.isEmpty else { return }
+        let owner = snapshot.publicKey, enabled = pushEnabled, token = MarketPushDelegate.token
+        queue.async { [weak self] in
+            guard let filters = try? app.pushSnapshot() else { return }
+            Task { @MainActor in guard let self, self.snapshot.publicKey == owner else { return }; await self.pushRuntime.sync(owner:owner,filtersJSON:filters,enabled:enabled,token:token) }
+        }
+        #endif
+    }
+    func setPushEnabled(_ enabled: Bool) {
+        #if os(iOS)
+        guard !demo, ready, !busy, (!enabled || NativePushStorage.configured), snapshot.profileNameRequired != true, let app else { return }
+        pushIntent += 1
+        let intent = pushIntent, owner = snapshot.publicKey, generation = accountGeneration
+        let source = pushPublicDirectory, device = pushDeviceSecret
+        if !enabled {
+            pushEnabled = false; UserDefaults.standard.set(false,forKey:"market.notifications.\(snapshot.publicKey)")
+            NativePushCredentials.remove(); command(["type":"set_push_enabled","enabled":false]); syncPush(); return
+        }
+        Task {
+            let allowed = (try? await UNUserNotificationCenter.current().requestAuthorization(options:[.alert,.badge,.sound])) == true
+            guard self.pushIntent == intent, self.accountGeneration == generation, self.snapshot.publicKey == owner, self.app === app else { return }
+            guard allowed else { self.alert = "Allow notifications in system settings to receive private updates."; return }
+            guard let source, let device else { return }
+            busy = true
+            queue.async { [weak self = self] in
+                do {
+                    app.shutdown()
+                    let shared = try NativePushStorage.migrate(from:source,owner:owner)
+                    Task { @MainActor in
+                        guard let self, self.accountGeneration == generation, self.pushIntent == intent else { return }
+                        do { try NativePushCredentials(owner:owner,deviceSecret:device,directory:shared.path).save() }
+                        catch { self.open(); self.alert = "Notifications could not be enabled. Your messages were preserved."; return }
+                        UserDefaults.standard.set(true,forKey:"market.notifications.\(owner)")
+                        self.pushEnabled = false; self.open()
+                    }
+                } catch {
+                    Task { @MainActor in guard let self, self.accountGeneration == generation else { return }; self.open(); self.alert = "Notifications could not be enabled. Your messages were preserved." }
+                }
+            }
+        }
+        #endif
+    }
+    @discardableResult func receivePush(_ payload: String, tapped: Bool = false, presenting: Bool = false) async -> Bool {
+        guard !demo, pushEnabled, let app else { return false }
+        let generation = accountGeneration, owner = snapshot.publicKey
+        let prepared: (NativePushResolution, MarketSnapshot?)? = await withCheckedContinuation { continuation in
+            queue.async {
+                guard let credentials = NativePushCredentials.read(),credentials.owner == owner else { continuation.resume(returning:nil); return }
+                let replay = NativePushPendingFile.appendAndContext(owner:owner,payload:payload) ?? payload
+                let raw = resolvePushPreview(dataDir:credentials.directory,ownerPublicKey:credentials.owner,deviceSecret:credentials.deviceSecret,payload:replay)
+                guard let resolution = try? JSONDecoder().decode(NativePushResolution.self,from:Data(raw.utf8)) else { continuation.resume(returning:nil); return }
+                for previous in NativePushPendingFile.drain(owner:owner) { try? app.ingestPushPayload(payload:previous) }
+                try? app.ingestPushPayload(payload:payload)
+                let next = (try? app.snapshot()).flatMap { try? MarketJSON.decoder().decode(MarketSnapshot.self,from:Data($0.utf8)) }
+                continuation.resume(returning:(resolution,next))
+            }
+        }
+        guard generation == accountGeneration, owner == snapshot.publicKey, let (resolution,next) = prepared else { return false }
+        if let next { acceptSnapshot(next) }
+        if tapped {
+            // The extension's authenticated route remains usable after ingestion consumed the envelope.
+            if let route = resolution.route { pushRoute = route }
+            else if let object = try? JSONSerialization.jsonObject(with:Data(payload.utf8)) as? [String:Any],let id = object["market_message_id"] as? String {
+                // Route hints from the transport are used only to look up authenticated local messages.
+                for thread in snapshot.conversations {
+                    if let message = thread.messages.first(where:{$0.id == id}) {
+                        pushRoute = NativePushRoute(peerID:thread.id,threadID:message.context?.threadId,orderID:message.orderId ?? message.context?.orderId); break
+                    }
+                }
+            }
+        }
+        let canonicalKey = resolution.orderID.map { "order:\($0)" } ?? resolution.threadID.map { "thread:\($0)" } ?? "general"
+        let active = activePushPeerID == resolution.peerID && (activePushThreadID == "*" || activePushThreadID == canonicalKey)
+        if resolution.show && !active && presenting { command(["type":"mark_notifications_presented","event_ids":[resolution.notificationID]]) }
+        return resolution.show && !active
+    }
 
 }
 

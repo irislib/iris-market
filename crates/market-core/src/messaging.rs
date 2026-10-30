@@ -5,6 +5,8 @@
 //! use fresh, send-only anonymous connections, never those used for public Market
 //! listings or for receiving. Only acknowledge an outbound event after a relay OK.
 
+pub mod mobile_push;
+
 use std::{
     collections::BTreeMap,
     fs,
@@ -48,6 +50,8 @@ const INVITE_PREFIX: &str = "double-ratchet/invites/";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Message {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<crate::conversation_context::MessageContext>,
     pub id: String,
     pub text: String,
     pub mine: bool,
@@ -141,6 +145,12 @@ struct QueuedPublish {
     recipient_device_owner: Option<PublicKey>,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+struct PendingContactMessage {
+    peer_id: String,
+    rumor: UnsignedEvent,
+}
+
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct PrivateState {
     conversations: BTreeMap<String, Conversation>,
@@ -154,6 +164,8 @@ struct PrivateState {
     orders: crate::orders::OrderBook,
     #[serde(default)]
     pending_invites: BTreeMap<String, Invite>,
+    #[serde(default)]
+    pending_contact_messages: BTreeMap<String, PendingContactMessage>,
 }
 
 /// All protocol keys, plaintext messages and queued ciphertext are encrypted at
@@ -518,6 +530,7 @@ impl Messaging {
                 // visible messages, but never retry a removed device's copies.
                 let peer = event.pubkey.to_hex();
                 this.state.outbox.retain(|_, queued| queued.peer_id != peer);
+                this.state.pending_contact_messages.retain(|_, queued| queued.peer_id != peer);
                 if let Some(thread) = this.state.conversations.get_mut(&peer) {
                     for message in &mut thread.messages {
                         if message.mine && message.delivery == "pending" {
@@ -544,10 +557,31 @@ impl Messaging {
         invite_owner(&parse_invite_url(input.trim()).map_err(protocol_error)?)
     }
 
+    /// An explicit contact action saves only local intent. The protocol engine
+    /// still requires device approval and verified peer evidence before delivery.
+    pub fn open_contact(&mut self, author: &str) -> MessagingResult<()> {
+        let peer = PublicKey::parse(author).map_err(|_| "Invalid contact".to_string())?;
+        if peer == self.owner || peer == self.keys.public_key() {
+            return Err("Choose another person to contact".into());
+        }
+        self.transaction(|this| this.ensure_conversation(&peer.to_hex()))
+    }
+
     pub fn send(&mut self, peer_id: &str, text: &str) -> MessagingResult<()> {
+        self.send_with_context(peer_id, text, None)
+    }
+
+    pub fn send_with_context(&mut self, peer_id: &str, text: &str, context: Option<crate::conversation_context::MessageContext>) -> MessagingResult<()> {
         self.require_authorization()?;
+        if let Some(value) = &context { value.validate().map_err(str::to_string)?; }
+
         let peer = PublicKey::parse(peer_id).map_err(|_| "Invalid conversation".to_string())?;
         let id = peer.to_hex();
+        if let Some(order_id) = context.as_ref().and_then(|c| c.order_id.as_ref()) {
+            if !self.state.orders.context_participant(order_id, &self.owner.to_hex(), &id) {
+                return Err("This order is not shared with this person".into());
+            }
+        }
         let text = text.trim().to_string();
         if text.is_empty() {
             return Err("Write a message first".into());
@@ -559,24 +593,45 @@ impl Messaging {
             return Err("Accept a private invitation first".into());
         }
         self.transaction(move |this| {
-            if this.state.outbox.len() >= MAX_OUTBOX {
+            if this.state.outbox.len() + this.state.pending_contact_messages.len() >= MAX_OUTBOX {
                 return Err("Connect to send queued messages before sending more".into());
             }
             let now = now();
-            let result = this
-                .engine
-                .send_direct_text(peer, &id, &text, None, UnixSeconds(now))
-                .map_err(protocol_error)?;
+            if !this.contact_recipient_ready(peer) {
+                // The pinned protocol requires a recipient list before accepting
+                // a send. Save the exact rumor locally, encrypted and bounded,
+                // until signed discovery can hand it to that unchanged engine.
+                let mut millis = SystemTime::now().duration_since(UNIX_EPOCH).map_err(protocol_error)?.as_millis() as u64;
+                let rumor = loop {
+                    let mut rumor = UnsignedEvent::from_json(serde_json::json!({"pubkey":this.owner,"kind":14,"created_at":now,"content":text,"tags":[["p",id],["ms",millis.to_string()]]}).to_string()).map_err(protocol_error)?;
+                    if let Some(value) = &context { rumor.tags.push(value.tag()?); }
+                    rumor.ensure_id();
+                    let message_id = rumor.id.as_ref().ok_or("Private message identity is unavailable")?.to_hex();
+                    if !this.state.conversations.values().any(|thread| thread.messages.iter().any(|message| message.id == message_id)) { break rumor; }
+                    millis = millis.saturating_add(1);
+                };
+                let message_id = rumor.id.as_ref().ok_or("Private message identity is unavailable")?.to_hex();
+                this.state.pending_contact_messages.insert(message_id.clone(), PendingContactMessage { peer_id: id.clone(), rumor });
+                return this.append(&id, Message { id:message_id, order_id:context.as_ref().and_then(|value|value.order_id.clone()), context, text, mine:true, created_at:now, delivery:"pending".into(), cashu:None });
+            }
+            let result = if let Some(value) = &context {
+                let mut rumor = UnsignedEvent::from_json(serde_json::json!({"pubkey":this.keys.public_key(),"kind":14,"created_at":now,"content":text,"tags":[["p",id],["ms",(now * 1000).to_string()]]}).to_string()).map_err(protocol_error)?;
+                rumor.tags.push(value.tag()?);
+                this.engine.send_direct_unsigned_event(peer, &id, rumor, UnixSeconds(now)).map_err(protocol_error)?
+            } else {
+                this.engine.send_direct_text(peer, &id, &text, None, UnixSeconds(now)).map_err(protocol_error)?
+            };
             this.queue_effects(result.effects)?;
             this.append(
                 &id,
                 Message {
                     id: result.message_id,
+                    order_id: context.as_ref().and_then(|c| c.order_id.clone()),
+                    context,
                     text,
                     mine: true,
                     created_at: now,
                     delivery: "pending".into(),
-                    order_id: None,
                     cashu: None,
                 },
             )?;
@@ -607,6 +662,10 @@ impl Messaging {
             let owner =
                 if invite.owner_public_key.is_some() || invite.inviter_owner_pubkey.is_some() {
                     invite_owner(&invite)?
+                } else if self.state.conversations.contains_key(&event.pubkey.to_hex()) {
+                    // A locally requested legacy owner may sign its own public
+                    // invitation without a separate device-roster announcement.
+                    event.pubkey
                 } else {
                     let owners = self
                         .engine
@@ -622,6 +681,22 @@ impl Messaging {
                     }
                     owners[0]
                 };
+            if let Some(heads) = self.state.authorization_heads.get(&owner.to_hex()) {
+                let mut verified = VerifiedAppKeysIndex::default();
+                if heads.len() != 1 || verified.ingest(heads[0].clone(), now()).is_err()
+                    || verified.membership(owner, event.pubkey) != DeviceMembership::Authorized
+                { return Err("Device invitation is not authorized by its owner".into()); }
+            }
+            if owner != self.owner
+                && event.pubkey == owner
+                && self.state.conversations.contains_key(&owner.to_hex())
+                && !self.state.authorization_heads.contains_key(&owner.to_hex())
+                && !self.contact_recipient_ready(owner)
+            {
+                // Reuse signature, invitation ownership, roster/revocation and
+                // local authorization checks; never treat discovery as approval.
+                return self.accept_public_contact_event(event, &owner.to_hex()).map(|_| ());
+            }
             if (owner != self.owner && !self.state.conversations.contains_key(&owner.to_hex()))
                 || !self
                     .engine
@@ -692,11 +767,13 @@ impl Messaging {
             .has_due_pending_retry_work(iris_chat_protocol::NdrUnixSeconds(now()))
             && !self.state.orders.jobs.iter().any(|job| !job.handed)
             && self.state.pending_invites.is_empty()
+            && !self.state.pending_contact_messages.values().any(|queued| PublicKey::from_hex(&queued.peer_id).is_ok_and(|peer| self.contact_recipient_ready(peer)))
         {
             return Ok(());
         }
         self.transaction(|this| {
             this.retry_invitations()?;
+            this.send_pending_contacts()?;
             this.send_order_jobs()?;
             let batch = this
                 .engine
@@ -707,6 +784,47 @@ impl Messaging {
                 .ack_pending_decrypted_deliveries()
                 .map_err(protocol_error)
         })
+    }
+
+    fn contact_recipient_ready(&self, peer: PublicKey) -> bool {
+        let snapshot = self.engine.session_manager_snapshot();
+        let Some(user) = snapshot.users.iter().find(|user| user.owner_pubkey.to_bytes() == peer.to_bytes()) else { return false; };
+        let Some(roster) = &user.roster else { return false; };
+        let verified_devices = self.engine.known_device_identity_pubkeys_for_owner(peer);
+        let mut signed = VerifiedAppKeysIndex::default();
+        let has_signed_heads = if let Some(heads) = self.state.authorization_heads.get(&peer.to_hex()) {
+            if heads.len() != 1 || signed.ingest(heads[0].clone(), now()).is_err() { return false; }
+            true
+        } else { false };
+        // Preserve prepared legacy private-invitation handshakes, even before
+        // their roster appears in the engine's signed-device projection. A
+        // locally opened unknown profile has neither this roster nor a target.
+        user.devices.iter().any(|device| {
+            let key = PublicKey::from_slice(&device.device_pubkey.to_bytes()).ok();
+            device.authorized && !device.is_stale
+                && roster.devices().iter().any(|entry| entry.device_pubkey == device.device_pubkey)
+                && key.is_some_and(|key| if has_signed_heads {
+                    signed.membership(peer, key) == DeviceMembership::Authorized
+                } else { key == peer || verified_devices.contains(&key) })
+                && (device.public_invite.is_some() || device.active_session.is_some() || !device.inactive_sessions.is_empty())
+        })
+    }
+
+    fn send_pending_contacts(&mut self) -> MessagingResult<()> {
+        if !self.can_send() { return Ok(()); }
+        for (id, queued) in self.state.pending_contact_messages.clone() {
+            if self.state.outbox.len() >= MAX_OUTBOX.saturating_sub(16) { break; }
+            let peer = PublicKey::from_hex(&queued.peer_id).map_err(protocol_error)?;
+            if !self.contact_recipient_ready(peer) { continue; }
+            if let Some(context) = crate::conversation_context::from_rumor(&queued.rumor)
+                && let Some(order) = context.order_id
+                && !self.state.orders.context_participant(&order, &self.owner.to_hex(), &queued.peer_id)
+            { continue; }
+            let result = self.engine.send_direct_unsigned_event(peer, &queued.peer_id, queued.rumor, UnixSeconds(now())).map_err(protocol_error)?;
+            self.queue_effects(result.effects)?;
+            self.state.pending_contact_messages.remove(&id);
+        }
+        Ok(())
     }
 
     pub fn conversations(&self) -> Vec<Conversation> {
@@ -794,6 +912,7 @@ impl Messaging {
                     &job.recipient,
                     Message {
                         id: job.id,
+                        context: Some(crate::conversation_context::MessageContext::for_order(&job.order_id)),
                         text: job.rumor.content,
                         mine: true,
                         created_at: job.rumor.created_at.as_secs(),
@@ -872,7 +991,11 @@ impl Messaging {
                     .author(owner)
                     .limit(20),
             });
-            for device in self.engine.known_device_identity_pubkeys_for_owner(owner) {
+            let mut devices = self.engine.known_device_identity_pubkeys_for_owner(owner);
+            if owner != self.owner && !devices.contains(&owner) {
+                devices.push(owner);
+            }
+            for device in devices {
                 result.push(PrivateSubscription {
                     scope: format!("private-device-invites-{}", device.to_hex()),
                     filter: Self::contact_discovery_filter(&device.to_hex())
@@ -1185,6 +1308,10 @@ impl Messaging {
             message.sender
         };
         let id = inner.id.ok_or("Private message has no ID")?.to_hex();
+        let mut context = crate::conversation_context::from_rumor(&inner);
+        if context.as_ref().and_then(|c| c.order_id.as_ref()).is_some_and(|id| !self.state.orders.context_participant(id, &self.owner.to_hex(), &peer.to_hex())) {
+            context = None;
+        }
         let order_id = if crate::orders::is_order_message(&inner) {
             let sender_device = message.sender_device.unwrap_or(message.sender);
             let Some((order_id, location)) = self.state.orders.receive(
@@ -1199,14 +1326,14 @@ impl Messaging {
             if location {
                 return Ok(());
             }
+            context = Some(crate::conversation_context::MessageContext::for_order(&order_id));
             Some(order_id)
         } else {
-            None
+            context.as_ref().and_then(|c| c.order_id.clone())
         };
-        self.append(
-            &peer.to_hex(),
-            Message {
+        let stored = Message {
                 id,
+                context,
                 // Retain the exact received text encrypted, including additional
                 // payment tokens. conversations() hides bearer text in the UI.
                 text: inner.content,
@@ -1215,8 +1342,11 @@ impl Messaging {
                 delivery: if mine { "sent" } else { "received" }.into(),
                 order_id,
                 cashu: None,
-            },
-        )
+            };
+        self.append(&peer.to_hex(), stored.clone())?;
+        // Optional notification caching must never roll back a valid private message.
+        let _ = self.cache_notification(message.event_id.as_deref(), &peer.to_hex(), &stored);
+        Ok(())
     }
 
     fn transaction<T>(

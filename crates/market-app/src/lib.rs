@@ -79,12 +79,48 @@ impl MarketApp {
     pub fn snapshot(&self) -> Result<String, MarketError> {
         self.inner.snapshot().map_err(error)
     }
+    #[uniffi::constructor]
+    pub fn with_shared_private_store(data_dir: String, private_data_dir: String, owner_public_key: String, owner_secret: Option<String>, device_secret: String, authorization: Option<String>) -> Result<Arc<Self>, MarketError> {
+        let owner = PublicKey::parse(&owner_public_key).map_err(error)?;
+        let owner_keys = owner_secret.map(|s| Keys::parse(&s)).transpose().map_err(error)?;
+        let keys = Keys::parse(&device_secret).map_err(error)?;
+        let authorization = authorization.map(nostr::Event::from_json).transpose().map_err(error)?;
+        Ok(Arc::new(Self { inner: iris_market_core::Market::open_identity_private(Path::new(&data_dir), Path::new(&private_data_dir), owner, owner_keys, keys, authorization, false).map_err(error)? }))
+    }
+    pub fn push_snapshot(&self) -> Result<String, MarketError> {
+        self.inner.push_snapshot().map_err(error)
+    }
+    pub fn ingest_push_payload(&self, payload: String) -> Result<(), MarketError> {
+        self.inner.ingest_push_payload(&payload).map_err(error)
+    }
     pub fn command(&self, request: String) -> Result<String, MarketError> {
         self.inner.command(&request).map_err(error)
     }
     pub fn shutdown(&self) {
         self.inner.shutdown();
     }
+}
+
+/// Read-only detached preview; never opens the private store's writer.
+#[uniffi::export]
+pub fn push_event_id(payload: String) -> Option<String> {
+    iris_market_core::mobile_push::payload_event(&payload).map(|event| event.id.to_hex())
+}
+
+#[uniffi::export]
+pub fn resolve_push_preview(data_dir: String, owner_public_key: String, device_secret: String, payload: String) -> String {
+    let resolution = match (PublicKey::parse(&owner_public_key), Keys::parse(&device_secret)) {
+        (Ok(owner), Ok(keys)) => iris_market_core::messaging::mobile_push::resolve(Path::new(&data_dir), owner, &keys, &payload),
+        _ => iris_market_core::mobile_push::Resolution::default(),
+    };
+    serde_json::to_string(&resolution).unwrap_or_else(|_| "{\"show\":false}".into())
+}
+
+#[uniffi::export]
+pub fn build_push_request(registration_secret: String, method: String, endpoint: String, subscription_id: Option<String>, delivery_json: Option<String>) -> Result<String, MarketError> {
+    let delivery = delivery_json.map(|value| serde_json::from_str(&value)).transpose().map_err(error)?;
+    let request = iris_market_core::mobile_push::build_request(&registration_secret, &method, &endpoint, subscription_id.as_deref(), delivery).map_err(error)?;
+    serde_json::to_string(&request).map_err(error)
 }
 
 #[uniffi::export]

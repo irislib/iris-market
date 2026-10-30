@@ -69,7 +69,15 @@ data class Listing(
 
 }
 data class PriceDisplay(val amount: Double, val currency: String, val approximate: Boolean, val stale: Boolean)
-data class Message(val id: String, val text: String, val mine: Boolean, val orderId: String? = null, val cashu: CashuPayment? = null)
+data class MessageContext(val threadId:String,val orderId:String?=null,val listing:String?=null) {
+    val key:String get()=orderId?.let { "order:$it" }?:"thread:$threadId"
+    fun json()=JSONObject().put("thread_id",threadId).apply { orderId?.let { put("order_id",it) };listing?.let { put("listing",it) } }
+    companion object { fun order(id:String)=MessageContext(id.substringAfterLast(':'),id)
+        fun parse(value:JSONObject)=MessageContext(value.getString("thread_id"),value.optional("order_id"),value.optional("listing")) }
+}
+data class Message(val id: String, val text: String, val mine: Boolean, val orderId: String? = null, val cashu: CashuPayment? = null,val context:MessageContext?=null,val createdAt:Long=0L) {
+    val threadKey:String get()=orderId?.let { "order:$it" }?:context?.key?:"general"
+}
 data class Conversation(val id: String, val name: String, val messages: List<Message>)
 data class SearchDiscoveryStatus(val loading: Boolean, val hasMore: Boolean)
 data class MarketSnapshot(
@@ -103,7 +111,7 @@ data class MarketSnapshot(
                     val c = cs.getJSONObject(i); val ms = c.optJSONArray("messages") ?: JSONArray()
                     Conversation(c.getString("id"), c.optString("name", "Conversation"),
                         (0 until ms.length()).map { j -> val m = ms.getJSONObject(j)
-                            Message(m.getString("id"), m.optString("text"), m.optBoolean("mine"), m.optional("order_id"), m.optJSONObject("cashu")?.let(CashuPayment::parse)) })
+                            Message(m.getString("id"), m.optString("text"), m.optBoolean("mine"), m.optional("order_id"), m.optJSONObject("cashu")?.let(CashuPayment::parse),m.optJSONObject("context")?.let(MessageContext::parse),createdAt=m.optLong("created_at",0L)) })
                 }, invite = o.optional("invite"), aiSearch = o.optBoolean("ai_search"), sort = o.optString("sort", "suggested"),
                 liveLocationSupported = o.optBoolean("live_location_supported", false),
                 orders = o.optJSONArray("orders")?.let { a -> (0 until a.length()).map { MarketOrder.parse(a.getJSONObject(it)) } } ?: emptyList(),
@@ -128,11 +136,11 @@ private fun JSONObject.optional(name: String): String? =
     if (isNull(name)) null else optString(name).takeIf { it.isNotBlank() }
 
 /** The Keystore key is non-exportable. Only authenticated ciphertext is written to disk. */
-class SecureRecord(application: Application) {
+class SecureRecord(application: Application, namespace: String = "market") {
     private companion object { val recordLock = Any() }
-    private val file = AtomicFile(File(application.noBackupFilesDir, "market-secrets.v1"))
-    private val alias = "iris-market-record-v1"
-    private val aad = "to.iris.market.secrets.v1".toByteArray()
+    private val file = AtomicFile(File(application.noBackupFilesDir, if(namespace=="market") "market-secrets.v1" else "market-notifications.v1"))
+    private val alias = if(namespace=="market") "iris-market-record-v1" else "iris-market-notifications-v1"
+    private val aad = (if(namespace=="market") "to.iris.market.secrets.v1" else "to.iris.market.notifications.v1").toByteArray()
     private fun key(): SecretKey {
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         (store.getKey(alias, null) as? SecretKey)?.let { return it }
@@ -194,6 +202,19 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
     @Volatile private var remoteCurationRunning = false
     @Volatile private var remoteSnapshotLease: Pair<MarketApp, Long>? = null
     private val searchContinuation = NativeSearchContinuation()
+    private val pushSecure = SecureRecord(application,"notifications")
+    private val pushRuntime = NativePushRuntime(application)
+    private val mutablePushEnabled = MutableStateFlow(false)
+    val pushEnabled = mutablePushEnabled.asStateFlow()
+    private val mutablePushRoute = MutableStateFlow<NativePushRoute?>(null)
+    val pushRoute = mutablePushRoute.asStateFlow()
+    @Volatile private var activePushPeerID: String? = null
+    @Volatile private var activePushThreadID: String? = null
+    private var pushDirectory: String? = null
+    private var pushDeviceSecret: String? = null
+    @Volatile private var pushAccountReady=false
+    @Volatile private var pushConsentRevision=0L
+    @Volatile private var pendingPushIntent: android.content.Intent? = null
     private val mutableAITest=MutableStateFlow(NativeAITestUI())
     val aiTest=mutableAITest.asStateFlow()
     private val aiTestSession=NativeAITestSession()
@@ -225,8 +246,15 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
         }
     }
     private fun openSavedAccount() {
+        pushAccountReady=false
         invalidateAITest()
         dismissProfileSetup()
+        val previousOwner=state.value.publicKey
+        if(!preview) {
+            if(previousOwner.isNotBlank())pushRuntime.sync(previousOwner,"{}",false)
+            pushSecure.put("preview","")
+        }
+        mutablePushRoute.value=null;activePushPeerID=null;activePushThreadID=null
         accountGeneration += 1
         aiIntentGate.advance()
         core?.shutdown();core?.close();core=null
@@ -244,15 +272,29 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
             val bundle=JSONObject(saved)
             val directory=if(bundle.optBoolean("legacy")) base else File(base,"accounts/$owner")
             directory.mkdirs()
+            pushDirectory=directory.absolutePath;pushDeviceSecret=bundle.getString("device")
             core=MarketApp.withIdentity(directory.absolutePath,owner,bundle.optional("secret"),bundle.getString("device"),bundle.optional("authorization"))
         } else {
             base.mkdirs()
+            pushDirectory=base.absolutePath;pushDeviceSecret=legacy
             core=if(!preview && secure.get("identity-bootstrap")==publicKeyForSecret(legacy)) {
                 MarketApp.freshProfile(base.absolutePath,legacy).also {secure.put("identity-bootstrap","")}
             } else MarketApp(base.absolutePath,legacy,preview)
         }
         core?.command(JSONObject().put("type", "set_filter").put("query", "").put("side", "offer").put("ai_search", false).toString())
         refreshSnapshot(reset = true)
+        if(!preview)NativePushBridge.attach(this)
+        mutablePushEnabled.value=!preview && pushSecure.get("enabled-${state.value.publicKey}")=="true"
+        if(!preview)runCatching {com.google.firebase.messaging.FirebaseMessaging.getInstance().isAutoInitEnabled=mutablePushEnabled.value}
+        if(mutablePushEnabled.value) {
+            val directory=pushDirectory;val device=pushDeviceSecret
+            if(directory!=null&&device!=null)pushSecure.put("preview",JSONObject().put("owner",state.value.publicKey).put("device",device).put("directory",directory).toString())
+        }
+        core?.command(JSONObject().put("type","set_push_enabled").put("enabled",mutablePushEnabled.value).toString())
+        if(!preview)core?.let {app->NativePushPending.drain(application,state.value.publicKey){payload->app.ingestPushPayload(payload)}}
+        pushAccountReady=true
+        syncPush()
+        pendingPushIntent?.let {pendingPushIntent=null;handlePushIntent(it)}
         if (!preview) {
             val ai = JSONObject(state.value.settings).optJSONObject("ai") ?: JSONObject()
             val originalEndpoint = ai.optString("base_url")
@@ -367,11 +409,11 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
         }
     }
     fun closeDeviceLink() {linkJob?.cancel();linkJob=null;linking.value=null}
-    fun setActive(value: Boolean) { active = value; if (!value) cancelLocalAI() }
+    fun setActive(value: Boolean) { active = value; if (!value) { setActivePushContext(null,null);cancelLocalAI() } else syncPush() }
     private fun publishSnapshot(next: MarketSnapshot) {
         mutable.update { previous -> if(previous.publicKey==next.publicKey&&next.revision<previous.revision) previous else next }
         if (!state.value.profileNameRequired || state.value.demo) dismissProfileSetup()
-        viewModelScope.launch { continueLocalSearch() }
+        viewModelScope.launch { continueLocalSearch();syncPush() }
     }
     private suspend fun pollSnapshot() {
         val lease = remoteSnapshotLease
@@ -718,6 +760,62 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
                 else submit(JSONObject().put("type", "set_settings").put("settings", settings), committed, null, expectedAIIntent)
             } catch (_: Exception) { alert.value = "Could not securely save your provider key." }
         }
+    }
+    fun markMessagesRead(messageIDs:List<String>,onComplete:(Boolean)->Unit) = submit(JSONObject().put("type","mark_messages_read").put("message_ids",JSONArray(messageIDs.take(256))),{onComplete(true)},{onComplete(false)})
+    fun setActivePushContext(peerID:String?,threadID:String?) {activePushPeerID=peerID;activePushThreadID=threadID}
+    fun consumePushRoute(){mutablePushRoute.value=null}
+    fun suppressPush(route:NativePushRoute?):Boolean {
+        if(!active || route==null || activePushPeerID!=route.peerID)return false
+        val key=route.orderID?.let {"order:$it"} ?: route.threadID?.let {"thread:$it"} ?: "general"
+        return activePushThreadID=="*" || activePushThreadID==key
+    }
+    fun pushConsentScope():String = "$accountGeneration|$pushConsentRevision|${state.value.publicKey}"
+    fun setPushEnabled(enabled:Boolean,expectedOwner:String?=null,expectedScope:String?=null) {
+        if(preview || !pushAccountReady || state.value.publicKey.isBlank() || state.value.profileNameRequired || expectedOwner!=null&&expectedOwner!=state.value.publicKey || expectedScope!=null&&expectedScope!=pushConsentScope())return
+        pushConsentRevision+=1
+        mutablePushEnabled.value=enabled
+        runCatching {com.google.firebase.messaging.FirebaseMessaging.getInstance().isAutoInitEnabled=enabled}
+        val owner=state.value.publicKey
+        pushSecure.put("enabled-$owner",enabled.toString())
+        if(enabled) {
+            val directory=pushDirectory ?: return;val device=pushDeviceSecret ?: return
+            pushSecure.put("preview",JSONObject().put("owner",owner).put("device",device).put("directory",directory).toString())
+        } else pushSecure.put("preview","")
+        command(JSONObject().put("type","set_push_enabled").put("enabled",enabled)){syncPush()}
+        if(!enabled)pushRuntime.sync(owner,"{}",false)
+    }
+    fun syncPush() {
+        if(preview || !state.value.publicKey.isNotBlank())return
+        val app=core ?: return;val owner=state.value.publicKey;val generation=accountGeneration
+        viewModelScope.launch(Dispatchers.IO) {
+            val filters=runCatching {app.pushSnapshot()}.getOrNull() ?: return@launch
+            if(accountGeneration==generation)pushRuntime.sync(owner,filters,mutablePushEnabled.value)
+        }
+    }
+    fun ingestBackgroundPush(payload:String) {
+        if(payload.length>65536)return
+        viewModelScope.launch(Dispatchers.IO) {mutex.withLock {
+            core?.let {app->runCatching {app.ingestPushPayload(payload)};refreshSnapshot()}
+        }}
+    }
+    fun handlePushIntent(intent:android.content.Intent) {
+        val payload=intent.getStringExtra("market_push_payload") ?: return
+        val messageID=intent.getStringExtra("market_push_message_id")
+        if(core==null){
+            pendingPushIntent=android.content.Intent(intent)
+            intent.removeExtra("market_push_payload");intent.removeExtra("market_push_message_id");return
+        }
+        intent.removeExtra("market_push_payload");intent.removeExtra("market_push_message_id")
+        if(payload.length>65536)return
+        viewModelScope.launch(Dispatchers.IO) {mutex.withLock {
+            val app=core ?: return@withLock
+            runCatching {app.ingestPushPayload(payload)}
+            val next=MarketSnapshot.parse(app.snapshot());publishSnapshot(next)
+            // Never trust an externally supplied peer/order route. Resolve the message locally.
+            next.conversations.firstNotNullOfOrNull {thread->thread.messages.firstOrNull {it.id==messageID}?.let {message->
+                NativePushRoute(thread.id,message.context?.threadId,message.orderId ?: message.context?.orderId)
+            }}?.let {mutablePushRoute.value=it}
+        }}
     }
     override fun onCleared() {
         invalidateAITest()

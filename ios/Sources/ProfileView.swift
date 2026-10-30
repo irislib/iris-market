@@ -23,6 +23,9 @@ struct ProfileView: View {
                     Divider().padding(.leading, 61)
                     profileRow("Connections & profile", symbol: "point.3.connected.trianglepath.dotted") { connectionSettings = true }
                 }.background(MarketTheme.surface.opacity(0.75), in: RoundedRectangle(cornerRadius: 23))
+                #if os(iOS)
+                Toggle("Private notifications",isOn:Binding(get:{store.pushEnabled},set:{store.setPushEnabled($0)})).disabled(store.demo || store.snapshot.profileNameRequired == true || !NativePushStorage.configured)
+                #endif
                 Picker("Display currency", selection: Binding(get: { store.snapshot.settings.currency }, set: { value in
                     var settings = store.snapshot.settings; settings.currency = value
                     store.saveSettings(settings, key: "", replaceKey: false)

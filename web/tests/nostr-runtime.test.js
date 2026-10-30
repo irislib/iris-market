@@ -34,6 +34,22 @@ test('anonymous worker configuration satisfies the shared graph initialization w
   assert.deepEqual(config.reconciliation,{lookbackSeconds:7*86400});
 });
 
+test('public worker reserves a small cache budget before exposing network queries',async()=>{
+  const {createPublicWorkerClient}=await import('../src/nostr-runtime.ts');
+  const messages=[];
+  class ReadyWorker extends EventTarget {
+    postMessage(message){
+      messages.push(message);
+      queueMicrotask(()=>this.onmessage?.(new MessageEvent('message',{data:message.type==='init'?{type:'ready'}:{type:'void',id:message.id}})));
+    }
+    terminate(){}
+  }
+  const client=await createPublicWorkerClient([],()=>{}, {WorkerImpl:ReadyWorker,workerURL:'test.worker.js'});
+  await client.init();
+  assert.deepEqual(messages.map(message=>message.type),['init','setStorageMaxBytes']);
+  assert.equal(messages[1].maxBytes,128*1024*1024);
+});
+
 test('public cache imports verify records and cannot publish or accept private events',async()=>{
   const {runtime,clients}=fixture(),record=event();
   await runtime.ingest([record]);assert.deepEqual(clients[0].imported,[record]);

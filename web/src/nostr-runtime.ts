@@ -103,7 +103,12 @@ export async function createPublicWorkerClient(relays: readonly string[], failed
   } as unknown as new () => Worker;
   const client=new RelayWorkerClient(PublicWorker, publicWorkerConfig(relays));
   return {
-    init:()=>client.init(),queryEvents:(filters,options)=>client.queryEvents(filters,options),
+    async init(){
+      await client.init();
+      // Keep public browsing history from consuming space needed for private
+      // orders. The worker also reclaims obsolete event-index blocks.
+      await client.setStorageMaxBytes(128*1024*1024);
+    },queryEvents:(filters,options)=>client.queryEvents(filters,options),
     subscribeEvents:(filters,handlers)=>client.subscribeEvents(filters,handlers),publishEvent:event=>client.publishEvent(event),
     ingestEvents:events=>client.ingestEvents(events),
     setNostrSource:source=>client.setNostrSource(source),

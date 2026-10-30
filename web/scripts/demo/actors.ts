@@ -41,10 +41,11 @@ export async function startDemoActors({relay,origin,durationMs=120000,model='',t
     persistedRuntime=encoded;return vaults[0].put('demo/runtime',value).catch(error=>{persistedRuntime='';throw error;});
   };
   const listings=[];
+  const orderingNote='Designed to be ordered through Iris Market: https://market.iris.to. Use the web app or find links to native apps there.\n\nThis local preview is only available here. Choose Buy → Request order to try it.';
   for(const seller of sellers) {
     const author=seller.client.state().ownerPubkey!;
     const event=await seller.client.publishEvent({kind:30402,created_at:now(),tags:[['d',seller.id],['title',seller.title],['market','offer'],['t','transport'],['t',seller.kind==='ride'?'passenger':'parcel'],['price','0','EUR'],['location','Helsinki · simulation'],['g','ud9wr2'],['status','active']],
-      content:seller.kind==='ride'?'A simulated ride from Helsinki Central Station to the waterfront. Request this free demo to follow the driver approaching, picking you up and completing the trip. No real driver, booking or payment. The route is fictional; your location is not used.':'A pretend parcel delivered by a simulated drone. Request this free demo to see the shop accept, the drone collect your parcel and its position move along the route. No real product, flight, delivery or payment. The route is fictional; your location is not used.'});
+      content:[orderingNote,seller.kind==='ride'?'A simulated ride from Helsinki Central Station to the waterfront. Request this free demo to follow the driver approaching, picking you up and completing the trip. No real driver, booking or payment. The route is fictional; your location is not used.':'A pretend parcel delivered by a simulated drone. Request this free demo to see the shop accept, the drone collect your parcel and its position move along the route. No real product, flight, delivery or payment. The route is fictional; your location is not used.'].join('\n\n')});
     const url=new URL(listingURL(`${author}:${seller.id}`,origin));url.searchParams.set('test-relay',relay);
     listings.push({kind:seller.kind,title:seller.title,url:url.href,event:event.event});
   }

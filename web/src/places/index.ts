@@ -339,14 +339,30 @@ export function createMapPlaceSearchSource(
     tree?: Pick<HashTree, 'readFile'>;
   },
 ): MapPlaceSearchSource {
-  const store = options.store;
+  // The index library logs and swallows individual term-read errors. Retain the
+  // failure signal so an unsuccessful scan cannot masquerade as an empty catalog.
+  let readFailures = 0;
+  let lastReadFailure: unknown;
+  const store: Store = {
+    has: hash => options.store.has(hash),
+    put: (hash, data) => options.store.put(hash, data),
+    delete: hash => options.store.delete(hash),
+    async get(hash) {
+      try {
+        const block = await options.store.get(hash);
+        if (!block) throw new Error('Place catalog block unavailable');
+        return block;
+      } catch (error) { readFailures++; lastReadFailure = error; throw error; }
+    },
+  };
   const tree = options.tree ?? new HashTree({ store });
   const searchIndex = new SearchIndex(store, manifest.searchOptions ?? { order: 64, minKeywordLength: 1 });
   const searchRoot = deserializeCid(manifest.searchRoot);
   const placeNamesPrefix = normalizePlaceNames(manifest.placeNames)?.prefix;
   async function readJson(cid: CID): Promise<unknown> {
     const data = await tree.readFile(cid);
-    return data ? JSON.parse(textDecoder.decode(data)) : null;
+    if (!data) throw new Error('Place catalog record unavailable');
+    return JSON.parse(textDecoder.decode(data));
   }
 
   const readRecord = createAsyncCache(async (cid: CID) => normalizeSearchResult(await readJson(cid)), cidCacheKey);
@@ -376,6 +392,7 @@ export function createMapPlaceSearchSource(
     async search(query: string, limit = 40): Promise<SearchResult[]> {
       if (!searchRoot || limit <= 0) return [];
       async function lookup(text: string, prefix: string): Promise<SearchResult[]> {
+        const failuresBefore = readFailures;
         const terms = buildMapSearchTerms(searchIndex, text);
         if (!terms.length) return [];
         const candidateLimit = Math.max(limit, 24);
@@ -383,11 +400,14 @@ export function createMapPlaceSearchSource(
         const batches = await Promise.all(prefixes.map(prefix => searchIndex.searchLinkTerms(searchRoot, prefix, terms, {
           limit: candidateLimit, scanLimit: candidateLimit,
         })));
+        if (!batches.some(batch => batch.length) && readFailures !== failuresBefore) throw lastReadFailure;
         // Reserve candidates from the name namespace before ordinary matches can fill
         // the result limit. Deduplicate by record ID, never by the shared shard CID.
         const links = new Map(batches.flat().map(link => [link.id, link]));
         const records = await Promise.all([...links.values()].map(link => readLinkRecord(link)));
-        return records.filter((record): record is SearchResult => record !== null && matchesMapSearchQuery(record, query)).slice(0, limit);
+        const results = records.filter((record): record is SearchResult => record !== null && matchesMapSearchQuery(record, query)).slice(0, limit);
+        if (!results.length && readFailures !== failuresBefore) throw lastReadFailure;
+        return results;
       }
       const scopedPrefix = manifest.locationContext?.scopePrefix;
       const parts = query.split(',').map(normalizeSearchText).filter(Boolean);

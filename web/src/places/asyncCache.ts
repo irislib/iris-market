@@ -11,9 +11,12 @@ export function createAsyncCache<K, V>(
     if (pending) {
       cache.delete(key);
     } else {
-      pending = Promise.resolve().then(() => load(input)).catch(() => null).then((value) => {
+      pending = Promise.resolve().then(() => load(input)).then((value) => {
         if (value === null && cache.get(key) === pending) cache.delete(key);
         return value;
+      }, (error) => {
+        if (cache.get(key) === pending) cache.delete(key);
+        throw error;
       });
     }
     cache.set(key, pending);

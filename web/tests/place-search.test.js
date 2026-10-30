@@ -18,3 +18,32 @@ test('slow catalog falls back without accepting late results after closing',asyn
   let finish;const search=createPlaceSearch({timeoutMs:5,source:{search:()=>new Promise(resolve=>{finish=resolve;})}});
   const result=await search.search('Helsinki');assert.ok(result.some(place=>place.name==='Helsinki'));await search.close();finish([]);
 });
+
+test('failed catalog with no bundled match rejects instead of reporting no matches',async()=>{
+  const failure=new Error('Catalog download failed');
+  const search=createPlaceSearch({source:{async search(){throw failure;}}});
+  await assert.rejects(search.search('Synthetic absent place'),error=>error===failure);
+  await search.close();
+});
+test('timed out catalog with no bundled match rejects but successful empty search is empty',async()=>{
+  const slow=createPlaceSearch({timeoutMs:5,source:{search:()=>new Promise(()=>{})}});
+  await assert.rejects(slow.search('Synthetic absent place'),/Place search unavailable/);await slow.close();
+  const empty=createPlaceSearch({source:{async search(){return[];}}});
+  assert.deepEqual(await empty.search('Synthetic absent place'),[]);await empty.close();
+});
+test('record cache shares failure, preserves it, and retries on the next lookup',async()=>{
+  const {createAsyncCache}=await import('../src/places/asyncCache.ts');
+  let calls=0;const failure=new Error('Record unavailable');
+  const read=createAsyncCache(async()=>{calls++;if(calls===1)throw failure;return 'record';},key=>key);
+  const first=read('cid');assert.equal(read('cid'),first);
+  await assert.rejects(first,error=>error===failure);
+  assert.equal(await read('cid'),'record');assert.equal(calls,2);
+});
+
+test('index term download failures remain observable despite index library error swallowing',async()=>{
+  const {createMapPlaceSearchSource}=await import('../src/places/index.ts');
+  const {default:manifest}=await import('../src/places/manifest.json',{with:{type:'json'}});
+  const failure=new Error('Catalog block download failed');
+  const source=createMapPlaceSearchSource(manifest,{store:{async get(){throw failure;},async has(){return false;},async put(){return false;},async delete(){return false;}}});
+  await assert.rejects(source.search('Synthetic absent place',8),error=>error===failure);
+});

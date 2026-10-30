@@ -17,7 +17,12 @@ export function createPlaceSearch({source,timeoutMs=15000}:{source?:{search(quer
         if(!source){cache??=new MapBlockCache({cacheMiB:64});const blocks=cache;source=createMapPlaceSearchSource(manifest as MapPlaceSearchManifest,{store:{get:hash=>blocks.get(hash),has:async()=>false,put:async()=>false,delete:async()=>false}});}
         const results=await Promise.race([source.search(query,8),new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(new Error('Place search unavailable')),timeoutMs);})]);
         return closed?[]:results.length?results:local(query);
-      }catch{return closed?[]:local(query);}finally{clearTimeout(timer);}
+      }catch(error){
+        if(closed)return[];
+        const fallback=local(query);
+        if(fallback.length)return fallback;
+        throw error;
+      }finally{clearTimeout(timer);}
     },
     async close(){closed=true;await cache?.close();},
   };

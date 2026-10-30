@@ -155,3 +155,13 @@ test('reopening a saved circle restores its point and radius without rewriting g
  assert.equal(restoreServiceAreaCircle(polygon),null);
  const f=fixture({value:saved});await f.ui.show();assert.deepEqual(f.ui.getValue(),saved);assert.deepEqual(f.changes,[]);assert.ok(all(f.ui.element).some(node=>node.textContent.includes('km around the selected point')));await f.ui.destroy();
 });
+
+
+test('catalog failure is shown as unavailable rather than a successful empty search',async()=>{
+  const f=fixture({searchPlaces:async()=>{throw new Error('Catalog download timed out');}});await f.ui.show();
+  const input=label(f.ui.element,'Search places');input.value='Synthetic absent place';input.oninput();
+  await new Promise(done=>setTimeout(done,270));
+  assert(find(f.ui.element,'Place search unavailable. Choose a point on the map.'));
+  assert.equal(find(f.ui.element,'No matching places. Choose a point on the map.'),undefined);
+  assert.equal(f.ui.getValue(),null);assert.deepEqual(f.changes,[]);await f.ui.destroy();
+});

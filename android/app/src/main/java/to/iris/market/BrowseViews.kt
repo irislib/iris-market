@@ -34,6 +34,7 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import org.json.JSONObject
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable fun BrowseView(state: MarketSnapshot, model: MarketModel, busy: Boolean,
     selected: (Listing) -> Unit, settings: () -> Unit, photoFilter: Boolean?, changePhotoFilter: (Boolean?) -> Unit) {
     var query by remember { mutableStateOf(state.query) }
@@ -41,7 +42,7 @@ import org.json.JSONObject
     LaunchedEffect(state.query, state.side) { showAll = false }
     var showMap by remember { mutableStateOf(false) }
     var sortMenu by remember { mutableStateOf(false) }
-    var filtersMenu by remember { mutableStateOf(false) }
+    var filtersSheet by remember { mutableStateOf(false) }
     val ai = remember(state.settings) { JSONObject(state.settings).optJSONObject("ai") }
     val localModel by model.localModelState.collectAsState()
     val localInference = ai?.optString("provider")=="litert" && localModel.phase in setOf(LocalModelPhase.VERIFYING, LocalModelPhase.LOADING, LocalModelPhase.REVIEWING)
@@ -117,14 +118,7 @@ import org.json.JSONObject
                                 enabled=true, selected=state.side==value, borderColor=Line, selectedBorderColor=Action))
                     }
                     Spacer(Modifier.weight(1f))
-                    Box {
-                        IconButton(onClick={filtersMenu=true}) { Icon(Icons.Filled.FilterAlt,"Filters",tint=Muted) }
-                        DropdownMenu(expanded=filtersMenu,onDismissRequest={filtersMenu=false}) {
-                            DropdownMenuItem(text={Text("Has photos")},leadingIcon={if(wantsPhotos) Icon(Icons.Filled.Check,null)},onClick={changePhotoFilter(true);filtersMenu=false})
-                            DropdownMenuItem(text={Text("Show all listings")},onClick={changePhotoFilter(false);filtersMenu=false})
-                            DropdownMenuItem(text={Text("Automatic")},onClick={changePhotoFilter(null);filtersMenu=false})
-                        }
-                    }
+                    IconButton(onClick={filtersSheet=true}) { Icon(Icons.Filled.FilterAlt,"Filters",tint=Muted) }
                 }
                 if (canCurate) Surface(color = Mint, shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth().padding(top = 5.dp)) {
                     Row(Modifier.padding(start = 12.dp, end = 5.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -153,6 +147,24 @@ import org.json.JSONObject
         if(!showMap) items(visibleListings, key={it.id}) { listing -> ListingCard(listing, state.demo, {selected(listing)}, {model.save(listing.id)}) }
         if(!showMap && (state.searchDiscovery?.hasMore == true || canCurate && state.listings.any { it.relevanceShow == null })) item(span={GridItemSpan(maxLineSpan)}) {
             TextButton(onClick=model::continueSearch,enabled=!searching&&!busy,modifier=Modifier.fillMaxWidth().testTag("loadMoreListings")) { Text("Load more") }
+        }
+    }
+    if(filtersSheet) ModalBottomSheet(onDismissRequest={filtersSheet=false}) {
+        Column(Modifier.fillMaxWidth().padding(horizontal=24.dp).padding(bottom=24.dp).testTag("listingFiltersSheet")) {
+            Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
+                Text("Filters",style=MaterialTheme.typography.headlineSmall,modifier=Modifier.weight(1f))
+                TextButton(onClick={filtersSheet=false}) { Text("Done") }
+            }
+            Surface(color=MaterialTheme.colorScheme.surfaceContainerLow,shape=RoundedCornerShape(16.dp),modifier=Modifier.padding(vertical=16.dp)) {
+                Row(Modifier.fillMaxWidth().padding(horizontal=16.dp,vertical=8.dp),verticalAlignment=Alignment.CenterVertically) {
+                    Text("Has photos",style=MaterialTheme.typography.bodyLarge,modifier=Modifier.weight(1f))
+                    Switch(checked=wantsPhotos,onCheckedChange=changePhotoFilter,
+                        modifier=Modifier.semantics { contentDescription="Has photos" }.testTag("hasPhotosFilter"))
+                }
+            }
+            TextButton(onClick={changePhotoFilter(null)},enabled=photoFilter!=null,modifier=Modifier.testTag("resetPhotoFilter")) {
+                Text("Reset")
+            }
         }
     }
 }

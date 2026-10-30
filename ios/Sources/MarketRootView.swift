@@ -96,6 +96,7 @@ struct BrowseView: View {
     @State private var showAllMatches = false
     @State private var showMap = false
     @State private var aiSettings = false
+    @State private var filtersPresented = false
     @Binding var photoFilter: Bool?
     private let columns = [GridItem(.flexible(), spacing: 14), GridItem(.flexible(), spacing: 14)]
     private var curationActive: Bool { store.snapshot.aiSearch && store.snapshot.settings.ai.enabled && !store.snapshot.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -139,11 +140,7 @@ struct BrowseView: View {
                     filterChip("Selling", value: "offer", symbol: "tag.fill")
                     filterChip("Buying", value: "request", symbol: "hand.wave.fill")
                     Spacer()
-                    Menu {
-                        Button { photoFilter = true } label: { Label("Has photos", systemImage: wantsPhotos ? "checkmark" : "photo") }.accessibilityIdentifier("hasPhotosFilter")
-                        Button("Show all listings") { photoFilter = false }.accessibilityIdentifier("allPhotosFilter")
-                        Button("Automatic") { photoFilter = nil }.accessibilityIdentifier("automaticPhotoFilter")
-                    } label: { Image(systemName: "line.3.horizontal.decrease.circle.fill").font(.system(size: 21)).foregroundStyle(MarketTheme.muted).frame(width: 40, height: 40) }
+                    Button { filtersPresented = true } label: { Image(systemName: "line.3.horizontal.decrease.circle.fill").font(.system(size: 21)).foregroundStyle(MarketTheme.muted).frame(width: 40, height: 40) }
                         .accessibilityLabel("Filters").accessibilityValue(wantsPhotos ? "Has photos" : "All listings").accessibilityIdentifier("listingFilters")
                 }
                 if searching {
@@ -199,6 +196,10 @@ struct BrowseView: View {
             .onChange(of: store.snapshot.side) { _ in showAllMatches = false }
             .refreshable { store.command(["type": "refresh"]) }
             .sheet(isPresented: $aiSettings) { AISettingsView(settings: store.snapshot.settings).marketSheetScope() }
+            .sheet(isPresented: $filtersPresented) {
+                ListingFiltersView(hasPhotos: Binding(get: { wantsPhotos }, set: { photoFilter = $0 }), canReset: photoFilter != nil, reset: { photoFilter = nil })
+                    .modifier(MarketSheetScope())
+            }
     }
     private func submitSearch() {
         switch NativeAIReadiness.searchAction(intentOn: store.snapshot.settings.ai.enabled, ready: store.aiSearchEnabled, busy: store.busy, inference: store.localAIProgress != nil, query: query) {
@@ -214,6 +215,37 @@ struct BrowseView: View {
                 .foregroundStyle(side == value ? MarketTheme.onAction : MarketTheme.ink).padding(.horizontal, 15).padding(.vertical, 11)
                 .background(side == value ? MarketTheme.action : MarketTheme.surface.opacity(0.70), in: Capsule())
         }.accessibilityIdentifier("filter\(label)").accessibilityAddTraits(side == value ? .isSelected : [])
+    }
+}
+
+private struct ListingFiltersView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Binding var hasPhotos: Bool
+    let canReset: Bool
+    let reset: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            HStack {
+                Text("Filters").font(.system(size: 22, weight: .semibold))
+                Spacer()
+                Button("Done") { dismiss() }.font(.system(size: 16, weight: .semibold))
+                    .accessibilityIdentifier("closeListingFilters")
+            }
+            Toggle(isOn: $hasPhotos) { Label("Has photos", systemImage: "photo") }
+                .toggleStyle(.switch).padding(16)
+                .background(MarketTheme.surface, in: RoundedRectangle(cornerRadius: 16))
+                .accessibilityIdentifier("hasPhotosFilter")
+            Button("Reset", action: reset).disabled(!canReset)
+                .accessibilityIdentifier("resetListingFilters")
+        }.padding(24).foregroundStyle(MarketTheme.ink).tint(MarketTheme.action)
+            .background(MarketTheme.paper)
+        #if os(macOS)
+            .frame(width: 400)
+        #else
+            .presentationDetents([.height(230), .medium])
+            .presentationDragIndicator(.visible)
+        #endif
     }
 }
 

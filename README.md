@@ -20,7 +20,7 @@ A general marketplace for things, skills and opportunities. Native iOS, Android 
 - One search field for text or optional AI matching. Browser-local AI can prepare its local model automatically, with inline progress, cancellation and a Show all override. It is experimental; marketplace accuracy is not established.
 - Named CLI commands, a local JSON action interface and MCP stdio tools for search, publication, saved listings, contact, messages and private orders.
 
-This is a development prototype. The browser includes an optional Cashu wallet; shipping guarantees, escrow, automatic transfer of earlier private chat history, group conversations and saved matching watches are not implemented. Native Cashu adapters and secure seed storage are present behind the disabled `cashu-wallet` feature; native wallet compilation and UI acceptance are pending. Native local AI supports Apple’s available system model and an optional Android model download; Android inference on actual model weights remains unverified. The CLI source package is published on crates.io. Signed Android and notarized macOS downloads are available in [v0.1.1-alpha.1](https://github.com/irislib/iris-market/releases/tag/v0.1.1-alpha.1). iOS 0.1.2 (5) is available to the existing internal TestFlight group, with relative expiry, known followers and an editable AI test. The alpha includes the compact search action and photo-only Selling home feed; searches, Saved and profiles can include listings without photos.
+This is a development prototype. The browser includes an optional Cashu wallet; shipping guarantees, escrow, automatic transfer of earlier private chat history, group conversations and saved matching watches are not implemented. Native Cashu adapters and secure seed storage are present behind the disabled `cashu-wallet` feature; native wallet compilation and UI acceptance are pending. Native local AI supports Apple’s available system model and an optional Android model download; Android inference on actual model weights remains unverified. The CLI source package is published on crates.io. Signed Android and notarized macOS downloads are available in [v0.1.1-alpha.1](https://github.com/irislib/iris-market/releases/tag/v0.1.1-alpha.1). iOS 0.1.3 (9) is available to the existing internal TestFlight group, with relative expiry, known followers and an editable AI test. The alpha includes the compact search action and photo-only Selling home feed; searches, Saved and profiles can include listings without photos.
 
 Web: [market.iris.to](https://market.iris.to) · [App builds and CLI](https://getmarket.iris.to). Source: [GitHub](https://github.com/irislib/iris-market). Hashtree source: [iris-market](https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/iris-market).
 
@@ -221,7 +221,7 @@ The ordinary home feed is photo-first, but does not use an automatic “delightf
 Install the published CLI from [crates.io](https://crates.io/crates/iris-market):
 
 ```sh
-cargo install iris-market --version 0.1.2 --locked
+cargo install iris-market --version 0.1.3 --locked
 ```
 
 The executable is `iris-market`. Source builds use `cargo build --locked -p iris-market`.
@@ -264,18 +264,18 @@ Acceptance includes actual fresh-native Rust→JS order interoperability and an 
 
 ### Release candidate 0.1.3
 
-The current source targets `v0.1.3-alpha.2`, with native build number **9**. These are source defaults, not a claim that updated downloads or TestFlight builds are available. Existing download links above remain on their published release until new public bytes are verified. The frozen `v0.1.2-alpha.1` candidates retain their original source and evidence. The held `v0.1.3-alpha.1` candidate and its immutable source tag also remain preserved.
+The current source targets `v0.1.3-alpha.3`, with native build number **10**. These are source defaults, not a claim that updated downloads or TestFlight builds are available. Existing download links above remain on their published release until new public bytes are verified. The frozen `v0.1.2-alpha.1` candidates retain their original source and evidence. The held `v0.1.3-alpha.1` and `v0.1.3-alpha.2` candidates and their immutable source tags also remain preserved.
 
 The release owner integrates and commits the accepted source before building. `native-alpha.py` rejects a dirty checkout, uses checksum-verified inputs, generates bindings from that same core, and keeps candidates in a new staging directory. On the accepted commit:
 
 ```sh
-python3 scripts/alpha-release.py plan --tag v0.1.3-alpha.2
+python3 scripts/alpha-release.py plan --tag v0.1.3-alpha.3
 python3 scripts/release-build-inputs.py --check
 python3 scripts/android-release-inputs.py --check
 python3 scripts/test_alpha_release.py -v
 ```
 
-Build the signed Apple candidates using the pinned local Apple input installer and `native-alpha.py --build-number 9`; Android and all four CLI targets use `.github/workflows/alpha-build.yml` dispatched on the release tag pointing to the full accepted commit, with the same build number. The workflow's Android output is an attested unsigned handoff. `android-sign.py` verifies that provenance and signs locally without changing application payloads. Signing values stay in the release environment.
+Build the signed Apple candidates using the pinned local Apple input installer and `native-alpha.py --build-number 10`; Android and all four CLI targets use `.github/workflows/alpha-build.yml` dispatched on the release tag pointing to the full accepted commit, with the same build number. The workflow's Android output is an attested unsigned handoff. `android-sign.py` verifies that provenance and signs locally without changing application payloads. Signing values stay in the release environment.
 
 Runtime acceptance must cover the final signed APK, the final notarized/stapled Mac archive, the distribution IPA and TestFlight processing/internal-group state, and each CLI executable on its target. The Linux desktop packages require clean-source evidence, a verified bundled web asset manifest, exact installed/extracted payload checks, recorded system runtime versions, and GUI acceptance of each final format. Then seal the nine artifacts with `alpha-release.py seal` and verify its manifest before publication. Publish to the existing GitHub/Hashtree destinations, verify anonymous downloads against every recorded hash, and only then update download links. The build scripts do not upload or publish automatically. `scripts/publish-alpha.mjs` manages explicit publication after sealing, deriving the complete file set from the manifest (eleven files for schema 2). Its `github-draft` operation only uploads missing matching files; it refuses to replace differing assets. `github-publish` rechecks remote tag identity and every file digest, and `github-verify` streams anonymous downloads to verify all bytes. `hashtree-publish` requires a previously accepted release proof and keeps the existing release inventory; `hashtree-verify` checks the immutable upload, public HTTPS files, latest record, and the preserved previous release. The helper uses the same pinned Hashtree executable as static-site publication.
 
@@ -302,7 +302,7 @@ cd ..
 python3 linux/iris_market.py --assets web/dist
 ```
 
-The release owner packages only the accepted source and reviewed web assets with `scripts/linux-package.py --tag v0.1.3-alpha.2 --version 0.1.3~alpha.2 --arch amd64 --output <new-output-directory>`. The `.deb` declares its system dependencies; the portable archive needs those same dependencies installed. A dirty-source preview package is never accepted as a release candidate.
+The release owner packages only the accepted source and reviewed web assets with `scripts/linux-package.py --tag v0.1.3-alpha.3 --version 0.1.3~alpha.3 --arch amd64 --output <new-output-directory>`. The `.deb` declares its system dependencies; the portable archive needs those same dependencies installed. A dirty-source preview package is never accepted as a release candidate.
 
 ## Protocol and privacy
 

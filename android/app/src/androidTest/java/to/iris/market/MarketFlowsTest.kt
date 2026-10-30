@@ -22,7 +22,9 @@ class MarketFlowsTest {
         activity = ActivityScenario.launch(intent)
         compose.waitUntil(15_000) { compose.onAllNodesWithContentDescription("Filters").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithContentDescription("Filters").performClick()
-        compose.onNodeWithText("Show all listings").performClick()
+        if(compose.onAllNodesWithTag("resetPhotoFilter").filter(isEnabled()).fetchSemanticsNodes().isNotEmpty()) compose.onNodeWithTag("resetPhotoFilter").performClick()
+        compose.onNodeWithTag("hasPhotosFilter").assertIsOn().performClick()
+        compose.onNodeWithText("Done").performClick()
         compose.waitUntil(15_000) { compose.onAllNodesWithText("A little more green").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("Selling").assertIsSelected()
         compose.onNodeWithText("Everything").assertDoesNotExist()
@@ -222,7 +224,14 @@ class MarketFlowsTest {
 
     @Test fun homePhotoDefaultKeepsSearchAndSavedWithoutPhotos() {
         compose.onNodeWithContentDescription("Filters").performClick()
-        compose.onNodeWithText("Automatic").performClick()
+        compose.onNodeWithTag("listingFiltersSheet").assertExists()
+        compose.onNodeWithTag("hasPhotosFilter").assertIsOff()
+        compose.onNodeWithText("Reset").assertIsEnabled().performClick()
+        compose.onNodeWithTag("hasPhotosFilter").assertIsOn()
+        compose.onNodeWithText("Reset").assertIsNotEnabled()
+        compose.onNodeWithTag("listingFiltersSheet").assertExists()
+        capture("filters-sheet-automatic-photos")
+        compose.onNodeWithText("Done").performClick()
         compose.waitUntil(5_000) { compose.onAllNodesWithText("A little more green").fetchSemanticsNodes().isEmpty() }
         capture("home-photo-default-no-placeholder-tiles")
         compose.onNode(hasSetTextAction()).performTextInput("green")
@@ -231,7 +240,9 @@ class MarketFlowsTest {
         if(compose.onAllNodesWithContentDescription("Unsave A little more green").fetchSemanticsNodes().isNotEmpty()) compose.onNodeWithContentDescription("Unsave A little more green").performClick()
         compose.onNodeWithContentDescription("Save A little more green").performClick()
         compose.onNodeWithContentDescription("Filters").performClick()
-        compose.onNodeWithText("Has photos").performClick()
+        compose.onNodeWithTag("hasPhotosFilter").assertIsOff().performClick().assertIsOn()
+        compose.onNodeWithTag("listingFiltersSheet").assertExists()
+        compose.onNodeWithText("Done").performClick()
         compose.waitUntil(5_000) { compose.onAllNodesWithText("A little more green").fetchSemanticsNodes().isEmpty() }
         compose.onNodeWithText("Saved").performClick()
         compose.onNodeWithText("A little more green").assertExists()

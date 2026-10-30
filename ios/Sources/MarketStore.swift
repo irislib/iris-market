@@ -22,6 +22,7 @@ final class MarketStore: ObservableObject {
     private var operationCount = 0
     var aiIntentEpoch: Int { aiIntentGate.current }
     private let queue = DispatchQueue(label: "to.iris.market.core", qos: .userInitiated)
+    private let inferenceQueue = DispatchQueue(label: "to.iris.market.inference", qos: .userInitiated)
     private let enrollmentQueue = DispatchQueue(label: "to.iris.market.enrollment", qos: .utility)
     private var app: MarketApp?
     private var timer: Timer?
@@ -30,6 +31,7 @@ final class MarketStore: ObservableObject {
     private var searchContinuation = NativeSearchContinuation()
     @Published private(set) var localAIProgress: String?
     @Published private(set) var localAIStatus: String?
+    @Published private(set) var searchPaused = false
     @Published private(set) var aiTestBusy = false
     @Published private(set) var aiTestResult: NativeAITestResult?
     @Published private(set) var aiTestError: String?
@@ -191,7 +193,7 @@ final class MarketStore: ObservableObject {
             let gate = aiIntentGate
             let epoch = value["type"] as? String == "set_settings" ? (expectedAIIntent ?? gate.current) : nil
             let inferenceEpoch = ["curate", "check_ai"].contains(value["type"] as? String ?? "") ? gate.current : nil
-            let commandQueue = urgentPreference ? aiPreferenceQueue : queue
+            let commandQueue = urgentPreference ? aiPreferenceQueue : (value["type"] as? String == "curate" ? inferenceQueue : queue)
             commandQueue.async { [weak self] in
                 do {
                     let request: String = try {
@@ -242,6 +244,7 @@ final class MarketStore: ObservableObject {
     func filter(query: String, side: String, aiSearch: Bool = false, completion: ((Bool) -> Void)? = nil) {
         searchContinuation.stop()
         if localAIProgress != nil && (query != snapshot.query || side != snapshot.side || aiSearch != snapshot.aiSearch) { cancelLocalAI() }
+        searchPaused = false
         command(["type": "set_filter", "query": query, "side": side, "ai_search": aiSearch]) { [weak self] success in
             if success, let self, !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { self.searchContinuation.start(self.searchContext) }
             completion?(success)
@@ -371,7 +374,7 @@ final class MarketStore: ObservableObject {
         } catch { aiTestError = "Could not read the provider key securely." }
     }
     private var searchContext: String {
-        [snapshot.publicKey, snapshot.query, snapshot.side, snapshot.settings.ai.provider, snapshot.settings.ai.model, snapshot.settings.ai.baseUrl].joined(separator: "\n")
+        [String(accountGeneration), String(snapshot.searchGeneration ?? 0), snapshot.publicKey, snapshot.query, snapshot.side, snapshot.settings.ai.provider, snapshot.settings.ai.model, snapshot.settings.ai.baseUrl].joined(separator: "\n")
     }
     private func continueDiscovery() {
         guard !busy, !aiTestBusy, localAITask == nil, localAIProgress == nil,
@@ -384,20 +387,44 @@ final class MarketStore: ObservableObject {
     private func continueLocalSearch() {
         continueDiscovery()
         guard !busy, !aiTestBusy, localAITask == nil, localAIProgress == nil,
-              snapshot.aiSearch, snapshot.settings.ai.enabled, snapshot.settings.ai.provider == "apple",
+              snapshot.aiSearch, snapshot.settings.ai.enabled,
+              snapshot.listings.filter({ $0.relevance?.show == true }).count < 24,
               !snapshot.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         let candidates = snapshot.listings.filter { $0.relevance == nil }.map(\.localSearchRevision)
-        guard searchContinuation.claim(searchContext, candidates: candidates) else { return }
-        runOnDeviceAI(check: false)
+        let batchSize = snapshot.settings.ai.provider == "apple" ? 24 : 12
+        guard searchContinuation.canReview(searchContext, candidates: candidates, batchSize: batchSize) else { return }
+        runAI(type: "curate")
     }
     func runAI(type: String) {
         guard !busy else { return }
         if snapshot.settings.ai.provider == "apple" { runOnDeviceAI(check: type == "check_ai"); return }
-        do { command(["type": type, "api_key": demo ? "" : try SecureStore.read(SecureStore.aiAccount(snapshot.settings.ai)) ?? ""]) }
-        catch { alert = marketErrorMessage(error) }
+        let context = searchContext
+        let alreadyReviewed = Set(snapshot.listings.filter { $0.relevance != nil }.map(\.localSearchRevision))
+        let hadCandidates = snapshot.listings.contains { $0.relevance == nil }
+        do {
+            command(["type": type, "api_key": demo ? "" : try SecureStore.read(SecureStore.aiAccount(snapshot.settings.ai)) ?? ""]) { [weak self] success in
+                guard let self, type == "curate", self.searchContext == context else { return }
+                let reviewed = self.snapshot.listings.filter { $0.relevance != nil && !alreadyReviewed.contains($0.localSearchRevision) }.map(\.localSearchRevision)
+                self.searchContinuation.record(reviewed)
+                if !success {
+                    self.searchContinuation.stop(); self.searchPaused = true
+                    self.alert = "The AI provider couldn’t finish this search. Try again."
+                } else if !reviewed.isEmpty {
+                    self.continueLocalSearch()
+                } else if hadCandidates {
+                    self.searchContinuation.stop(); self.searchPaused = true
+                }
+            }
+        } catch {
+            searchContinuation.stop(); searchPaused = true; alert = marketErrorMessage(error)
+        }
     }
     func continueSearch() {
+        searchPaused = false
         searchContinuation.start(searchContext)
+        if snapshot.aiSearch && snapshot.listings.contains(where: { $0.relevance == nil }) {
+            runAI(type: "curate"); return
+        }
         command(["type": "continue_search"]) { [weak self] success in
             if success, let self, self.snapshot.aiSearch { self.runAI(type: "curate") }
         }
@@ -406,6 +433,7 @@ final class MarketStore: ObservableObject {
     func cancelLocalAI() {
         cancelSearch()
         searchContinuation.stop()
+        searchPaused = true
         localAIRequest = UUID(); localAITask?.cancel(); localAITask = nil; localAIProgress = nil; localAIStatus = nil
         if let batch = snapshot.localCuration { command(["type": "cancel_local_curation", "id": batch.id]) }
     }
@@ -453,7 +481,6 @@ final class MarketStore: ObservableObject {
                 let prepared = await self.localCommand(["type": "begin_local_curation"])
                 guard prepared, let batch = self.snapshot.localCuration else { return }
                 batchID = batch.id
-                self.searchContinuation.record(batch.candidates.map { $0.listing.localSearchRevision })
                 let started = Date()
                 for (index, candidate) in batch.candidates.enumerated() {
                     try Task.checkCancellation()
@@ -469,6 +496,7 @@ final class MarketStore: ObservableObject {
                     let applied = await self.localCommand(["type": "apply_local_curation", "id": batch.id, "partial": true,
                         "decisions": [["event_id": candidate.eventId, "show": show, "reason": show ? "Matches your search" : "Does not match your search"]]])
                     guard applied else { throw OnDeviceAI.Unavailable(message: "This search has changed.") }
+                    self.searchContinuation.record([candidate.listing.localSearchRevision])
                 }
                 if batch.candidates.isEmpty { _ = await self.localCommand(["type": "cancel_local_curation", "id": batch.id]) }
                 batchID = nil
@@ -476,7 +504,10 @@ final class MarketStore: ObservableObject {
                 if self.accountGeneration == generation, let batchID {
                     _ = await self.localCommand(["type": "cancel_local_curation", "id": batchID])
                 }
-                if !Task.isCancelled && self.localAIRequest == request { self.alert = "The on-device model could not finish. Listings remain available." }
+                if !Task.isCancelled && self.localAIRequest == request {
+                    self.searchContinuation.stop(); self.searchPaused = true
+                    self.alert = "The on-device model could not finish. Listings remain available."
+                }
             }
         }
     }

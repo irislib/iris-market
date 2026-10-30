@@ -124,7 +124,7 @@ import org.json.JSONObject
                     Row(Modifier.padding(start = 12.dp, end = 5.dp), verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Filled.AutoAwesome, null, Modifier.size(16.dp), tint = Forest)
                         Spacer(Modifier.width(8.dp))
-                        Text(if (showAll) "All listings" else "$matchCount ${if (matchCount == 1) "match" else "matches"}",
+                        Text(if (showAll) "All listings" else if (state.error != null) "Search paused" else if (matchCount == 0 && (state.searchDiscovery?.hasMore == true || state.listings.any { it.relevanceShow == null })) "No matches yet" else "$matchCount ${if (matchCount == 1) "match" else "matches"}",
                             Modifier.weight(1f), style = MaterialTheme.typography.labelSmall, color = Forest)
                         TextButton(onClick = { showAll = !showAll }) { Text(if (showAll) "Show matches" else "Show all") }
                     }
@@ -140,8 +140,8 @@ import org.json.JSONObject
         }
         if (!showMap && visibleListings.isEmpty()) item(span={GridItemSpan(maxLineSpan)}) {
             if(searching) Box(Modifier.fillMaxWidth().padding(48.dp), contentAlignment=Alignment.Center) { CircularProgressIndicator() }
-            else EmptyView(if(canCurate && !showAll) "No matching listings" else if(query.isBlank()) "No listings" else "No matches",
-                if(canCurate && !showAll) "Show all listings or change your AI settings." else if(query.isBlank()) "Sell something or post what you want to buy." else "Try a different search or clear the filters.",
+            else EmptyView(if(canCurate && !showAll && state.error != null) "Search paused" else if(canCurate && !showAll && (state.searchDiscovery?.hasMore == true || state.listings.any { it.relevanceShow == null })) "No matches yet" else if(canCurate && !showAll) "No matching listings" else if(query.isBlank()) "No listings" else "No matches",
+                if(canCurate && !showAll && state.error != null) "Check your AI settings, then try again." else if(canCurate && !showAll && (state.searchDiscovery?.hasMore == true || state.listings.any { it.relevanceShow == null })) "Load more to keep searching, or show all listings." else if(canCurate && !showAll) "Show all listings or change your AI settings." else if(query.isBlank()) "Sell something or post what you want to buy." else "Try a different search or clear the filters.",
                 Icons.Filled.Storefront)
         }
         if(!showMap) items(visibleListings, key={it.id}) { listing -> ListingCard(listing, state.demo, {selected(listing)}, {model.save(listing.id)}) }

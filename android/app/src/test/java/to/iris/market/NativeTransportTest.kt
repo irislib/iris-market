@@ -50,4 +50,46 @@ class NativeTransportTest {
         assertTrue(search.claimHistory("a"))
     }
 
+    @Test fun remoteBatchesCountOnlyActualTwelveDecisions() {
+        val search = NativeSearchContinuation()
+        search.start("remote")
+        val candidates = (0 until 36).map { "revision-$it" }
+        assertTrue(search.canReview("remote", candidates, batchSize = 12))
+        // Merely checking eligibility must not spend the budget or reserve a guessed batch.
+        assertTrue(search.canReview("remote", candidates, batchSize = 12))
+        search.record(candidates.take(12))
+        assertFalse(search.canReview("remote", candidates, batchSize = 12))
+        assertTrue(search.canReview("remote", candidates.drop(12), batchSize = 12))
+        assertTrue(search.claim("remote", candidates.drop(12), batchSize = 12))
+        assertFalse(search.claim("remote", candidates.drop(12), batchSize = 12))
+        assertTrue(search.canReview("remote", candidates.drop(24), batchSize = 12))
+        search.stop()
+        assertFalse(search.canReview("remote", candidates.drop(24), batchSize = 12))
+    }
+    @Test fun twentyRemoteBatchesReachTheSharedActionBudget() {
+        val search = NativeSearchContinuation()
+        search.start("remote")
+        repeat(20) { page ->
+            val batch = (0 until 12).map { "$page-$it" }
+            assertTrue(search.canReview("remote", batch, batchSize = 12))
+            search.record(batch)
+        }
+        assertFalse(search.canReview("remote", listOf("late"), batchSize = 12))
+        assertFalse(search.claimHistory("remote"))
+        search.start("remote")
+        assertTrue(search.canReview("remote", listOf("late"), batchSize = 12))
+    }
+
+    @Test fun aPartialFirstBatchCannotAuthorizeMoreThanRemainingBudget() {
+        val search = NativeSearchContinuation()
+        search.start("remote")
+        search.record((0 until 237).map { "reviewed-$it" })
+        assertEquals(3, search.remainingBudget("remote"))
+        assertFalse(search.canReview("remote", (0 until 12).map { "late-$it" }, batchSize = 12))
+        assertFalse(search.claim("remote", (0 until 12).map { "late-$it" }, batchSize = 12))
+        assertFalse(search.canReview("remote", listOf("last-1", "last-2", "last-3"), batchSize = 12))
+        assertFalse(search.claim("remote", listOf("last-1", "last-2", "last-3"), batchSize = 12))
+        assertEquals(3, search.remainingBudget("remote"))
+    }
+
 }

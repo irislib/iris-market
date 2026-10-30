@@ -191,6 +191,8 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
     private val localModel = LocalModel(application, viewModelScope)
     val localModelState = localModel.state
     private var localCurationJob: Job? = null
+    @Volatile private var remoteCurationRunning = false
+    @Volatile private var remoteSnapshotLease: Pair<MarketApp, Long>? = null
     private val searchContinuation = NativeSearchContinuation()
     private val mutableAITest=MutableStateFlow(NativeAITestUI())
     val aiTest=mutableAITest.asStateFlow()
@@ -207,6 +209,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
         command(JSONObject().put("type", "continue_search")) { if (state.value.aiSearch) ai("curate") }
     }
     fun cancelSearch() {
+        searchContinuation.stop()
         val app = core ?: return
         viewModelScope.launch(Dispatchers.IO) { runCatching { app.command("{\"type\":\"cancel_search\"}") } }
     }
@@ -216,7 +219,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 mutex.withLock { openSavedAccount() }
-                while (isActive) { delay(2_000); if (active) mutex.withLock { refreshSnapshot() } }
+                while (isActive) { delay(2_000); if (active) pollSnapshot() }
             } catch (e: CancellationException) { throw e }
             catch (_: Exception) { alert.value = "Your market could not open. Close and reopen the app to try again." }
         }
@@ -369,6 +372,15 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
         mutable.update { previous -> if(previous.publicKey==next.publicKey&&next.revision<previous.revision) previous else next }
         if (!state.value.profileNameRequired || state.value.demo) dismissProfileSetup()
         viewModelScope.launch { continueLocalSearch() }
+    }
+    private suspend fun pollSnapshot() {
+        val lease = remoteSnapshotLease
+        if (lease == null) { mutex.withLock { refreshSnapshot() }; return }
+        // The command holds the lifecycle mutex; UniFFI also retains each concurrent call.
+        // A completed/closed lease is harmless: discard its snapshot or closed-object error.
+        runCatching { MarketSnapshot.parse(lease.first.snapshot()) }.getOrNull()?.let { next ->
+            if (remoteSnapshotLease === lease && accountGeneration == lease.second && core === lease.first) publishSnapshot(next)
+        }
     }
     private fun refreshSnapshot(reset: Boolean = false) { core?.let {
         val next=MarketSnapshot.parse(it.snapshot())
@@ -543,7 +555,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
     private fun continueDiscovery() {
         val snapshot = state.value
         val discovery = snapshot.searchDiscovery ?: return
-        if (!active || working.value || mutableAITest.value.busy || localCurationJob?.isActive == true || snapshot.query.isBlank() || discovery.loading || !discovery.hasMore) return
+        if (!active || working.value || mutableAITest.value.busy || localCurationJob?.isActive == true || snapshot.query.isBlank() || snapshot.error != null || discovery.loading || !discovery.hasMore) return
         val unresolved = snapshot.aiSearch && snapshot.listings.any { it.relevanceShow == null }
         val matches = if (snapshot.aiSearch) snapshot.listings.count { it.relevanceShow == true } else snapshot.listings.size
         if (!unresolved && matches < 24 && searchContinuation.claimHistory(searchContext())) command(JSONObject().put("type", "continue_search"))
@@ -552,28 +564,55 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
         continueDiscovery()
         val snapshot = state.value
         val ai = JSONObject(snapshot.settings).optJSONObject("ai") ?: return
-        if (!active || working.value || mutableAITest.value.busy || localCurationJob?.isActive == true || !snapshot.aiSearch || !ai.optBoolean("enabled") || ai.optString("provider") != "litert" || snapshot.query.isBlank()) return
+        if (!active || working.value || mutableAITest.value.busy || localCurationJob?.isActive == true || !snapshot.aiSearch || !ai.optBoolean("enabled") || snapshot.query.isBlank() || snapshot.error != null) return
+        if (snapshot.listings.count { it.relevanceShow == true } >= 24) return
         val candidates = snapshot.listings.filter { it.relevanceShow == null }.map { it.localSearchRevision }
-        if (searchContinuation.claim(searchContext(), candidates)) runLocalCuration(checkOnly = false)
+        if (ai.optString("provider") == "litert") {
+            if (searchContinuation.claim(searchContext(), candidates)) runLocalCuration(checkOnly = false)
+        } else if (searchContinuation.canReview(searchContext(), candidates, batchSize = 12)) ai("curate")
     }
     fun ai(type: String) {
+        if (remoteCurationRunning || mutableAITest.value.busy) return
         val provider = JSONObject(state.value.settings).optJSONObject("ai")?.optString("provider", "compatible") ?: "compatible"
         if (provider == "litert") { runLocalCuration(checkOnly = type == "check_ai"); return }
         val requestEpoch=aiIntentEpoch
         val generation=accountGeneration
+        val context=searchContext()
+        val searchGeneration=state.value.searchGeneration
+        remoteCurationRunning = true
+        operationCount += 1; working.value = true
         viewModelScope.launch {
-            operationCount += 1; working.value = true
             try {
                 withContext(Dispatchers.IO) { mutex.withLock {
                     val app = core ?: error("Not ready")
                     val settings = JSONObject(MarketSnapshot.parse(app.snapshot()).settings).getJSONObject("ai")
                     check(settings.optString("provider") == provider) { "Provider changed" }
                     val key = secure.get(NativePreferences.keySlot(provider, settings.optString("base_url")))
-                    publishSnapshot(MarketSnapshot.parse(app.command(JSONObject().put("type", type).put("api_key", key).toString())))
+                    val initialListings = MarketSnapshot.parse(app.snapshot()).listings
+                    val hadCandidates = initialListings.any { it.relevanceShow == null }
+                    val before = initialListings.filter { it.relevanceShow != null }.map { it.localSearchRevision }.toSet()
+                    val next = try {
+                        if (type == "curate") remoteSnapshotLease = app to generation
+                        MarketSnapshot.parse(app.command(JSONObject().put("type", type).put("api_key", key).toString()))
+                    } finally { remoteSnapshotLease = null }
+                    if (type == "curate" && requestEpoch == aiIntentEpoch && generation == accountGeneration && context == searchContext() && searchGeneration == next.searchGeneration) {
+                        // Planning can reorder the selected twelve: count actual decisions, not a guessed prefix.
+                        val reviewed = next.listings.filter { it.relevanceShow != null && it.localSearchRevision !in before }.map { it.localSearchRevision }
+                        searchContinuation.record(reviewed)
+                        if (next.error != null || reviewed.isEmpty() && hadCandidates) searchContinuation.stop()
+                    }
+                    publishSnapshot(next)
                 } }
             } catch (e: CancellationException) { throw e }
-            catch (_: Exception) { if(requestEpoch==aiIntentEpoch&&generation==accountGeneration) alert.value = "Could not test this provider. Check its settings and try again." }
-            finally { operationCount -= 1; working.value = operationCount > 0 }
+            catch (_: Exception) { if(requestEpoch==aiIntentEpoch&&generation==accountGeneration) {
+                if (type == "curate") searchContinuation.stop()
+                alert.value = if (type == "curate") "Search paused. Check this provider’s settings and try again." else "Could not test this provider. Check its settings and try again."
+            } }
+            finally {
+                remoteCurationRunning = false
+                operationCount -= 1; working.value = operationCount > 0
+                if (type == "curate" && requestEpoch == aiIntentEpoch && generation == accountGeneration) continueLocalSearch()
+            }
         }
     }
 

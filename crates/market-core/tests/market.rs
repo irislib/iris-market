@@ -1281,3 +1281,146 @@ fn sandbox_refuses_active_feed_work_and_clear_does_not_cancel_curate() {
     task.join().unwrap();
     server.join().unwrap();
 }
+
+/// The HTTP fixture models SystemOne's probability protocol, including the
+/// optional planning request, without contacting a provider or using real keys.
+fn remote_systemone_fixture(fail: bool) -> (String, std::thread::JoinHandle<usize>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
+    let server = std::thread::spawn(move || {
+        let mut classified = 0;
+        loop {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut bytes = Vec::new();
+            let mut buffer = [0; 4096];
+            let (offset, length) = loop {
+                let n = stream.read(&mut buffer).unwrap();
+                assert!(n > 0);
+                bytes.extend_from_slice(&buffer[..n]);
+                assert!(bytes.len() < 65536);
+                if let Some(end) = bytes.windows(4).position(|v| v == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&bytes[..end]).to_lowercase();
+                    assert!(headers.starts_with("post /v1/systemone "));
+                    let length = headers
+                        .lines()
+                        .find_map(|line| line.strip_prefix("content-length:"))
+                        .unwrap()
+                        .trim()
+                        .parse::<usize>()
+                        .unwrap();
+                    break (end + 4, length);
+                }
+            };
+            while bytes.len() < offset + length {
+                let n = stream.read(&mut buffer).unwrap();
+                assert!(n > 0);
+                bytes.extend_from_slice(&buffer[..n]);
+            }
+            let request: Value = serde_json::from_slice(&bytes[offset..offset + length]).unwrap();
+            let is_listing = request["questions"].get("match").is_some();
+            let body = if is_listing {
+                classified += 1;
+                assert_eq!(request["state"]["query"], "a bicycle");
+                assert!(request["state"]["listing"]["title"].is_string());
+                json!({"answers":{"match":{"type":"noul","noul":if classified > 12 {0.9} else {0.1}}}})
+            } else {
+                json!({"answers":{}})
+            }.to_string();
+            let status = if fail {
+                "503 Service Unavailable"
+            } else {
+                "200 OK"
+            };
+            write!(stream,"HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",body.len(),body).unwrap();
+            if fail || classified == 13 {
+                return classified;
+            }
+        }
+    });
+    (endpoint, server)
+}
+
+fn remote_systemone_market(path: &std::path::Path, endpoint: String, count: usize) -> Market {
+    offline(path);
+    let app = Market::open(path, &iris_market_core::generate_secret_key(), false).unwrap();
+    let seller = Keys::generate();
+    for index in 0..count {
+        app.ingest_event(
+            &listing::build(
+                &seller,
+                &draft(),
+                &format!("synthetic-{index}"),
+                listing::now(),
+                false,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    }
+    let mut settings = Settings {
+        relays: vec![],
+        ..Default::default()
+    };
+    settings.ai.enabled = true;
+    settings.ai.provider = "systemone".into();
+    settings.ai.model = "synthetic-systemone".into();
+    settings.ai.base_url = endpoint;
+    app.command(&json!({"type":"set_settings","settings":settings}).to_string())
+        .unwrap();
+    app.command(r#"{"type":"set_filter","query":"a bicycle","side":"all","ai_search":true}"#)
+        .unwrap();
+    app
+}
+
+#[test]
+fn remote_systemone_repeated_batches_reach_a_match_beyond_the_first_twelve() {
+    let (endpoint, server) = remote_systemone_fixture(false);
+    let dir = tempfile::tempdir().unwrap();
+    let app = remote_systemone_market(dir.path(), endpoint, 13);
+    let first: Value = serde_json::from_str(&app.command(r#"{"type":"curate"}"#).unwrap()).unwrap();
+    let listings = first["listings"].as_array().unwrap();
+    assert_eq!(listings.len(), 13);
+    assert_eq!(
+        listings
+            .iter()
+            .filter(|l| l["relevance"]["show"] == false)
+            .count(),
+        12
+    );
+    assert_eq!(
+        listings.iter().filter(|l| l["relevance"].is_null()).count(),
+        1
+    );
+    assert!(first["error"].is_null());
+    let next: Value = serde_json::from_str(&app.command(r#"{"type":"curate"}"#).unwrap()).unwrap();
+    let listings = next["listings"].as_array().unwrap();
+    assert_eq!(
+        listings
+            .iter()
+            .filter(|l| l["relevance"]["show"] == true)
+            .count(),
+        1
+    );
+    assert!(listings.iter().all(|l| !l["relevance"].is_null()));
+    assert_eq!(server.join().unwrap(), 13);
+    app.shutdown();
+}
+
+#[test]
+fn remote_systemone_failure_preserves_unreviewed_listings_without_false_decisions() {
+    let (endpoint, server) = remote_systemone_fixture(true);
+    let dir = tempfile::tempdir().unwrap();
+    let app = remote_systemone_market(dir.path(), endpoint, 1);
+    let state: Value = serde_json::from_str(&app.command(r#"{"type":"curate"}"#).unwrap()).unwrap();
+    assert_eq!(state["error"], "AI provider returned HTTP 503");
+    assert_eq!(state["ai_search"], true);
+    assert_eq!(state["listings"].as_array().unwrap().len(), 1);
+    assert!(state["listings"][0]["relevance"].is_null());
+    let unchanged: Value = serde_json::from_str(&app.snapshot().unwrap()).unwrap();
+    assert!(unchanged["listings"][0]["relevance"].is_null());
+    assert_eq!(server.join().unwrap(), 1);
+    app.shutdown();
+}

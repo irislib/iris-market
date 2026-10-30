@@ -102,6 +102,13 @@ struct BrowseView: View {
     private var curationActive: Bool { store.snapshot.aiSearch && store.snapshot.settings.ai.enabled && !store.snapshot.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     private var searching: Bool { store.localAIProgress != nil || store.snapshot.searchDiscovery?.loading == true || curationActive && store.busy }
     private var matchCount: Int { store.snapshot.listings.filter { $0.relevance?.show == true }.count }
+    private var unfinishedSearch: Bool { curationActive && (store.searchPaused || store.snapshot.searchDiscovery?.hasMore == true || store.snapshot.listings.contains { $0.relevance == nil }) }
+    private var matchSummary: String {
+        if showAllMatches { return "All listings" }
+        if matchCount > 0 { return "\(matchCount) \(matchCount == 1 ? "match" : "matches")" }
+        if store.searchPaused { return "Search paused" }
+        return searching || unfinishedSearch ? "No matches yet" : "0 matches"
+    }
     private var wantsPhotos: Bool { NativePhotoFilter.wantsPhotos(choice: photoFilter, query: store.snapshot.query, side: store.snapshot.side, map: showMap) }
     private var visibleListings: [MarketListing] {
         store.snapshot.listings.filter { listing in
@@ -152,7 +159,7 @@ struct BrowseView: View {
                 }
                 if curationActive {
                     HStack {
-                        Text(showAllMatches ? "All listings" : "\(matchCount) \(matchCount == 1 ? "match" : "matches")")
+                        Text(matchSummary)
                             .font(.system(size: 12)).foregroundStyle(MarketTheme.muted)
                         Spacer()
                         Button(showAllMatches ? "Show matches" : "Show all") { showAllMatches.toggle() }
@@ -177,7 +184,7 @@ struct BrowseView: View {
                 else if visibleListings.isEmpty && searching {
                     ProgressView().frame(maxWidth: .infinity).padding(.vertical, 50)
                 } else if visibleListings.isEmpty {
-                    MarketEmptyState(symbol: query.isEmpty ? "square.grid.2x2" : "magnifyingglass", title: query.isEmpty ? "No listings" : "No results", description: query.isEmpty ? "Sell something or post what you want to buy." : "Try another search or post what you want to buy.")
+                    MarketEmptyState(symbol: query.isEmpty ? "square.grid.2x2" : "magnifyingglass", title: query.isEmpty ? "No listings" : (store.searchPaused ? "Search paused" : unfinishedSearch ? "No matches yet" : "No results"), description: query.isEmpty ? "Sell something or post what you want to buy." : unfinishedSearch ? "Continue searching or try another search." : "Try another search or post what you want to buy.")
                 } else {
                     LazyVGrid(columns: columns, alignment: .leading, spacing: 21) {
                         ForEach(visibleListings) { listing in ListingCard(listing: listing, open: { selected = listing }, save: { store.save(listing) }) }

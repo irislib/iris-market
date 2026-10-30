@@ -157,15 +157,15 @@ test('new candidates stream into classification before their source page finishe
   const client={info:{model:'deberta'},load:async()=>{},async classify(_condition,text){texts.push(text);return{score:.9};},dispose(){this.info=null;}};
   const {field,ui,setRows}=fixture({rows:[],query:'bicycle',client,fetchMoreCandidates:()=>{fetches++;return source.promise;}});
   const run=field('search-run').onclick();await until(()=>fetches===1);
-  assert.equal(field('ai-summary-text').textContent,'Searching…');
+  assert.equal(field('ai-summary-text').textContent,'Waiting for listings · 0 matches · 0 checked');
   setRows([bicycle]);await until(()=>ui.isVisible(bicycle));
-  assert.equal(ui.searching(),true);assert.equal(field('ai-summary-text').textContent,'Searching… · 1 match');
+  assert.equal(ui.searching(),true);assert.match(field('ai-summary-text').textContent,/^(Waiting for listings · )?1 match · 1 checked$/);
   const second={...bicycle,id:'second'};setRows([bicycle,second]);await until(()=>ui.isVisible(second));
-  assert.equal(field('ai-summary-text').textContent,'Searching… · 2 matches');
+  assert.match(field('ai-summary-text').textContent,/^(Waiting for listings · )?2 matches · 2 checked$/);
   assert.equal(fetches,1,'incoming candidates do not start parallel pagination');
   source.resolve(false);await run;
   assert.equal(texts.length,2);assert.equal(ui.pagination().hasMore,false);
-  assert.equal(field('ai-summary-text').textContent,'2 matches');
+  assert.equal(field('ai-summary-text').textContent,'2 matches · 2 checked');
 });
 
 test('Stop settles a source wait immediately and its late failure cannot change a new query',async()=>{
@@ -174,7 +174,7 @@ test('Stop settles a source wait immediately and its late failure cannot change 
   const {field,ui,setRows}=fixture({rows:[],query:'bicycle',client,fetchMoreCandidates:()=>++fetches===1?source.promise:Promise.resolve(false)});
   let stopped=false;const old=field('search-run').onclick().then(()=>{stopped=true;});await until(()=>fetches===1);
   field('ai-stop').onclick();await until(()=>stopped);
-  assert.equal(field('ai-summary-text').textContent,'Search paused · 0 matches');
+  assert.equal(field('ai-summary-text').textContent,'Search paused · 0 matches · 0 checked');
   field('search').value='chair';const next=field('search-run').onclick();
   setRows([{...bicycle,id:'chair',title:'Chair'}]);await until(()=>texts.length===1);
   assert.match(texts[0],/chair/);assert.equal(fetches,1,'a new query shares the outstanding source operation');
@@ -191,7 +191,7 @@ test('a late source failure after a full match window is handled on continuation
   assert.equal(ui.pagination().matches,24);assert.equal(ui.searching(),false);
   source.reject(Error('Remaining listings unavailable'));await Promise.resolve();
   await ui.loadMore();assert.equal(fetches,1);assert.equal(ui.pagination().paused,true);assert.equal(field('ai-error').textContent,'');assert.equal(ui.pagination().error,'');assert.equal(field('ai-progress').textContent,'');assert(client.info,'a source error must not unload the model');
-  assert.equal(field('ai-summary-text').textContent,'24 matches');
+  assert.equal(field('ai-summary-text').textContent,'24 matches · 24 checked');
   field('ai-show-all').onclick();assert.equal(field('ai-summary-text').textContent,'Showing all listings');
 });
 
@@ -461,7 +461,7 @@ test('source failure keeps partial matches quiet; only a failed explicit retry r
   let fetches=0,disposals=0;
   const client={info:{model:'deberta'},load:async()=>{},classify:async()=>({score:.9}),dispose(){disposals++;this.info=null;}};
   const {field,ui}=fixture({query:'a bicycle',client,fetchMoreCandidates:async()=>{if(++fetches<3)throw Error('Relay diagnostic');return false;}});
-  await field('search-run').onclick();assert.equal(ui.pagination().matches,1);assert.equal(ui.pagination().error,'');assert.equal(field('ai-summary-text').textContent,'1 match');assert.equal(field('ai-error').textContent,'');assert.equal(field('ai-progress').textContent,'');
+  await field('search-run').onclick();assert.equal(ui.pagination().matches,1);assert.equal(ui.pagination().error,'');assert.equal(field('ai-summary-text').textContent,'1 match · 1 checked');assert.equal(field('ai-error').textContent,'');assert.equal(field('ai-progress').textContent,'');
   await ui.loadMore();assert.equal(ui.pagination().error,'Could not fetch more results.');assert.equal(field('ai-error').textContent,'');assert.equal(field('ai-progress').textContent,'');assert.equal(ui.pagination().matches,1);
   await ui.loadMore();assert.equal(ui.pagination().error,'');assert.equal(fetches,3);assert.equal(disposals,0);assert(client.info);
 });
@@ -569,4 +569,38 @@ test('main search and the settings sandbox both use model-aware hypotheses',asyn
     await field('search-run').onclick();example(field,{query:'fresh apples'});await field('ai-test-run').onclick();
     assert.equal(conditions.length,2);assert(conditions.every(condition=>condition===(model==='deberta'?'This listing offers fresh apples.':'This listing matches this search: fresh apples')));
   }
+});
+
+
+test('checked activity counts completed unique revisions including negative decisions and preserves continuation',async()=>{
+  const decisions=[];const client={info:{model:'deberta'},async load(){this.info={model:'deberta'};},classify:()=>{const decision=deferred();decisions.push(decision);return decision.promise;},dispose(){}};
+  const first={...bicycle,eventId:'revision-one'},second={...bicycle,id:'second',eventId:'revision-two'};
+  const {field,ui,setRows}=fixture({rows:[first],query:'a bicycle',client});
+  const running=field('search-run').onclick();await until(()=>decisions.length===1);
+  assert.equal(field('ai-summary-text').textContent,'0 matches · 0 checked');
+  decisions[0].resolve({score:0});await running;
+  assert.equal(field('ai-summary-text').textContent,'0 matches · 1 checked');
+  field('search').value='unsubmitted edit';field('search').dispatchEvent(new Event('input'));
+  assert.equal(field('ai-summary-text').textContent,'0 matches · 1 checked');
+  setRows([first,first,second]);const continued=ui.loadMore();await until(()=>decisions.length===2);
+  decisions[1].resolve({score:.9});await continued;
+  assert.equal(ui.pagination().reviewed,2);assert.equal(field('ai-summary-text').textContent,'1 match · 2 checked');
+  field('ai-stop').onclick();assert.equal(field('ai-summary-text').textContent,'Search paused · 1 match · 2 checked');
+  field('search').value='a desk';const replacement=field('search-run').onclick();await until(()=>decisions.length===3);
+  assert.equal(field('ai-summary-text').textContent,'0 matches · 0 checked');
+  decisions[2].reject(new Error('Synthetic classifier failure'));await replacement;
+  assert.equal(ui.pagination().reviewed,0,'failed decisions are not counted');
+  assert.equal(field('ai-summary-text').textContent,'Search paused · 0 matches · 0 checked');
+  field('search').value='';field('search').dispatchEvent(new Event('input'));
+  assert.equal(ui.pagination().reviewed,0);assert.equal(field('ai-summary').hidden,true);
+});
+
+test('model and candidate waits are distinct from completed matching activity',async()=>{
+  const loading=deferred(),source=deferred();const client={info:null,load(){return loading.promise.then(()=>{this.info={model:'deberta'};});},dispose(){}};
+  const {field}=fixture({rows:[],query:'desk',client,fetchMoreCandidates:()=>source.promise});
+  const running=field('search-run').onclick();await until(()=>field('ai-summary-text').textContent.includes('Loading model'));
+  assert.equal(field('ai-summary-text').textContent,'Loading model… · 0 matches · 0 checked');
+  loading.resolve();await until(()=>field('ai-summary-text').textContent.startsWith('Waiting for listings'));
+  assert.equal(field('ai-summary-text').textContent,'Waiting for listings · 0 matches · 0 checked');source.resolve(false);await running;
+  assert.equal(field('ai-summary-text').textContent,'0 matches · 0 checked');
 });

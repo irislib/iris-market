@@ -10,7 +10,7 @@ interface SearchListing {id:string;eventId?:string;title:string;description?:str
 interface AIOptions {getCandidates:()=>SearchListing[];onChange:()=>void;onTextSearch?:(query:string)=>void;fetchMoreCandidates?:()=>Promise<boolean>;client?:Pick<FeedFilterClient,'info'|'load'|'classify'|'dispose'>&{pin?:()=>()=>void};browserClient?:BrowserFeedFilterClient;hasWebGPU?:()=>boolean;autoPrepare?:boolean;storage?:Pick<Storage,'getItem'|'setItem'>;saveData?:()=>boolean}
 interface SourceRequest {epoch:number;done:boolean;more?:boolean;error?:unknown}
 export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandidates, client = new FeedFilterClient(), browserClient=new BrowserFeedFilterClient(),hasWebGPU=()=>!!globalThis.navigator&&'gpu' in globalThis.navigator,autoPrepare=true,storage:providedStorage,saveData=()=>!!(globalThis.navigator as Navigator&{connection?:{saveData?:boolean}})?.connection?.saveData }:AIOptions) {
-  let scores = new Map(), showAll = false, phase:'idle'|'loading'|'searching'='idle', generation = 0, submittedQuery='', paused=false;
+  let scores = new Map(), showAll = false, phase:'idle'|'loading'|'searching'='idle', generation = 0, submittedQuery='', paused=false, waitingCandidates=false;
   let storage=providedStorage;try{storage??=globalThis.localStorage;}catch{}
   const readSetting=(key:string)=>{try{return storage?.getItem(key);}catch{return null;}};
   const writeSetting=(key:string,value:string)=>{try{storage?.setItem(key,value);}catch{}};
@@ -46,7 +46,8 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
     const matches=candidates.length-hidden,matchLabel=`${matches} ${matches===1?'match':'matches'}`;
     $('ai-options').hidden = !active;
     $('ai-summary').hidden = !active || (!submittedQuery && !busy);
-    $('ai-summary-text').textContent = showAll ? 'Showing all listings' : phase==='loading' ? $('ai-progress').textContent : busy ? `Searching…${matches?` · ${matchLabel}`:''}` : `${paused&&!sourceError?'Search paused · ':''}${matchLabel}`;
+    const activity = `${matchLabel} · ${scores.size} checked`;
+    $('ai-summary-text').textContent = showAll ? 'Showing all listings' : phase==='loading' ? `${$('ai-progress').textContent || 'Loading model…'} · ${activity}` : `${waitingCandidates&&busy?'Waiting for listings · ':paused&&!sourceError?'Search paused · ':''}${activity}`;
     $('ai-show-all').textContent = showAll ? 'Use AI matches' : 'Show all';
     $('ai-show-all').hidden = !submittedQuery||(!hidden&&!showAll&&!$('ai-error').textContent);
     $('ai-stop').hidden = !busy;
@@ -110,7 +111,7 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
   }
   function stop({reset=false,unload=true}={}) {
     sourceError=null;sourceErrorVisible=false;
-    generation++;runController?.abort();runController=null;activeRun=null;sourceEpoch++;wakeCandidates?.();if(unload){prepareGeneration++;preparation=undefined;downloadFraction=undefined;client.dispose();browserClient.dispose();}phase='idle';paused=!reset;progress.hidden=true;$('ai-progress').textContent='';
+    generation++;runController?.abort();runController=null;activeRun=null;sourceEpoch++;wakeCandidates?.();if(unload){prepareGeneration++;preparation=undefined;downloadFraction=undefined;client.dispose();browserClient.dispose();}phase='idle';waitingCandidates=false;paused=!reset;progress.hidden=true;$('ai-progress').textContent='';
     if(reset){scores.clear();submittedQuery='';showAll=false;sourceExhausted=false;targetMatches=24;$('ai-error').textContent='';}
     refresh();onChange();
   }
@@ -139,7 +140,7 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
     const sameQuery=!!submittedQuery&&$('search').value.trim()===submittedQuery;
     const preserve=continuation||sameQuery,retrySource=preserve&&!!sourceError;
     sourceError=null;sourceErrorVisible=false;
-    paused=false;
+    paused=false;waitingCandidates=false;
     if(!preserve){sourceEpoch++;submittedQuery=$('search').value.trim();scores.clear();showAll=false;sourceExhausted=false;targetMatches=24;}
     else if(!retrySource)targetMatches=matchCount()+24;
     $('ai-error').textContent='';
@@ -175,12 +176,12 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
             if(!fetchMoreCandidates||sourceExhausted||sourceRequests>=32)break;
             sourceRequests++;requestCandidates();
           }
-          $('ai-progress').textContent='Searching…';refresh();
+          waitingCandidates=true;$('ai-progress').textContent='Waiting for listings…';refresh();
           await waitForCandidates(current,sourceRequest);
           if(current!==generation)return;
           continue;
         }
-        $('ai-progress').textContent = 'Searching…';
+        waitingCandidates=false;$('ai-progress').textContent = 'Searching…';refresh();
         let score=0;
         for(const text of listingSearchTexts(item,query,$('ai-model').value)){
           const result=await selected.classify(condition,text,{eventId:item.eventId,signal:controller.signal});
@@ -199,7 +200,7 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
       }
     } catch (error) {
       if (current === generation) { paused=true;selected.dispose(); $('ai-error').textContent = `${error.message || 'Search failed'}. Show all listings or switch to Text to continue browsing.`; }
-    } finally { releaseModel();if(runController===controller)runController=null;if (current === generation) { phase='idle';$('ai-progress').textContent='';refresh();onChange(); } }
+    } finally { releaseModel();if(runController===controller)runController=null;if (current === generation) { phase='idle';waitingCandidates=false;$('ai-progress').textContent='';refresh();onChange(); } }
   }
   $('search-mode').onclick = () => {
     const active=!enabled();preference=active?'on':'off';writeSetting(AI_MODE_STORAGE_KEY,preference);setEnabled(active);
@@ -281,7 +282,7 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
     try{await prepareModel();if(!closed&&!testRequested&&preference!=='off'&&!textSubmitted){preference='on';writeSetting(AI_MODE_STORAGE_KEY,preference);setEnabled(true);refresh();onChange();}}
     catch{/* Background preparation is optional. Explicit Search can retry without blocking Browse. */}
   });
-  const pagination=()=>{const rows=candidates(),remaining=rows.filter(listing=>!scores.has(keyFor(listing))).length;return{hasMore:enabled()&&!!submittedQuery&&!showAll&&(remaining>0||!!fetchMoreCandidates&&!sourceExhausted),loading:phase!=='idle',paused,error:sourceErrorVisible?sourceError:$('ai-error').textContent,remaining,reviewed:rows.length-remaining,matches:matchCount(),target:targetMatches};};
+  const pagination=()=>{const rows=candidates(),remaining=rows.filter(listing=>!scores.has(keyFor(listing))).length;return{hasMore:enabled()&&!!submittedQuery&&!showAll&&(remaining>0||!!fetchMoreCandidates&&!sourceExhausted),loading:phase!=='idle',paused,error:sourceErrorVisible?sourceError:$('ai-error').textContent,remaining,reviewed:scores.size,matches:matchCount(),target:targetMatches};};
   const scoreFor=(listing:SearchListing):number|undefined=>{
     if(!enabled()||showAll||!submittedQuery||$('ai-error').textContent)return undefined;
     const score=scores.get(keyFor(listing));return Number.isFinite(score)?score:undefined;

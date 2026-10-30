@@ -6,4 +6,5 @@
 .orders-dialog .transport-next-stop{margin-bottom:24px}.orders-dialog .transport-next-stop h3{font-size:24px}.orders-dialog .transport-next-stop .order-actions{margin:6px 0 0}
 .orders-dialog.app-page{width:100%;max-width:850px;max-height:none;padding:24px 0}
 .order-participants+.order-shipment{border-top:0;margin-top:0}
+.order-arrival{display:grid;gap:7px;padding:20px 24px;background:var(--soft);border-radius:16px;margin:0 0 24px}.order-arrival-countdown{font-size:clamp(25px,4vw,34px);font-weight:650;line-height:1.15;letter-spacing:-.8px;font-variant-numeric:tabular-nums}.order-arrival+.order-map-section{margin-top:0}
 @media(max-width:640px){.orders-dialog.app-page{padding:16px 0}.transport-next-stop{padding:18px}}

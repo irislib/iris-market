@@ -32,6 +32,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.delay
@@ -144,7 +145,7 @@ import java.util.UUID
             Text("Delivery", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
             if (seller && !order.terminal && order.status != "requested") TextButton(onClick = { editRoute = true }) { Text("Edit route") }
         }
-        order.shipment.eta?.let { Text("Expected ${orderDate(it)}", color = Muted) }
+        ArrivalEstimate(order.shipment.eta, order.status)
         if (order.shipment.stops.any { it.coordinates != null }) {
             ShipmentMapView(order.shipment, Modifier.fillMaxWidth().height(240.dp))
             Text("Stops joined directly; not driving directions.", color = Muted, style = MaterialTheme.typography.labelSmall)
@@ -321,5 +322,23 @@ private data class StopDraft(val id: String = UUID.randomUUID().toString(), val 
         }) { Icon(if (sharing) Icons.Filled.LocationOff else Icons.Filled.MyLocation, null); Spacer(Modifier.width(8.dp)); Text(if (sharing) "Stop sharing location" else "Share live location") }
         Text(if (sharing) "Shared privately while this order stays open. Stops after one hour." else "Share your current position with this order's participants while this view is open.", color = Muted, style = MaterialTheme.typography.bodySmall)
         error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+    }
+}
+
+
+@Composable private fun ArrivalEstimate(eta: Long?, status: String) {
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    var now by remember { mutableLongStateOf(System.currentTimeMillis() / 1000) }
+    LaunchedEffect(lifecycle, eta, status) {
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) { now = System.currentTimeMillis() / 1000; delay(15_000) }
+        }
+    }
+    marketArrivalEstimate(eta, status, now)?.let { estimate ->
+        Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+            Text("Estimated arrival", style = MaterialTheme.typography.labelSmall, color = Muted)
+            Text(estimate, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
+            Text(orderDate(eta!!), style = MaterialTheme.typography.bodySmall, color = Muted)
+        }
     }
 }

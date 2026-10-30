@@ -22,16 +22,26 @@ const {setupPeople}=await import('../src/people.ts');setupPeople({getRelays:()=>
 const {setupOrders}=await import('../src/orders-ui.ts');
 const all=node=>[node,...node.children.flatMap(all)],find=(node,text)=>all(node).find(child=>child.textContent===text),settle=()=>new Promise(resolve=>setImmediate(resolve));
 const buyer='b'.repeat(64),seller='a'.repeat(64),courier='c'.repeat(64);
-function fixture({signedOut=false,delivered=false}={}){
+function fixture({signedOut=false,delivered=false,eta=undefined}={}){
   doc.visibilityState='visible';geo.calls=[];geo.cleared=[];
   let state={status:signedOut?'empty':'ready',ownerPubkey:signedOut?undefined:courier,orders:[],conversations:[]},reads=0,signIns=0;
   const listeners=new Set(),updates=[],reviews=[],announced=[];
-  const job={id:'job',buyer,seller,items:[{id:'item',title:'Private parcel',price:'10',currency:'EUR',quantity:1}],status:delivered?'delivered':'accepted',createdAt:100,updatedAt:100,shipment:{stops:[{id:'pickup',label:'Pickup',address:'Private pickup',status:'pending',courierPubkey:courier}]},archived:false,sync:'queued',locationFresh:false};state.orders=[job];
+  const job={id:'job',buyer,seller,items:[{id:'item',title:'Private parcel',price:'10',currency:'EUR',quantity:1}],status:delivered?'delivered':'accepted',createdAt:100,updatedAt:100,shipment:{eta,stops:[{id:'pickup',label:'Pickup',address:'Private pickup',status:'pending',courierPubkey:courier}]},archived:false,sync:'queued',locationFresh:false};state.orders=[job];
   const account={state:()=>state,showAccount:()=>signIns++,closeAccount(){},onState:fn=>{listeners.add(fn);return()=>listeners.delete(fn);},messaging:{updateOrder:async(id,patch)=>{updates.push({id,patch});}}};
   const page=new Element('main');doc.body.append(page);
   const ui=setupOrders({account,page,onReview:key=>reviews.push(key),courier:{getListings:()=>{reads++;return[{id:'public',author:seller,title:'Public parcel request',tags:['parcel'],category:'transport',side:'request',status:'active'}];},onListing(){},onAnnounce:value=>announced.push(value)}});
-  return{ui,page,updates,reviews,announced,get reads(){return reads;},get signIns(){return signIns;},setState:patch=>{state={...state,...patch};for(const fn of listeners)fn(state);},cleanup(){win.dispatchEvent(new Event('pagehide'));page.remove();}};
+  return{ui,page,job,updates,reviews,announced,get reads(){return reads;},get signIns(){return signIns;},setState:patch=>{state={...state,...patch};for(const fn of listeners)fn(state);},cleanup(){win.dispatchEvent(new Event('pagehide'));page.remove();}};
 }
+
+test('arrival countdown advances without network updates or replacing controls and disappears on completion',t=>{
+  t.mock.timers.enable({apis:['Date','setInterval'],now:1000000});
+  const f=fixture({eta:1120});try{
+    f.ui.open('job');const headline=find(f.page,'About 2 min'),button=find(f.page,'Share live location');assert(headline);
+    t.mock.timers.tick(75000);assert.equal(headline.textContent,'Less than a minute');assert.equal(find(f.page,'Share live location'),button);
+    t.mock.timers.tick(45000);assert.equal(headline.textContent,'Taking longer than expected');
+    f.job.status='delivered';f.setState({});assert.equal(find(f.page,'Estimated arrival'),undefined);
+  }finally{f.cleanup();}
+});
 
 test('signed-out courier workspace shows real public work without unlocking private orders',()=>{
   const f=fixture({signedOut:true});try{

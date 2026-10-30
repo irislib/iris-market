@@ -136,7 +136,15 @@ struct OrderDetailView: View {
                 Text("Delivery").font(.system(size: 21, weight: .semibold)); Spacer()
                 if seller && !order.terminal && order.status != "requested" { Button("Edit route") { editingRoute = true }.font(.system(size: 13, weight: .semibold)) }
             }
-            if !order.terminal, let eta = order.shipment.eta { Text("Expected \(Date(timeIntervalSince1970: Double(eta)).formatted(date: .abbreviated, time: .shortened))").font(.system(size: 13)).foregroundStyle(MarketTheme.muted) }
+            TimelineView(.periodic(from: .now, by: 15)) { context in
+                if let estimate = marketArrivalEstimate(eta: order.shipment.eta, status: order.status, now: Int64(context.date.timeIntervalSince1970)), let eta = order.shipment.eta {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("Estimated arrival").font(.system(size: 12)).foregroundStyle(MarketTheme.muted)
+                        Text(estimate).font(.system(size: 28, weight: .semibold))
+                        Text(Date(timeIntervalSince1970: Double(eta)).formatted(date: .abbreviated, time: .shortened)).font(.system(size: 13)).foregroundStyle(MarketTheme.muted)
+                    }
+                }
+            }
             if order.shipment.hasMap {
                 ShipmentMapView(shipment: order.shipment).frame(height: 250).clipShape(RoundedRectangle(cornerRadius: 20))
                 Text("Stops joined directly; not driving directions.").font(.system(size: 11)).foregroundStyle(MarketTheme.muted)

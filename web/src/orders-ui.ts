@@ -10,6 +10,7 @@ import { imageUrl } from './media.ts';
 import { art } from './art.ts';
 import { setupCourierWorkspace, orderReviewParticipants, type CourierFeedOptions } from './courier-ui.ts';
 import { nextTransportStop, stopDirections, transportProgress } from './transport-job.ts';
+import {orderArrival} from './order-arrival.ts';
 
 const terminal = order => ['delivered', 'cancelled'].includes(order.status);
 const statuses = { requested: 'Requested', accepted: 'Accepted', 'in-transit': 'On the way', delivered: 'Delivered', cancelled: 'Cancelled' };
@@ -31,6 +32,7 @@ const dark = () => document.documentElement.dataset.appearance === 'dark' || (do
 export function setupOrders({ account, isPreview = () => false, onProfile = () => {}, onReview = onProfile, courier, onUnread = (_count:number) => {}, page, onNavigate = (_id?:string,_tab?:string) => {}, onClose = () => {}, formatPrice = item => `${item.price || ''} ${item.currency || ''}`.trim() }: {account:ReturnType<typeof import('./account-ui.ts').setupAccount>;isPreview?:()=>boolean;onProfile?:(key:string)=>void;onReview?:(key:string)=>void;courier?:CourierFeedOptions;onUnread?:(count:number)=>void;page?:HTMLElement;onNavigate?:(id?:string,tab?:string)=>void;onClose?:()=>void;formatPrice?:(item:any)=>string}) {
   const unread=createUnreadTracker({kind:'orders',onUnread});
   let state = account.state(), view = 'history', tab = 'purchases', selected, listing, pending, busy = false, error = '', sharing, map, mapLoading, mapHost, mapOrderId, mapGeneration = 0, destroyed = false;
+  let arrivalHeadline:HTMLElement|undefined;
   const dialog = createSurface({className:'orders-dialog',label:'Orders',pageHost:page,onOpen:()=>onNavigate(view==='detail'?selected:undefined,tab),onClose}); dialog.id = 'orders-dialog'; dialog.setAttribute('aria-labelledby', 'orders-title');
   const close = node('button', '×', 'dialog-close icon-button'); close.type = 'button'; close.setAttribute('aria-label', 'Close orders'); close.onclick = () => dialog.close();
   const back = node('button', '← Orders', 'text-button orders-back'); back.type = 'button'; back.onclick = () => showHistory();
@@ -174,7 +176,6 @@ export function setupOrders({ account, isPreview = () => false, onProfile = () =
   function renderTimeline(order) {
     const stops = order.shipment?.stops || [], section = node('section', undefined, 'order-shipment');
     section.append(node('h3', 'Route'));
-    if (order.shipment?.eta) section.append(node('p', `Expected ${dateTime(order.shipment.eta)}`, 'order-eta'));
     if (!stops.length) section.append(node('p', 'Delivery or collection details are not set yet.', 'small muted'));
     else {
       const timeline = node('ol', undefined, 'order-timeline');
@@ -230,6 +231,13 @@ export function setupOrders({ account, isPreview = () => false, onProfile = () =
     for (const item of order.items || []) {
       const itemRow = node('div', undefined, 'order-item'); itemRow.append(node('h3', item.title), node('span', `${price(item)}${item.quantity > 1 ? ' each' : ''}`, 'order-item-price'));
       if (item.quantity > 1) itemRow.append(node('p', `Quantity ${item.quantity}`, 'small muted')); body.append(itemRow);
+    }
+    const arrival=orderArrival(order);
+    if(arrival){
+      const estimate=node('section',undefined,'order-arrival');estimate.setAttribute('aria-label','Estimated arrival');
+      arrivalHeadline=node('strong',arrival.headline,'order-arrival-countdown');
+      const clock=node('time',dateTime(arrival.at),'small muted');clock.setAttribute('datetime',new Date(arrival.at*1000).toISOString());
+      estimate.append(node('span','Estimated arrival','small muted'),arrivalHeadline,clock);body.append(estimate);
     }
     if (order.status !== 'requested' || order.shipment?.stops?.length) { const mapNode = shipmentMap(order); if (mapNode) body.append(mapNode); }
     const participants = node('div', undefined, 'order-participants'); participants.append(person(order.buyer, 'Buyer'), person(order.seller, 'Seller')); body.append(participants);
@@ -317,7 +325,7 @@ export function setupOrders({ account, isPreview = () => false, onProfile = () =
     if(view!=='history'||tab!=='deliveries')courierUI?.hide();
     heading.textContent = view === 'review' ? 'Request an order' : view === 'route' ? 'Delivery details' : view === 'detail' ? 'Order details' : tab==='deliveries'?'Transport':'Orders';
     back.hidden = view === 'history'; failure.textContent = error; renderTabs();
-    const scrollTop = dialog.scrollTop; body.replaceChildren();
+    const scrollTop = dialog.scrollTop; arrivalHeadline=undefined;body.replaceChildren();
     if (view === 'review') renderReview(); else if (view === 'detail') renderDetail(); else if (view === 'route') renderRoute(); else renderHistory();
     dialog.scrollTop = scrollTop;
   }
@@ -334,13 +342,19 @@ export function setupOrders({ account, isPreview = () => false, onProfile = () =
     if (dialog.open && !['review', 'route'].includes(view)) render();
   }
   dialog.addEventListener('close', () => { courierUI?.hide();stopLocation(); dropMap(); syncUnread(); });
-  const hidden = () => { syncUnread(); if (document.visibilityState === 'hidden') { stopLocation(); if (dialog.open && view === 'detail') render(); } };
-  const focused=()=>{syncUnread();if(dialog.open&&view==='history')render();};
+  function refreshArrival(){
+    if(destroyed||!dialog.open||view!=='detail'||document.visibilityState==='hidden'||!arrivalHeadline)return;
+    const order=current(),arrival=order&&orderArrival(order);
+    if(arrival&&arrivalHeadline.textContent!==arrival.headline)arrivalHeadline.textContent=arrival.headline;
+  }
+  const arrivalTimer=setInterval(refreshArrival,15000);
+  const hidden = () => { syncUnread(); if (document.visibilityState === 'hidden') { stopLocation(); if (dialog.open && view === 'detail') render(); }else refreshArrival(); };
+  const focused=()=>{syncUnread();refreshArrival();if(dialog.open&&view==='history')render();};
   const uncovered=()=>queueMicrotask(focused);
   const theme = () => { map?.setDark(dark()).catch(() => {}); };
   document.addEventListener('visibilitychange', hidden);document.addEventListener('close',uncovered,true); window.addEventListener('focus',focused); window.addEventListener('market-themechange', theme);
   const appearance = matchMedia('(prefers-color-scheme: dark)'); appearance.addEventListener('change', theme);
   const unsubscribe=account.onState?.(refresh);syncUnread();
-  window.addEventListener('pagehide', () => { stopLocation(); dropMap(); courierUI?.destroy();destroyed = true;unsubscribe?.();window.removeEventListener('focus',focused);document.removeEventListener('visibilitychange', hidden);document.removeEventListener('close',uncovered,true); window.removeEventListener('market-themechange', theme); appearance.removeEventListener('change', theme); });
+  window.addEventListener('pagehide', () => { clearInterval(arrivalTimer);stopLocation(); dropMap(); courierUI?.destroy();destroyed = true;unsubscribe?.();window.removeEventListener('focus',focused);document.removeEventListener('visibilitychange', hidden);document.removeEventListener('close',uncovered,true); window.removeEventListener('market-themechange', theme); appearance.removeEventListener('change', theme); });
   return { open, buy, refresh, refreshCourier(){if(dialog.open&&view==='history'&&tab==='deliveries')courierUI?.refresh();}, hide:()=>dialog.hide() };
 }

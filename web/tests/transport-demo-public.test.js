@@ -49,13 +49,13 @@ test('public demo listings validate as signed free simulations, expire and renew
   }
 });
 
-test('public actors order, chat and drain a per-buyer journey queue through offline WSS mapping',{timeout:25000},async()=>{
+test('public actors serve concurrent customers privately and drain each buyer queue through offline WSS mapping',{timeout:25000},async()=>{
   const [{mkdtemp,rm},{tmpdir},{join},{startDemoRelay},{createMessaging},{createVault},{orderContext}]=await Promise.all([
     import('node:fs/promises'),import('node:os'),import('node:path'),import('../scripts/demo/relay.ts'),
     import('../src/messaging/client.ts'),import('../src/messaging/vault.ts'),import('../src/message-context.ts'),
   ]);
   const directory=await mkdtemp(join(tmpdir(),'iris-public-offline-')),relay=await startDemoRelay(0);
-  const OriginalWebSocket=globalThis.WebSocket,urls=[];let bots,buyer,row;
+  const OriginalWebSocket=globalThis.WebSocket,urls=[];let bots,buyer,row,secondBuyer,secondRow;
   const endpoint='wss://demo.example/';
   globalThis.WebSocket=class extends OriginalWebSocket {
     constructor(url,...args){urls.push(String(url));if(String(url)!==endpoint)throw Error('Unexpected network destination in offline demo test');super(relay.url,...args);}
@@ -66,13 +66,20 @@ test('public actors order, chat and drain a per-buyer journey queue through offl
     assert(bots.listings.every(item=>new URL(item.url).origin==='https://market.iris.to'&&!item.url.includes('test-relay')));
     buyer=createMessaging({getRelays:()=>[endpoint],vault:createVault({backend:{read:async()=>structuredClone(row),write:async value=>{row=structuredClone(value);}}})});
     await buyer.createAccount();await until(()=>buyer.state().canSend);
+    secondBuyer=createMessaging({getRelays:()=>[endpoint],vault:createVault({backend:{read:async()=>structuredClone(secondRow),write:async value=>{secondRow=structuredClone(value);}}})});
+    await secondBuyer.createAccount();await until(()=>secondBuyer.state().canSend);
     const listing=kind=>{const author=bots.clients[kind==='ride'?2:0].state().ownerPubkey;return {id:`${author}:${kind==='ride'?'demo-ride':'demo-drone-delivery'}`,author,title:'Free public demo',side:'offer',price:'0',currency:'EUR'};};
     const parcel=await buyer.requestOrder(listing('delivery'));
     await until(()=>buyer.state().orders.find(item=>item.id===parcel.id)?.locationFresh);
+    const otherRide=await secondBuyer.requestOrder(listing('ride'));
+    await until(()=>secondBuyer.state().orders.find(item=>item.id===otherRide.id)?.locationFresh);
+    assert.equal(bots.active(),2);
+    assert(!buyer.state().orders.some(item=>item.id===otherRide.id));
+    assert(!secondBuyer.state().orders.some(item=>item.id===parcel.id));
     const ride=await buyer.requestOrder(listing('ride'));
     await until(()=>bots.clients[2].state().orders.some(item=>item.id===ride.id));
     await new Promise(resolve=>setTimeout(resolve,200));
-    assert.equal(bots.active(),1);
+    assert.equal(bots.active(),2);
     assert.equal(bots.clients[2].state().orders.find(item=>item.id===ride.id).status,'requested');
     await buyer.send(listing('delivery').author,'Is this just a simulation?',orderContext(parcel.id));
     await until(()=>buyer.state().conversations.some(thread=>thread.messages.some(message=>!message.mine&&message.text.startsWith('Simulated update:')&&message.context?.order_id===parcel.id)));
@@ -80,6 +87,7 @@ test('public actors order, chat and drain a per-buyer journey queue through offl
     await until(()=>buyer.state().orders.find(item=>item.id===parcel.id)?.status==='delivered');
     await until(()=>buyer.state().orders.find(item=>item.id===ride.id)?.locationFresh);
     await until(()=>buyer.state().orders.find(item=>item.id===ride.id)?.status==='delivered');
+    await until(()=>secondBuyer.state().orders.find(item=>item.id===otherRide.id)?.status==='delivered');
     await until(()=>bots.active()===0);
     const paid=await buyer.requestOrder({...listing('ride'),price:'1'});
     const multiple=await buyer.requestOrder(listing('delivery'),{quantity:2});
@@ -87,7 +95,7 @@ test('public actors order, chat and drain a per-buyer journey queue through offl
     assert.deepEqual(bots.errors,[]);
     assert(urls.length>0);assert(urls.every(url=>url===endpoint));
   }finally{
-    try{await buyer?.destroy();await bots?.close();await relay.close();}
+    try{await buyer?.destroy();await secondBuyer?.destroy();await bots?.close();await relay.close();}
     finally{globalThis.WebSocket=OriginalWebSocket;await rm(directory,{recursive:true,force:true});}
   }
 });

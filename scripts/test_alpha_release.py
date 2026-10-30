@@ -5,6 +5,7 @@ import importlib.util
 import json
 import io
 import os
+import plistlib
 from pathlib import Path
 import sys
 import tarfile
@@ -84,16 +85,64 @@ class AlphaContract(unittest.TestCase):
     def test_external_apple_sources_do_not_walk_intermediate_groups(self):
         source = self.root/'source'
         (source/'ios').mkdir(parents=True)
-        (source/'ios/project.yml').write_text('options:\n  createIntermediateGroups: true\nsources:\n  - path: Sources\n  - path: Bindings\n')
+        (source/'ios/project.yml').write_text('options:\n  createIntermediateGroups: true\nsources:\n  - path: Sources\n  - path: Bindings\ntargets:\n  IrisMarket:\n    settings:\n      base:\n        PRODUCT_BUNDLE_IDENTIFIER: to.iris.market\n  MarketNotificationService:\n    settings:\n      base:\n        PRODUCT_BUNDLE_IDENTIFIER: to.iris.market.NotificationService\n')
         stage = self.root/'generated'; stage.mkdir()
         (stage/'headers').mkdir()
         with patch.object(native, 'ROOT', source), patch.object(native, 'run') as run:
-            native.apple_project(stage, 'ios-arm64', {'MARKET_XCODEGEN': '/verified/xcodegen'})
+            native.apple_project(stage, 'ios-arm64', {'MARKET_XCODEGEN': '/verified/xcodegen', 'MARKET_IOS_PROFILE_UUID':'fixture-main', 'MARKET_IOS_NSE_PROFILE_UUID':'fixture-nse'})
         project = (stage/'project.yml').read_text()
         self.assertIn('createIntermediateGroups: false', project)
         self.assertIn('- path: '+str(source/'ios/Sources'), project)
         self.assertIn('- path: '+str(stage/'Bindings'), project)
         self.assertEqual(run.call_args.args[0][0], '/verified/xcodegen')
+
+    def test_ios_stage_paths_and_profiles_are_target_scoped(self):
+        source = self.root/'source'; (source/'ios').mkdir(parents=True)
+        (source/'ios/project.yml').write_text((Path(__file__).resolve().parents[1]/'ios/project.yml').read_text())
+        stage = self.root/'stage'; stage.mkdir(); (stage/'headers').mkdir()
+        environment = {'MARKET_IOS_PROFILE_UUID':'fixture-main', 'MARKET_IOS_NSE_PROFILE_UUID':'fixture-nse'}
+        with patch.object(native,'ROOT',source), patch.object(native,'run'):
+            native.apple_project(stage,'ios-arm64',environment)
+        text = (stage/'project.yml').read_text()
+        for relative in ('NotificationService','NotificationService/Info.plist','Market.entitlements','NotificationService/NotificationService.entitlements','Simulator.entitlements','Sources/NativePushShared.swift'):
+            self.assertIn(str(source/'ios'/relative),text)
+        header, targets = text.split('\ntargets:\n',1)
+        self.assertNotIn('PROVISIONING_PROFILE_SPECIFIER',header)
+        main = targets.split('  IrisMarket:',1)[1].split('  IrisMarketUITests:',1)[0]
+        nse = text.split('  MarketNotificationService:',1)[1]
+        self.assertIn('PROVISIONING_PROFILE_SPECIFIER: "fixture-main"',main)
+        self.assertNotIn('"fixture-nse"',main)
+        self.assertIn('PROVISIONING_PROFILE_SPECIFIER: "fixture-nse"',nse)
+        self.assertNotIn('"fixture-main"',nse)
+        self.assertEqual((stage/'project.yml').stat().st_mode & 0o777,0o600)
+
+    def test_ios_requires_extension_profile_and_exact_target(self):
+        self.assertIn('MARKET_IOS_NSE_PROFILE_UUID',release.REQUIRED_ENV['ios-arm64'])
+        source = self.root/'source'; (source/'ios').mkdir(parents=True)
+        (source/'ios/project.yml').write_text('PRODUCT_BUNDLE_IDENTIFIER: to.iris.market\n')
+        stage = self.root/'stage'; stage.mkdir(); (stage/'headers').mkdir()
+        with patch.object(native,'ROOT',source), patch.object(native,'run') as run:
+            with self.assertRaisesRegex(ValueError,'MARKET_IOS_NSE_PROFILE_UUID'):
+                native.apple_project(stage,'ios-arm64',{'MARKET_IOS_PROFILE_UUID':'fixture-main'})
+            with self.assertRaisesRegex(ValueError,'Expected exactly one iOS signing target'):
+                native.apple_project(stage,'ios-arm64',{'MARKET_IOS_PROFILE_UUID':'fixture-main','MARKET_IOS_NSE_PROFILE_UUID':'fixture-nse'})
+            run.assert_not_called()
+
+    def test_ios_archive_uses_target_profiles_and_exports_both_bundles(self):
+        source=self.root/'source'; icon=source/'ios/Assets.xcassets/AppIcon.appiconset/Contents.json'; icon.parent.mkdir(parents=True);icon.write_text('{}')
+        sdk=self.root/'sdk';(sdk/'usr/lib').mkdir(parents=True);(sdk/'usr/lib/libsqlite3.tbd').write_text('fixture')
+        stage=self.root/'stage';stage.mkdir();(stage/'export').mkdir();(stage/'export/fixture.ipa').write_bytes(b'fixture')
+        output=self.root/'output';output.mkdir()
+        args=SimpleNamespace(tag=TAG,build_number=12,platform='ios-arm64',output=output)
+        environment={'MARKET_APPLE_TEAM_ID':'fixture-team','MARKET_IOS_SIGNING_IDENTITY':'fixture-identity','MARKET_IOS_PROFILE_UUID':'fixture-main','MARKET_IOS_NSE_PROFILE_UUID':'fixture-nse'}
+        with patch.object(native,'ROOT',source),patch.object(native.sys,'platform','darwin'),patch.object(native,'bindings'),patch.object(native,'rust'),patch.object(native,'apple_headers'),patch.object(native,'apple_project'),patch.object(native.subprocess,'check_output',return_value=str(sdk)),patch.object(native,'run') as run:
+            native.build_ios(args,stage,self.root/'cache',environment)
+        archive=next(call.args[0] for call in run.call_args_list if 'archive' in call.args[0])
+        self.assertFalse(any(str(value).startswith('PROVISIONING_PROFILE_SPECIFIER=') for value in archive))
+        options=plistlib.loads((stage/'ExportOptions.plist').read_bytes())
+        self.assertEqual(options['provisioningProfiles'],{'to.iris.market':'fixture-main','to.iris.market.NotificationService':'fixture-nse'})
+        self.assertTrue(options['testFlightInternalTestingOnly'])
+        self.assertEqual(environment['MARKET_APS_ENVIRONMENT'],'production')
 
     def test_release_path_remaps_preserve_flags_and_paths_with_spaces(self):
         home = self.root/'private user'

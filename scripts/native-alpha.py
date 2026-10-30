@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import re
 import shutil
 import shlex
 import subprocess
@@ -98,9 +99,38 @@ def apple_project(stage, platform, environment):
     text = text.replace('createIntermediateGroups: true', 'createIntermediateGroups: false')
     replacements = {'- path: Sources': '- path: '+str(ROOT/'ios/Sources'), '- path: Bindings': '- path: '+str(stage/'Bindings'), '- path: UITests': '- path: '+str(ROOT/'ios/UITests'), '- path: ../ios/Sources': '- path: '+str(ROOT/'ios/Sources'), '- path: ../ios/Bindings': '- path: '+str(stage/'Bindings'), 'INFOPLIST_FILE: Info.plist': 'INFOPLIST_FILE: '+str(source/'Info.plist'), 'Frameworks/IrisMarketCore.xcframework': str(stage/'IrisMarketCore.xcframework'), '$(PROJECT_DIR)/.build/headers': str(headers)}
     for old, new in replacements.items(): text = text.replace(old, new)
+    if platform == 'ios-arm64':
+        paths = {
+            '- path: NotificationService': '- path: '+str(source/'NotificationService'),
+            'INFOPLIST_FILE: NotificationService/Info.plist': 'INFOPLIST_FILE: '+str(source/'NotificationService/Info.plist'),
+            'CODE_SIGN_ENTITLEMENTS: Market.entitlements': 'CODE_SIGN_ENTITLEMENTS: '+str(source/'Market.entitlements'),
+            'CODE_SIGN_ENTITLEMENTS: NotificationService/NotificationService.entitlements': 'CODE_SIGN_ENTITLEMENTS: '+str(source/'NotificationService/NotificationService.entitlements'),
+            'CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]": Simulator.entitlements': 'CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]": '+str(source/'Simulator.entitlements'),
+        }
+        for old, new in paths.items(): text = text.replace(old, new)
+        # Xcode command-line profile overrides apply to every target. Scope each
+        # distribution profile in its own target, including the embedded NSE.
+        profiles = (('IrisMarket', 'to.iris.market', 'MARKET_IOS_PROFILE_UUID'),
+                    ('MarketNotificationService', 'to.iris.market.NotificationService', 'MARKET_IOS_NSE_PROFILE_UUID'))
+        for _, _, key in profiles: release.require(environment.get(key), 'Missing '+key)
+        header, separator, targets = text.partition('\ntargets:\n')
+        release.require(separator, 'Expected exactly one iOS signing target section')
+        for target, bundle, key in profiles:
+            pattern = r'(^  '+re.escape(target)+r':\n)(.*?)(?=^  [A-Za-z0-9_]+:\n|\Z)'
+            matches = list(re.finditer(pattern, targets, re.MULTILINE | re.DOTALL))
+            release.require(len(matches) == 1, 'Expected exactly one iOS signing target: '+target)
+            match = matches[0]; block = match.group(0)
+            identifier = 'PRODUCT_BUNDLE_IDENTIFIER: '+bundle+'\n'
+            valid_identifier = identifier in block or (target == 'IrisMarket' and 'PRODUCT_BUNDLE_IDENTIFIER:' not in block and identifier in header)
+            release.require(valid_identifier, 'Unexpected iOS bundle identifier: '+target)
+            base = '    settings:\n      base:\n'
+            release.require(block.count(base) == 1, 'Expected iOS target signing settings: '+target)
+            block = block.replace(base, base+'        PROVISIONING_PROFILE_SPECIFIER: '+json.dumps(environment[key])+'\n')
+            targets = targets[:match.start()]+block+targets[match.end():]
+        text = header+separator+targets
     # Future source asset catalogs remain relative to the original platform tree.
     text = text.replace('- path: Assets.xcassets', '- path: '+str(source/'Assets.xcassets'))
-    project = stage/'project.yml'; project.write_text(text)
+    project = stage/'project.yml'; project.write_text(text); project.chmod(0o600)
     run([environment.get('MARKET_XCODEGEN', 'xcodegen'), 'generate', '--spec', project, '--project', stage], environment)
     return headers
 
@@ -109,7 +139,7 @@ def build_ios(args, stage, cache, environment):
     release.require(sys.platform == 'darwin', 'iOS release requires macOS/Xcode')
     release.require((ROOT/'ios/Assets.xcassets/AppIcon.appiconset/Contents.json').is_file(), 'iOS distribution needs a reviewed AppIcon asset catalog')
     bindings(stage, cache, environment, 'swift')
-    environment.update(IPHONEOS_DEPLOYMENT_TARGET='16.0', CFLAGS_aarch64_apple_ios='-miphoneos-version-min=16.0')
+    environment.update(IPHONEOS_DEPLOYMENT_TARGET='16.0', CFLAGS_aarch64_apple_ios='-miphoneos-version-min=16.0', MARKET_APS_ENVIRONMENT='production')
     environment['CFLAGS_aarch64_apple_ios'] += ' '+ ' '.join(shlex.quote('-ffile-prefix-map='+str(path)+'='+virtual) for path, virtual in private_path_remaps(environment))
     sdk = Path(subprocess.check_output(['xcrun', '--sdk', 'iphoneos', '--show-sdk-path'], text=True).strip())
     release.require((sdk/'usr/lib/libsqlite3.tbd').is_file(), 'Selected iOS SDK lacks system SQLite')
@@ -122,8 +152,8 @@ def build_ios(args, stage, cache, environment):
     run(['xcodebuild', '-create-xcframework', '-library', cache/'aarch64-apple-ios/release/libiris_market_app.a', '-headers', headers, '-output', stage/'IrisMarketCore.xcframework'], environment)
     apple_project(stage, args.platform, environment)
     archive = stage/'IrisMarket.xcarchive'
-    run(['xcodebuild', '-project', stage/'IrisMarket.xcodeproj', '-scheme', 'IrisMarket', '-configuration', 'Release', '-destination', 'generic/platform=iOS', '-archivePath', archive, '-derivedDataPath', environment.get('MARKET_IOS_RELEASE_DERIVED_DATA', ROOT/'ios/.build/ReleaseDerivedData'), '-jobs', '2', 'CODE_SIGN_STYLE=Manual', 'CODE_SIGN_IDENTITY='+environment['MARKET_IOS_SIGNING_IDENTITY'], 'DEVELOPMENT_TEAM='+environment['MARKET_APPLE_TEAM_ID'], 'PROVISIONING_PROFILE_SPECIFIER='+environment['MARKET_IOS_PROFILE_UUID'], 'MARKETING_VERSION='+args.tag[1:].split('-')[0], 'CURRENT_PROJECT_VERSION='+str(args.build_number), 'archive'], environment)
-    options = {'method': 'app-store-connect', 'destination': 'export', 'signingStyle': 'manual', 'teamID': environment['MARKET_APPLE_TEAM_ID'], 'signingCertificate': environment['MARKET_IOS_SIGNING_IDENTITY'], 'provisioningProfiles': {'to.iris.market': environment['MARKET_IOS_PROFILE_UUID']}, 'testFlightInternalTestingOnly': True, 'uploadSymbols': False, 'manageAppVersionAndBuildNumber': False}
+    run(['xcodebuild', '-project', stage/'IrisMarket.xcodeproj', '-scheme', 'IrisMarket', '-configuration', 'Release', '-destination', 'generic/platform=iOS', '-archivePath', archive, '-derivedDataPath', environment.get('MARKET_IOS_RELEASE_DERIVED_DATA', ROOT/'ios/.build/ReleaseDerivedData'), '-jobs', '2', 'CODE_SIGN_STYLE=Manual', 'CODE_SIGN_IDENTITY='+environment['MARKET_IOS_SIGNING_IDENTITY'], 'DEVELOPMENT_TEAM='+environment['MARKET_APPLE_TEAM_ID'], 'MARKETING_VERSION='+args.tag[1:].split('-')[0], 'CURRENT_PROJECT_VERSION='+str(args.build_number), 'archive'], environment)
+    options = {'method': 'app-store-connect', 'destination': 'export', 'signingStyle': 'manual', 'teamID': environment['MARKET_APPLE_TEAM_ID'], 'signingCertificate': environment['MARKET_IOS_SIGNING_IDENTITY'], 'provisioningProfiles': {'to.iris.market': environment['MARKET_IOS_PROFILE_UUID'], 'to.iris.market.NotificationService': environment['MARKET_IOS_NSE_PROFILE_UUID']}, 'testFlightInternalTestingOnly': True, 'uploadSymbols': False, 'manageAppVersionAndBuildNumber': False}
     export_options = stage/'ExportOptions.plist'
     with export_options.open('xb') as stream: plistlib.dump(options, stream)
     export_options.chmod(0o600)

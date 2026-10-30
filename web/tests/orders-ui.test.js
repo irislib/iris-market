@@ -47,6 +47,17 @@ test('public courier refresh does not rebuild an open private job or start locat
   }finally{f.cleanup();}
 });
 
+test('provider gets prominent next-stop directions and an arrival action without starting GPS',async()=>{
+  const f=fixture();try{
+    f.ui.open('job','deliveries');
+    const card=all(f.page).find(node=>node.className==='transport-next-stop');assert(card);
+    assert(find(card,'Pickup'));assert(find(card,'Private pickup'));assert(find(card,'0 of 1 stops completed'));
+    assert.equal(new URL(find(card,'Directions').href).searchParams.get('destination'),'Private pickup');
+    find(card,'Mark arrived').click();await settle();
+    assert.deepEqual(f.updates,[{id:'job',patch:{stopId:'pickup',status:'arrived'}}]);assert.equal(geo.calls.length,0);
+  }finally{f.cleanup();}
+});
+
 test('live location is explicitly per-job, stoppable, and stale callbacks cannot resume it',async()=>{
   const f=fixture();try{
     f.ui.open('job','deliveries');assert.equal(geo.calls.length,0);find(f.page,'Share live location').click();assert.equal(geo.calls.length,1);

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Iris Market
+Comment=Browse offers and requests on Iris Market
+Exec=iris-market-desktop
+Icon=iris-market
+Terminal=false
+Categories=Network;Office;
+StartupWMClass=iris-market

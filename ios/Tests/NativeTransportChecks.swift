@@ -1,0 +1,32 @@
+@main struct NativeTransportChecks {
+    static func main() {
+        precondition(NativeTransportType.classify(["car", "transport"]) == nil)
+        precondition(NativeTransportType.classify(["courier"]) == .parcel)
+        precondition(NativeTransportType.classify(["courier", "passenger"]) == .passenger)
+        precondition(NativeTransportType.classify(["parcel", "passenger"]) == .both)
+        precondition(NativeTransportType.classify([" ＲＩＤＥＳ "]) == .passenger)
+        precondition(NativeTransportType.parcel.includes(["parcel", "passenger"]))
+        precondition(!NativeTransportType.passenger.includes(["parcel"]))
+        precondition(NativeTransportType.both.includes(["delivery"]))
+        precondition(!NativeTransportType.both.includes(["cars"]))
+        for type in NativeTransportType.allCases { precondition(NativeTransportType.classify(type.tags) == type) }
+        var search = NativeSearchContinuation()
+        precondition(!search.claim("a", candidates: ["first"]))
+        search.start("a")
+        precondition(!search.claim("b", candidates: ["first"]))
+        precondition(!search.claim("a", candidates: []))
+        precondition(search.claim("a", candidates: ["first|1"]))
+        precondition(!search.claim("a", candidates: ["first|1"]))
+        precondition(search.claim("a", candidates: ["first|2"]))
+        search.stop()
+        precondition(!search.claim("a", candidates: ["late"]))
+        search.start("new")
+        for page in 0..<10 { precondition(search.claim("new", candidates: (0..<24).map { "\(page)-\($0)" })) }
+        precondition(!search.claim("new", candidates: ["over-budget"]))
+        search.start("a")
+        search.record(["already-reviewed"])
+        precondition(!search.claim("a", candidates: ["already-reviewed"]))
+        precondition(search.claim("a", candidates: ["late-arrival"]))
+        print("Native transport and search continuation: 32 checks passed")
+    }
+}

@@ -1,6 +1,7 @@
 package to.iris.market
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -35,14 +36,16 @@ import org.json.JSONObject
             unfocusedContainerColor=White,focusedContainerColor=White))
 }
 
-@Composable fun PostListing(state:MarketSnapshot,model:MarketModel,busy:Boolean,done:()->Unit) {
+@Composable fun PostListing(state:MarketSnapshot,model:MarketModel,busy:Boolean,transportType:NativeTransportType?=null,initialArea:String="",done:()->Unit) {
     var expiry by remember { mutableStateOf(NativeListingExpiry.NEVER) }
     var expiryOpen by remember { mutableStateOf(false) }
     var confirmPublish by remember { mutableStateOf(false) }
     var side by remember { mutableStateOf("offer") }
-    var title by remember { mutableStateOf("") };var description by remember { mutableStateOf("") }
+    var title by remember { mutableStateOf(transportType?.serviceTitle ?: "") };var description by remember { mutableStateOf("") }
     var price by remember { mutableStateOf("") };var currency by remember { mutableStateOf("EUR") }
-    var location by remember { mutableStateOf("") };var category by remember { mutableStateOf("Other") }
+    var location by remember { mutableStateOf(initialArea) };var category by remember { mutableStateOf(if(transportType == null) "Other" else "Transport") }
+    var transport by remember { mutableStateOf(transportType) }
+    var destinationArea by remember { mutableStateOf("") }
     var imageUrl by remember { mutableStateOf("") };var categoriesOpen by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).imePadding().padding(horizontal=24.dp).padding(bottom=30.dp),
         verticalArrangement=Arrangement.spacedBy(13.dp)) {
@@ -66,7 +69,7 @@ import org.json.JSONObject
                 NativeListingExpiry.entries.forEach { choice -> DropdownMenuItem(text={Text(choice.label)},onClick={expiry=choice;expiryOpen=false}) }
             }
         }
-        MarketField(location,{location=it},"Location",hint="City or neighbourhood")
+        MarketField(location,{location=it},if(transport == null) "Location" else "Pickup area",hint="City or neighbourhood")
         Box {
             OutlinedButton(onClick={categoriesOpen=true},shape=RoundedCornerShape(14.dp),modifier=Modifier.fillMaxWidth().height(52.dp)) {
                 Text(category);Spacer(Modifier.weight(1f));Icon(Icons.Filled.ExpandMore,null)
@@ -76,6 +79,17 @@ import org.json.JSONObject
                     DropdownMenuItem(text={Text(value)},onClick={category=value;categoriesOpen=false})
                 }
             }
+        }
+        if(category == "Transport") {
+            Text("Service type",fontWeight=FontWeight.Medium)
+            Row(Modifier.horizontalScroll(rememberScrollState()),horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                FilterChip(transport==null,{transport=null},label={Text("Other")})
+                NativeTransportType.entries.forEach { choice -> FilterChip(transport==choice,{transport=choice},label={Text(choice.label)}) }
+            }
+        }
+        if(category == "Transport" && transport != null) {
+            MarketField(destinationArea,{destinationArea=it.take(160)},"Destination area · optional")
+            Text("Name your pickup and destination areas. Agree on exact addresses privately.",color=Muted,style=MaterialTheme.typography.bodySmall)
         }
         MarketField(imageUrl,{imageUrl=it},"Photo link · optional",hint="https://…",keyboard=KeyboardType.Uri)
         if(state.demo) Surface(color=Sand,shape=RoundedCornerShape(14.dp)) {
@@ -87,13 +101,13 @@ import org.json.JSONObject
         }
     }
     if(confirmPublish) AlertDialog(onDismissRequest={confirmPublish=false},title={Text("Publish your listing?")},
-        text={Text("Your listing and availability for private enquiries will be public. Conversations stay encrypted.")},
+        text={Text("$title\n$location\nYour listing and availability for private enquiries will be public. Conversations stay encrypted.")},
         dismissButton={TextButton(onClick={confirmPublish=false}){Text("Keep editing")}},
         confirmButton={TextButton(onClick={
             confirmPublish=false
-            val draft=JSONObject().put("title",title.trim()).put("description",description.trim()).put("side",side)
+            val draft=JSONObject().put("title",title.trim()).put("description",description.trim() + if(category == "Transport" && transport != null) "\n\nPickup area: $location\nDestination area: $destinationArea" else "").put("side",side)
                 .put("price",price.trim()).put("currency",currency.trim()).put("location",location.trim())
-                .put("category",category).put("image_url",imageUrl.trim().ifBlank { null } ?: JSONObject.NULL)
+                .put("category",category).put("tags",JSONArray(if(category == "Transport") transport?.tags ?: emptyList<String>() else emptyList<String>())).put("image_url",imageUrl.trim().ifBlank { null } ?: JSONObject.NULL)
             model.publishListing(draft,expiry,done)
         }){Text("Publish")}})
 }

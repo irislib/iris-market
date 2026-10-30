@@ -772,6 +772,15 @@ fn ai_search_mode_cannot_override_explicit_off_and_disabling_restores_literal_se
 
 #[test]
 fn off_cancels_delayed_remote_http_and_frees_the_serial_search_queue() {
+    delayed_remote_cancellation(false);
+}
+
+#[test]
+fn switching_away_from_jev_cancels_http_and_rejects_late_decisions() {
+    delayed_remote_cancellation(true);
+}
+
+fn delayed_remote_cancellation(switch_provider: bool) {
     use std::sync::{Arc, mpsc};
     use std::time::Instant;
     for operation in ["curate", "check_ai"] {
@@ -853,6 +862,9 @@ fn off_cancels_delayed_remote_http_and_frees_the_serial_search_queue() {
         };
         settings.ai.enabled = true;
         settings.ai.model = "delayed-local-fixture".into();
+        if switch_provider {
+            settings.ai.provider = "systemone".into();
+        }
         settings.ai.base_url = endpoint;
         app.command(&json!({"type":"set_settings","settings":settings}).to_string())
             .unwrap();
@@ -873,7 +885,12 @@ fn off_cancels_delayed_remote_http_and_frees_the_serial_search_queue() {
         });
         started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
         let started = Instant::now();
-        settings.ai.enabled = false;
+        if switch_provider {
+            settings.ai.provider = "compatible".into();
+            settings.ai.model = "replacement-fixture".into();
+        } else {
+            settings.ai.enabled = false;
+        }
         app.command(&json!({"type":"set_settings","settings":settings}).to_string())
             .unwrap();
         let off_elapsed = started.elapsed();
@@ -886,7 +903,8 @@ fn off_cancels_delayed_remote_http_and_frees_the_serial_search_queue() {
             "the loopback provider must observe HTTP transport cancellation, not merely ignored output"
         );
         let state: Value = serde_json::from_str(&response).unwrap();
-        assert_eq!(state["settings"]["ai"]["enabled"], false);
+        assert_eq!(state["settings"]["ai"]["enabled"], switch_provider);
+        assert_eq!(state["settings"]["ai"]["provider"], "compatible");
         assert_eq!(state["ai_search"], false);
         assert_eq!(state["query"], "camera");
         assert_eq!(state["listings"].as_array().unwrap().len(), 2);

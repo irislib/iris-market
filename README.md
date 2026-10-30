@@ -14,7 +14,7 @@ A general marketplace for things, skills and opportunities. Native iOS, Android 
 - Public author profiles, following and observed follower lists, known connections and relationship checkmarks. The visitor network starts from Sirius Business, including when no profile is signed in. On the web, new profiles and profiles without observed follows also use this starting network; a verified nonempty personal follow list switches to the personal graph in the background.
 - Relevance combines search matches, optional AI scores, social connections, freshness, saved categories and nearby listings when location is known. Social and Newest are separate sort choices. The unfiltered Selling feed starts with photos; Filters can include listings without them. Saved items remain in Browse.
 - Listing maps use the same pinned Hashtree basemap as Iris Maps, with a bounded public-data cache and markers from signed geohash tags.
-- The browser creator offers optional delivery destinations and a fixed delivery cost, plus Delivery / Passenger ride / Both for transport listings. Price can stay blank for negotiation; payment conditions remain in the description. Delivery options use the draft extension described below. Native delivery-option creation is pending.
+- The browser creator offers optional delivery destinations and a fixed delivery cost. Browser and native transport workspaces offer Deliveries / Rides / Both, public requests, private assigned jobs and service announcements. Native service listings describe pickup and destination areas in text; drawing structured service-area boundaries remains browser-only. Price can stay blank for negotiation; payment conditions remain in the description. Delivery options use the draft extension described below. Native delivery-option creation is pending.
 - Listing expiry is optional, with relative presets in the browser and native source. The signed event retains an absolute deadline, and expired listings stay hidden.
 - One search field for text or optional AI matching. Browser-local AI can prepare its local model automatically, with inline progress, cancellation and a Show all override. It is experimental; marketplace accuracy is not established.
 - Named CLI commands, a local JSON action interface and MCP stdio tools for search, publication, saved listings, contact, messages and private orders.
@@ -249,11 +249,44 @@ The CLI also exposes `orders`, `order-request <listing-id> [json|-]`, `order-upd
 
 ## Native alpha release contract
 
-`scripts/alpha-release.py` and `scripts/native-alpha.py` define the iOS, Android, macOS and cross-platform CLI artifact set. Release inputs are pinned in `scripts/release-build-inputs.json` and `scripts/android-release-inputs.json`; installers verify their hashes before use. Signing values come only from the release environment. The release manifest requires an exact full source commit, public GitHub/Hashtree source-history verification, target-specific runtime acceptance, and matching artifact hashes. Apple distribution additionally requires the appropriate signing/notarization or TestFlight gates. These scripts are release tooling, not evidence that binaries have shipped.
+`scripts/alpha-release.py` and `scripts/native-alpha.py` define the iOS, Android, macOS and cross-platform CLI artifact set. Release manifest schema 2 adds Linux x64 desktop `.deb` and portable `.tar.gz` packages, for nine artifacts in total. Schema 1 remains verifiable for the seven-artifact releases already prepared; their tags, packages and evidence stay unchanged. Release inputs are pinned in `scripts/release-build-inputs.json` and `scripts/android-release-inputs.json`; installers verify their hashes before use. Signing values come only from the release environment. The release manifest requires an exact full source commit, public GitHub/Hashtree source-history verification, target-specific runtime acceptance, and matching artifact hashes. Apple distribution additionally requires the appropriate signing/notarization or TestFlight gates. These scripts are release tooling, not evidence that binaries have shipped.
 
 Native release diagnostics remap source paths to `/source/iris-market`, Cargo inputs to `/build/cargo`, and the build home to `/build/home`. Local Apple input installations can be reused with `release-build-inputs.py --install --local-macos --reuse` and the same target/tool selection: pinned Rust components are reinstalled, every native archive payload byte is verified, and the preceding source receipt is preserved. This does not reuse runtime acceptance or change the exact-source release gate.
 
-Acceptance includes actual fresh-native Rust→JS order interoperability and an iOS UI order journey using an isolated local relay. Seller/courier native screens were additionally exercised with an isolated UI harness. Native profile grids load signed author listings independently from Browse, with bounded load-more queries; this was exercised on an actual iOS simulator. Native wallet redemption and live-location sending remain unavailable.
+Acceptance includes actual fresh-native Rust→JS order interoperability and an iOS UI order journey using an isolated local relay. Seller/courier native screens were additionally exercised with an isolated UI harness. Native profile grids load signed author listings independently from Browse, with bounded load-more queries; this was exercised on an actual iOS simulator. Native wallet redemption and live-location sending remain unavailable. Native Transport is available from the header and Profile, with Find work, My jobs and My service, explicit service topics, next-stop directions, and normal private order actions. Native local AI can review newly arriving results for the submitted search, up to 240 candidates; Stop, leaving the search, or backgrounding ends that continuation.
+
+### Release candidate 0.1.3
+
+The current source targets `v0.1.3-alpha.1`, with native build number **8**. These are source defaults, not a claim that updated downloads or TestFlight builds are available. Existing download links above remain on their published release until new public bytes are verified. The frozen `v0.1.2-alpha.1` candidates retain their original source and evidence.
+
+The release owner integrates and commits the accepted source before building. `native-alpha.py` rejects a dirty checkout, uses checksum-verified inputs, generates bindings from that same core, and keeps candidates in a new staging directory. On the accepted commit:
+
+```sh
+python3 scripts/alpha-release.py plan --tag v0.1.3-alpha.1
+python3 scripts/release-build-inputs.py --check
+python3 scripts/android-release-inputs.py --check
+python3 scripts/test_alpha_release.py -v
+```
+
+Build the signed Apple candidates using the pinned local Apple input installer and `native-alpha.py --build-number 8`; Android and all four CLI targets use `.github/workflows/alpha-build.yml` dispatched at the full accepted commit with the same tag/build number. The workflow's Android output is an attested unsigned handoff. `android-sign.py` verifies that provenance and signs locally without changing application payloads. Signing values stay in the release environment.
+
+Runtime acceptance must cover the final signed APK, the final notarized/stapled Mac archive, the distribution IPA and TestFlight processing/internal-group state, and each CLI executable on its target. The Linux desktop packages require clean-source evidence, a verified bundled web asset manifest, exact installed/extracted payload checks, recorded system runtime versions, and GUI acceptance of each final format. Then seal the nine artifacts with `alpha-release.py seal` and verify its manifest before publication. Publish to the existing GitHub/Hashtree destinations, verify anonymous downloads against every recorded hash, and only then update download links. The release scripts do not upload or publish automatically.
+
+### Linux desktop preview
+
+`linux/iris_market.py` runs the bundled browser client in a persistent WebKitGTK window. It uses system Python 3.10+, GTK 3, PyGObject and WebKitGTK 4.1 API (WebKit 2.42+); it does not bundle these runtimes. Linux x64 is the release target. The desktop package is not yet published. Browser accounts, encrypted local storage, transport workspaces and optional CPU/WASM AI use the same web implementation; this is not a separate Rust-native Linux interface.
+
+Build the web assets with the pinned Node version and locked dependencies before launching from source:
+
+```sh
+cd web
+npm ci
+npm run build
+cd ..
+python3 linux/iris_market.py --assets web/dist
+```
+
+The release owner packages only the accepted source and reviewed web assets with `scripts/linux-package.py --tag v0.1.3-alpha.1 --version 0.1.3~alpha.1 --arch amd64 --output <new-output-directory>`. The `.deb` declares its system dependencies; the portable archive needs those same dependencies installed. A dirty-source preview package is never accepted as a release candidate.
 
 ## Protocol and privacy
 

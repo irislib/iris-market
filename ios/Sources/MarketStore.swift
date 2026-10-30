@@ -24,6 +24,7 @@ final class MarketStore: ObservableObject {
     private var timer: Timer?
     private var localAITask: Task<Void, Never>?
     private var localAIRequest = UUID()
+    private var searchContinuation = NativeSearchContinuation()
     @Published private(set) var localAIProgress: String?
     @Published private(set) var localAIStatus: String?
     @Published private(set) var aiTestBusy = false
@@ -152,14 +153,14 @@ final class MarketStore: ObservableObject {
             Task { @MainActor in self?.refreshSnapshot() }
         }
     }
-    func stopPolling() { timer?.invalidate(); timer = nil }
+    func stopPolling() { timer?.invalidate(); timer = nil; searchContinuation.stop() }
     private func refreshSnapshot() {
         guard let app else { return }
         let generation = accountGeneration
         queue.async { [weak self] in
             do {
                 let next = try MarketJSON.decoder().decode(MarketSnapshot.self, from: Data(try app.snapshot().utf8))
-                Task { @MainActor in if self?.accountGeneration == generation { self?.acceptSnapshot(next); self?.refreshAIAvailability() } }
+                Task { @MainActor in if self?.accountGeneration == generation { self?.acceptSnapshot(next); self?.refreshAIAvailability(); self?.continueLocalSearch() } }
             } catch { Task { @MainActor in self?.alert = marketErrorMessage(error) } }
         }
     }
@@ -222,11 +223,12 @@ final class MarketStore: ObservableObject {
         } catch { alert = marketErrorMessage(error); completion?(false) }
     }
     func filter(query: String, side: String, aiSearch: Bool = false, completion: ((Bool) -> Void)? = nil) {
+        searchContinuation.stop()
         if localAIProgress != nil && (query != snapshot.query || side != snapshot.side || aiSearch != snapshot.aiSearch) { cancelLocalAI() }
         command(["type": "set_filter", "query": query, "side": side, "ai_search": aiSearch], completion: completion)
     }
     func searchAI(query: String, side: String) {
-        filter(query: query, side: side, aiSearch: true) { success in if success { self.runAI(type: "curate") } }
+        filter(query: query, side: side, aiSearch: true) { success in if success { self.searchContinuation.start(self.searchContext); self.runAI(type: "curate") } }
     }
     func save(_ listing: MarketListing) { command(["type": "save", "id": listing.id]) }
     func requestOrder(_ listing: MarketListing, quantity: Int, note: String, completion: @escaping (Bool) -> Void) {
@@ -348,6 +350,17 @@ final class MarketStore: ObservableObject {
             }
         } catch { aiTestError = "Could not read the provider key securely." }
     }
+    private var searchContext: String {
+        [snapshot.publicKey, snapshot.query, snapshot.side, snapshot.settings.ai.provider, snapshot.settings.ai.model, snapshot.settings.ai.baseUrl].joined(separator: "\n")
+    }
+    private func continueLocalSearch() {
+        guard !busy, !aiTestBusy, localAITask == nil, localAIProgress == nil,
+              snapshot.aiSearch, snapshot.settings.ai.enabled, snapshot.settings.ai.provider == "apple",
+              !snapshot.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        let candidates = snapshot.listings.filter { $0.relevance == nil }.map(\.localSearchRevision)
+        guard searchContinuation.claim(searchContext, candidates: candidates) else { return }
+        runOnDeviceAI(check: false)
+    }
     func runAI(type: String) {
         guard !busy else { return }
         if snapshot.settings.ai.provider == "apple" { runOnDeviceAI(check: type == "check_ai"); return }
@@ -355,6 +368,7 @@ final class MarketStore: ObservableObject {
         catch { alert = marketErrorMessage(error) }
     }
     func cancelLocalAI() {
+        searchContinuation.stop()
         localAIRequest = UUID(); localAITask?.cancel(); localAITask = nil; localAIProgress = nil; localAIStatus = nil
         if let batch = snapshot.localCuration { command(["type": "cancel_local_curation", "id": batch.id]) }
     }
@@ -385,6 +399,7 @@ final class MarketStore: ObservableObject {
         command(["type": "begin_local_curation"]) { [weak self] success in
             guard let self, self.localAIRequest == request else { return }
             guard success, let batch = self.snapshot.localCuration else { self.localAIProgress = nil; return }
+            self.searchContinuation.record(batch.candidates.map { $0.listing.localSearchRevision })
             let started = Date()
             self.localAITask = Task { [weak self] in
                 defer { if self?.localAIRequest == request { self?.localAIProgress = nil; self?.localAITask = nil } }

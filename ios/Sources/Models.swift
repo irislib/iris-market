@@ -42,6 +42,7 @@ struct MarketListing: Decodable, Identifiable, Hashable {
     let currency: String
     let location: String
     let category: String
+    var tags: [String]? = nil
     let imageUrl: String?
     let createdAt: Int64
     let expiresAt: Int64?
@@ -54,6 +55,11 @@ struct MarketListing: Decodable, Identifiable, Hashable {
     let displayPrice: MarketDisplayPrice?
     let relevance: Relevance?
     struct Relevance: Decodable, Hashable { let show: Bool; let reason: String }
+    var localSearchRevision: String {
+        var revision = Hasher()
+        for value in [title, description, side, price, currency, location, category] { revision.combine(value) }
+        return "\(id)|\(createdAt)|\(revision.finalize())"
+    }
     var formattedPrice: String {
         guard !price.isEmpty else { return side == "request" ? "Make an offer" : "Ask for price" }
         guard let amount = displayPrice?.amount ?? Double(price), amount.isFinite else { return "\(price) \(currency)" }

@@ -7,12 +7,15 @@ struct ProfileView: View {
     @State private var signIn = false
     @State private var publicProfile = false
     @State private var connectionSettings = false
+    @State private var transport = false
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 25) {
                 Text("Profile").font(.system(size: 30, weight: .medium)).tracking(-1).foregroundStyle(MarketTheme.ink)
                 VStack(spacing: 0) {
                     profileRow("Sign in", symbol: "person.crop.circle.badge.checkmark") { signIn = true }.disabled(store.demo)
+                    Divider().padding(.leading, 61)
+                    profileRow("Transport", subtitle: "Find work, manage jobs and offer your service", symbol: "car.fill") { transport = true }.accessibilityIdentifier("transportWorkspace")
                     Divider().padding(.leading, 61)
                     profileRow("My listings", symbol: "person.crop.circle.fill") { publicProfile = true }
                     Divider().padding(.leading, 61)
@@ -32,7 +35,8 @@ struct ProfileView: View {
                 }.padding(20).background(MarketTheme.surface, in: RoundedRectangle(cornerRadius: 23))
                 if store.demo { Label("Preview mode uses sample listings and stays offline.", systemImage: "eye").font(.system(size: 12)).foregroundStyle(MarketTheme.muted) }
             }.padding(23)
-        }.sheet(isPresented: $signIn) { AccountSignInView().marketSheetScope() }
+        }.sheet(isPresented: $transport) { CourierWorkspaceView().marketSheetScope() }
+            .sheet(isPresented: $signIn) { AccountSignInView().marketSheetScope() }
             .sheet(isPresented: $aiSettings) { AISettingsView(settings: store.snapshot.settings).marketSheetScope() }
             .sheet(isPresented: $publicProfile) { AuthorProfileView(author: store.snapshot.publicKey).marketSheetScope() }
             .sheet(isPresented: $connectionSettings) { ConnectionSettingsView(settings: store.snapshot.settings).marketSheetScope() }

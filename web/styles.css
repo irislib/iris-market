@@ -83,3 +83,5 @@ dialog { color:var(--ink); background:var(--bg); border:1px solid var(--line); b
 
 @media(max-width:520px){.header nav{gap:14px}}
 .ai-test { border-top:1px solid var(--line);margin-top:18px;padding-top:18px; }.ai-test h3{font-size:15px;margin:0 0 14px}#preferences-dialog .ai-test label{display:block;margin-top:12px}.settings-dialog .ai-test input,.settings-dialog .ai-test textarea{display:block;width:100%;max-width:none;margin-top:8px}.ai-test progress{width:100%;margin-top:12px}#ai-test-description{margin-bottom:0}#ai-test-status{margin-top:12px}
+
+.transport-next-stop{display:grid;gap:10px;background:var(--soft);border:1px solid var(--line);border-radius:20px;padding:22px}.transport-next-stop h3,.transport-next-stop p{margin:0}.transport-next-stop h3{font-size:24px}.transport-next-stop .order-actions{margin-top:6px}.order-next-label{line-height:1.5}.orders-list>h3{margin:16px 0 0}

@@ -101,7 +101,7 @@ import java.util.UUID
             model.orderCommand(JSONObject().put("type", "request_order").put("listing_id", listing.id).put("quantity", quantity.toInt()).put("note", note.trim()),
                 onSuccess = { done(model.state.value.orders.filter { order -> order.buyer == state.publicKey && order.items.any { it.id == listing.id } }.maxByOrNull { it.createdAt }?.id) },
                 onError = { error = it })
-        }, modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(16.dp)) { Text("Request order") }
+        }, modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(16.dp)) { Text(NativeTransportType.classify(listing.tags)?.requestLabel ?: "Request order") }
     }
 }
 
@@ -163,6 +163,12 @@ import java.util.UUID
                     }
                     stop.courierPubkey?.let { courier -> Row(Modifier.clickable { openProfile(courier) }) { UserRow(state.people[courier] ?: PublicPerson.unnamed(courier), "Courier", 30.dp) } }
                     if (!order.terminal && order.status != "requested" && (seller || stop.courierPubkey == state.publicKey)) {
+                        if (stop.status != "completed") {
+                            val destination = stop.coordinates?.let { "${it[1]},${it[0]}" } ?: stop.address.trim()
+                            if (destination.isNotBlank()) TextButton(onClick = { runCatching { uri.openUri("https://www.google.com/maps/dir/?api=1&destination=${android.net.Uri.encode(destination)}&travelmode=driving") } }) {
+                                Icon(Icons.Filled.Directions, null); Spacer(Modifier.width(8.dp)); Text("Navigate to stop")
+                            }
+                        }
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             if (stop.status == "pending") OutlinedButton(enabled = !busy, onClick = { update(JSONObject().put("stopId", stop.id).put("status", "arrived")) }) { Text("Mark arrived") }
                             if (stop.status != "completed") TextButton(enabled = !busy, onClick = { update(JSONObject().put("stopId", stop.id).put("status", "completed")) }) { Text("Complete stop") }

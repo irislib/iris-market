@@ -120,7 +120,11 @@ export function setupCourierWorkspace({getListings,getOwner,getOrders,renderOrde
       if(!owner){const signin=element('button','Sign in to see your jobs','button primary');signin.type='button';signin.onclick=onSignIn;content.append(signin);return;}
       const jobs=courierJobs(getOrders(),owner),list=element('div',undefined,'orders-list');
       if(!jobs.length)list.append(element('h3','No jobs yet'),element('p','Deliveries and rides assigned to you appear here.','small muted'));
-      else for(const order of jobs)list.append(renderOrder(order));
+      else {
+        const active=jobs.filter(order=>!terminal(order)),finished=jobs.filter(terminal);
+        if(active.length){list.append(element('h3',`Active · ${active.length}`));for(const order of active)list.append(renderOrder(order));}
+        if(finished.length){list.append(element('h3','History'));for(const order of finished)list.append(renderOrder(order));}
+      }
       content.append(list);return;
     }
     if(isPreview()){content.append(element('p','Switch to the live market to find work or offer a service.','muted'));return;}

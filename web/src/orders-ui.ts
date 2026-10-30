@@ -8,6 +8,7 @@ import { decode } from 'nostr-tools/nip19';
 import { imageUrl } from './media.ts';
 import { art } from './art.ts';
 import { setupCourierWorkspace, orderReviewParticipants, type CourierFeedOptions } from './courier-ui.ts';
+import { nextTransportStop, stopDirections, transportProgress } from './transport-job.ts';
 
 const terminal = order => ['delivered', 'cancelled'].includes(order.status);
 const statuses = { requested: 'Requested', accepted: 'Accepted', 'in-transit': 'On the way', delivered: 'Delivered', cancelled: 'Cancelled' };
@@ -42,7 +43,7 @@ export function setupOrders({ account, isPreview = () => false, onProfile = () =
   const current = () => orders().find(order => order.id === selected);
   const owner = () => state.ownerPubkey;
   const role = order => order.buyer === owner() ? 'buyer' : order.seller === owner() ? 'seller' : 'courier';
-  const ownStop = order => order.shipment?.stops?.find(stop => stop.status !== 'completed' && (order.seller === owner() || stop.courierPubkey === owner()));
+  const ownStop = order => nextTransportStop(order,owner());
   const price = item => { const value = formatPrice(item); return value; };
   const action = (label, fn, primary = false) => { const button = node('button', label, `button ${primary ? 'primary' : 'secondary'}`); button.type = 'button'; button.dataset.orderAction = ''; button.onclick = fn; button.disabled = busy; return button; };
   const person = (pubkey:string, label?:string) => {
@@ -120,6 +121,11 @@ export function setupOrders({ account, isPreview = () => false, onProfile = () =
       const title=node('span', order.items?.map(item => item.title).join(', ') || 'Order', 'order-card-title');
       if(unread.unread(order.id)){const dot=node('span',undefined,'unread-dot');dot.setAttribute('aria-hidden','true');title.append(dot,node('span','Unread update','unread-label'));}
       text.append(title);
+      if(tab==='deliveries'){
+        const stop=ownStop(order),progress=transportProgress(order);
+        if(stop)text.append(node('span',`${stop.status==='arrived'?'At':'Next'}: ${stop.label||'Stop'}${stop.address?` · ${stop.address}`:''}`,'order-next-label'));
+        if(progress.total)text.append(node('span',`${progress.completed} of ${progress.total} stops completed`,'small muted'));
+      }
       text.append(node('span', `${date(order.createdAt)}${order.items?.[0]?.quantity > 1 ? ` · ${order.items[0].quantity} items` : ''}`, 'small muted'));
       amount.append(node('span', `${price(order.items?.[0] || {})}${order.items?.[0]?.quantity > 1 ? ` × ${order.items[0].quantity}` : ''}`, 'order-card-price'), node('span', statuses[order.status] || order.status, `order-status order-status-${order.status}`));
       card.append(text, amount); return card;
@@ -152,9 +158,21 @@ export function setupOrders({ account, isPreview = () => false, onProfile = () =
     body.append(form);
   }
   function update(order, patch, announcement) { void perform(async () => { await account.messaging.updateOrder(order.id, patch); live.textContent = announcement || 'Order updated'; }); }
+  function nextStopCard(order) {
+    const stop=ownStop(order);if(!stop)return null;
+    const card=node('section',undefined,'transport-next-stop'),progress=transportProgress(order);
+    card.setAttribute('aria-label','Next stop');
+    card.append(node('span',stop.status==='arrived'?'At this stop':'Next stop','small muted'),node('h3',stop.label||'Stop'));
+    if(stop.address)card.append(node('p',stop.address));
+    card.append(node('p',`${progress.completed} of ${progress.total} stops completed`,'small muted'));
+    const actions=node('div',undefined,'order-actions'),directions=stopDirections(stop);
+    if(directions){const link=node('a','Directions','button secondary');link.href=directions;link.target='_blank';link.rel='noopener noreferrer';actions.append(link);}
+    actions.append(action(stop.status==='arrived'?'Complete stop':'Mark arrived',()=>update(order,{stopId:stop.id,status:stop.status==='arrived'?'completed':'arrived'},stop.status==='arrived'?'Stop completed':'Arrival saved'),true));
+    card.append(actions);return card;
+  }
   function renderTimeline(order) {
     const stops = order.shipment?.stops || [], section = node('section', undefined, 'order-shipment');
-    section.append(node('h3', 'Delivery'));
+    section.append(node('h3', 'Route'));
     if (order.shipment?.eta) section.append(node('p', `Expected ${dateTime(order.shipment.eta)}`, 'order-eta'));
     if (!stops.length) section.append(node('p', 'Delivery or collection details are not set yet.', 'small muted'));
     else {
@@ -191,7 +209,7 @@ export function setupOrders({ account, isPreview = () => false, onProfile = () =
     if (!hasLocation) return null;
     if (!mapHost || mapOrderId !== order.id) {
       dropMap(); mapOrderId = order.id; mapHost = node('div', undefined, 'order-map-section');
-      const canvas = node('div', undefined, 'order-map'); canvas.setAttribute('aria-label', 'Delivery map');
+      const canvas = node('div', undefined, 'order-map'); canvas.setAttribute('aria-label', 'Route map');
       const status = node('p', '', 'small muted'); status.setAttribute('role', 'status');
       mapHost.append(canvas, node('p', 'Stops joined directly; not driving directions.', 'small muted'), status);
       const generation = mapGeneration;
@@ -207,6 +225,7 @@ export function setupOrders({ account, isPreview = () => false, onProfile = () =
     const selfRole = role(order), summary = node('div', undefined, 'order-detail-heading');
     summary.append(node('span', statuses[order.status] || order.status, `order-status order-status-${order.status}`), node('span', dateTime(order.createdAt), 'small muted'));
     body.append(summary);
+    const next=nextStopCard(order);if(next)body.append(next);
     for (const item of order.items || []) {
       const itemRow = node('div', undefined, 'order-item'); itemRow.append(node('h3', item.title), node('span', `${price(item)}${item.quantity > 1 ? ' each' : ''}`, 'order-item-price'));
       if (item.quantity > 1) itemRow.append(node('p', `Quantity ${item.quantity}`, 'small muted')); body.append(itemRow);
@@ -221,7 +240,7 @@ export function setupOrders({ account, isPreview = () => false, onProfile = () =
     if (['buyer', 'seller'].includes(selfRole)) actions.append(action('Message', () => { dialog.hide(); void account.openChat(selfRole === 'buyer' ? order.seller : order.buyer); }));
     if (!terminal(order) && ['buyer', 'seller'].includes(selfRole)) actions.append(action(order.status === 'requested' && selfRole === 'seller' ? 'Decline request' : 'Cancel order', () => update(order, { status: 'cancelled' }, 'Order cancelled')));
     if (terminal(order)) actions.append(action(order.archived ? 'Restore order' : 'Archive order', () => { void perform(async () => { await account.messaging.archiveOrder(order.id, !order.archived); live.textContent = order.archived ? 'Order restored' : 'Order archived'; }); }));
-    body.append(actions);
+    if(actions.childElementCount)body.append(actions);
     if (order.sync === 'queued') body.append(node('p', 'Update saved. Waiting to reach the other people in this order.', 'small muted order-sync'));
     if (order.status !== 'requested' || order.shipment?.stops?.length) body.append(renderTimeline(order));
     const reviewPeople=orderReviewParticipants(order,owner());

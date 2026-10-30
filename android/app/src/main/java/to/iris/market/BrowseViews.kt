@@ -229,7 +229,7 @@ import org.json.JSONObject
             Button(enabled=!busy&&!demo&&!listing.mine,onClick={
                 if(listing.side=="offer") buy() else model.command(JSONObject().put("type","contact").put("author",listing.author).put("listing_id",listing.id),inbox)
             },modifier=Modifier.weight(1.35f).height(51.dp),shape=RoundedCornerShape(15.dp)) {
-                Text(if(listing.side=="offer") "Buy" else "Respond")
+                Text(if(listing.side=="offer") NativeTransportType.classify(listing.tags)?.requestLabel ?: "Buy" else "Respond")
             }
         }
         if(!listing.mine && !demo && listing.side=="offer") TextButton(enabled=!busy,onClick={

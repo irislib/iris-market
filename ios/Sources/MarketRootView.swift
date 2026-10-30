@@ -6,6 +6,7 @@ struct MarketRootView: View {
     @AppStorage("market.appearance") private var appearance = MarketAppearance.system.rawValue
     @State private var tab = MarketTab.browse
     @State private var compose = false
+    @State private var transport = false
     @State private var selected: MarketListing?
     @State private var photoFilter: Bool?
     enum MarketTab: String, CaseIterable {
@@ -22,6 +23,7 @@ struct MarketRootView: View {
                 Button { appearance = (colorScheme == .dark ? MarketAppearance.light : .dark).rawValue } label: {
                     Image(systemName: colorScheme == .dark ? "sun.max.fill" : "moon.fill").frame(width: 32, height: 41).foregroundStyle(MarketTheme.muted)
                 }.accessibilityLabel(colorScheme == .dark ? "Use light appearance" : "Use dark appearance").accessibilityIdentifier("themeToggle")
+                Button { transport = true } label: { Image(systemName: "car.fill").frame(width: 32, height: 41).foregroundStyle(MarketTheme.muted) }.accessibilityLabel("Transport workspace").accessibilityIdentifier("openTransport")
                 Button { compose = true } label: { Image(systemName: "plus").font(.system(size: 20, weight: .medium)).frame(width: 41, height: 41).background(MarketTheme.action, in: Circle()).foregroundStyle(MarketTheme.onAction) }
                     .accessibilityLabel("Create a listing").accessibilityIdentifier("createListing")
             }.padding(.horizontal, 23).padding(.top, 10).padding(.bottom, 16)
@@ -57,6 +59,7 @@ struct MarketRootView: View {
             }.background(MarketTheme.paper)
         }.background(MarketTheme.paper)
             .sheet(isPresented: Binding(get: { store.snapshot.profileNameRequired == true && !store.demo }, set: { _ in })) { ProfileNameEntryView().environmentObject(store) }
+            .sheet(isPresented: $transport) { CourierWorkspaceView().marketSheetScope() }
             .sheet(isPresented: $compose) { NewListingView().marketSheetScope() }
             .sheet(item: $selected) { listing in ListingDetailView(listing: listing, onContact: { tab = .inbox }, onOrder: { tab = .orders }).marketSheetScope() }
             .alert("Unable to complete action", isPresented: Binding(get: { store.alert != nil && store.activeSheetCount == 0 }, set: { if !$0 { store.alert = nil } })) { Button("OK", role: .cancel) { store.alert = nil } } message: { Text(store.alert ?? "") }

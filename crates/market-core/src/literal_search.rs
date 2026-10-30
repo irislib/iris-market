@@ -104,6 +104,8 @@ mod tests {
 
     #[test]
     fn unicode_lowercase_preserves_finnish_letters() {
+        assert!(matches("Fresh meat", "MEAT"));
+        assert!(matches("Fresh MEAT", "meat"));
         assert!(matches("Helsinki: TUORE LEIPÄ", "leipä tuore"));
         assert!(matches("KÄYTETTY PYÖRÄ", "pyörä käytetty"));
         assert!(!matches("LEIPÄ", "leipa"));

@@ -14,6 +14,7 @@ pub mod profiles;
 pub mod public_cache;
 pub mod ranking;
 pub mod rates;
+mod search_discovery;
 pub mod service_area;
 pub mod store;
 #[cfg(feature = "cashu-wallet")]
@@ -63,6 +64,7 @@ pub(crate) struct State {
     remote_ai_cancel: Option<Arc<Notify>>,
     remote_ai_is_check: bool,
     buying_request: u64,
+    search_request: u64,
     profile_listings: Option<profile_listings::Feed>,
 }
 impl State {
@@ -404,6 +406,7 @@ impl Market {
             remote_ai_cancel: None,
             remote_ai_is_check: false,
             buying_request: 0,
+            search_request: 0,
             profile_listings: None,
         };
         if demo {
@@ -419,6 +422,11 @@ impl Market {
         if !demo {
             runtime.spawn(rates::run(state.clone(), stopped.clone()));
             runtime.spawn(network::run(state.clone(), notify.clone(), stopped.clone()));
+            runtime.spawn(search_discovery::run(
+                state.clone(),
+                notify.clone(),
+                stopped.clone(),
+            ));
             runtime.spawn(network::run_private(
                 state.clone(),
                 notify.clone(),
@@ -569,6 +577,10 @@ impl Market {
                 s.query = query;
                 s.side = side;
                 s.ai_search = ai_search;
+                // A submitted query may retrieve older public inventory even
+                // when its local filter did not change (explicit retry).
+                s.search_request = s.search_request.wrapping_add(1);
+                self.notify.notify_waiters();
             }
             Command::SetSort { sort } => {
                 if !["suggested", "newest"].contains(&sort.as_str()) {
@@ -675,6 +687,7 @@ impl Market {
             }
             Command::Refresh => {
                 if !s.demo {
+                    s.search_request = s.search_request.wrapping_add(1);
                     if s.side == "request" {
                         s.buying_request += 1;
                     }

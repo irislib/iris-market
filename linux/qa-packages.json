@@ -1,0 +1,48 @@
+{
+  "purpose": "Optional Ubuntu 26.04 GUI QA viewer only; not included in releases",
+  "repository": "http://archive.ubuntu.com/ubuntu/",
+  "packages": [
+    {
+      "Package": "libtk8.6",
+      "Version": "8.6.17-1build1",
+      "Architecture": "amd64",
+      "Filename": "pool/main/t/tk8.6/libtk8.6_8.6.17-1build1_amd64.deb",
+      "SHA256": "9956a0f9252ce0bc3be1a97fa06b53e2697d25c24f7dcff25fc17e7b52c3db6f"
+    },
+    {
+      "Package": "libvncclient1",
+      "Version": "0.9.15+dfsg-3ubuntu0.2",
+      "Architecture": "amd64",
+      "Filename": "pool/main/libv/libvncserver/libvncclient1_0.9.15+dfsg-3ubuntu0.2_amd64.deb",
+      "SHA256": "4b8518ff070b15bfcc3defa186ddfd1c3dddc60d205fe72a79ceb7626fc297b7"
+    },
+    {
+      "Package": "libvncserver1",
+      "Version": "0.9.15+dfsg-3ubuntu0.2",
+      "Architecture": "amd64",
+      "Filename": "pool/main/libv/libvncserver/libvncserver1_0.9.15+dfsg-3ubuntu0.2_amd64.deb",
+      "SHA256": "63a6c7554a9de482e9227e615a68de73af7c2a461e9555e577e123f7ce8edde5"
+    },
+    {
+      "Package": "tk8.6",
+      "Version": "8.6.17-1build1",
+      "Architecture": "amd64",
+      "Filename": "pool/main/t/tk8.6/tk8.6_8.6.17-1build1_amd64.deb",
+      "SHA256": "b0dfc0048744d30c0d0d6a6ab1b2ed98854c21323b973d5ce57d44960f0c5074"
+    },
+    {
+      "Package": "tk",
+      "Version": "8.6.16build1",
+      "Architecture": "amd64",
+      "Filename": "pool/main/t/tcltk-defaults/tk_8.6.16build1_amd64.deb",
+      "SHA256": "863549584cee09cfbee538e98d28f51efa20cf59c16c89df31361e2ccb7999b1"
+    },
+    {
+      "Package": "x11vnc",
+      "Version": "0.9.17-2",
+      "Architecture": "amd64",
+      "Filename": "pool/universe/x/x11vnc/x11vnc_0.9.17-2_amd64.deb",
+      "SHA256": "2446b6e148f2b58226ed8d20092e102ecd80b10dd1ca5dd400c6c55a66db7551"
+    }
+  ]
+}

@@ -81,7 +81,7 @@ struct OrderReviewView: View {
                         store.requestOrder(listing, quantity: quantity, note: note.trimmingCharacters(in: .whitespacesAndNewlines)) { success in
                             if success { dismiss(); onRequested() }
                         }
-                    } label: { if store.busy { ProgressView() } else { Text("Request order") } }
+                    } label: { if store.busy { ProgressView() } else { Text(NativeTransportType.classify(listing.tags ?? [])?.requestLabel ?? "Request order") } }
                         .buttonStyle(PrimaryButton()).disabled(store.demo || store.busy || !store.snapshot.canSign).accessibilityIdentifier("requestOrder")
                 }.padding(24)
             }.background(MarketTheme.paper).foregroundStyle(MarketTheme.ink).navigationTitle("Review order").marketInlineTitle()
@@ -171,6 +171,7 @@ struct OrderDetailView: View {
                 Button { profile = OrderSelection(id: courier) } label: { UserRow(person: store.snapshot.people[courier] ?? .unnamed(courier), subtitle: "Courier", size: 30) }.buttonStyle(.plain)
             }
             if !order.terminal && order.status != "requested" && (seller || stop.courierPubkey == store.snapshot.publicKey) {
+                if stop.status != "completed", let url = navigationURL(stop) { Link(destination: url) { Label("Navigate to stop", systemImage: "arrow.triangle.turn.up.right.diamond.fill") }.font(.system(size: 13, weight: .semibold)) }
                 HStack(spacing: 18) {
                     if stop.status == "pending" { Button("Mark arrived") { store.updateOrder(orderID, patch: ["stopId": stop.id, "status": "arrived"]) } }
                     if stop.status != "completed" { Button("Complete stop") { store.updateOrder(orderID, patch: ["stopId": stop.id, "status": "completed"]) } }
@@ -178,4 +179,14 @@ struct OrderDetailView: View {
             }
         }.padding(17).frame(maxWidth: .infinity, alignment: .leading).background(MarketTheme.surface, in: RoundedRectangle(cornerRadius: 19))
     }
+}
+
+private func navigationURL(_ stop: MarketShipmentStop) -> URL? {
+    let destination: String
+    if let point = stop.coordinates, MarketShipment.validCoordinates(point) { destination = "\(point[1]),\(point[0])" }
+    else { destination = stop.address.trimmingCharacters(in: .whitespacesAndNewlines) }
+    guard !destination.isEmpty else { return nil }
+    var url = URLComponents(string: "https://maps.apple.com/")!
+    url.queryItems = [URLQueryItem(name: "daddr", value: destination), URLQueryItem(name: "dirflg", value: "d")]
+    return url.url
 }

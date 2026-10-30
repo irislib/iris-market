@@ -37,17 +37,32 @@ class AlphaContract(unittest.TestCase):
             (self.root/release.asset_name(TAG, platform)).write_bytes(b'synthetic fixture '+platform.encode())
         self.entries = release.asset_entries(self.root, TAG)
         check = {'passed': True, 'sourceCommit': COMMIT, 'evidenceSHA256': DIGEST}
-        self.gate = {'schema': 1, 'tag': TAG, 'sourceCommit': COMMIT, 'accepted': True,
+        self.gate = {'schema': 2, 'tag': TAG, 'sourceCommit': COMMIT, 'accepted': True,
                      'source': {channel: {'commit': COMMIT, 'coldFetch': True, 'completeHistory': True, 'evidenceSHA256': DIGEST} for channel in ('github', 'hashtree')},
                      'checks': {name: dict(check) for name in ('core', 'source-audit', *release.PLATFORMS)}}
         for entry in self.entries:
-            self.gate['checks'][entry['platform']].update(artifactSHA256=entry['sha256'], signed=True, notarized=True)
-        self.manifest = {'schema': 1, 'product': 'iris-market', 'channel': 'alpha', 'tag': TAG, 'sourceCommit': COMMIT, 'artifacts': self.entries}
+            self.gate['checks'][entry['platform']].update(artifactSHA256=entry['sha256'], signed=True, notarized=True, sourceClean=True, bundledAssetsVerified=True, installedOrExtractedBytesVerified=True, runtimeVersionsRecorded=True)
+        self.manifest = {'schema': 2, 'product': 'iris-market', 'channel': 'alpha', 'tag': TAG, 'sourceCommit': COMMIT, 'artifacts': self.entries}
 
     def test_full_inventory_and_exact_acceptance(self):
-        self.assertEqual(len(self.entries), 7)
+        self.assertEqual(len(self.entries), 9)
         release.check_acceptance(self.gate, TAG, COMMIT, self.entries)
         release.verify(self.manifest, self.root, TAG, COMMIT)
+
+    def test_schema_one_keeps_frozen_seven_artifact_releases_verifiable(self):
+        entries = [entry for entry in self.entries if entry['platform'] in release.LEGACY_PLATFORMS]
+        manifest = {**self.manifest, 'schema': 1, 'artifacts': entries}
+        gate = {**self.gate, 'schema': 1}
+        release.verify(manifest, self.root, TAG, COMMIT)
+        release.check_acceptance(gate, TAG, COMMIT, entries)
+        with self.assertRaises(ValueError): release.verify(manifest, self.root, TAG, COMMIT, 'linux-desktop-x64-deb')
+
+    def test_linux_acceptance_covers_final_package_and_bundled_assets(self):
+        for platform in release.LINUX_DESKTOP_PLATFORMS:
+            for field in ('sourceClean', 'bundledAssetsVerified', 'installedOrExtractedBytesVerified', 'runtimeVersionsRecorded'):
+                gate = copy.deepcopy(self.gate); gate['checks'][platform][field] = False
+                with self.assertRaises(ValueError): release.check_acceptance(gate, TAG, COMMIT, self.entries)
+        with self.assertRaises(ValueError): release.verify({**self.manifest, 'artifacts': self.entries[:-1]}, self.root, TAG, COMMIT)
 
     def test_external_apple_sources_do_not_walk_intermediate_groups(self):
         source = self.root/'source'
@@ -158,7 +173,7 @@ class AlphaContract(unittest.TestCase):
             with self.assertRaises(ValueError): release.check_acceptance(gate, TAG, COMMIT, self.entries)
 
     def test_missing_duplicate_and_traversing_assets_fail(self):
-        for entries in (self.entries[:-1], [self.entries[0]]*7):
+        for entries in (self.entries[:-1], [self.entries[0]]*len(self.entries)):
             manifest = {**self.manifest, 'artifacts': entries}
             with self.assertRaises(ValueError): release.verify(manifest, self.root, TAG, COMMIT)
         self.entries[0]['name'] = '../secret'

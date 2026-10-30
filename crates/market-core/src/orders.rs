@@ -476,7 +476,9 @@ fn apply(
         }
         "stop" | "location" => {
             require(
-                !order.status.terminal() && matches!(sender_role, "seller" | "courier"),
+                matches!(sender_role, "seller" | "courier")
+                    && (!order.status.terminal()
+                        || (event.action == "location" && event.payload.is_null())),
                 "Only the seller or assigned courier can update delivery",
             )?;
             if event.action == "location" && event.payload.is_null() {
@@ -917,6 +919,76 @@ mod tests {
     }
     fn receive(book: &mut OrderBook, event: &UnsignedEvent, sender: &str, owner: &str) -> bool {
         book.receive(event, sender, sender, owner, 1000).is_some()
+    }
+    #[test]
+    fn stopping_location_after_completion_is_safe_and_role_scoped() {
+        let buyer = "a".repeat(64);
+        let seller = "b".repeat(64);
+        let courier = "c".repeat(64);
+        let mut b = OrderBook::default();
+        let mut s = OrderBook::default();
+        let mut c = OrderBook::default();
+        let id = b
+            .request(&listing(&seller), 1, "", &buyer, &buyer, 1000)
+            .unwrap();
+        assert!(receive(
+            &mut s,
+            &take(&b, "request", &seller),
+            &buyer,
+            &seller
+        ));
+        s.update(&id, json!({"status":"accepted"}), &seller, &seller, 1000)
+            .unwrap();
+        s.update(
+            &id,
+            json!({"shipment":{"stops":[{"id":"pickup","label":"Shop","courierPubkey":courier}]}}),
+            &seller,
+            &seller,
+            1000,
+        )
+        .unwrap();
+        assert!(receive(
+            &mut c,
+            &take(&s, "route", &courier),
+            &seller,
+            &courier
+        ));
+        s.update(&id, json!({"status":"delivered"}), &seller, &seller, 1000)
+            .unwrap();
+        assert!(receive(
+            &mut c,
+            &take(&s, "status", &courier),
+            &seller,
+            &courier
+        ));
+        c.update(&id, json!({"location":null}), &courier, &courier, 1000)
+            .unwrap();
+        s.update(&id, json!({"location":null}), &seller, &seller, 1000)
+            .unwrap();
+        assert!(
+            c.update(
+                &id,
+                json!({"stopId":"pickup","status":"arrived"}),
+                &courier,
+                &courier,
+                1000
+            )
+            .is_err()
+        );
+        assert!(
+            c.update(
+                &id,
+                json!({"location":{"stopId":"pickup","coordinates":[25.,61.]}}),
+                &courier,
+                &courier,
+                1000
+            )
+            .is_err()
+        );
+        assert!(
+            s.update(&id, json!({"location":null}), &buyer, &buyer, 1000)
+                .is_err()
+        );
     }
     #[test]
     fn route_reordering_roles_device_clocks_and_fresh_positions() {

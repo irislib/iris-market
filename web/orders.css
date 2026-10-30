@@ -2,3 +2,8 @@
 @media(max-width:600px){.orders-dialog{padding:24px 18px;max-height:94dvh}.orders-dialog h2{font-size:23px}.orders-tabs{gap:2px}.orders-tabs button{padding:9px 10px;font-size:13px}.order-card{padding:16px 13px;gap:12px}.order-card-title{font-size:15px}.order-card-price{font-size:14px}.order-status{font-size:11px;padding:4px 7px}.order-review-item{gap:14px}.order-review-item img{width:72px;height:72px}.order-review-item h3{font-size:18px}.order-item h3{font-size:21px}.order-item-price{font-size:20px}.order-participants{gap:20px}.order-person .user-name{max-width:200px}.order-actions{gap:8px}.orders-dialog .button{font-size:13px;padding:10px 13px}.order-detail-heading{align-items:flex-start}.order-detail-heading>.muted{text-align:right;max-width:170px}.order-route-stop{padding:14px}.order-map{height:260px}.order-location-control{align-items:flex-start}.order-location-control p{min-width:100%;margin-top:-3px}.order-stop{gap:12px}}
 
 .order-map-section+.order-participants{margin-top:24px}
+
+.orders-dialog .transport-next-stop{margin-bottom:24px}.orders-dialog .transport-next-stop h3{font-size:24px}.orders-dialog .transport-next-stop .order-actions{margin:6px 0 0}
+.orders-dialog.app-page{width:100%;max-width:850px;max-height:none;padding:24px 0}
+.order-participants+.order-shipment{border-top:0;margin-top:0}
+@media(max-width:640px){.orders-dialog.app-page{padding:16px 0}.transport-next-stop{padding:18px}}

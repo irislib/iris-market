@@ -76,6 +76,9 @@ fun MarketAppView(model: MarketModel, appearance: Appearance, changeAppearance: 
     var orderId by remember { mutableStateOf<String?>(null) }
     var profileAuthor by remember { mutableStateOf<String?>(null) }
     var posting by remember { mutableStateOf(false) }
+    var transport by remember { mutableStateOf(false) }
+    var serviceType by remember { mutableStateOf<NativeTransportType?>(null) }
+    var serviceArea by remember { mutableStateOf("") }
     var settings by remember { mutableStateOf(false) }
     var photoFilter by remember { mutableStateOf<Boolean?>(null) }
     if(state.profileNameRequired && !state.demo) {
@@ -110,7 +113,7 @@ fun MarketAppView(model: MarketModel, appearance: Appearance, changeAppearance: 
                 }
             }
         }, floatingActionButton = {
-            if (tab == 0 || tab == 1) FloatingActionButton(onClick = { posting = true }, containerColor = Action,
+            if (tab == 0 || tab == 1) FloatingActionButton(onClick = { serviceType = null; serviceArea = ""; posting = true }, containerColor = Action,
                 contentColor = OnInk, shape = CircleShape) { Icon(Icons.Filled.Add, "Create listing") }
         }
     ) { inset ->
@@ -119,6 +122,7 @@ fun MarketAppView(model: MarketModel, appearance: Appearance, changeAppearance: 
                 IrisMark(Modifier.size(27.dp)); Spacer(Modifier.width(9.dp))
                 Text("iris market", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.weight(1f))
+                IconButton(onClick = { transport = true }) { Icon(Icons.Filled.DirectionsCar, "Transport workspace", tint = Muted) }
                 val dark = MaterialTheme.colorScheme.background.luminance() < .5f
                 IconButton(onClick = { changeAppearance(if (dark) Appearance.Light else Appearance.Dark) }) {
                     Icon(if (dark) Icons.Filled.LightMode else Icons.Filled.DarkMode, if (dark) "Use light appearance" else "Use dark appearance", tint = Muted)
@@ -132,7 +136,7 @@ fun MarketAppView(model: MarketModel, appearance: Appearance, changeAppearance: 
                 1 -> SavedView(state, model, selected = { selected = it })
                 2 -> InboxView(state, model, busy, openOrder = { orderId = it })
                 3 -> OrdersView(state, openOrder = { orderId = it })
-                4 -> ProfileView(state, busy, { settings = true }, { switchMode(!state.demo) }, model, appearance, changeAppearance, openProfile={profileAuthor=state.publicKey})
+                4 -> ProfileView(state, busy, { settings = true }, { switchMode(!state.demo) }, model, appearance, changeAppearance, openProfile={profileAuthor=state.publicKey},openTransport={transport=true})
             }
         }
     }
@@ -160,7 +164,10 @@ fun MarketAppView(model: MarketModel, appearance: Appearance, changeAppearance: 
         }
     }
     if (posting) ModalBottomSheet(onDismissRequest = { posting = false }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = Cream) {
-        PostListing(state, model, busy) { posting = false }
+        PostListing(state, model, busy, transportType = serviceType, initialArea = serviceArea) { posting = false }
+    }
+    if (transport) ModalBottomSheet(onDismissRequest = { transport = false }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = Cream) {
+        CourierWorkspaceView(state, model, openListing = { selected = it; transport = false }, openOrder = { orderId = it; transport = false }, announce = { type, area -> serviceType = type; serviceArea = area; transport = false; posting = true }) { transport = false }
     }
     if (settings) ModalBottomSheet(onDismissRequest = { settings = false }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = Cream) {
         SettingsView(state, model, busy) { settings = false }

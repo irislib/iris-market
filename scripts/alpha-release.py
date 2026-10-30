@@ -19,7 +19,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 PINS = ROOT / 'scripts/release-build-inputs.json'
 INSTALLER = ROOT / 'scripts/release-build-inputs.py'
-PLATFORMS = {
+LEGACY_PLATFORMS = {
     'ios-arm64': ('ios.ipa', 'aarch64-apple-ios', 'iOS 16+', 'internal TestFlight'),
     'android-arm64': ('android-arm64.apk', 'aarch64-linux-android', 'Android 10 / API 29+', 'APK'),
     'macos-arm64': ('macos-arm64.zip', 'aarch64-apple-darwin', 'macOS 14+', 'Developer ID / notarized app'),
@@ -28,6 +28,18 @@ PLATFORMS = {
     'cli-linux-x64': ('cli-x86_64-unknown-linux-gnu.tar.gz', 'x86_64-unknown-linux-gnu', 'build host glibc baseline recorded in receipt', 'CLI archive'),
     'cli-windows-x64': ('cli-x86_64-pc-windows-msvc.zip', 'x86_64-pc-windows-msvc', 'Windows 10 x64+', 'CLI archive'),
 }
+LINUX_DESKTOP_PLATFORMS = {
+    'linux-desktop-x64-deb': ('linux-x64.deb', 'x86_64-unknown-linux-gnu', 'Linux x64; system Python 3.10+, GTK 3, WebKitGTK 4.1', 'Debian package'),
+    'linux-desktop-x64-portable': ('linux-x64.tar.gz', 'x86_64-unknown-linux-gnu', 'Linux x64; system Python 3.10+, GTK 3, WebKitGTK 4.1', 'Portable desktop archive'),
+}
+PLATFORMS = {**LEGACY_PLATFORMS, **LINUX_DESKTOP_PLATFORMS}
+
+
+def platforms_for_schema(schema):
+    require(schema in (1, 2), 'Unsupported release manifest schema')
+    return LEGACY_PLATFORMS if schema == 1 else PLATFORMS
+
+
 REQUIRED_ENV = {
     'ios-arm64': ('MARKET_APPLE_TEAM_ID', 'MARKET_IOS_SIGNING_IDENTITY', 'MARKET_IOS_PROFILE_UUID'),
     'macos-arm64': ('MARKET_APPLE_TEAM_ID', 'MARKET_MACOS_SIGNING_IDENTITY'),
@@ -105,6 +117,7 @@ def verified_environment(inputs, receipt, previous=None):
 
 
 def preflight(tag, commit, platform, inputs, build_number=None, unsigned_android=False):
+    require(platform not in LINUX_DESKTOP_PLATFORMS, 'Linux desktop uses linux-package.py and final package acceptance, not Rust native build inputs')
     exact_source(tag, commit)
     receipt = read_json(inputs)
     check_inputs(receipt, commit, platform)
@@ -169,10 +182,10 @@ def build_cli(args):
     print(json.dumps(build))
 
 
-def asset_entries(directory, tag):
+def asset_entries(directory, tag, schema=2):
     directory = Path(directory)
     entries = []
-    for platform in PLATFORMS:
+    for platform in platforms_for_schema(schema):
         name = asset_name(tag, platform); path = directory/name
         require(path.is_file() and not path.is_symlink() and path.stat().st_size > 0, 'Missing regular release artifact: '+name)
         entries.append({'platform': platform, 'name': name, 'bytes': path.stat().st_size, 'sha256': sha256(path), 'target': PLATFORMS[platform][1]})
@@ -180,13 +193,15 @@ def asset_entries(directory, tag):
 
 
 def check_acceptance(gate, tag, commit, entries):
-    require(gate.get('schema') == 1 and gate.get('tag') == tag and gate.get('sourceCommit') == commit and gate.get('accepted') is True, 'Acceptance must approve this exact source and alpha tag')
+    require(gate.get('schema') in (1, 2) and gate.get('tag') == tag and gate.get('sourceCommit') == commit and gate.get('accepted') is True, 'Acceptance must approve this exact source and alpha tag')
+    platforms = platforms_for_schema(gate['schema'])
+    require(len(entries) == len(platforms) and {entry.get('platform') for entry in entries} == set(platforms), 'Acceptance has an incomplete or duplicate platform inventory')
     source = gate.get('source', {})
     for channel in ('github', 'hashtree'):
         evidence = source.get(channel, {})
         require(evidence.get('commit') == commit and evidence.get('coldFetch') is True and evidence.get('completeHistory') is True and re.fullmatch('[0-9a-f]{64}', evidence.get('evidenceSHA256', '')), 'Missing cold public source/history proof for '+channel)
     checks = gate.get('checks', {})
-    for name in ('core', 'source-audit', *PLATFORMS):
+    for name in ('core', 'source-audit', *platforms):
         record = checks.get(name, {})
         require(record.get('passed') is True and record.get('sourceCommit') == commit and re.fullmatch('[0-9a-f]{64}', record.get('evidenceSHA256', '')), 'Missing exact-source acceptance: '+name)
     for entry in entries:
@@ -195,13 +210,20 @@ def check_acceptance(gate, tag, commit, entries):
     require(checks['ios-arm64'].get('signed') is True, 'iOS acceptance must verify distribution signing')
     require(checks['macos-arm64'].get('signed') is True and checks['macos-arm64'].get('notarized') is True, 'macOS acceptance must verify signing and stapled notarization')
     require(checks['android-arm64'].get('signed') is True, 'Android acceptance must verify release signing')
+    for platform in platforms.keys() & LINUX_DESKTOP_PLATFORMS.keys():
+        record = checks[platform]
+        require(record.get('installedOrExtractedBytesVerified') is True, 'Linux desktop acceptance must verify the final installed or extracted package bytes')
+        require(record.get('bundledAssetsVerified') is True, 'Linux desktop acceptance must verify the bundled web asset manifest')
+        require(record.get('sourceClean') is True, 'Linux desktop packages require a clean exact-source build')
+        require(record.get('runtimeVersionsRecorded') is True, 'Linux desktop acceptance must record system runtime versions')
 
 
 def seal(args):
     exact_source(args.tag, args.commit)
-    entries = asset_entries(args.assets, args.tag)
-    gate = read_json(args.acceptance); check_acceptance(gate, args.tag, args.commit, entries)
-    manifest = {'schema': 1, 'product': 'iris-market', 'channel': 'alpha', 'tag': args.tag, 'sourceCommit': args.commit,
+    gate = read_json(args.acceptance)
+    entries = asset_entries(args.assets, args.tag, gate.get('schema'))
+    check_acceptance(gate, args.tag, args.commit, entries)
+    manifest = {'schema': gate['schema'], 'product': 'iris-market', 'channel': 'alpha', 'tag': args.tag, 'sourceCommit': args.commit,
                 'source': {'github': 'https://github.com/irislib/iris-market', 'tree': git('rev-parse', 'HEAD^{tree}')},
                 'cargoLockSHA256': sha256(ROOT/'Cargo.lock'), 'buildPinsSHA256': sha256(PINS),
                 'acceptanceSHA256': sha256(args.acceptance), 'artifacts': entries}
@@ -209,21 +231,42 @@ def seal(args):
     with args.manifest.open('x') as stream: json.dump(manifest, stream, indent=2); stream.write('\n')
     with (args.assets/'SHA256SUMS').open('x') as stream:
         for entry in entries: stream.write(entry['sha256']+'  '+entry['name']+'\n')
-    print('Sealed seven accepted alpha artifacts. No release was published.')
+    print(f'Sealed {len(entries)} accepted alpha artifacts. No release was published.')
 
 
 def verify(manifest, directory, tag, commit, platform=None):
     identity(tag, commit)
     require(platform is None or platform in PLATFORMS, 'Unsupported alpha platform')
-    require(manifest.get('schema') == 1 and manifest.get('product') == 'iris-market' and manifest.get('channel') == 'alpha' and manifest.get('tag') == tag and manifest.get('sourceCommit') == commit, 'Release manifest identity mismatch')
+    require(manifest.get('schema') in (1, 2) and manifest.get('product') == 'iris-market' and manifest.get('channel') == 'alpha' and manifest.get('tag') == tag and manifest.get('sourceCommit') == commit, 'Release manifest identity mismatch')
+    platforms = platforms_for_schema(manifest['schema'])
+    require(platform is None or platform in platforms, 'Selected platform is absent from this manifest schema')
     artifacts = manifest.get('artifacts', [])
-    require(len(artifacts) == len(PLATFORMS) and {entry.get('platform') for entry in artifacts} == set(PLATFORMS), 'Release manifest has an incomplete or duplicate platform inventory')
+    require(len(artifacts) == len(platforms) and {entry.get('platform') for entry in artifacts} == set(platforms), 'Release manifest has an incomplete or duplicate platform inventory')
     for entry in artifacts:
         target = entry['platform']; require(entry.get('name') == asset_name(tag, target) and entry.get('target') == PLATFORMS[target][1], 'Noncanonical release artifact')
         require(re.fullmatch('[0-9a-f]{64}', entry.get('sha256', '')) and isinstance(entry.get('bytes'), int) and entry['bytes'] > 0, 'Invalid release checksum/size')
         if platform and target != platform: continue
         path = Path(directory)/entry['name']
         require(path.is_file() and not path.is_symlink() and path.stat().st_size == entry['bytes'] and sha256(path) == entry['sha256'], 'Release artifact differs from accepted bytes: '+entry['name'])
+
+
+def publication_files(args):
+    """Recheck acceptance before either established publication destination mutates."""
+    exact_source(args.tag, args.commit)
+    manifest_path = args.assets/'release-manifest.json'
+    checksums_path = args.assets/'SHA256SUMS'
+    require(not manifest_path.is_symlink() and not checksums_path.is_symlink(), 'Publication metadata must be regular files')
+    manifest = read_json(manifest_path)
+    verify(manifest, args.assets, args.tag, args.commit)
+    gate = read_json(args.acceptance)
+    require(manifest.get('acceptanceSHA256') == sha256(args.acceptance), 'Acceptance differs from sealed manifest')
+    require(gate.get('schema') == manifest['schema'], 'Acceptance schema differs from sealed manifest')
+    check_acceptance(gate, args.tag, args.commit, manifest['artifacts'])
+    expected = ''.join(entry['sha256']+'  '+entry['name']+'\n' for entry in manifest['artifacts'])
+    require(checksums_path.read_text() == expected, 'Checksum inventory differs from sealed manifest')
+    files = [{'name':entry['name'], 'bytes':entry['bytes'], 'sha256':entry['sha256']} for entry in manifest['artifacts']]
+    files += [{'name':path.name, 'bytes':path.stat().st_size, 'sha256':sha256(path)} for path in (manifest_path, checksums_path)]
+    return {'tag':args.tag, 'sourceCommit':args.commit, 'schema':manifest['schema'], 'files':files}
 
 
 def main():
@@ -233,14 +276,16 @@ def main():
         child = commands.add_parser(command); child.add_argument('--tag', required=True); child.add_argument('--commit', required=True); child.add_argument('--platform', choices=PLATFORMS, required=True); child.add_argument('--inputs', type=Path, required=True); child.add_argument('--build-number', type=int)
         if command == 'build-cli': child.add_argument('--output', type=Path, required=True)
     child = commands.add_parser('seal'); child.add_argument('--tag', required=True); child.add_argument('--commit', required=True); child.add_argument('--assets', type=Path, required=True); child.add_argument('--acceptance', type=Path, required=True); child.add_argument('--manifest', type=Path, required=True)
+    child = commands.add_parser('publication-check'); child.add_argument('--tag', required=True); child.add_argument('--commit', required=True); child.add_argument('--assets', type=Path, required=True); child.add_argument('--acceptance', type=Path, required=True)
     child = commands.add_parser('verify'); child.add_argument('--tag', required=True); child.add_argument('--commit', required=True); child.add_argument('--assets', type=Path, required=True); child.add_argument('--manifest', type=Path, required=True); child.add_argument('--platform', choices=PLATFORMS)
     args = parser.parse_args()
     if args.command == 'plan':
         identity(args.tag, '0'*40)
-        print(json.dumps({'tag': args.tag, 'platforms': [{'platform': key, 'asset': asset_name(args.tag, key), 'target': value[1], 'minimumSystem': value[2], 'channel': value[3], 'signingEnvironmentNames': list(REQUIRED_ENV.get(key, ()))} for key, value in PLATFORMS.items()]}, indent=2))
+        print(json.dumps({'schema': 2, 'tag': args.tag, 'platforms': [{'platform': key, 'asset': asset_name(args.tag, key), 'target': value[1], 'minimumSystem': value[2], 'channel': value[3], 'signingEnvironmentNames': list(REQUIRED_ENV.get(key, ()))} for key, value in PLATFORMS.items()]}, indent=2))
     elif args.command == 'preflight': preflight(args.tag, args.commit, args.platform, args.inputs, args.build_number); print('Exact-source build preflight passed. No build or upload performed.')
     elif args.command == 'build-cli': build_cli(args)
     elif args.command == 'seal': seal(args)
+    elif args.command == 'publication-check': print(json.dumps(publication_files(args)))
     else: verify(read_json(args.manifest), args.assets, args.tag, args.commit, args.platform); print('Accepted artifact checksums match.')
 
 

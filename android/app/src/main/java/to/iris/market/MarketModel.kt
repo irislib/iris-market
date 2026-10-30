@@ -32,8 +32,13 @@ data class Listing(
     val price: String, val currency: String, val location: String, val category: String,
     val imageUrl: String?, val saved: Boolean, val mine: Boolean, val status: String,
     val delivery: String, val relevance: String?, val relevanceShow: Boolean?, val coordinates: List<Double>? = null,
-    val serviceAreas: String? = null, val priceDisplay: PriceDisplay? = null, val expiresAt: Long? = null
+    val serviceAreas: String? = null, val priceDisplay: PriceDisplay? = null, val expiresAt: Long? = null, val tags: List<String> = emptyList(), val createdAt: Long = 0
 ) {
+    val localSearchRevision: String get() {
+        val content = listOf(title, description, side, price, currency, location, category).joinToString("\u0000")
+        val digest = java.security.MessageDigest.getInstance("SHA-256").digest(content.toByteArray(Charsets.UTF_8))
+        return "$id|$createdAt|${digest.joinToString("") { "%02x".format(it) }}"
+    }
     val displayPrice: String get() {
         if (price.isBlank()) return "Let's talk"
         val amount = priceDisplay?.amount ?: price.toDoubleOrNull() ?: return "$price $currency"
@@ -58,7 +63,8 @@ data class Listing(
             }, l.optJSONArray("coordinates")?.let { a -> if (a.length()==2) listOf(a.optDouble(0),a.optDouble(1)).takeIf { values -> values.all { it.isFinite() } } else null },
             l.optJSONObject("service_areas")?.toString()?.takeIf { it.toByteArray(Charsets.UTF_8).size <= 32832 },
             l.optJSONObject("display_price")?.let { d -> PriceDisplay(d.optDouble("amount"),d.optString("currency"),d.optBoolean("approximate"),d.optBoolean("stale")) },
-            if(l.has("expires_at")&&!l.isNull("expires_at")) l.getLong("expires_at") else null)
+            if(l.has("expires_at")&&!l.isNull("expires_at")) l.getLong("expires_at") else null,
+            l.optJSONArray("tags")?.let { a -> (0 until minOf(a.length(),64)).map { a.optString(it) } } ?: emptyList(), l.optLong("created_at"))
     }
 
 }
@@ -175,6 +181,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
     private val localModel = LocalModel(application, viewModelScope)
     val localModelState = localModel.state
     private var localCurationJob: Job? = null
+    private val searchContinuation = NativeSearchContinuation()
     private val mutableAITest=MutableStateFlow(NativeAITestUI())
     val aiTest=mutableAITest.asStateFlow()
     private val aiTestSession=NativeAITestSession()
@@ -185,7 +192,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
     fun downloadLocalModel() { if (!state.value.demo) localModel.download() }
     fun cancelLocalModelDownload() = localModel.cancelDownload()
     fun deleteLocalModel() { if (!state.value.demo) localModel.delete() }
-    fun cancelLocalAI() { localCurationJob?.cancel() }
+    fun cancelLocalAI() { searchContinuation.stop(); localCurationJob?.cancel() }
 
     init {
         viewModelScope.launch(Dispatchers.IO) {
@@ -341,6 +348,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
     fun setActive(value: Boolean) { active = value; if (!value) cancelLocalAI() }
     private fun publishSnapshot(next: MarketSnapshot) {
         mutable.update { previous -> if(previous.publicKey==next.publicKey&&next.revision<previous.revision) previous else next }
+        viewModelScope.launch { continueLocalSearch() }
     }
     private fun refreshSnapshot(reset: Boolean = false) { core?.let {
         val next=MarketSnapshot.parse(it.snapshot())
@@ -442,7 +450,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
         }
     }
     fun filter(query: String, side: String, aiSearch: Boolean = false) = command(JSONObject().put("type", "set_filter").put("query", query).put("side", side).put("ai_search", aiSearch))
-    fun searchAI(query: String, side: String) = command(JSONObject().put("type", "set_filter").put("query", query).put("side", side).put("ai_search", true)) { ai("curate") }
+    fun searchAI(query: String, side: String) = command(JSONObject().put("type", "set_filter").put("query", query).put("side", side).put("ai_search", true)) { searchContinuation.start(searchContext()); ai("curate") }
     fun save(id: String) = command(JSONObject().put("type", "save").put("id", id))
     fun action(type: String) = command(JSONObject().put("type", type))
     private fun aiTestContext(): NativeAITestContext {
@@ -502,6 +510,18 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
             finally {if(aiTestSession.revision==revision) {mutableAITest.value=mutableAITest.value.copy(busy=false);aiTestJob=null}}
         }
     }
+    private fun searchContext(): String {
+        val snapshot = state.value
+        val ai = JSONObject(snapshot.settings).optJSONObject("ai") ?: JSONObject()
+        return listOf(snapshot.publicKey, snapshot.query, snapshot.side, ai.optString("provider"), ai.optString("model"), ai.optString("base_url")).joinToString("\n")
+    }
+    private fun continueLocalSearch() {
+        val snapshot = state.value
+        val ai = JSONObject(snapshot.settings).optJSONObject("ai") ?: return
+        if (!active || working.value || mutableAITest.value.busy || localCurationJob?.isActive == true || !snapshot.aiSearch || !ai.optBoolean("enabled") || ai.optString("provider") != "litert" || snapshot.query.isBlank()) return
+        val candidates = snapshot.listings.filter { it.relevanceShow == null }.map { it.localSearchRevision }
+        if (searchContinuation.claim(searchContext(), candidates)) runLocalCuration(checkOnly = false)
+    }
     fun ai(type: String) {
         val provider = JSONObject(state.value.settings).optJSONObject("ai")?.optString("provider", "compatible") ?: "compatible"
         if (provider == "litert") { runLocalCuration(checkOnly = type == "check_ai"); return }
@@ -547,7 +567,8 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
                     }
                 } }
                 batchId = batch.id.takeIf { it.isNotEmpty() }
-                if (!checkOnly && batch.candidates.isEmpty()) { alert.value = "No more listings to review."; return@launch }
+                if (!checkOnly) searchContinuation.record(batch.candidates.map { it.listing.localSearchRevision })
+                if (!checkOnly && batch.candidates.isEmpty()) return@launch
                 val checkStarted = System.nanoTime()
                 val decisions = withTimeout(270_000) { localModel.classify(batch) }
                 ensureActive()

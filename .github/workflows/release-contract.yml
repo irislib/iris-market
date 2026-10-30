@@ -25,4 +25,5 @@ jobs:
           python3 scripts/android-release-inputs.py --check
           python3 scripts/test_alpha_release.py -v
           python3 scripts/native-alpha.py --help
+          node --test scripts/publish-alpha.test.mjs
       # Native builds, signing and publication are separately owned release gates.

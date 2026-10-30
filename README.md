@@ -270,7 +270,14 @@ python3 scripts/test_alpha_release.py -v
 
 Build the signed Apple candidates using the pinned local Apple input installer and `native-alpha.py --build-number 8`; Android and all four CLI targets use `.github/workflows/alpha-build.yml` dispatched at the full accepted commit with the same tag/build number. The workflow's Android output is an attested unsigned handoff. `android-sign.py` verifies that provenance and signs locally without changing application payloads. Signing values stay in the release environment.
 
-Runtime acceptance must cover the final signed APK, the final notarized/stapled Mac archive, the distribution IPA and TestFlight processing/internal-group state, and each CLI executable on its target. The Linux desktop packages require clean-source evidence, a verified bundled web asset manifest, exact installed/extracted payload checks, recorded system runtime versions, and GUI acceptance of each final format. Then seal the nine artifacts with `alpha-release.py seal` and verify its manifest before publication. Publish to the existing GitHub/Hashtree destinations, verify anonymous downloads against every recorded hash, and only then update download links. The release scripts do not upload or publish automatically.
+Runtime acceptance must cover the final signed APK, the final notarized/stapled Mac archive, the distribution IPA and TestFlight processing/internal-group state, and each CLI executable on its target. The Linux desktop packages require clean-source evidence, a verified bundled web asset manifest, exact installed/extracted payload checks, recorded system runtime versions, and GUI acceptance of each final format. Then seal the nine artifacts with `alpha-release.py seal` and verify its manifest before publication. Publish to the existing GitHub/Hashtree destinations, verify anonymous downloads against every recorded hash, and only then update download links. The build scripts do not upload or publish automatically. `scripts/publish-alpha.mjs` manages explicit publication after sealing, deriving the complete file set from the manifest (eleven files for schema 2). Its `github-draft` operation only uploads missing matching files; it refuses to replace differing assets. `github-publish` rechecks remote tag identity and every file digest, and `github-verify` streams anonymous downloads to verify all bytes. `hashtree-publish` requires a previously accepted release proof and keeps the existing release inventory; `hashtree-verify` checks the immutable upload, public HTTPS files, latest record, and the preserved previous release. The helper uses the same pinned Hashtree executable as static-site publication.
+
+```sh
+node --test scripts/publish-alpha.test.mjs
+node scripts/publish-alpha.mjs --help
+# Every publication operation requires --assets, --acceptance, --tag and --commit.
+# Draft and Hashtree publication also require --notes; Hashtree requires --previous.
+```
 
 ### Linux desktop preview
 

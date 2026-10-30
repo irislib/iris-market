@@ -64,6 +64,23 @@ class AlphaContract(unittest.TestCase):
                 with self.assertRaises(ValueError): release.check_acceptance(gate, TAG, COMMIT, self.entries)
         with self.assertRaises(ValueError): release.verify({**self.manifest, 'artifacts': self.entries[:-1]}, self.root, TAG, COMMIT)
 
+    def test_publication_inventory_derives_all_eleven_files_and_rechecks_acceptance(self):
+        acceptance = self.root/'acceptance.json'; acceptance.write_text(json.dumps(self.gate))
+        manifest = {**self.manifest, 'acceptanceSHA256':release.sha256(acceptance)}
+        (self.root/'release-manifest.json').write_text(json.dumps(manifest))
+        sums = ''.join(entry['sha256']+'  '+entry['name']+'\n' for entry in self.entries)
+        (self.root/'SHA256SUMS').write_text(sums)
+        args = SimpleNamespace(tag=TAG, commit=COMMIT, assets=self.root, acceptance=acceptance)
+        with patch.object(release, 'exact_source'):
+            proof = release.publication_files(args)
+            self.assertEqual(len(proof['files']), 11)
+            self.assertEqual(proof['files'][-2]['name'], 'release-manifest.json')
+            acceptance.write_text(json.dumps({**self.gate, 'accepted':False}))
+            with self.assertRaises(ValueError): release.publication_files(args)
+            acceptance.write_text(json.dumps(self.gate))
+            (self.root/'SHA256SUMS').write_text(sums+'unexpected\n')
+            with self.assertRaises(ValueError): release.publication_files(args)
+
     def test_external_apple_sources_do_not_walk_intermediate_groups(self):
         source = self.root/'source'
         (source/'ios').mkdir(parents=True)

@@ -202,8 +202,18 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
     @Volatile private var remoteCurationRunning = false
     @Volatile private var remoteSnapshotLease: Pair<MarketApp, Long>? = null
     private val searchContinuation = NativeSearchContinuation()
+    private val drafts=NativeMessageDrafts()
+    private val mutableMessageDrafts=MutableStateFlow<Map<NativeMessageDrafts.Key,String>>(emptyMap())
+    val messageDrafts=mutableMessageDrafts.asStateFlow()
+    fun setMessageDraft(key:NativeMessageDrafts.Key,text:String) {
+        if(key.account!=state.value.publicKey)return
+        drafts[key]=text;mutableMessageDrafts.value=drafts.snapshot()
+    }
+    fun finishMessageDraft(key:NativeMessageDrafts.Key,text:String,success:Boolean) {
+        drafts.sent(text,key,success);mutableMessageDrafts.value=drafts.snapshot()
+    }
     private val pushSecure = SecureRecord(application,"notifications")
-    private val pushRuntime = NativePushRuntime(application)
+    private val pushRuntime = NativePushRuntime.shared(application)
     private val mutablePushEnabled = MutableStateFlow(false)
     val pushEnabled = mutablePushEnabled.asStateFlow()
     private val mutablePushRoute = MutableStateFlow<NativePushRoute?>(null)
@@ -251,8 +261,11 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
         dismissProfileSetup()
         val previousOwner=state.value.publicKey
         if(!preview) {
-            if(previousOwner.isNotBlank())pushRuntime.sync(previousOwner,"{}",false)
-            pushSecure.put("preview","")
+            NativePushBridge.attach(this)
+            if(!NativePushBridge.withCurrent(this) {
+                if(previousOwner.isNotBlank())pushRuntime.setEnabled(previousOwner,false)
+                pushSecure.put("preview","")
+            })return
         }
         mutablePushRoute.value=null;activePushPeerID=null;activePushThreadID=null
         accountGeneration += 1
@@ -283,16 +296,19 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
         }
         core?.command(JSONObject().put("type", "set_filter").put("query", "").put("side", "offer").put("ai_search", false).toString())
         refreshSnapshot(reset = true)
-        if(!preview)NativePushBridge.attach(this)
-        mutablePushEnabled.value=!preview && pushSecure.get("enabled-${state.value.publicKey}")=="true"
-        if(!preview)runCatching {com.google.firebase.messaging.FirebaseMessaging.getInstance().isAutoInitEnabled=mutablePushEnabled.value}
-        if(mutablePushEnabled.value) {
-            val directory=pushDirectory;val device=pushDeviceSecret
-            if(directory!=null&&device!=null)pushSecure.put("preview",JSONObject().put("owner",state.value.publicKey).put("device",device).put("directory",directory).toString())
-        }
-        core?.command(JSONObject().put("type","set_push_enabled").put("enabled",mutablePushEnabled.value).toString())
+        val notificationsEnabled=!preview && pushSecure.get("enabled-${state.value.publicKey}")=="true"
+        core?.command(JSONObject().put("type","set_push_enabled").put("enabled",notificationsEnabled).toString())
         if(!preview)core?.let {app->NativePushPending.drain(application,state.value.publicKey){payload->app.ingestPushPayload(payload)}}
-        pushAccountReady=true
+        if(!preview && !NativePushBridge.withCurrent(this) {
+            mutablePushEnabled.value=notificationsEnabled
+            runCatching {com.google.firebase.messaging.FirebaseMessaging.getInstance().isAutoInitEnabled=notificationsEnabled}
+            if(notificationsEnabled) {
+                val directory=pushDirectory;val device=pushDeviceSecret
+                if(directory!=null&&device!=null)pushSecure.put("preview",JSONObject().put("owner",state.value.publicKey).put("device",device).put("directory",directory).toString())
+            }
+            pushRuntime.activate(state.value.publicKey,notificationsEnabled)
+            pushAccountReady=true
+        })return
         syncPush()
         pendingPushIntent?.let {pendingPushIntent=null;handlePushIntent(it)}
         if (!preview) {
@@ -771,7 +787,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
     }
     fun pushConsentScope():String = "$accountGeneration|$pushConsentRevision|${state.value.publicKey}"
     fun setPushEnabled(enabled:Boolean,expectedOwner:String?=null,expectedScope:String?=null) {
-        if(preview || !pushAccountReady || state.value.publicKey.isBlank() || state.value.profileNameRequired || expectedOwner!=null&&expectedOwner!=state.value.publicKey || expectedScope!=null&&expectedScope!=pushConsentScope())return
+        if(preview || NativePushBridge.current()!==this || !pushAccountReady || state.value.publicKey.isBlank() || state.value.profileNameRequired || expectedOwner!=null&&expectedOwner!=state.value.publicKey || expectedScope!=null&&expectedScope!=pushConsentScope())return
         pushConsentRevision+=1
         mutablePushEnabled.value=enabled
         runCatching {com.google.firebase.messaging.FirebaseMessaging.getInstance().isAutoInitEnabled=enabled}
@@ -781,15 +797,15 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
             val directory=pushDirectory ?: return;val device=pushDeviceSecret ?: return
             pushSecure.put("preview",JSONObject().put("owner",owner).put("device",device).put("directory",directory).toString())
         } else pushSecure.put("preview","")
+        pushRuntime.setEnabled(owner,enabled)
         command(JSONObject().put("type","set_push_enabled").put("enabled",enabled)){syncPush()}
-        if(!enabled)pushRuntime.sync(owner,"{}",false)
     }
     fun syncPush() {
         if(preview || !state.value.publicKey.isNotBlank())return
         val app=core ?: return;val owner=state.value.publicKey;val generation=accountGeneration
         viewModelScope.launch(Dispatchers.IO) {
             val filters=runCatching {app.pushSnapshot()}.getOrNull() ?: return@launch
-            if(accountGeneration==generation)pushRuntime.sync(owner,filters,mutablePushEnabled.value)
+            if(accountGeneration==generation)pushRuntime.publish(owner,filters)
         }
     }
     fun ingestBackgroundPush(payload:String) {
@@ -818,12 +834,17 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
         }}
     }
     override fun onCleared() {
+        NativePushBridge.detach(this)
         invalidateAITest()
         val app=core
         super.onCleared()
         CoroutineScope(Dispatchers.IO).launch {
             runCatching { app?.shutdown() }
-            mutex.withLock { app?.close(); if(core===app) core = null }
+            mutex.withLock {
+                val opened=core
+                if(opened!==app)runCatching {opened?.shutdown()}
+                opened?.close();core=null
+            }
         }
     }
 }

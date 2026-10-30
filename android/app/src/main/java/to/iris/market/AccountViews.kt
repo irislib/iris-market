@@ -160,7 +160,9 @@ private fun inboxContextTitle(context:MessageContext?,state:MarketSnapshot):Stri
         onDispose {lifecycle.removeObserver(observer);reads.close()}
     }
     LaunchedEffect(visible,incoming,reads){reads.update(visible&&lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED),incoming)}
-    var message by remember(c.id,context?.key) { mutableStateOf("") }
+    val drafts by model.messageDrafts.collectAsState()
+    val draftKey=NativeMessageDrafts.key(accountID.ifBlank {model.state.value.publicKey},c.id,context?.key ?: "general")
+    val message=drafts[draftKey].orEmpty()
     Column(Modifier.fillMaxSize().padding(horizontal=18.dp).imePadding()) {
         Row(verticalAlignment=Alignment.CenterVertically) {
             IconButton(onClick=back){Icon(Icons.Filled.ArrowBack,"Back to inbox")}
@@ -182,10 +184,12 @@ private fun inboxContextTitle(context:MessageContext?,state:MarketSnapshot):Stri
             }
         }
         Row(Modifier.fillMaxWidth().padding(bottom=12.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(7.dp)) {
-            OutlinedTextField(value=message,onValueChange={message=it},placeholder={Text("Write a message")},modifier=Modifier.weight(1f),
+            OutlinedTextField(value=message,onValueChange={model.setMessageDraft(draftKey,it)},placeholder={Text("Write a message")},modifier=Modifier.weight(1f),
                 shape=RoundedCornerShape(23.dp),maxLines=4,colors=OutlinedTextFieldDefaults.colors(unfocusedBorderColor=Line))
-            FilledIconButton(enabled=message.isNotBlank()&&!busy,onClick={
-                model.command(JSONObject().put("type","send_message").put("peer_id",c.id).put("text",message.trim()).apply { context?.let { put("context",it.json()) } }){message=""}
+            FilledIconButton(enabled=message.isNotBlank()&&!busy&&draftKey.account==model.state.value.publicKey,onClick=send@{
+                if(draftKey.account!=model.state.value.publicKey)return@send
+                val pending=model.messageDrafts.value[draftKey].orEmpty()
+                model.command(JSONObject().put("type","send_message").put("peer_id",c.id).put("text",pending.trim()).apply { context?.let { put("context",it.json()) } }){model.finishMessageDraft(draftKey,pending,true)}
             }) { Icon(Icons.Filled.ArrowUpward,"Send message") }
         }
     }

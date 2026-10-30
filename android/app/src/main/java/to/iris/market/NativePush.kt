@@ -21,7 +21,6 @@ import to.iris.market.core.resolvePushPreview
 import to.iris.market.core.pushEventId
 import java.net.HttpURLConnection
 import java.net.URL
-import java.lang.ref.WeakReference
 import java.io.File
 import android.util.AtomicFile
 
@@ -39,22 +38,17 @@ data class NativePushResolution(val show:Boolean,val notificationID:String,val m
     }
 }
 object NativePushBridge {
-    @Volatile private var model=WeakReference<MarketModel>(null)
-    fun attach(value:MarketModel){model=WeakReference(value)}
-    fun current():MarketModel?=model.get()
+    private val model=NativePushLifecycle<MarketModel>()
+    fun attach(value:MarketModel){model.attach(value)}
+    fun detach(value:MarketModel){model.detach(value)}
+    fun current():MarketModel?=model.current()
+    fun withCurrent(value:MarketModel,action:()->Unit):Boolean=model.withCurrent(value,action)
 }
 class MarketFirebaseMessagingService:FirebaseMessagingService() {
     override fun onNewToken(token:String) {
         runCatching {
-            val secure=SecureRecord(application,"notifications");secure.put("token",token)
-            val model=NativePushBridge.current()
-            if(model!=null)model.syncPush() else {
-                val owner=secure.get("preview").takeIf {it.isNotBlank()}?.let(::JSONObject)?.optString("owner")
-                if(!owner.isNullOrBlank()&&secure.get("desired-$owner")=="true") {
-                    val filters=secure.get("filters-$owner")
-                    if(filters.isNotBlank())NativePushRuntime(application).sync(owner,filters,true)
-                }
-            }
+            NativePushRuntime.shared(application).recordToken(token)
+            NativePushBridge.current()?.syncPush()
         }
     }
     override fun onMessageReceived(message:RemoteMessage) {
@@ -65,6 +59,8 @@ class MarketFirebaseMessagingService:FirebaseMessagingService() {
             val secure=SecureRecord(application,"notifications")
             val credentialRaw=secure.get("preview").takeIf {it.isNotBlank()} ?: return
             val credential=JSONObject(credentialRaw)
+            val owner=credential.getString("owner")
+            if(secure.get("active-owner")!=owner||secure.get("desired-$owner")!="true")return
             val replay=NativePushPending.appendAndContext(applicationContext,credential.getString("owner"),payload) ?: return
             val resolution=NativePushResolution.parse(resolvePushPreview(credential.getString("directory"),credential.getString("owner"),credential.getString("device"),replay))
             if(secure.get("preview")!=credentialRaw)return
@@ -133,48 +129,110 @@ object NativePushPending {
     }
 }
 
-class NativePushRuntime(private val application:android.app.Application) {
+class NativePushRuntime private constructor(private val application:android.app.Application) {
     private val scope=CoroutineScope(SupervisorJob()+Dispatchers.IO)
     private val secure=SecureRecord(application,"notifications")
-    private val syncMutex=kotlinx.coroutines.sync.Mutex()
-    private var signature:String?=null
+    private val state=NativePushRegistrationQueue()
+    private val wake=kotlinx.coroutines.channels.Channel<Unit>(kotlinx.coroutines.channels.Channel.CONFLATED)
     private var lastHTTPStatus=0
-    private val inFlight=java.util.concurrent.atomic.AtomicBoolean(false)
-    private var lastAttempt=0L
-    private val pendingDisable=mutableSetOf<String>()
-    fun sync(owner:String,filters:String,enabled:Boolean) {
-        secure.put("desired-$owner",enabled.toString())
-        if(enabled) {
-            if(!inFlight.compareAndSet(false,true))return
-            if(System.currentTimeMillis()-lastAttempt<10000){inFlight.set(false);return}
-            lastAttempt=System.currentTimeMillis()
-        } else synchronized(pendingDisable){if(!pendingDisable.add(owner))return}
-        scope.launch {
-            syncMutex.lock()
-            try {
-                if(secure.get("desired-$owner")!=enabled.toString())return@launch
-                val token=secure.get("token")
-                val next="$owner|$enabled|$token|$filters"
-                if(next==signature)return@launch
-                val key="registration-$owner";val secret=secure.get(key).ifBlank {generateSecretKey().also {secure.put(key,it)}}
-                val storage="subscription-$owner";val id=secure.get(storage).ifBlank {null}
-                if(!enabled) {
-                    if(id!=null && perform(buildPushRequest(secret,"DELETE",ENDPOINT,id,null))==null && lastHTTPStatus!=404)return@launch
-                    secure.put(storage,"");signature=next;return@launch
-                }
-                if(token.isBlank()){FirebaseMessaging.getInstance().token.addOnSuccessListener {value->secure.put("token",value);if(secure.get("desired-$owner")=="true")sync(owner,filters,true)};return@launch}
-                val filter=JSONObject(filters).getJSONArray("filters");if(filter.length()==0)return@launch
-                secure.put("filters-$owner",filters)
-                val delivery=JSONObject().put("platform","android").put("token",token).put("production",!BuildConfig.DEBUG).put("filters",filter)
-                var response=perform(buildPushRequest(secret,"POST",ENDPOINT,id,delivery.toString()))
-                var created=id==null
-                if(response==null&&id!=null&&lastHTTPStatus==404){response=perform(buildPushRequest(secret,"POST",ENDPOINT,null,delivery.toString()));created=true}
-                if(response==null)return@launch
-                if(created)secure.put(storage,JSONObject(response).getString("id"))
-                signature=next
-            } catch(_:Exception) { /* Foreground state refresh retries; UI remains local-first. */ }
-            finally {syncMutex.unlock();if(enabled)inFlight.set(false) else synchronized(pendingDisable){pendingDisable.remove(owner)}}
+    private val tokenLock=Any()
+    private var tokenPending=false
+    private var lastTokenAttempt:Long?=null
+    init {
+        state.recordToken(secure.get("token"))
+        for(owner in knownOwners()) {
+            state.setIntent(owner,secure.get("desired-$owner")=="true")
+            state.publish(owner,secure.get("filters-$owner"),android.os.SystemClock.elapsedRealtime())
         }
+        scope.launch {
+            while(isActive) {
+                val work=state.next()
+                if(work==null){wake.receive();continue}
+                val wait=(work.readyAt-android.os.SystemClock.elapsedRealtime()).coerceAtLeast(0)
+                if(wait>0){withTimeoutOrNull(wait){wake.receive()};continue}
+                if(!state.begin(work,android.os.SystemClock.elapsedRealtime()))continue
+                val success=runCatching {performWork(work)}.getOrDefault(false)
+                val current=state.finish(work,success,android.os.SystemClock.elapsedRealtime())
+                if(current&&success&&!work.enabled)forgetDisabled(work.owner)
+            }
+        }
+        ensureToken()
+    }
+    /** Account activation / settings only. Callbacks and polling never set intent. */
+    @Synchronized fun activate(owner:String,enabled:Boolean) {
+        val previous=secure.get("active-owner")
+        if(previous.isNotBlank()&&previous!=owner)setEnabled(previous,false)
+        secure.put("active-owner",owner);setEnabled(owner,enabled)
+    }
+    @Synchronized fun setEnabled(owner:String,enabled:Boolean) {
+        if(owner.isBlank())return
+        val owners=knownOwners()
+        if(owner !in owners&&owners.size>=64)return
+        if(owner !in owners)secure.put("owners",org.json.JSONArray(owners+owner).toString())
+        if(secure.get("desired-$owner")!=enabled.toString())secure.put("desired-$owner",enabled.toString())
+        state.setIntent(owner,enabled)
+        wake.trySend(Unit);ensureToken()
+    }
+    /** Save retrieval scopes even when Firebase has not returned a token yet. */
+    @Synchronized fun publish(owner:String,filters:String) {
+        if(owner.isBlank()||filters.length>4*1024*1024)return
+        if(secure.get("filters-$owner")!=filters)secure.put("filters-$owner",filters)
+        state.publish(owner,filters,android.os.SystemClock.elapsedRealtime())
+        wake.trySend(Unit);ensureToken()
+    }
+    @Synchronized fun recordToken(token:String) {
+        secure.put("token",token);state.recordToken(token);wake.trySend(Unit)
+    }
+    private fun ensureToken() {
+        if(!state.wantsToken())return
+        synchronized(tokenLock) {
+            val now=android.os.SystemClock.elapsedRealtime()
+            if(tokenPending||lastTokenAttempt?.let {now-it<10000}==true)return
+            tokenPending=true;lastTokenAttempt=now
+        }
+        val revision=state.tokenRevision()
+        try {
+            FirebaseMessaging.getInstance().token.addOnCompleteListener {result->
+                synchronized(tokenLock){tokenPending=false}
+                if(result.isSuccessful)result.result?.takeIf {it.isNotBlank()}?.let {value->recordFetchedToken(value,revision)}
+            }
+        } catch(_:Exception){synchronized(tokenLock){tokenPending=false}}
+    }
+    @Synchronized private fun recordFetchedToken(token:String,revision:Long) {
+        if(!state.recordFetchedToken(token,revision))return
+        secure.put("token",token);wake.trySend(Unit)
+    }
+    private fun performWork(work:NativePushRegistrationQueue.Work):Boolean {
+        // Recheck persisted user intent immediately before every request. A token
+        // callback cannot revive a disabled account, including across restarts.
+        if(!state.isCurrent(work)||secure.get("desired-${work.owner}")!=work.enabled.toString())return false
+        val storage="subscription-${work.owner}";val id=secure.get(storage).ifBlank {null}
+        val filters=if(work.enabled)JSONObject(work.filters).getJSONArray("filters") else null
+        val remove=!work.enabled||filters?.length()==0
+        if(remove&&id==null)return true
+        val key="registration-${work.owner}";val secret=secure.get(key).ifBlank {generateSecretKey().also {secure.put(key,it)}}
+        if(remove) {
+            val result=perform(buildPushRequest(secret,"DELETE",ENDPOINT,id,null))
+            if(result==null&&lastHTTPStatus!=404)return false
+            secure.put(storage,"");return true
+        }
+        val delivery=JSONObject().put("platform","android").put("token",work.token).put("production",!BuildConfig.DEBUG).put("filters",filters)
+        var response=perform(buildPushRequest(secret,"POST",ENDPOINT,id,delivery.toString()))
+        var created=id==null
+        if(response==null&&id!=null&&lastHTTPStatus==404){response=perform(buildPushRequest(secret,"POST",ENDPOINT,null,delivery.toString()));created=true}
+        if(response==null)return false
+        // Retain an ID even if disable raced the HTTP response, so the next
+        // coalesced cleanup can delete the just-created subscription.
+        if(created)secure.put(storage,JSONObject(response).getString("id"))
+        return true
+    }
+    @Synchronized private fun knownOwners():List<String> {
+        val values=runCatching {org.json.JSONArray(secure.get("owners").ifBlank {"[]"})}.getOrDefault(org.json.JSONArray())
+        return (0 until values.length()).map {values.optString(it)}.filter {it.isNotBlank()}.distinct().take(64)
+    }
+    @Synchronized private fun forgetDisabled(owner:String) {
+        if(secure.get("desired-$owner")!="false")return
+        secure.put("owners",org.json.JSONArray(knownOwners().filter {it!=owner}).toString())
     }
     private fun perform(raw:String):String? {
         lastHTTPStatus=0
@@ -191,5 +249,9 @@ class NativePushRuntime(private val application:android.app.Application) {
             }
         } finally {connection.disconnect()}
     }
-    companion object {private const val ENDPOINT="https://notifications.iris.to"}
+    companion object {
+        private const val ENDPOINT="https://notifications.iris.to"
+        private var instance:NativePushRuntime?=null
+        @Synchronized fun shared(application:android.app.Application):NativePushRuntime = instance ?: NativePushRuntime(application).also {instance=it}
+    }
 }

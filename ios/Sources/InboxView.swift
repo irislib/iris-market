@@ -60,7 +60,6 @@ struct InboxView: View {
                         }
                     }
                 }
-                Label("Private messages are never public listings.", systemImage: "lock.fill").font(.system(size: 11)).foregroundStyle(MarketTheme.muted).frame(maxWidth: .infinity).padding(.top, 8)
             }.padding(23)
         }.foregroundStyle(MarketTheme.ink)
             .sheet(isPresented: $showInvitation) { InvitationView().marketSheetScope() }

@@ -9,7 +9,7 @@ import { applyOrderEnvelope, createOrderBook, decodeOrder, LOCATION_TTL, ORDER_T
 const buyer='1'.repeat(64),seller='2'.repeat(64),courier='3'.repeat(64),outsider='4'.repeat(64),device='5'.repeat(64);
 const listing={id:`${seller}:bicycle`,author:seller,title:'Bicycle',price:'125',currency:'EUR',side:'offer',status:'active'};
 function backend(){let row;return {read:async()=>structuredClone(row),write:async(value,expected)=>{if((row?.version??0)!==expected)throw Error('conflict');row=structuredClone(value);}};}
-async function book(owner,{now=()=>1800000000,store,deviceKey=device}={}){const memory=store??backend(),vault=createVault({backend:memory});if(!(await vault.status()).exists)await vault.create();else await vault.unlock();const result=createOrderBook({vault,owner,device:deviceKey,now});await result.load();const receive=result.receive;result.receive=(rumor,sender,fromDevice=device)=>receive(rumor,sender,fromDevice);return {book:result,vault,backend:memory};}
+async function book(owner,{now=()=>1800000000,store,deviceKey=device,developerMint}={}){const memory=store??backend(),vault=createVault({backend:memory});if(!(await vault.status()).exists)await vault.create();else await vault.unlock();const result=createOrderBook({vault,owner,device:deviceKey,now,developerMint});await result.load();const receive=result.receive;result.receive=(rumor,sender,fromDevice=device)=>receive(rumor,sender,fromDevice);return {book:result,vault,backend:memory};}
 const eventFor=(book,action)=>decodeOrder(book.jobs().findLast(job=>job.action===action).rumor);
 const rumorFor=(book,action,peer)=>book.jobs().findLast(job=>job.action===action&&(!peer||job.recipient===peer)).rumor;
 async function participants(){const a=await book(buyer),b=await book(seller),c=await book(courier);const order=await a.book.request(listing);await b.book.receive(rumorFor(a.book,'request'),buyer);await b.book.update(order.id,{status:'accepted'});await a.book.receive(rumorFor(b.book,'status'),seller);await b.book.update(order.id,{shipment:{stops:[{id:'pickup',label:'Pickup',address:'Private pickup',courierPubkey:courier,coordinates:[24.94,60.17]},{id:'drop',label:'Delivery',address:'Private destination',courierPubkey:courier}],eta:1800003600}});await a.book.receive(rumorFor(b.book,'route',buyer),seller);await c.book.receive(rumorFor(b.book,'route',courier),seller);return {a,b,c,id:order.id};}
@@ -232,4 +232,102 @@ test('Buying listing inquiry uses the real card coordinate through NDR request a
  const reply=responder.state().conversations.flatMap(chat=>chat.messages).find(message=>message.text==='Synthetic Buying inquiry reply');
  assert.deepEqual(reply.context,context);assert.equal(messageThreadKey(reply),`thread:${context.thread_id}`);
  assert(!bus.frames.some(event=>JSON.stringify(event).includes(context.thread_id)||JSON.stringify(event).includes(buying.id)), 'Buying context stays inside encrypted rumors');
+});
+
+async function privatePickup(){
+ const a=await book(buyer),b=await book(seller),c=await book(courier);
+ const source=await a.book.request(listing);await b.book.receive(rumorFor(a.book,'request'),buyer);
+ await b.book.update(source.id,{status:'accepted'});await a.book.receive(rumorFor(b.book,'status'),seller);
+ await b.book.update(source.id,{shipment:{stops:[{id:'pickup',label:'Shop',address:'Merchant shop',coordinates:[24,60]}]}});
+ await a.book.receive(rumorFor(b.book,'route'),seller);return {a,b,c,id:source.id};
+}
+const transport={...listing,id:`${courier}:transport`,author:courier,title:'Transport'};
+const destination={label:'Home',address:'Secret destination',coordinates:[25,61]};
+test('separate delivery uses exact private peers, collection reference, and local-only order links',async()=>{
+ const {a,b,c,id}=await privatePickup();const delivery=await a.book.requestDelivery(id,transport,destination);
+ assert.equal(delivery.sourceOrderId,id);assert.equal(a.book.state().find(o=>o.id===id).deliveryOrderId,delivery.id);
+ const auth=rumorFor(a.book,'pickup',seller),request=rumorFor(a.book,'request',courier);
+ assert(!JSON.stringify(auth).includes(destination.address));assert(!JSON.stringify(request).includes(id));
+ assert(!JSON.stringify(request).includes('sourceOrderId'));assert(!JSON.stringify(auth).includes('deliveryOrderId'));
+ assert.deepEqual(a.book.jobs().filter(j=>j.orderId===id).map(j=>j.recipient),[seller,seller]);
+ assert.deepEqual(a.book.jobs().filter(j=>j.orderId===delivery.id).map(j=>j.recipient),[courier]);
+ await b.book.receive(auth,buyer);await c.book.receive(request,buyer);
+ assert.equal(b.book.state()[0].pickupAuthorization.courierPubkey,courier);
+ assert.equal(c.book.state()[0].deliveryRequest.collection.reference,b.book.state()[0].pickupAuthorization.reference);
+ assert.equal(c.book.state()[0].sourceOrderId,undefined);assert.equal(b.book.state()[0].deliveryRequest,undefined);
+ await assert.rejects(b.book.update(id,{pickupAuthorization:{courierPubkey:courier,reference:'bad'}}),/Only the buyer/);
+ await assert.rejects(b.book.requestDelivery(id,transport,destination),/your accepted/);
+ await assert.rejects(a.book.requestDelivery(id,transport,destination),/already/);
+ await c.book.update(delivery.id,{status:'accepted'});
+ const changed=eventFor(c.book,'status');changed.snapshot.deliveryRequest.destination.address='Tampered';
+ const previous={order:delivery,clocks:{},archived:false};
+ assert.throws(()=>applyOrderEnvelope(previous,changed,courier,buyer,1800000000),/changed the order/);
+});
+test('delivery request and pickup authorization fail atomically on persistence errors',async()=>{
+ const {a,id}=await privatePickup();const before=a.book.state(),jobs=a.book.jobs();let writes=0;
+ a.vault.put=async()=>{writes++;throw Error('full')};
+ await assert.rejects(a.book.requestDelivery(id,transport,destination),/full/);
+ assert.equal(writes,1);assert.deepEqual(a.book.state(),before);assert.deepEqual(a.book.jobs(),jobs);
+});
+test('standalone delivery requests are bounded and immutable on wire',async()=>{
+ const a=await book(buyer);const delivery=await a.book.request(transport,{deliveryRequest:{pickup:{label:'Pickup',address:'Station'},destination}});
+ assert.deepEqual(delivery.deliveryRequest.destination,destination);
+ assert.throws(()=>a.book.request(transport,{deliveryRequest:{pickup:{label:'',address:'Station'},destination:{...destination,address:'x'.repeat(501)}}}),/Invalid address/);
+ const draft=await a.book.request(listing);await assert.rejects(a.book.requestDelivery(draft.id,transport,destination),/accepted/);
+});
+
+test('payment terms belong to seller, validate mint and amount, and freeze after received',async()=>{
+ const a=await book(buyer),b=await book(seller);const order=await a.book.request(listing);await b.book.receive(rumorFor(a.book,'request'),buyer);
+ const term={mint:'https://mint.example/',amount:'00125',unit:'sat',status:'requested'};
+ await assert.rejects(a.book.update(order.id,{payment:term}),/Only the seller/);
+ await b.book.update(order.id,{payment:term});await a.book.receive(rumorFor(b.book,'payment'),seller);
+ assert.deepEqual(a.book.state()[0].payment,{...term,mint:'https://mint.example',amount:'125'});
+ for(const invalid of [{mint:'http://mint.example'},{mint:'https://mint.example/?key=secret'},{mint:'https://u:p@mint.example'},{amount:'0'},{amount:'1000000000001'},{amount:'1.5'}])assert.throws(()=>b.book.update(order.id,{payment:{...term,...invalid}}));
+ await b.book.update(order.id,{payment:{...term,status:'received'}});await a.book.receive(rumorFor(b.book,'payment'),seller);
+ assert.equal(a.book.state()[0].payment.status,'received');
+ await assert.rejects(b.book.update(order.id,{payment:{...term,amount:'126',status:'received'}}),/cannot change/);
+ const request=eventFor(a.book,'request');request.payload.payment=term;
+ assert.throws(()=>applyOrderEnvelope(undefined,request,buyer,seller,1800000000),/Invalid order request/);
+});
+
+test('later seller snapshots recover skipped payment updates without allowing buyer forgery or received rollback',async()=>{
+ const a=await book(buyer),b=await book(seller);const order=await a.book.request(listing);await b.book.receive(rumorFor(a.book,'request'),buyer);
+ const term={mint:'https://mint.example',amount:'125',unit:'sat',status:'requested'};
+ await b.book.update(order.id,{payment:term});const early=rumorFor(b.book,'payment');
+ await b.book.update(order.id,{status:'accepted'});await a.book.receive(rumorFor(b.book,'status'),seller);
+ assert.deepEqual(a.book.state()[0].payment,term);assert.equal(await a.book.receive(early,seller),null);
+ await b.book.update(order.id,{payment:{...term,status:'received'}});
+ await b.book.update(order.id,{status:'in-transit'});await a.book.receive(rumorFor(b.book,'status'),seller);
+ assert.equal(a.book.state()[0].payment.status,'received');
+ const current=a.book.state()[0],record={order:current,clocks:{},archived:false};
+ const rollback={...eventFor(b.book,'status'),opId:crypto.randomUUID(),seq:100,snapshot:{...current,payment:{...term,amount:'999'}}};
+ assert.equal(applyOrderEnvelope(record,rollback,seller,buyer,1800000000).record.order.payment.status,'received');
+ const forged={...rollback,action:'status',payload:{status:'cancelled'},snapshot:{...current,payment:{...term,amount:'999',status:'received'}}};
+ assert.equal(applyOrderEnvelope(record,forged,buyer,seller,1800000000).record.order.payment.amount,'125');
+});
+test('later buyer snapshots recover pickup authorization and seller snapshots cannot forge it',async()=>{
+ const {a,b,id}=await privatePickup();
+ const auth={courierPubkey:courier,reference:'collection-code'};
+ await a.book.update(id,{pickupAuthorization:auth});const early=rumorFor(a.book,'pickup');
+ await a.book.update(id,{status:'cancelled'});await b.book.receive(rumorFor(a.book,'status'),buyer);
+ assert.deepEqual(b.book.state()[0].pickupAuthorization,auth);assert.equal(await b.book.receive(early,buyer),null);
+ const {a:c,b:d,id:other}=await privatePickup();
+ await d.book.update(other,{status:'in-transit'});const event=eventFor(d.book,'status');event.snapshot.pickupAuthorization=auth;
+ const record={order:c.book.state()[0],clocks:{},archived:false};
+ assert.equal(applyOrderEnvelope(record,event,seller,buyer,1800000000).record.order.pickupAuthorization,undefined);
+});
+
+test('local HTTP payment mint requires exact explicit loopback configuration on sender and recipient',async()=>{
+ const developerMint='http://127.0.0.1:3338',a=await book(buyer,{developerMint}),b=await book(seller,{developerMint}),production=await book(buyer);
+ const order=await a.book.request(listing);await b.book.receive(rumorFor(a.book,'request'),buyer);await production.book.receive(rumorFor(a.book,'request'),buyer);
+ const term={mint:`${developerMint}/`,amount:'125',unit:'sat',status:'requested'};
+ await b.book.update(order.id,{payment:term});const paymentRumor=rumorFor(b.book,'payment');
+ assert(await a.book.receive(paymentRumor,seller));assert.equal(a.book.state()[0].payment.mint,developerMint);
+ assert.equal(await production.book.receive(paymentRumor,seller),null);assert.equal(production.book.state()[0].payment,undefined);
+ for(const mint of ['http://127.0.0.1:3339','http://localhost:3338','http://example.com:3338','http://127.0.0.1:3338/path','http://127.0.0.1:3338/?secret=x'])assert.throws(()=>b.book.update(order.id,{payment:{...term,mint}}),/secure mint/);
+ await b.book.update(order.id,{status:'accepted'});await a.book.receive(rumorFor(b.book,'status'),seller);assert.equal(a.book.state()[0].payment.mint,developerMint);
+ const snapshotEvent=eventFor(b.book,'status');const prior={order:order,clocks:{},archived:false};
+ assert.throws(()=>applyOrderEnvelope(prior,snapshotEvent,seller,buyer,1800000000),/secure mint/);
+ assert.equal(applyOrderEnvelope(prior,snapshotEvent,seller,buyer,1800000000,device,{developerMint}).record.order.payment.mint,developerMint);
+ assert.throws(()=>createOrderBook({vault:a.vault,owner:buyer,device,developerMint:'http://example.com:3338'}),/Local test mint/);
 });

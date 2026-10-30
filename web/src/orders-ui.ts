@@ -10,6 +10,10 @@ import { imageUrl } from './media.ts';
 import { art } from './art.ts';
 import { setupCourierWorkspace, orderReviewParticipants, type CourierFeedOptions } from './courier-ui.ts';
 import { nextTransportStop, stopDirections, transportProgress } from './transport-job.ts';
+import {createDeliveryPlaceInput} from './delivery-place-ui.ts';
+import {courierListingType} from './transport-type.ts';
+import {renderCashuContent,containsCashu} from './cashu-content.ts';
+import {DEFAULT_SUPPORTED_MINTS,isTestMint,mintUnitLabel} from './wallet/mints.ts';
 import {orderArrival} from './order-arrival.ts';
 
 const terminal = order => ['delivered', 'cancelled'].includes(order.status);
@@ -29,10 +33,12 @@ const courierKey = (input:string) => {
 const dark = () => document.documentElement.dataset.appearance === 'dark' || (document.documentElement.dataset.appearance !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
 
 /** Private order requests are separate from chat and never imply a payment. */
-export function setupOrders({ account, isPreview = () => false, onProfile = () => {}, onReview = onProfile, courier, onUnread = (_count:number) => {}, page, onNavigate = (_id?:string,_tab?:string) => {}, onClose = () => {}, formatPrice = item => `${item.price || ''} ${item.currency || ''}`.trim() }: {account:ReturnType<typeof import('./account-ui.ts').setupAccount>;isPreview?:()=>boolean;onProfile?:(key:string)=>void;onReview?:(key:string)=>void;courier?:CourierFeedOptions;onUnread?:(count:number)=>void;page?:HTMLElement;onNavigate?:(id?:string,tab?:string)=>void;onClose?:()=>void;formatPrice?:(item:any)=>string}) {
+export function setupOrders({ onPay, onReceiveToken, account, isPreview = () => false, onProfile = () => {}, onReview = onProfile, courier, onUnread = (_count:number) => {}, page, onNavigate = (_id?:string,_tab?:string) => {}, onClose = () => {}, formatPrice = item => `${item.price || ''} ${item.currency || ''}`.trim() }: {onPay?:(order:import('./orders.ts').OrderView)=>unknown;onReceiveToken?:(token:string,orderId:string)=>unknown;account:ReturnType<typeof import('./account-ui.ts').setupAccount>;isPreview?:()=>boolean;onProfile?:(key:string)=>void;onReview?:(key:string)=>void;courier?:CourierFeedOptions;onUnread?:(count:number)=>void;page?:HTMLElement;onNavigate?:(id?:string,tab?:string)=>void;onClose?:()=>void;formatPrice?:(item:any)=>string}) {
   const unread=createUnreadTracker({kind:'orders',onUnread});
   let state = account.state(), view = 'history', tab = 'purchases', selected, listing, pending, busy = false, error = '', sharing, map, mapLoading, mapHost, mapOrderId, mapGeneration = 0, destroyed = false;
-  let arrivalHeadline:HTMLElement|undefined;
+  let arrivalHeadline:HTMLElement|undefined,renderVersion=0;
+  let placeInputs:ReturnType<typeof createDeliveryPlaceInput>[]=[],renderProviders:(()=>void)|undefined;
+  const clearEditors=()=>{for(const editor of placeInputs)editor.destroy();placeInputs=[];renderProviders=undefined;};
   const dialog = createSurface({className:'orders-dialog',label:'Orders',pageHost:page,onOpen:()=>onNavigate(view==='detail'?selected:undefined,tab),onClose}); dialog.id = 'orders-dialog'; dialog.setAttribute('aria-labelledby', 'orders-title');
   const close = node('button', '×', 'dialog-close icon-button'); close.type = 'button'; close.setAttribute('aria-label', 'Close orders'); close.onclick = () => dialog.close();
   const back = node('button', '← Orders', 'text-button orders-back'); back.type = 'button'; back.onclick = () => showHistory();
@@ -65,7 +71,7 @@ export function setupOrders({ account, isPreview = () => false, onProfile = () =
     error = ''; failure.textContent = ''; setBusy(true);
     try { await task(); state = account.state(); }
     catch (cause) { error = cause?.message || 'Could not save this update. Try again.'; }
-    finally { setBusy(false); if (error && ['review', 'route'].includes(view)) failure.textContent = error; else render(); }
+    finally { setBusy(false); if (error && ['review', 'route', 'delivery', 'payment'].includes(view)) failure.textContent = error; else render(); }
   }
   function dropMap() {
     mapGeneration++; map?.destroy().catch(() => {}); map = mapLoading = mapHost = mapOrderId = undefined;
@@ -77,9 +83,9 @@ export function setupOrders({ account, isPreview = () => false, onProfile = () =
     clearTimeout(stopped.timeout);
     if (publish && state.status === 'ready' && state.ownerPubkey === stopped.owner) void account.messaging.updateOrder(stopped.orderId, { location: null }).catch(() => {});
   }
-  function changeView(next) { if(next!=='history')courierUI?.hide();if (next !== 'detail') stopLocation(); view = next; error = ''; if (next !== 'detail') dropMap(); }
+  function changeView(next) { clearEditors(); if(next!=='history')courierUI?.hide();if (next !== 'detail') stopLocation(); view = next; error = ''; if (next !== 'detail') dropMap(); }
   function showHistory() { changeView('history'); selected = undefined; render(); if(dialog.open)onNavigate(undefined,tab); }
-  function showDetail(order) {
+  function showDetail(order) { clearEditors();
     if (selected !== order.id) { stopLocation(); dropMap(); }
     selected = order.id; view = 'detail'; error = ''; render(); if(dialog.open)onNavigate(order.id);
   }
@@ -150,13 +156,14 @@ export function setupOrders({ account, isPreview = () => false, onProfile = () =
     const summary = node('div'); summary.append(node('h3', listing.title), node('p', price(listing), 'order-review-price'));
     product.append(image, summary); form.append(product, person(listing.author, 'Seller'));
     const quantity = input('Quantity', { type: 'number', value: '1', required: true, min: 1, max: 999, step: 1 });
-    const note = input('Message to the seller', { type: 'textarea', maxLength: 2000, placeholder: 'Delivery or collection details (optional)' }); note.field.rows = 3;
+    const note = input('Message to the seller', { type: 'textarea', maxLength: 2000, placeholder: 'Optional' }); note.field.rows = 3;
+    if(listing.category==='transport'){const pickup=createDeliveryPlaceInput({label:'Pickup'}),destination=createDeliveryPlaceInput({label:'Destination'});placeInputs.push(pickup,destination);form.append(pickup.element,destination.element);}
     form.append(quantity.wrap, note.wrap, node('p', 'The seller will confirm your request. No payment is taken here.', 'small muted'));
     const submit = node('button', 'Request order', 'button primary'); submit.type = 'submit'; submit.dataset.orderAction = ''; submit.disabled = busy || listing.author === owner(); form.append(submit);
     form.onsubmit = event => {
       event.preventDefault(); const count = Number(quantity.field.value), message = note.field.value.trim();
       if (!Number.isInteger(count) || count < 1 || count > 999) { quantity.field.reportValidity(); return; }
-      void perform(async () => { const order = await account.messaging.requestOrder(listing, { quantity: count, note: message }); state = account.state(); selected = order.id; view = 'detail'; live.textContent = 'Order requested'; });
+      void perform(async () => { const order = await account.messaging.requestOrder(listing, { quantity: count, note: message, ...(placeInputs.length===2?{deliveryRequest:{pickup:placeInputs[0].read(),destination:placeInputs[1].read()}}:{}) }); state = account.state(); showDetail(order); live.textContent = 'Order requested'; });
     };
     body.append(form);
   }
@@ -242,7 +249,15 @@ export function setupOrders({ account, isPreview = () => false, onProfile = () =
     if (order.status !== 'requested' || order.shipment?.stops?.length) { const mapNode = shipmentMap(order); if (mapNode) body.append(mapNode); }
     const participants = node('div', undefined, 'order-participants'); participants.append(person(order.buyer, 'Buyer'), person(order.seller, 'Seller')); body.append(participants);
     if (order.note) body.append(node('p', order.note, 'order-note'));
+    if(order.deliveryRequest){const route=node('section',undefined,'order-request-route');route.append(node('h3','Requested route'),node('p','Pickup · '+order.deliveryRequest.pickup.address),node('p','Destination · '+order.deliveryRequest.destination.address));body.append(route);}
+    if(order.pickupAuthorization){const pickup=node('section',undefined,'order-pickup-authorization');pickup.append(node('h3','Collection'),person(order.pickupAuthorization.courierPubkey,'Authorized courier'),node('p','Pickup reference · '+order.pickupAuthorization.reference,'small muted'));body.append(pickup);}
+    if(order.payment){const payment=node('section',undefined,'order-payment');payment.append(node('h3',order.payment.status==='received'?'Payment received':'Payment requested'),node('strong',new Intl.NumberFormat().format(BigInt(order.payment.amount))+' '+mintUnitLabel(order.payment.mint)),node('p',new URL(order.payment.mint).hostname+(isTestMint(order.payment.mint)?' · Test money · no bitcoin value':''),'small muted'));if(order.payment.status==='received')payment.append(node('span','Confirmed by seller','small muted'));else if(selfRole==='buyer'&&onPay&&!terminal(order))payment.append(action('Pay',()=>{void onPay(order);},true));body.append(payment);}
+    if(onReceiveToken&&order.payment?.status!=='received'){const version=renderVersion,peer=selfRole==='buyer'?order.seller:order.buyer;const messages=state.conversations?.find(thread=>thread.pubkey===peer)?.messages||[];for(const message of messages.filter(message=>!message.mine&&message.context?.order_id===order.id&&containsCashu(message.text)).slice(-2)){const credit=node('div',undefined,'order-funds');body.append(credit);void renderCashuContent(message.text,{isActive:()=>version===renderVersion&&view==='detail'&&selected===order.id,onToken:token=>onReceiveToken(token,order.id)}).then(content=>{if(version===renderVersion)credit.replaceChildren(content);});}}
     const actions = node('div', undefined, 'order-actions');
+    if(selfRole==='buyer'&&['accepted','in-transit'].includes(order.status)&&!order.deliveryRequest&&!order.deliveryOrderId&&order.shipment.stops.length&&!order.shipment.stops.some(stop=>stop.courierPubkey)&&courier)actions.append(action('Arrange delivery',()=>{changeView('delivery');render();},true));
+    for(const [id,label] of [[order.deliveryOrderId,'View delivery'],[order.sourceOrderId,'View product order']]){const related=id&&orders().find(value=>value.id===id);if(related)actions.append(action(label,()=>showDetail(related)));}
+    if(selfRole==='seller'&&!terminal(order)&&!order.payment)actions.append(action('Request payment',()=>{changeView('payment');render();}));
+    if(selfRole==='seller'&&order.payment?.status==='requested')actions.append(action('Confirm payment received',()=>update(order,{payment:{...order.payment,status:'received'}},'Payment confirmed')));
     if (order.status === 'requested' && selfRole === 'seller') actions.append(action('Accept order', () => update(order, { status: 'accepted' }, 'Order accepted'), true));
     if (order.status === 'accepted' && selfRole === 'seller') actions.append(action('Mark on the way', () => update(order, { status: 'in-transit' }, 'Delivery started'), true));
     if (['accepted', 'in-transit'].includes(order.status) && ['seller', 'buyer'].includes(selfRole)) actions.append(action(selfRole === 'buyer' ? 'Mark received' : 'Mark delivered', () => update(order, { status: 'delivered' }, 'Order delivered'), selfRole === 'buyer'));
@@ -259,6 +274,21 @@ export function setupOrders({ account, isPreview = () => false, onProfile = () =
       body.append(section);
     }
     if (terminal(order)) body.append(node('p', 'Archiving only changes your history.', 'small muted order-archive-note'));
+  }
+  function renderDelivery(){
+    const order=current();if(!order||!courier)return;
+    const form=node('form',undefined,'order-delivery-form'),pickup=order.shipment.stops[0],destination=createDeliveryPlaceInput({label:'Destination'});placeInputs.push(destination);
+    form.append(node('h3','Pickup'),node('p',pickup.address),destination.element,node('h3','Choose a delivery service'));
+    const providers=node('div',undefined,'order-service-options'),empty=node('p','','small muted'),summary=node('p','','small muted');let service:any;
+    const submit=node('button','Request delivery','button primary');submit.type='submit';submit.disabled=true;submit.dataset.orderAction='';
+    renderProviders=()=>{const offers=courier.getListings().filter(value=>value.side==='offer'&&value.author!==owner()&&value.author!==order.seller&&value.status!=='sold'&&(!value.expiration||value.expiration>Date.now()/1000)&&['parcel','both'].includes(courierListingType(value)||''));providers.replaceChildren();for(const value of offers){const button=action('',()=>{service=value;renderProviders?.();});button.classList.add('order-service-option');button.setAttribute('aria-pressed',String(service?.id===value.id));button.append(node('strong',value.title),node('span',price(value),'small muted'));const row=node('div',undefined,'order-service-row');row.append(button,person(value.author));providers.append(row);}empty.textContent=offers.length?'':'Looking for delivery services…';submit.disabled=!service||busy;summary.textContent=service?'Only this delivery provider receives your destination. The merchant receives their identity and a pickup reference.':'';};renderProviders();
+    form.append(providers,empty);if(courier.loadMore)form.append(action('More services',()=>{void courier.loadMore().then(()=>renderProviders?.()).catch(()=>{empty.textContent='No more services found yet.';});}));form.append(summary,submit,action('Back to order',()=>showDetail(order)));
+    form.onsubmit=event=>{event.preventDefault();if(!service)return;void perform(async()=>{const result=await account.messaging.requestDelivery(order.id,service,destination.read());state=account.state();showDetail(result);live.textContent='Delivery requested';});};body.append(form);
+  }
+  function renderPayment(){
+    const order=current();if(!order||order.seller!==owner())return;
+    const form=node('form',undefined,'order-payment-form'),amount=input('Amount in sats',{type:'number',required:true,min:1,step:1,value:['SATS','TESTSAT'].includes(order.items[0].currency)?order.items[0].price:''});
+    const label=node('label','Mint'),mint=node('select');mint.setAttribute('aria-label','Payment mint');for(const url of DEFAULT_SUPPORTED_MINTS){const option=node('option',new URL(url).hostname+(isTestMint(url)?' · Test money':''));option.value=url;mint.append(option);}label.append(mint);const submit=node('button','Request payment','button primary');submit.type='submit';submit.dataset.orderAction='';form.append(amount.wrap,label,submit,action('Cancel',()=>showDetail(order)));form.onsubmit=event=>{event.preventDefault();void perform(async()=>{await account.messaging.updateOrder(order.id,{payment:{amount:amount.field.value,mint:mint.value,unit:'sat',status:'requested'}});view='detail';});};body.append(form);
   }
   function renderRoute() {
     const order = current(); if (!order || order.seller !== owner() || terminal(order)) { view = 'detail'; renderDetail(); return; }
@@ -323,10 +353,10 @@ export function setupOrders({ account, isPreview = () => false, onProfile = () =
     if (destroyed) return;
     syncUnread();
     if(view!=='history'||tab!=='deliveries')courierUI?.hide();
-    heading.textContent = view === 'review' ? 'Request an order' : view === 'route' ? 'Delivery details' : view === 'detail' ? 'Order details' : tab==='deliveries'?'Transport':'Orders';
+    heading.textContent = view==='delivery'?'Arrange delivery':view==='payment'?'Request payment':view === 'review' ? 'Request an order' : view === 'route' ? 'Delivery details' : view === 'detail' ? 'Order details' : tab==='deliveries'?'Transport':'Orders';
     back.hidden = view === 'history'; failure.textContent = error; renderTabs();
-    const scrollTop = dialog.scrollTop; arrivalHeadline=undefined;body.replaceChildren();
-    if (view === 'review') renderReview(); else if (view === 'detail') renderDetail(); else if (view === 'route') renderRoute(); else renderHistory();
+    const scrollTop = dialog.scrollTop; renderVersion++;clearEditors();arrivalHeadline=undefined;body.replaceChildren();
+    if(view==='delivery')renderDelivery();else if(view==='payment')renderPayment();else if (view === 'review') renderReview(); else if (view === 'detail') renderDetail(); else if (view === 'route') renderRoute(); else renderHistory();
     dialog.scrollTop = scrollTop;
   }
   function refresh(value = account.state()) {
@@ -339,9 +369,9 @@ export function setupOrders({ account, isPreview = () => false, onProfile = () =
     if (sharing && (!order || terminal(order) || !sharedStop || order.archived || document.visibilityState === 'hidden')) stopLocation();
     if (pending && state.status === 'ready') { const intent = pending; pending = undefined; account.closeAccount?.(); if (intent.type === 'buy') buy(intent.listing); else open(intent.id,intent.section); return; }
     // Preserve typing while private updates arrive in the background.
-    if (dialog.open && !['review', 'route'].includes(view)) render();
+    if (dialog.open && !['review', 'route', 'delivery', 'payment'].includes(view)) render();
   }
-  dialog.addEventListener('close', () => { courierUI?.hide();stopLocation(); dropMap(); syncUnread(); });
+  dialog.addEventListener('close', () => {clearEditors();renderVersion++; courierUI?.hide();stopLocation(); dropMap(); syncUnread(); });
   function refreshArrival(){
     if(destroyed||!dialog.open||view!=='detail'||document.visibilityState==='hidden'||!arrivalHeadline)return;
     const order=current(),arrival=order&&orderArrival(order);
@@ -356,5 +386,5 @@ export function setupOrders({ account, isPreview = () => false, onProfile = () =
   const appearance = matchMedia('(prefers-color-scheme: dark)'); appearance.addEventListener('change', theme);
   const unsubscribe=account.onState?.(refresh);syncUnread();
   window.addEventListener('pagehide', () => { clearInterval(arrivalTimer);stopLocation(); dropMap(); courierUI?.destroy();destroyed = true;unsubscribe?.();window.removeEventListener('focus',focused);document.removeEventListener('visibilitychange', hidden);document.removeEventListener('close',uncovered,true); window.removeEventListener('market-themechange', theme); appearance.removeEventListener('change', theme); });
-  return { open, buy, refresh, refreshCourier(){if(dialog.open&&view==='history'&&tab==='deliveries')courierUI?.refresh();}, hide:()=>dialog.hide() };
+  return { open, buy, refresh, refreshCourier(){if(dialog.open&&view==='delivery'){renderProviders?.();return;}if(dialog.open&&view==='history'&&tab==='deliveries')courierUI?.refresh();}, hide:()=>dialog.hide() };
 }

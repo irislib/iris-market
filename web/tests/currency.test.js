@@ -149,3 +149,9 @@ test('closing cancels an in-flight HTTP read and prevents late UI updates', asyn
   assert.equal(updates, 0)
   assert.equal((await rates.refresh()).status, 'unavailable')
 })
+
+
+test('test sats are labeled and never converted into fiat or real bitcoin',()=>{
+  const price=formatPrice({price:'16',currency:'TESTSAT'},{preferredCurrency:'EUR',rates:{rates:{TESTSAT:{value:1,updatedAt:1000},EUR:{value:65000,updatedAt:1000}}},now:1000});
+  assert.equal(price.primary,'16 test sats');assert.equal(price.converted,null);assert.equal(price.original,null);
+});

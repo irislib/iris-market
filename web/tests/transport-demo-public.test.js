@@ -22,14 +22,14 @@ test('public demo rejects unsafe configuration before opening storage or network
   assert(DEFAULT_RELAYS.every(value=>new URL(value).protocol==='wss:'));
 });
 
-test('public demo listings validate as signed free simulations, expire and renew',()=>{
+test('public demo listings validate as signed test-money simulations, expire and renew',()=>{
   const createdAt=1800000000,secret=generateSecretKey();
   assert(DEMO_RENEW_AFTER>0&&DEMO_RENEW_AFTER<DEMO_LISTING_LIFETIME);
-  for(const kind of ['ride','delivery']) {
+  for(const kind of ['product','ride','delivery']) {
     const event=finalizeEvent(demoListingDraft(kind,createdAt,true),secret),listing=parseEvent(event,{now:createdAt});
-    assert.equal(listing.identifier,kind==='ride'?'demo-ride':'demo-drone-delivery');
-    assert.equal(listing.side,'offer');assert.equal(listing.price,'0');assert.equal(listing.currency,'EUR');
-    assert.equal(listing.imageUrl,`https://market.iris.to/demo-${kind}.svg`);
+    assert.equal(listing.identifier,kind==='product'?'demo-drone-delivery':kind==='ride'?'demo-ride':'demo-courier');
+    assert.equal(listing.side,'offer');assert.equal(listing.price,kind==='product'?'16':'8');assert.equal(listing.currency,'TESTSAT');
+    assert.equal(listing.imageUrl,`https://market.iris.to/demo-${kind==='ride'?'ride':'delivery'}.svg`);
     assert.equal(listing.expiration,createdAt+DEMO_LISTING_LIFETIME);
     assert.match(listing.description,/https:\/\/market\.iris\.to/);
     assert.match(listing.description,/Simulation only: no real/);
@@ -49,43 +49,46 @@ test('public demo listings validate as signed free simulations, expire and renew
   }
 });
 
-test('public actors serve concurrent customers privately and drain each buyer queue through offline WSS mapping',{timeout:25000},async()=>{
+test('public actors serve concurrent customers privately and drain each buyer queue through offline WSS mapping',{timeout:45000},async()=>{
   const [{mkdtemp,rm},{tmpdir},{join},{startDemoRelay},{createMessaging},{createVault},{orderContext}]=await Promise.all([
     import('node:fs/promises'),import('node:os'),import('node:path'),import('../scripts/demo/relay.ts'),
     import('../src/messaging/client.ts'),import('../src/messaging/vault.ts'),import('../src/message-context.ts'),
   ]);
   const directory=await mkdtemp(join(tmpdir(),'iris-public-offline-')),relay=await startDemoRelay(0);
   const OriginalWebSocket=globalThis.WebSocket,urls=[];let bots,buyer,row,secondBuyer,secondRow;
-  const endpoint='wss://demo.example/';
+  const endpoint='wss://demo.example/';let clock=0;
   globalThis.WebSocket=class extends OriginalWebSocket {
     constructor(url,...args){urls.push(String(url));if(String(url)!==endpoint)throw Error('Unexpected network destination in offline demo test');super(relay.url,...args);}
   };
-  const until=async(check,timeout=16000)=>{const started=Date.now();while(Date.now()-started<timeout){if(check())return;await new Promise(resolve=>setTimeout(resolve,35));}throw Error('Public offline demo timed out');};
+  const until=async(check,timeout=30000)=>{const started=Date.now();while(Date.now()-started<timeout){if(check())return;await new Promise(resolve=>setTimeout(resolve,35));}throw Error('Public offline demo timed out');};
   try {
-    bots=await startDemoActors({publicRelays:[endpoint],origin:'https://market.iris.to',stateDir:directory,password:'offline-public-test-password',tickMs:60,durationMs:4500});
+    bots=await startDemoActors({publicRelays:[endpoint],origin:'https://market.iris.to',stateDir:directory,password:'offline-public-test-password',tickMs:60,durationMs:9000,clockMs:()=>clock,moneyFactory:async()=>({grant:async()=>({token:'cashuATEST',mint:'https://testnut.cashu.space',amount:'128',unit:'sat'}),redeem:async()=>{},close:async()=>{}})});
     assert(bots.listings.every(item=>new URL(item.url).origin==='https://market.iris.to'&&!item.url.includes('test-relay')));
     buyer=createMessaging({getRelays:()=>[endpoint],vault:createVault({backend:{read:async()=>structuredClone(row),write:async value=>{row=structuredClone(value);}}})});
     await buyer.createAccount();await until(()=>buyer.state().canSend);
     secondBuyer=createMessaging({getRelays:()=>[endpoint],vault:createVault({backend:{read:async()=>structuredClone(secondRow),write:async value=>{secondRow=structuredClone(value);}}})});
     await secondBuyer.createAccount();await until(()=>secondBuyer.state().canSend);
-    const listing=kind=>{const author=bots.clients[kind==='ride'?2:0].state().ownerPubkey;return {id:`${author}:${kind==='ride'?'demo-ride':'demo-drone-delivery'}`,author,title:'Free public demo',side:'offer',price:'0',currency:'EUR'};};
-    const parcel=await buyer.requestOrder(listing('delivery'));
+    const listing=kind=>{const author=bots.clients[kind==='ride'?2:1].state().ownerPubkey;return {id:`${author}:${kind==='product'?'demo-drone-delivery':kind==='ride'?'demo-ride':'demo-courier'}`,author,title:'Free public demo',side:'offer',price:'8',currency:'TESTSAT'};};
+    const parcel=await buyer.requestOrder(listing('ride'));
+    const pay=async(client,order)=>{await until(()=>client.state().orders.find(item=>item.id===order.id)?.payment);await client.send(order.seller,'cashuAPAY8',orderContext(order.id));};await pay(buyer,parcel);
     await until(()=>buyer.state().orders.find(item=>item.id===parcel.id)?.locationFresh);
-    const otherRide=await secondBuyer.requestOrder(listing('ride'));
+    const otherRide=await secondBuyer.requestOrder(listing('ride'));await pay(secondBuyer,otherRide);
     await until(()=>secondBuyer.state().orders.find(item=>item.id===otherRide.id)?.locationFresh);
     assert.equal(bots.active(),2);
     assert(!buyer.state().orders.some(item=>item.id===otherRide.id));
     assert(!secondBuyer.state().orders.some(item=>item.id===parcel.id));
-    const ride=await buyer.requestOrder(listing('ride'));
+    const ride=await buyer.requestOrder(listing('ride'));await pay(buyer,ride);
     await until(()=>bots.clients[2].state().orders.some(item=>item.id===ride.id));
     await new Promise(resolve=>setTimeout(resolve,200));
     assert.equal(bots.active(),2);
     assert.equal(bots.clients[2].state().orders.find(item=>item.id===ride.id).status,'requested');
-    await buyer.send(listing('delivery').author,'Is this just a simulation?',orderContext(parcel.id));
+    await buyer.send(listing('ride').author,'Is this just a simulation?',orderContext(parcel.id));
     await until(()=>buyer.state().conversations.some(thread=>thread.messages.some(message=>!message.mine&&message.text.startsWith('Simulated update:')&&message.context?.order_id===parcel.id)));
     assert.equal(bots.replyStats().ollama,0);assert(bots.replyStats().scripted>=1);
+    clock=10000;
     await until(()=>buyer.state().orders.find(item=>item.id===parcel.id)?.status==='delivered');
     await until(()=>buyer.state().orders.find(item=>item.id===ride.id)?.locationFresh);
+    clock=20000;
     await until(()=>buyer.state().orders.find(item=>item.id===ride.id)?.status==='delivered');
     await until(()=>secondBuyer.state().orders.find(item=>item.id===otherRide.id)?.status==='delivered');
     await until(()=>bots.active()===0);

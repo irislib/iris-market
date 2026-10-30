@@ -2,11 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 class Element extends EventTarget {
-  constructor(tag){super();this.tag=tag;this.children=[];this.attributes=new Map();this.dataset={};this.className='';this.textContent='';this.value='';this.hidden=false;this.scrollTop=0;this.classList={toggle:(name,on)=>{const values=new Set(this.className.split(' ').filter(Boolean));on?values.add(name):values.delete(name);this.className=[...values].join(' ');}};}
+  constructor(tag){super();this.tag=tag;this.children=[];this.attributes=new Map();this.dataset={};this.className='';this.textContent='';this.value='';this.hidden=false;this.scrollTop=0;this.classList={add:(name)=>this.classList.toggle(name,true),toggle:(name,on)=>{const values=new Set(this.className.split(' ').filter(Boolean));on?values.add(name):values.delete(name);this.className=[...values].join(' ');}};}
   append(...children){for(const child of children){child.remove();child.parent=this;this.children.push(child);}}
   remove(){if(this.parent)this.parent.children=this.parent.children.filter(child=>child!==this);this.parent=undefined;}
   replaceChildren(...children){for(const child of [...this.children])child.remove();this.append(...children);}
   setAttribute(name,value){this.attributes.set(name,String(value));}
+  get childElementCount(){return this.children.length;}
   getAttribute(name){return this.attributes.get(name)??null;}
   removeAttribute(name){this.attributes.delete(name);}
   querySelectorAll(selector){return this.children.flatMap(child=>[...(matches(child,selector)?[child]:[]),...child.querySelectorAll(selector)]);}
@@ -22,15 +23,15 @@ const {setupPeople}=await import('../src/people.ts');setupPeople({getRelays:()=>
 const {setupOrders}=await import('../src/orders-ui.ts');
 const all=node=>[node,...node.children.flatMap(all)],find=(node,text)=>all(node).find(child=>child.textContent===text),settle=()=>new Promise(resolve=>setImmediate(resolve));
 const buyer='b'.repeat(64),seller='a'.repeat(64),courier='c'.repeat(64);
-function fixture({signedOut=false,delivered=false,eta=undefined}={}){
+function fixture({signedOut=false,delivered=false,eta=undefined,buyerView=false,offers=[],payment=undefined}={}){
   doc.visibilityState='visible';geo.calls=[];geo.cleared=[];
-  let state={status:signedOut?'empty':'ready',ownerPubkey:signedOut?undefined:courier,orders:[],conversations:[]},reads=0,signIns=0;
-  const listeners=new Set(),updates=[],reviews=[],announced=[];
-  const job={id:'job',buyer,seller,items:[{id:'item',title:'Private parcel',price:'10',currency:'EUR',quantity:1}],status:delivered?'delivered':'accepted',createdAt:100,updatedAt:100,shipment:{eta,stops:[{id:'pickup',label:'Pickup',address:'Private pickup',status:'pending',courierPubkey:courier}]},archived:false,sync:'queued',locationFresh:false};state.orders=[job];
-  const account={state:()=>state,showAccount:()=>signIns++,closeAccount(){},onState:fn=>{listeners.add(fn);return()=>listeners.delete(fn);},messaging:{updateOrder:async(id,patch)=>{updates.push({id,patch});}}};
+  let state={status:signedOut?'empty':'ready',ownerPubkey:signedOut?undefined:buyerView?buyer:courier,orders:[],conversations:[]},reads=0,signIns=0;
+  const listeners=new Set(),updates=[],reviews=[],announced=[],deliveries=[],payments=[];
+  const job={id:'job',buyer,seller,payment,items:[{id:'item',title:'Private parcel',price:'10',currency:'EUR',quantity:1}],status:delivered?'delivered':'accepted',createdAt:100,updatedAt:100,shipment:{eta,stops:[{id:'pickup',label:'Pickup',address:'Private pickup',status:'pending',...(buyerView?{}:{courierPubkey:courier})}]},archived:false,sync:'queued',locationFresh:false};state.orders=[job];
+  const account={state:()=>state,showAccount:()=>signIns++,closeAccount(){},onState:fn=>{listeners.add(fn);return()=>listeners.delete(fn);},messaging:{requestDelivery:async(id,service,destination)=>{deliveries.push({id,service,destination});const result={...job,id:'delivery',seller:service.author,deliveryRequest:{pickup:job.shipment.stops[0],destination}};state.orders.push(result);return result;},updateOrder:async(id,patch)=>{updates.push({id,patch});}}};
   const page=new Element('main');doc.body.append(page);
-  const ui=setupOrders({account,page,onReview:key=>reviews.push(key),courier:{getListings:()=>{reads++;return[{id:'public',author:seller,title:'Public parcel request',tags:['parcel'],category:'transport',side:'request',status:'active'}];},onListing(){},onAnnounce:value=>announced.push(value)}});
-  return{ui,page,job,updates,reviews,announced,get reads(){return reads;},get signIns(){return signIns;},setState:patch=>{state={...state,...patch};for(const fn of listeners)fn(state);},cleanup(){win.dispatchEvent(new Event('pagehide'));page.remove();}};
+  const ui=setupOrders({account,page,onPay:order=>payments.push(order),onReview:key=>reviews.push(key),courier:{getListings:()=>{reads++;return[...offers,{id:'public',author:seller,title:'Public parcel request',tags:['parcel'],category:'transport',side:'request',status:'active'}];},onListing(){},onAnnounce:value=>announced.push(value)}});
+  return{ui,page,job,updates,reviews,announced,deliveries,payments,get reads(){return reads;},get signIns(){return signIns;},setState:patch=>{state={...state,...patch};for(const fn of listeners)fn(state);},cleanup(){win.dispatchEvent(new Event('pagehide'));page.remove();}};
 }
 
 test('arrival countdown advances without network updates or replacing controls and disappears on completion',t=>{
@@ -102,5 +103,25 @@ test('completed-job review actions pass only the chosen public profile, never pr
     f.ui.open('job','deliveries');assert.equal(find(f.page,'Share live location'),undefined);
     const buttons=all(f.page).filter(node=>node.tag==='button'&&node.textContent==='Review');assert.equal(buttons.length,2);
     buttons[0].click();assert.deepEqual(f.reviews,[buyer]);assert.equal(f.page.children[0].open,false);assert.deepEqual(f.updates,[]);assert.deepEqual(f.announced,[]);
+  }finally{f.cleanup();}
+});
+
+
+test('ordinary buyer order books a separate courier after reviewing private destination, preserving input across feed refresh',async()=>{
+  const service={id:'courier-item',author:courier,title:'Parcel delivery',side:'offer',category:'transport',tags:['parcel'],price:'8',currency:'TESTSAT'};
+  const f=fixture({buyerView:true,offers:[service]});try{
+    f.ui.open('job');assert(find(f.page,'Arrange delivery'));find(f.page,'Arrange delivery').click();
+    const address=all(f.page).find(el=>el.getAttribute('aria-label')==='Destination address or meeting point');address.value='A private meeting point';
+    f.ui.refreshCourier();assert.equal(address.value,'A private meeting point');
+    const choose=all(f.page).find(el=>el.tag==='button'&&el.className.includes('order-service-option'));choose.click();
+    assert(find(f.page,'Only this delivery provider receives your destination. The merchant receives their identity and a pickup reference.'));
+    const form=all(f.page).find(el=>el.className==='order-delivery-form');form.onsubmit({preventDefault(){}});await settle();
+    assert.equal(f.deliveries.length,1);assert.equal(f.deliveries[0].id,'job');assert.equal(f.deliveries[0].service.author,courier);assert.equal(f.deliveries[0].destination.address,'A private meeting point');assert.equal(geo.calls.length,0);
+  }finally{f.cleanup();}
+});
+test('payment uses the normal order action and keeps test funds visibly distinct',()=>{
+  const f=fixture({buyerView:true,payment:{amount:'16',mint:'https://testnut.cashu.space',unit:'sat',status:'requested'}});try{
+    f.ui.open('job');assert(find(f.page,'16 test sats'));assert(find(f.page,'testnut.cashu.space · Test money · no bitcoin value'));find(f.page,'Pay').click();assert.deepEqual(f.payments,[f.job]);
+    f.job.payment.status='received';f.setState({});assert(find(f.page,'Payment received'));assert.equal(find(f.page,'Pay'),undefined);
   }finally{f.cleanup();}
 });

@@ -14,14 +14,14 @@ import type { Event, UnsignedEvent, VerifiedEvent } from 'nostr-tools';
 import type { NostrPublishContext, Rumor, OnEventMeta } from 'nostr-double-ratchet';
 import type { Vault } from './vault.ts';
 import type { PrivateTransport } from './transport.ts';
-import type { OrderListing, OrderPatch, OrderView } from '../orders.ts';
+import type { DeliveryPlace, DeliveryRequest, OrderListing, OrderPatch, OrderView } from '../orders.ts';
 type AccountMode='local'|'extension'|'linked';
 interface AccountRecord {owner:string;mode:AccountMode;deviceSecret:number[];ownerSecret?:number[];proof?:VerifiedEvent;installed?:boolean;freshOwner?:boolean;displayName?:string;profileEvent?:VerifiedEvent}
 export interface ChatMessage {id:string;text:string;mine:boolean;createdAt:number;expiresAt?:number;delivery:'queued'|'sent'|'received';orderId?:string;context?:MessageContext;system?:boolean}
 export interface MessagingState {status:string;error:string;password:boolean;ownerPubkey?:string;devicePubkey?:string;displayName?:string;pendingPublic:number;chatStatus:string;profileEvent?:VerifiedEvent;pendingListings:VerifiedEvent[];pendingReviews:VerifiedEvent[];orders:OrderView[];canSend:boolean;canSign:boolean;mode?:AccountMode;needsLogin:boolean;devices:{pubkey:string;current:boolean}[];conversations:{pubkey:string;messages:ChatMessage[]}[]}
 type AccountSigner=(event:UnsignedEvent)=>Event|Promise<Event>;
 interface BrowserSigner {getPublicKey():Promise<string>;signEvent:AccountSigner}
-interface MessagingOptions {getRelays?:()=>string[];onChange?:(state:MessagingState)=>void;vault?:Vault;transportFactory?:()=>PrivateTransport;extension?:()=>BrowserSigner|undefined}
+interface MessagingOptions {developerMint?:string;getRelays?:()=>string[];onChange?:(state:MessagingState)=>void;vault?:Vault;transportFactory?:()=>PrivateTransport;extension?:()=>BrowserSigner|undefined}
 interface SignerLoginOptions {password?:string;bunkerLink?:string;signal?:AbortSignal;onConnectionLink?:(url:string)=>void;onAuthUrl?:(url:string)=>void;onCommitting?:()=>void}
 type PublicationContext=NostrPublishContext&{recipientDeviceOwnerPubkey?:string};
 
@@ -66,7 +66,7 @@ export function messageProjection(rumor:Rumor, from:string, meta:OnEventMeta, ow
 }
 
 /** Public account identity and per-device chat key follow the active Iris Chat NDR runtime. */
-export function createMessaging({ getRelays=()=>[], onChange = () => {}, vault = createVault(),
+export function createMessaging({ developerMint, getRelays=()=>[], onChange = () => {}, vault = createVault(),
   transportFactory = () => createPrivateTransport(getRelays), extension = () => (globalThis.window as Window&{nostr?:BrowserSigner})?.nostr }:MessagingOptions = {}) {
   let account:AccountRecord,runtime:NdrRuntime,transport:PrivateTransport,outbox:ReturnType<typeof createPersistentNostrOutbox>,ownerSecret:Uint8Array,signer:AccountSigner,controller:AbortController,postingRemote:RemoteSigner,postingTransport:PrivateTransport,generation = 0;
   let status = 'signed-out', error = '', authorizationChecked = false, savedStatus;
@@ -391,7 +391,7 @@ export function createMessaging({ getRelays=()=>[], onChange = () => {}, vault =
     controller??=new AbortController();transport??=transportFactory();
     conversations.clear();
     for(const key of await vault.list('market/messages/'))conversations.set(key.slice('market/messages/'.length),await vault.get<ChatMessage[]>(key));
-    orders=createOrderBook({vault,owner:account.owner,device:getPublicKey(Uint8Array.from(account.deviceSecret)),notify,check:()=>check(attempt)});
+    orders=createOrderBook({vault,developerMint,owner:account.owner,device:getPublicKey(Uint8Array.from(account.deviceSecret)),notify,check:()=>check(attempt)});
     await orders.load();check(attempt);
     publicQueue=new Map();
     for(const key of await vault.list('market/public/')){const event=verifiedPrivateEvent(await vault.get(key));if(event&&event.pubkey===account.owner&&(publicAccountEvent(event)||(event.kind===37368&&event.id===account.proof?.id)))publicQueue.set(event.id,event);}
@@ -515,7 +515,8 @@ export function createMessaging({ getRelays=()=>[], onChange = () => {}, vault =
       await saveMessage(pubkey, { id: rumor.id, text, context,orderId:context?.order_id,mine: true, createdAt: rumor.created_at, delivery: diagnostics.length ? 'queued' : 'sent' });
       return rumor.id;
     },
-    async requestOrder(listing:OrderListing, options?:{quantity?:number;note?:string}) { requireReady();const order=await orders.request(listing,options);scheduleBackground();return order; },
+    async requestOrder(listing:OrderListing, options?:{quantity?:number;note?:string;deliveryRequest?:DeliveryRequest}) { requireReady();const order=await orders.request(listing,options);scheduleBackground();return order; },
+    async requestDelivery(sourceOrderId:string, serviceListing:OrderListing, destination:DeliveryPlace) { requireReady();const order=await orders.requestDelivery(sourceOrderId,serviceListing,destination);scheduleBackground();return order; },
     async updateOrder(id:string, patch:OrderPatch) { requireReady();const order=await orders.update(id,patch);await pruneOrderQueues();scheduleBackground();return order; },
     async archiveOrder(id, archived=true) { requireReady();return orders.archive(id,archived); },
     inviteUrl() { requireChat(); const invite = Invite.deserialize(runtime.getDelegateManager().getInvite().serialize()); invite.ownerPubkey = account.owner; return invite.getUrl(invitationBase(undefined)); },

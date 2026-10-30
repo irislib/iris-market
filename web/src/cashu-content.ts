@@ -1,3 +1,4 @@
+import {isTestMint,mintUnitLabel,configuredLocalTestMint} from './wallet/mints.ts';
 import { byId, element as domElement, formFields } from './dom.ts';
 const MAX_TEXT = 16_000, MAX_TOKENS = 4;
 const TOKEN_PATTERN = /(?<![A-Za-z0-9_/:?=&-])(?:cashu:)?(cashu[AB][A-Za-z0-9_-]+={0,2})(?![A-Za-z0-9_=-])/g;
@@ -17,7 +18,7 @@ export async function cashuParts(text) {
     try {
       info = getTokenMetadata(match[1]);
       const mint = new URL(info.mint), amount = info.amount.toString();
-      if (mint.protocol !== 'https:' || mint.username || mint.password || mint.search || mint.hash || mint.href.length > 1024 || !/^[a-zA-Z]{1,12}$/.test(info.unit) || !/^[1-9]\d{0,19}$/.test(amount) || !info.proofAmounts.length || info.proofAmounts.length > 256) continue;
+      if ((mint.protocol !== 'https:' && mint.href.replace(/\/+$/,'')!==configuredLocalTestMint()) || mint.username || mint.password || mint.search || mint.hash || mint.href.length > 1024 || !/^[a-zA-Z]{1,12}$/.test(info.unit) || !/^[1-9]\d{0,19}$/.test(amount) || !info.proofAmounts.length || info.proofAmounts.length > 256) continue;
       info = {amount,unit:info.unit,mint:mint.href.replace(/\/$/,''),mintName:mint.hostname,token:match[1]};
     } catch { continue; }
     if (match.index > end) parts.push({type:'text',text:text.slice(end,match.index)});
@@ -28,7 +29,7 @@ export async function cashuParts(text) {
 }
 
 export function cashuAmount(part) {
-  return new Intl.NumberFormat().format(BigInt(part.amount)) + ' ' + (part.unit === 'sat' ? 'sats' : part.unit);
+  return new Intl.NumberFormat().format(BigInt(part.amount)) + ' ' + (part.unit === 'sat' ? mintUnitLabel(part.mint||'') : part.unit);
 }
 
 const element = <K extends keyof HTMLElementTagNameMap>(doc:Document,tag:K,text?:string,className?:string) => {const node=doc.createElement(tag);if(text!==undefined)node.textContent=text;if(className)node.className=className;return node;};
@@ -50,7 +51,7 @@ export async function renderCashuContent(text,{document:doc=globalThis.document,
       continue;
     }
     const card=node('section',undefined,'chat-token');card.setAttribute('aria-label','Cashu token');
-    card.append(node('span','Cashu token','small muted'),node('strong',cashuAmount(part),'chat-token-amount'),node('span',part.mintName,'small muted'));
+    card.append(node('span',isTestMint(part.mint)?'Test money · no bitcoin value':'Cashu token','small muted'),node('strong',cashuAmount(part),'chat-token-amount'),node('span',part.mintName,'small muted'));
     const actions=node('div',undefined,'chat-token-actions'),status=node('span','Not checked','small muted');status.setAttribute('role','status');
     if(onToken){const receive=node('button','Open in wallet','button secondary');receive.type='button';receive.onclick=()=>{if(isActive())void Promise.resolve(onToken(part.token)).catch(()=>{if(isActive())status.textContent='Wallet unavailable. Try again.'})};actions.append(receive);}
     const copy=node('button','Copy token','text-button');copy.type='button';copy.onclick=()=>{if(isActive())void Promise.resolve().then(()=>{if(isActive())return copyText(part.token)}).then(()=>{if(isActive())status.textContent='Copied · Not checked'}).catch(()=>{if(isActive())status.textContent='Show the token to copy it.'})};actions.append(copy);
@@ -62,7 +63,7 @@ export async function renderCashuContent(text,{document:doc=globalThis.document,
 const NOTE_LABEL = 'Sender-reported; not verified.';
 /** A readable payment note, deliberately neither a proof nor an order-paid event. */
 export function formatPaymentNote(receipt) {
-  if (!receipt || !['lightning','melt'].includes(receipt.type) || receipt.state !== 'complete' || !/^[1-9]\d{0,19}$/.test(String(receipt.amount))) throw new Error('Choose a completed Lightning payment.');
+  if (!receipt || isTestMint(receipt.mint||'') || !['lightning','melt'].includes(receipt.type) || receipt.state !== 'complete' || !/^[1-9]\d{0,19}$/.test(String(receipt.amount))) throw new Error('Choose a completed Lightning payment.');
   const time = receipt.createdAt, milliseconds = time > 1e12 ? time : time * 1000;
   if (!Number.isSafeInteger(time) || milliseconds < 0 || milliseconds > 253402300799999) throw new Error('This payment date is unavailable.');
   return `Lightning payment\nAmount: ${receipt.amount} sats\nDate: ${new Date(milliseconds).toISOString()}\n${NOTE_LABEL}`;

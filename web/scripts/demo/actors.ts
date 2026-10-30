@@ -6,21 +6,29 @@ import {DEMO_SCENARIOS,simulationAt} from './simulation.ts';
 import {persistentVaultBackend} from './state.ts';
 import {demoReply} from './replies.ts';
 import {demoListingDraft,DEMO_RENEW_AFTER} from './listings.ts';
+import {createTestMoney,TEST_MINT} from './test-money.ts';
+import {join} from 'node:path';
+import {localTestMint} from '../../src/wallet/mints.ts';
 import {privateRelayUrls} from '../../src/messaging/transport.ts';
 
 type Client = ReturnType<typeof createMessaging>;
-type Kind = 'delivery'|'ride';
+type Kind = 'product'|'delivery'|'ride';
+type DemoMoney = {validatePayment?:(token:string,amount:string)=>void;grant:(id:string,amount?:string)=>Promise<{token:string;mint:string;amount:string;unit:'sat'}>;redeem:(id:string,token:string,amount:string)=>Promise<unknown>;close:()=>Promise<void>};
 const now = () => Math.floor(Date.now()/1000);
 
 /** Real signed listings, private orders and NDR chat; only the journeys are simulated. */
-export async function startDemoActors({relay,publicRelays,origin,durationMs=120000,model='',tickMs=2000,stateDir,password,modelReady=()=>true}:{relay?:string;publicRelays?:string[];origin:string;durationMs?:number;model?:string;tickMs?:number;stateDir?:string;password?:string;modelReady?:()=>boolean}) {
+export async function startDemoActors({relay,publicRelays,origin,durationMs=120000,model='',tickMs=2000,stateDir,password,modelReady=()=>true,moneyFactory,clockMs=Date.now,mintUrl=TEST_MINT}:{relay?:string;publicRelays?:string[];origin:string;durationMs?:number;model?:string;tickMs?:number;stateDir?:string;password?:string;modelReady?:()=>boolean;moneyFactory?:(name:string,vault:any)=>Promise<DemoMoney>;clockMs?:()=>number;mintUrl?:string}) {
   const publicMode=publicRelays!==undefined;
   if(publicMode&&(relay||!stateDir||new URL(origin).origin!=='https://market.iris.to'))throw new Error('Public demos require their own persistent state and Market origin.');
   const relays=publicMode?privateRelayUrls(publicRelays):[relay!];
   if(publicMode&&relays.some(value=>new URL(value).protocol!=='wss:'))throw new Error('Public demos require secure public relays.');
   if(!publicMode&&!/^ws:\/\/127\.0\.0\.1:\d+$/.test(relay??''))throw new Error('Local demo actors require a loopback relay.');
   if(stateDir&&(!password||password.length<8))throw new Error('Persistent demos require a vault password.');
+  if(publicMode&&mintUrl!==TEST_MINT)throw new Error('Public demos require the public test mint.');
+  if(!publicMode&&!moneyFactory)localTestMint(mintUrl);
+  const developerMint=!publicMode&&mintUrl!==TEST_MINT?localTestMint(mintUrl):undefined;
   const vaults=[];
+  const monies:DemoMoney[]=[];
   const clients:Client[]=[], journeys=new Map(), answered=new Set<string>(), replyTimes=new Map<string,number>();
   const abort=new AbortController();let closing=false,busy=false,replyBusy=false;
   const replies:Array<{client:Client;peer:string;text:string;context:any;role:string}>=[];
@@ -30,20 +38,25 @@ export async function startDemoActors({relay,publicRelays,origin,durationMs=1200
   async function actor(name:string) {
     let row:VaultRow|undefined;
     const vault=createVault({backend:stateDir?await persistentVaultBackend(stateDir,name.replaceAll(' ','-')+'.json'):{read:async()=>structuredClone(row),write:async value=>{row=structuredClone(value);}}});
-    vaults.push(vault);const client=createMessaging({getRelays:()=>relays,vault});
+    vaults.push(vault);const client=createMessaging({getRelays:()=>relays,vault,developerMint});
     clients.push(client);if((await vault.status()).exists){await client.restore();await client.unlock(password);}else {await client.createAccount({password:stateDir?password:undefined});if(!publicMode)await client.updateProfile({name});}return client;
   }
   const shop=await actor('Demo shop'),drone=await actor('Demo drone'),driver=await actor('Demo driver');
-  const sellers=[{kind:'delivery' as Kind,client:shop,courier:drone,title:'Demo parcel · drone delivery',id:'demo-drone-delivery'},
-    {kind:'ride' as Kind,client:driver,courier:driver,title:'Demo ride · Helsinki',id:'demo-ride'}];
+  const sellers=[{kind:'product' as Kind,client:shop,courier:shop,title:'Demo imaginary parcel',id:'demo-drone-delivery',price:'16'},
+    {kind:'delivery' as Kind,client:drone,courier:drone,title:'Demo courier · Helsinki',id:'demo-courier',price:'8'},
+    {kind:'ride' as Kind,client:driver,courier:driver,title:'Demo ride · Helsinki',id:'demo-ride',price:'8'}];
+  for(const [index,name] of ['shop','drone','driver'].entries())monies.push(moneyFactory?await moneyFactory(name,vaults[index]):await createTestMoney({mintUrl,directory:stateDir?join(stateDir,name+'-money'):undefined,password:password??'',vault:vaults[index]}));
+  const granted=new Set<string>(),paymentRetries=new Map<string,{attempt:number;nextAt:number}>();
   const saved=await vaults[0].get('demo/runtime');
+  for(const id of saved?.granted??[])granted.add(id);
+  for(const [id,value] of (saved?.paymentRetries??[]).slice(0,8))if(typeof id==='string'&&Number.isFinite(value?.nextAt)&&Number.isFinite(value?.attempt))paymentRetries.set(id,value);
   for(const id of saved?.answered??[])answered.add(id);
   for(const [key,time] of saved?.replyTimes??[])if(time>now()-60)replyTimes.set(key,time);
   for(const item of saved?.replies??[]){const client=clients[item.actor];if(client)replies.push({...item,client});}
-  for(const item of saved?.journeys??[]){const seller=sellers.find(value=>value.kind===item.kind);if(seller&&Number.isFinite(item.start))journeys.set(item.id,{seller,start:item.start,stage:item.stage});}
+  for(const item of saved?.journeys??[]){const seller=sellers.find(value=>value.kind===item.kind);if(seller&&seller.kind!=='product'&&seller.client.state().orders.some(order=>order.id===item.id&&order.seller===seller.client.state().ownerPubkey&&order.payment?.status==='received'&&!['cancelled','delivered'].includes(order.status))&&Number.isFinite(item.start))journeys.set(item.id,{seller,start:item.start,stage:item.stage});}
   let persistedRuntime=JSON.stringify(saved??null);
   const persist=()=>{
-    const value={answered:[...answered].slice(-2000),replyTimes:[...replyTimes].filter(([,time])=>time>now()-60).slice(-500),replies:replies.slice(0,8).map(({client,...item})=>({...item,actor:clients.indexOf(client)})),journeys:[...journeys].slice(0,8).map(([id,item])=>({id,kind:item.seller.kind,start:item.start,stage:item.stage}))};
+    const value={paymentRetries:[...paymentRetries].slice(0,8),granted:[...granted].slice(-2000),answered:[...answered].slice(-2000),replyTimes:[...replyTimes].filter(([,time])=>time>now()-60).slice(-500),replies:replies.slice(0,8).map(({client,...item})=>({...item,actor:clients.indexOf(client)})),journeys:[...journeys].slice(0,8).map(([id,item])=>({id,kind:item.seller.kind,start:item.start,stage:item.stage}))};
     const encoded=JSON.stringify(value);if(encoded===persistedRuntime)return Promise.resolve();
     persistedRuntime=encoded;return vaults[0].put('demo/runtime',value).catch(error=>{persistedRuntime='';throw error;});
   };
@@ -54,7 +67,7 @@ export async function startDemoActors({relay,publicRelays,origin,durationMs=1200
   try {
   if(publicMode)for(const [index,client] of clients.entries()) {
     const name=['Demo shop','Demo drone','Demo driver'][index];
-    await client.publishEvent({kind:0,created_at:now(),tags:[],content:JSON.stringify({name,display_name:name,bot:true,website:origin,picture:`${origin}/demo-${index===2?'ride':'delivery'}.svg`,about:'Automated Iris Market transport demo. Free simulated orders and local AI chat. No real products, journeys, deliveries or payments. Try it at https://market.iris.to.'})});
+    await client.publishEvent({kind:0,created_at:now(),tags:[],content:JSON.stringify({name,display_name:name,bot:true,website:origin,picture:`${origin}/demo-${index===2?'ride':'delivery'}.svg`,about:'Automated Iris Market transport demo. Simulated products and journeys with test Cashu payments. Test sats have no monetary value. Try it at https://market.iris.to.'})});
   }
   for(const seller of sellers) {
     const author=seller.client.state().ownerPubkey!;
@@ -80,24 +93,42 @@ export async function startDemoActors({relay,publicRelays,origin,durationMs=1200
         processing={client:seller.client,id:order.id};
         if(order.seller!==seller.client.state().ownerPubkey||order.items[0]?.id!==`${order.seller}:${seller.id}`)continue;
         if(['cancelled','delivered'].includes(order.status)){journeys.delete(order.id);continue;}
-        if(publicMode&&order.status==='requested'&&(Number(order.items[0].price)!==0||order.items[0].quantity!==1)){
-          await seller.client.updateOrder(order.id,{status:'cancelled'});
-          await speak(seller.client,order.buyer,'This demo is free. Please request one demo at its listed price of zero.',order.id);continue;
+        if(order.items.length!==1||order.items[0].price!==seller.price||order.items[0].currency!=='TESTSAT'||order.items[0].quantity!==1){
+          if(order.status==='requested'){await seller.client.updateOrder(order.id,{status:'cancelled'});await speak(seller.client,order.buyer,'Please request one demo at its listed test-sat price.',order.id);}continue;
         }
+        if(order.status==='requested'){
+          if(seller.kind==='delivery'&&!order.deliveryRequest){await seller.client.updateOrder(order.id,{status:'cancelled'});await speak(seller.client,order.buyer,'Choose pickup and destination when requesting this courier.',order.id);continue;}
+          const money=monies[clients.indexOf(seller.client)];
+          if(!order.payment){await seller.client.updateOrder(order.id,{payment:{mint:mintUrl,amount:seller.price,unit:'sat',status:'requested'}});}
+          if(!granted.has(order.id)){
+            const outstanding=clients.flatMap(client=>client.state().orders).filter(item=>item.seller===clients.find(client=>client.state().ownerPubkey===item.seller)?.state().ownerPubkey&&item.status==='requested'&&granted.has(item.id));
+            if(outstanding.length>=8)continue;
+            const grant=await money.grant(order.id,'128');
+            await speak(seller.client,order.buyer,`Test money only — no monetary value. Receive these 128 test sats in your Cashu wallet, then pay this order's ${seller.price} test sats: ${grant.token}`,order.id);
+            granted.add(order.id);await persist();
+          }
+          if(seller.client.state().orders.find(item=>item.id===order.id)?.payment?.status!=='received')continue;
+          if(seller.kind!=='product'&&(journeys.size>=8||(publicMode&&[...journeys].some(([id,item])=>item.seller.client.state().orders.find(value=>value.id===id)?.buyer===order.buyer))))continue;
+          await seller.client.updateOrder(order.id,{status:'accepted'});
+        }
+        if(seller.kind==='product'){
+          if(!order.shipment.stops.length){const pickup=DEMO_SCENARIOS.delivery.pickup;await seller.client.updateOrder(order.id,{shipment:{stops:[{id:pickup.id,label:'Collect imaginary parcel',address:pickup.name,coordinates:pickup.coordinates,status:'pending'}]}});await speak(seller.client,order.buyer,'Test payment received. Your imaginary parcel is ready for collection. Choose Arrange delivery to hire a courier separately.',order.id);}continue;
+        }
+        if(order.payment?.status!=='received')continue;
         let journey=journeys.get(order.id);
         if(!journey) {
           if(journeys.size>=8)continue;
           if(publicMode&&[...journeys].some(([id,item])=>item.seller.client.state().orders.find(value=>value.id===id)?.buyer===order.buyer))continue;
           if(order.status==='requested')await seller.client.updateOrder(order.id,{status:'accepted'});
-          const scenario=DEMO_SCENARIOS[seller.kind], frame=simulationAt(scenario,0,durationMs);
+          const scenario=scenarioFor(seller.kind,order), frame=simulationAt(scenario,0,durationMs);
           const existing=order.shipment.stops.length>0;
           if(!existing)await seller.client.updateOrder(order.id,{shipment:{eta:now()+Math.ceil(durationMs/1000),stops:frame.stops.map(stop=>({id:stop.id,label:stop.kind==='pickup'?(seller.kind==='ride'?'Pick up passenger':'Collect parcel'):(seller.kind==='ride'?'Drop off passenger':'Deliver parcel'),address:stop.name,coordinates:stop.coordinates,status:'pending',courierPubkey:seller.courier.state().ownerPubkey}))}});
-          journey={seller,start:existing&&order.shipment.eta?(order.shipment.eta*1000-durationMs):Date.now(),stage:existing?'restored':''};journeys.set(order.id,journey);await persist();
-          if(!existing)await speak(seller.client,order.buyer,seller.kind==='ride'?'Demo ride accepted. Your simulated driver is on the way. Nothing is booked or charged.':'Demo order accepted. The simulated drone will collect your pretend parcel. Nothing is bought or charged.',order.id);
+          journey={seller,start:existing&&order.shipment.eta?(order.shipment.eta*1000-durationMs):clockMs(),stage:existing?'restored':''};journeys.set(order.id,journey);await persist();
+          if(!existing)await speak(seller.client,order.buyer,seller.kind==='ride'?'Test payment received. Demo ride accepted. Your simulated driver is on the way.':'Test payment received. The simulated courier will collect your imaginary parcel.',order.id);
         }
         const courier=seller.courier, courierOrder=courier.state().orders.find(item=>item.id===order.id);
         if(!courierOrder?.routeId)continue;
-        const frame=simulationAt(DEMO_SCENARIOS[seller.kind],Date.now()-journey.start,durationMs);
+        const frame=simulationAt(scenarioFor(seller.kind,order),clockMs()-journey.start,durationMs);
         for(const stop of frame.stops) {
           const current=courier.state().orders.find(item=>item.id===order.id)?.shipment.stops.find(item=>item.id===stop.id);
           if(current&&['pending','arrived','completed'].indexOf(current.status)<['pending','arrived','completed'].indexOf(stop.status))await courier.updateOrder(order.id,{stopId:stop.id,status:stop.status});
@@ -123,6 +154,32 @@ export async function startDemoActors({relay,publicRelays,origin,durationMs=1200
         if(botKeys.has(thread.pubkey))continue;
         for(const message of thread.messages) {
           if(message.mine||message.system||answered.has(message.id))continue;
+          const token=message.text.match(/cashu[AB][A-Za-z0-9_-]+/);
+          if(token){
+            const order=client.state().orders.find(value=>value.id===message.context?.order_id&&value.buyer===thread.pubkey&&value.seller===client.state().ownerPubkey);
+            if(!order)continue;
+            if(order.payment?.status==='received'||['cancelled','delivered'].includes(order.status)){paymentRetries.delete(message.id);answered.add(message.id);continue;}
+            if(order.payment?.status!=='requested'||order.status!=='requested')continue;
+            const money=monies[clients.indexOf(client)],retry=paymentRetries.get(message.id);
+            if((retry&&retry.nextAt>Date.now())||(!retry&&paymentRetries.size>=8))continue;
+            try{money.validatePayment?.(token[0],order.payment.amount);}catch{
+              paymentRetries.delete(message.id);answered.add(message.id);await persist();
+              await speak(client,thread.pubkey,'That test payment could not be verified. Use the requested mint and exact amount.',order.id);continue;
+            }
+            try{
+              await money.redeem(order.id,token[0],order.payment.amount);
+              await client.updateOrder(order.id,{payment:{...order.payment,status:'received'}});
+              paymentRetries.delete(message.id);answered.add(message.id);await persist();
+              await speak(client,thread.pubkey,'Test Cashu payment verified and received.',order.id);
+            }catch{
+              // Mint swaps and the received-order projection each have durable,
+              // idempotent recovery. Never consume the message on transient failure.
+              if(client.state().orders.find(value=>value.id===order.id)?.payment?.status==='received'){paymentRetries.delete(message.id);answered.add(message.id);}
+              else {const attempt=Math.min(8,(retry?.attempt??0)+1);paymentRetries.set(message.id,{attempt,nextAt:Date.now()+Math.min(30000,250*2**attempt)});}
+              await persist();
+            }
+            continue;
+          }
           if(publicMode&&(message.createdAt<now()-600||message.createdAt>now()+60))continue;
           if(publicMode&&(replyTimes.get(thread.pubkey)??0)>now()-15){answered.add(message.id);continue;}
           if(replies.length<8){
@@ -132,6 +189,7 @@ export async function startDemoActors({relay,publicRelays,origin,durationMs=1200
           }
         }
       }
+      for(const id of paymentRetries.keys())if(!clients.some(client=>client.state().conversations.some(thread=>thread.messages.some(message=>message.id===id))))paymentRetries.delete(id);
       while(answered.size>2000)answered.delete(answered.values().next().value!);
       for(const [key,time] of replyTimes)if(time<now()-60)replyTimes.delete(key);
       await persist();void answer();
@@ -149,13 +207,19 @@ export async function startDemoActors({relay,publicRelays,origin,durationMs=1200
     try {while(replies.length&&!closing) {
       const item=replies[0]!;
       const replyStarted=Date.now();
-      const result=await demoReply({model:modelReady()?model:'',prompt:`You are the ${item.role}. Answer this visitor's message about the simulated journey: ${item.text}`,fallback:'This is a simulation. Request a free demo order to follow the journey on the map. No payment or real delivery is involved.',signal:abort.signal});
+      const result=await demoReply({model:modelReady()?model:'',prompt:`You are the ${item.role}. Answer this visitor's message about the simulated journey: ${item.text}`,fallback:'This is a simulation. Buy the imaginary parcel, then arrange a separate courier, or request a demo ride. Payments use test Cashu sats with no monetary value.',signal:abort.signal});
       replyStatistics[result.source]++;replyStatistics.lastSource=result.source;replyStatistics.lastLatencyMs=Date.now()-replyStarted;
       if(!closing){await item.client.send(item.peer,result.text,item.context);replies.shift();await persist();}
     }}catch(error){if(!closing){errors.push(error instanceof Error?error.message:String(error));if(errors.length>10)errors.shift();}}finally{replyBusy=false;}
   }
   const timer=setInterval(()=>void tick(),tickMs);await tick();
   return {listings,clients,errors,replyStats:()=>({...replyStatistics}),active:()=>journeys.size,
-    async close(){closing=true;clearInterval(timer);abort.abort();while(busy||replyBusy||publishing)await new Promise(resolve=>setTimeout(resolve,10));await persist();await Promise.all(clients.map(client=>client.destroy()));}};
-  }catch(error){abort.abort();await Promise.allSettled(clients.map(client=>client.destroy()));throw error;}
+    async close(){closing=true;clearInterval(timer);abort.abort();while(busy||replyBusy||publishing)await new Promise(resolve=>setTimeout(resolve,10));await persist();await Promise.all(monies.map(money=>money.close()));await Promise.all(clients.map(client=>client.destroy()));}};
+  }catch(error){abort.abort();await Promise.allSettled(monies.map(money=>money.close()));await Promise.allSettled(clients.map(client=>client.destroy()));throw error;}
+}
+
+function scenarioFor(kind:'delivery'|'ride',order:any) {
+  const base=DEMO_SCENARIOS[kind],request=order.deliveryRequest;
+  if(!request)return base;
+  return {...base,pickup:{...base.pickup,name:request.pickup.address,coordinates:request.pickup.coordinates??base.pickup.coordinates},dropoff:{...base.dropoff,name:request.destination.address,coordinates:request.destination.coordinates??base.dropoff.coordinates}};
 }

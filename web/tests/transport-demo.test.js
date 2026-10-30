@@ -43,3 +43,8 @@ test('deadline and caller cancellation settle even if an injected transport igno
   assert.equal((await demoReply({model:'local',prompt:'demo',fallback:'Continue',timeoutMs:5,fetch:hung})).source,'scripted');
   const controller=new AbortController();const pending=demoReply({model:'local',prompt:'demo',fallback:'Continue',signal:controller.signal,fetch:hung});controller.abort();assert.equal((await pending).source,'scripted');
 });
+
+test('Cashu tokens never enter the local model prompt',async()=>{
+  let body;await demoReply({model:'local',prompt:'pay cashuASECRETtoken now',fallback:'Demo',fetch:async(url,options)=>{body=options.body;return Response.json({message:{content:'Test money has no monetary value.'}});}});
+  assert(!body.includes('cashuASECRETtoken'));assert(body.includes('[payment token omitted]'));
+});

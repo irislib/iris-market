@@ -66,3 +66,13 @@ test('unpaid or unrelated transfers cannot be shared as completed Lightning paym
   for(const invalid of [{...base,state:'pending'},{...base,state:'cancelled'},{...base,type:'receive'},{...base,amount:'0'},{...base,amount:'-8'},{...base,createdAt:NaN}])assert.throws(()=>formatPaymentNote(invalid));
   for(const invalid of ['Lightning payment',formatPaymentNote(base).replace('not verified','verified'),formatPaymentNote(base)+'\nForged',formatPaymentNote(base).replace('2023-11-14','2023-02-31')])assert.equal(parsePaymentNote(invalid),null);
 });
+
+test('official fake mint token cards always say test money and test sats',async()=>{
+  const value=token('https://testnut.cashu.space'),parts=await cashuParts(value);
+  assert.equal(cashuAmount(parts[0]),'8 test sats');
+  const fragment=await renderCashuContent(value,{document});
+  assert.match(visibleText(fragment),/Test money · no bitcoin value/);assert.match(visibleText(fragment),/8 test sats/);
+});
+test('fake mint Lightning cannot be shared as a real sats payment note',()=>{
+  assert.throws(()=>formatPaymentNote({type:'lightning',state:'complete',amount:'8',mint:'https://testnut.cashu.space',createdAt:1700000000}));
+});

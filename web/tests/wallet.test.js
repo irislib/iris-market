@@ -279,3 +279,31 @@ test('actual SDK reclaims unpaid Lightning with exact fees after a lost reclaim 
   assert.ok(BigInt(completed.fee) > 0n);
   assert.equal(BigInt(restored.state().balance), before - BigInt(completed.fee));
 });
+
+test('order payment send and receive are idempotent across restart and reject changed bindings', async () => {
+  const {wallet,service,backend}=make(); await wallet.enable(); await wallet.receive(token(64));
+  const payment=await wallet.send({amount:'8',maxFee:'0',idempotencyKey:'order-payment:one'});
+  const count=service.calls.swaps;await wallet.lock();
+  const restored=make(service,backend).wallet;await restored.restore();
+  const repeat=await restored.send({amount:'8',maxFee:'0',idempotencyKey:'order-payment:one'});
+  assert.equal(repeat.token,payment.token);assert.equal(service.calls.swaps,count);
+  await assert.rejects(restored.send({amount:'16',maxFee:'0',idempotencyKey:'order-payment:one'}));
+  const receiver=make(service).wallet;await receiver.enable();
+  const receipt=await receiver.receive(payment.token,{operationId:'order-receipt:one'});
+  const swaps=service.calls.swaps;
+  assert.equal((await receiver.receive(payment.token,{operationId:'order-receipt:one'})).id,receipt.id);
+  assert.equal(service.calls.swaps,swaps);
+  await assert.rejects(receiver.receive(token(8),{operationId:'order-receipt:one'}));
+  await assert.rejects(receiver.receive(payment.token,{operationId:'order-receipt:two'}));
+});
+
+test('HTTP local mint requires an explicit exact developer allowlist and survives journal restore',async()=>{
+  const local='http://127.0.0.1:3338',service=mintService(),backend=memoryBackend();
+  assert.throws(()=>normalizeMint(local));
+  assert.throws(()=>createCashuWallet({vault:createVault({backend:memoryBackend()}),allowedMints:[local]}));
+  for(const unsafe of ['http://localhost:3338','http://127.0.0.1:3338/path','http://127.0.0.1:3338?x=1','http://192.168.0.1:3338','https://example.com'])assert.throws(()=>createCashuWallet({developerMint:unsafe}));
+  const options={vault:createVault({backend}),allowedMints:[local],developerMint:local,sdkFactory:service.factory};
+  const wallet=createCashuWallet(options);await wallet.enable({mintUrl:local});await wallet.receive(token(64,local));
+  assert.equal(wallet.state().balance,'64');await assert.rejects(wallet.addMint('http://127.0.0.1:3339'));
+  await wallet.lock();const restored=createCashuWallet({...options,vault:createVault({backend})});await restored.restore();assert.equal(restored.state().balance,'64');await restored.destroy();
+});

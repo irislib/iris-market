@@ -201,7 +201,7 @@ function displayAmount(value, currency, locale, original = false) {
   if (original && String(value).replace(/[^0-9]/g, '').replace(/^0+/, '').length > 15) return `${value} ${currency}`
   if (currency === 'SATS' || currency === 'BTC' || currency.length !== 3) {
     const digits = original ? fractionDigits(value) : currency === 'BTC' ? 8 : 0
-    return `${new Intl.NumberFormat(locale, { maximumFractionDigits: digits }).format(number)} ${currency === 'SATS' ? 'sats' : currency}`
+    return `${new Intl.NumberFormat(locale, { maximumFractionDigits: digits }).format(number)} ${currency === 'SATS' ? 'sats' : currency === 'TESTSAT' ? 'test sats' : currency}`
   }
   try {
     const baseDigits = new Intl.NumberFormat(locale, { style: 'currency', currency }).resolvedOptions().maximumFractionDigits
@@ -217,6 +217,7 @@ export function formatPrice(listing: PriceListing, { preferredCurrency = DEFAULT
   const value = numeric(listing.price)
   if (value === 0) return { ...blank, primary: 'Free', converted: 0, currency: preferred }
   const original = displayAmount(listing.price, currency, locale, true)
+  if(currency==='TESTSAT')return { ...blank, primary: original }
   const conversion = convert(listing.price, currency, preferred, rates, { now })
   if (!conversion) return { ...blank, primary: original }
   const changed = currency !== preferred

@@ -16,11 +16,12 @@ test('private buyer, bot identities, progressed journey and replies survive full
  const password='test-only-password';
  try{
   relay=await startDemoRelay(0,{stateDir:directory});
-  const options={relay:relay.url,origin:'http://127.0.0.1:4191',stateDir:directory,password,durationMs:10000,tickMs:70};
+  const options={relay:relay.url,origin:'http://127.0.0.1:4191',stateDir:directory,password,durationMs:10000,tickMs:70,moneyFactory:async()=>({grant:async()=>({token:'cashuATEST',mint:'https://testnut.cashu.space',amount:'128',unit:'sat'}),redeem:async()=>{},close:async()=>{}})};
   bots=await startDemoActors(options);const identities=bots.clients.map(client=>client.state().ownerPubkey);
   const openBuyer=()=>createMessaging({getRelays:()=>[options.relay],vault:createVault({backend:{read:async()=>structuredClone(row),write:async value=>{row=structuredClone(value);}}})});
   buyer=openBuyer();await buyer.createAccount();await until(()=>buyer.state().canSend);const owner=buyer.state().ownerPubkey;
-  const order=await buyer.requestOrder({id:`${identities[2]}:demo-ride`,author:identities[2],title:'Demo ride',side:'offer',price:'0',currency:'EUR'});
+  const order=await buyer.requestOrder({id:`${identities[2]}:demo-ride`,author:identities[2],title:'Demo ride',side:'offer',price:'8',currency:'TESTSAT'});
+  await until(()=>buyer.state().orders.find(item=>item.id===order.id)?.payment);await buyer.send(order.seller,'cashuAPAY8',orderContext(order.id));
   await until(()=>buyer.state().orders.find(item=>item.id===order.id)?.shipment.stops[0]?.status==='completed');
   await buyer.send(identities[2],'Is this a simulation?',orderContext(order.id));
   const replies=()=>buyer.state().conversations.flatMap(thread=>thread.messages).filter(message=>!message.mine&&message.text.startsWith('Simulated update:'));

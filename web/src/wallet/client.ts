@@ -1,4 +1,5 @@
 import { createVault, indexedDbVaultBackend } from '../messaging/vault.ts';
+import {localTestMint} from './mints.ts';
 import { encryptBackup, decryptBackup } from './backup.ts';
 import { Amount, OutputData, createSdk, json, hydrateProofs, getTokenMetadata, getEncodedToken, serializeSwapPreview, deserializeSwapPreview, packPreview, unpackPreview, quoteFromJson, restoreOutputs } from './sdk.ts';
 import type { Wallet, SerializedProof, SerializedSwapPreview, SerializedOutputData } from '@cashu/cashu-ts';
@@ -11,8 +12,8 @@ interface StoredPreview {quote:StoredQuote;inputs?:SerializedProof[];outputData:
 interface WalletOperation {id:string;type:OperationType;mint:string;amount:string;fee:string;state:OperationState;createdAt:number;error?:string;phase?:string;invoiceId?:string;parentPaymentId?:string;reclaimId?:string;capacityProofs?:number;capacityBytes?:number;swap?:SerializedSwapPreview;preview?:StoredPreview;quote?:StoredQuote;meltInputs?:SerializedProof[];token?:string}
 interface MintRecord {url:string;proofs:{proof:SerializedProof;state:ProofState;operationId?:string}[];counters:Record<string,number>}
 interface WalletData {schema:1;seed:string;selectedMint:string;mints:MintRecord[];ops:WalletOperation[];invoices:{id:string;mint:string;amount:string;state:string;quote:StoredQuote}[];quotes:{id:string;mint:string;quote:StoredQuote}[];reviewRequired?:boolean}
-export interface WalletState {status:string;busy:boolean;error:string;password:boolean;selectedMint:string;balance:string;reviewRequired:boolean;mints:{url:string;supported:boolean;balance:string;reserved:string}[];invoices:{id:string;mint:string;request:string;amount:string;state:string;expiresAt:number}[];history:{id:string;mint:string;type:OperationType;amount:string;fee:string;state:OperationState;createdAt:number}[];pending:{id:string;type:OperationType;amount:string;state:'pending';canReclaim:boolean;error:string}[]}
-interface WalletOptions {onChange?:(state:WalletState)=>void;vault?:Vault;sdkFactory?:typeof createSdk;allowedMints?:string[]}
+export interface WalletState {status:string;busy:boolean;error:string;password:boolean;selectedMint:string;balance:string;reviewRequired:boolean;mints:{url:string;supported:boolean;balance:string;reserved:string}[];invoices:{id:string;mint:string;request:string;amount:string;state:string;expiresAt:number}[];history:{id:string;mint:string;type:OperationType;amount:string;fee:string;state:OperationState;createdAt:number}[];pending:{id:string;mint:string;type:OperationType;amount:string;state:'pending';canReclaim:boolean;error:string}[]}
+interface WalletOptions {onChange?:(state:WalletState)=>void;vault?:Vault;sdkFactory?:typeof createSdk;allowedMints?:string[];developerMint?:string}
 
 export const DEFAULT_MINT = 'https://mint.coinos.io';
 const MAX_AMOUNT = 2_100_000_000_000_000n;
@@ -31,18 +32,18 @@ const hex = bytes => [...bytes].map(byte => byte.toString(16).padStart(2, '0')).
 const fromHex = (text:string) => Uint8Array.from(text.match(/../g), part => parseInt(part, 16));
 const id = () => crypto.randomUUID();
 const now = () => Math.floor(Date.now() / 1000);
-export function normalizeMint(value) {
+export function normalizeMint(value, developerMint?:string) {
   let url;
   try { url = new URL(value); } catch { fail('Enter a valid HTTPS mint address.'); }
-  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) fail('Use an HTTPS mint address without credentials, a query or a fragment.');
+  if ((url.protocol !== 'https:' && !(developerMint && localTestMint(developerMint) === url.href.replace(/\/+$/, ''))) || url.username || url.password || url.search || url.hash) fail('Use an HTTPS mint address without credentials, a query or a fragment.');
   return url.href.replace(/\/+$/, '');
 }
-function validateData(raw:unknown):WalletData {
+function validateData(raw:unknown, developerMint?:string):WalletData {
   const value=raw as WalletData;
   if (value?.schema !== 1 || !/^[a-f0-9]{128}$/.test(value.seed) || !Array.isArray(value.mints) || value.mints.length > 16 || !Array.isArray(value.ops) || value.ops.length > 1024 || !Array.isArray(value.invoices) || value.invoices.length > 512 || !Array.isArray(value.quotes) || value.quotes.length > 128) fail('Unsupported wallet backup.');
   const urls = new Set();
   for (const mint of value.mints) {
-    if (normalizeMint(mint.url) !== mint.url || urls.has(mint.url) || !Array.isArray(mint.proofs) || mint.proofs.length > 8192 || !mint.counters || typeof mint.counters !== 'object') fail('Invalid wallet data.');
+    if (normalizeMint(mint.url,developerMint) !== mint.url || urls.has(mint.url) || !Array.isArray(mint.proofs) || mint.proofs.length > 8192 || !mint.counters || typeof mint.counters !== 'object') fail('Invalid wallet data.');
     urls.add(mint.url);
     for (const counter of Object.values(mint.counters)) if (!Number.isSafeInteger(counter) || counter < 0) fail('Invalid wallet counters.');
     const secrets = new Set();
@@ -65,11 +66,14 @@ function validateData(raw:unknown):WalletData {
 }
 
 /** Independent of Nostr identity. Every money mutation journals exact outputs before contacting a mint. */
-export function createCashuWallet({ onChange = () => {}, vault = createVault({ backend: indexedDbVaultBackend(globalThis.indexedDB, 'iris-market-cashu') }), sdkFactory = createSdk, allowedMints }:WalletOptions = {}) {
+export function createCashuWallet({ onChange = () => {}, vault = createVault({ backend: indexedDbVaultBackend(globalThis.indexedDB, 'iris-market-cashu') }), sdkFactory = createSdk, allowedMints,developerMint }:WalletOptions = {}) {
   let data:WalletData, status = 'disabled', error = '', password = false, busy = false, destroyed = false;
   let queue = Promise.resolve(), activeOperationId;
   const wallets = new Map<string,Wallet>(), seeds = new Set<Uint8Array>();
-  const supported = allowedMints ? new Set(allowedMints.map(normalizeMint)) : null;
+  if(developerMint)developerMint=localTestMint(developerMint);
+  const normalize = value=>normalizeMint(value,developerMint);
+  const validate = value=>validateData(value,developerMint);
+  const supported = allowedMints ? new Set(allowedMints.map(normalize)) : null;
   const isSupported = url => !supported || supported.has(url);
   const requireSupported = url => { if (!isSupported(url)) fail('This mint is not supported by this Market website. Its saved wallet data is preserved.'); };
   const publicState = ():WalletState => {
@@ -78,7 +82,7 @@ export function createCashuWallet({ onChange = () => {}, vault = createVault({ b
       reviewRequired: !!data?.reviewRequired,
       invoices: (data?.invoices || []).map(invoice => ({ id: invoice.id, mint: invoice.mint, request: invoice.quote.request, amount: invoice.amount, state: invoice.state, expiresAt: invoice.quote.expiry })),
       history: (data?.ops || []).filter(operation => !operation.parentPaymentId).map(operation => ({ id: operation.id, mint: operation.mint, type: operation.type, amount: operation.amount, fee: operation.fee, state: operation.state, createdAt: operation.createdAt })).reverse(),
-      pending: (data?.ops || []).filter(operation => operation.state === 'pending' && !operation.parentPaymentId).map(operation => ({ id: operation.id, type: operation.type, amount: operation.amount, state: 'pending', canReclaim: operation.type === 'lightning' && ['melt-ready', 'melt'].includes(operation.phase) && !operation.reclaimId, error: operation.error || 'Check the mint to finish this operation.' })) };
+      pending: (data?.ops || []).filter(operation => operation.state === 'pending' && !operation.parentPaymentId).map(operation => ({ id: operation.id, mint:operation.mint, type: operation.type, amount: operation.amount, state: 'pending', canReclaim: operation.type === 'lightning' && ['melt-ready', 'melt'].includes(operation.phase) && !operation.reclaimId, error: operation.error || 'Check the mint to finish this operation.' })) };
   };
   const emit = () => { if (!destroyed) onChange(publicState()); };
   const assertReady = () => { if (status !== 'ready' || !data) fail('Unlock your wallet first.'); };
@@ -109,7 +113,7 @@ export function createCashuWallet({ onChange = () => {}, vault = createVault({ b
       owner.capacityProofs = Math.max(0, (owner.capacityProofs || 0) - addedProofs);
       owner.capacityBytes = Math.max(0, (owner.capacityBytes || 0) - Math.max(0, bytesUsed(next) - bytesUsed(data)));
     }
-    validateData(next); assertCapacity(next); await vault.put('wallet', next); data = next; emit();
+    validate(next); assertCapacity(next); await vault.put('wallet', next); data = next; emit();
   };
   const mintData = url => { const mint = data.mints.find(mint => mint.url === url); if (!mint) fail('Add and select this mint before using it.'); return mint; };
   const selected = () => { assertReady(); if (!data.selectedMint) fail('Select a mint first.'); return data.selectedMint; };
@@ -131,7 +135,7 @@ export function createCashuWallet({ onChange = () => {}, vault = createVault({ b
     return wallets.get(url);
   };
   const add = async url => {
-    url = normalizeMint(url); requireSupported(url);
+    url = normalize(url); requireSupported(url);
     if (!data.mints.some(mint => mint.url === url)) await commit(next => { if (next.mints.length >= 16) fail('You can add up to 16 mints.'); next.mints.push({ url, proofs: [], counters: {} }); });
     await sdk(url); return url;
   };
@@ -265,7 +269,7 @@ export function createCashuWallet({ onChange = () => {}, vault = createVault({ b
     if (typeof token !== 'string' || token.length > MAX_TOKEN || !token.startsWith('cashu')) fail('Enter a Cashu token under 256 KiB.');
     let metadata; try { metadata = getTokenMetadata(token); } catch { fail('This Cashu token is invalid.'); }
     if (metadata.unit !== 'sat') fail('Only Cashu tokens in sats are supported.');
-    integer(metadata.amount); return { mint: normalizeMint(metadata.mint), amount: metadata.amount.toString() };
+    integer(metadata.amount); return { mint: normalize(metadata.mint), amount: metadata.amount.toString() };
   };
   const sendEstimate = (wallet, amount, proofs, includeFees = false) => {
     const receiverFee = includeFees ? BigInt(wallet.getFeesToInclude(amount).toString()) : 0n;
@@ -287,18 +291,18 @@ export function createCashuWallet({ onChange = () => {}, vault = createVault({ b
   const clear = () => { for (const seed of seeds) seed.fill(0); seeds.clear(); wallets.clear(); data = undefined; vault.lock(); status = 'locked'; emit(); };
   return {
     state: publicState,
-    restore: () => serial(async () => { const stored = await vault.status(); password = stored.password; if (!stored.exists) { status = 'disabled'; return publicState(); } status = 'locked'; if (!password) { await vault.unlock(); data = validateData(await vault.get('wallet')); status = 'ready'; } return publicState(); }),
+    restore: () => serial(async () => { const stored = await vault.status(); password = stored.password; if (!stored.exists) { status = 'disabled'; return publicState(); } status = 'locked'; if (!password) { await vault.unlock(); data = validate(await vault.get('wallet')); status = 'ready'; } return publicState(); }),
     enable: ({ mintUrl = DEFAULT_MINT, password: passphrase }:{mintUrl?:string;password?:string} = {}) => serial(async () => {
       if ((await vault.status()).exists) fail('A wallet already exists on this browser. Unlock it instead.');
-      const url = normalizeMint(mintUrl); requireSupported(url); const seed = crypto.getRandomValues(new Uint8Array(64));
+      const url = normalize(mintUrl); requireSupported(url); const seed = crypto.getRandomValues(new Uint8Array(64));
       const initial:WalletData = { schema: 1, seed: hex(seed), selectedMint: url, mints: [{ url, proofs: [], counters: {} }], ops: [], invoices: [], quotes: [] }; seed.fill(0);
       await vault.create({ wallet: initial }, { password: passphrase }); data = initial; status = 'ready'; password = !!passphrase; emit(); await sdk(url); return publicState();
     }),
-    unlock: passphrase => serial(async () => { if (!await vault.unlock(passphrase)) fail('Enable a wallet first.'); data = validateData(await vault.get('wallet')); status = 'ready'; password = (await vault.status()).password; return publicState(); }),
+    unlock: passphrase => serial(async () => { if (!await vault.unlock(passphrase)) fail('Enable a wallet first.'); data = validate(await vault.get('wallet')); status = 'ready'; password = (await vault.status()).password; return publicState(); }),
     lock: () => serial(async () => { await vault.flush(); clear(); }),
     destroy: async () => { await queue; clear(); destroyed = true; },
     addMint: url => serial(async () => { assertReady(); return add(url); }),
-    selectMint: url => serial(async () => { assertReady(); url = normalizeMint(url); mintData(url); await commit(next => { next.selectedMint = url; }); return publicState(); }),
+    selectMint: url => serial(async () => { assertReady(); url = normalize(url); mintData(url); await commit(next => { next.selectedMint = url; }); return publicState(); }),
     previewReceive: token => serial(async () => {
       assertReady(); const info = tokenInfo(token);
       if (!data.mints.some(mint => mint.url === info.mint)) return { ...info, supported: isSupported(info.mint), unknownMint: true, fee: null, received: null };
@@ -306,30 +310,34 @@ export function createCashuWallet({ onChange = () => {}, vault = createVault({ b
       if (decoded.proofs.length > 2048 || fee >= BigInt(info.amount)) fail('This token does not cover its mint fee.');
       return { ...info, unknownMint: false, fee: fee.toString(), received: (BigInt(info.amount) - fee).toString() };
     }),
-    receive: token => serial(async () => {
+    receive: (token, { operationId }: {operationId?:string} = {}) => serial(async () => {
       assertReady(); const info = tokenInfo(token), wallet = await sdk(info.mint), decoded = wallet.decodeToken(token);
+      if (operationId) { const previous = data.ops.find(item => item.id === operationId); if (previous) { if (previous.type !== 'receive' || previous.mint !== info.mint || JSON.stringify(previous.swap?.inputs.map(p => [p.secret,String(p.amount),p.id,p.C,JSON.stringify(p.witness)]).sort()) !== JSON.stringify(decoded.proofs.map(p => [p.secret,String(p.amount),p.id,p.C,JSON.stringify(p.witness)]).sort())) fail('Operation identifier belongs to a different payment.'); return attempt(previous, true); } }
       if (decoded.proofs.length > 2048) fail('This token has too many proofs.');
       if (new Set(decoded.proofs.map(proof => proof.secret)).size !== decoded.proofs.length) fail('This token contains repeated proofs.');
       for (const proof of decoded.proofs) {
         if (mintData(info.mint).proofs.some(item => item.proof.secret === proof.secret)) fail('This token is already in your wallet or has been used.');
         if (data.ops.some(item => item.swap?.inputs.some(input => input.secret === proof.secret))) fail('This token has already been received or has a pending recovery.');
       }
-      const preview = await wallet.prepareSwapToReceive(decoded), record = { ...entry('receive', info.mint, preview.amount, preview.fees), swap: serializeSwapPreview(preview) };
+      const preview = await wallet.prepareSwapToReceive(decoded), record = { ...entry('receive', info.mint, preview.amount, preview.fees), ...(operationId ? {id:operationId} : {}), swap: serializeSwapPreview(preview) };
       await persistOperation(record); return attempt(record);
     }),
     previewSend: amount => serial(async () => { const url = selected(), value = integer(amount), wallet = await sdk(url), { fee } = sendEstimate(wallet, value, spendable(url)); return { amount: value.toString(), fee: fee.toString(), maxTotal: (value + fee).toString() }; }),
-    send: ({ amount, maxFee }) => serial(async () => {
+    send: ({ amount, maxFee, operationId, idempotencyKey }: {amount:unknown;maxFee:unknown;operationId?:string;idempotencyKey?:string}) => serial(async () => {
+      operationId = idempotencyKey || operationId;
       const url = selected(), value = integer(amount), limit = integer(maxFee, false), wallet = await sdk(url);
+      if (operationId) { const previous = data.ops.find(item => item.id === operationId); if (previous) { if (previous.type !== 'send' || previous.mint !== url || previous.amount !== value.toString()) fail('Operation identifier belongs to a different transfer.'); return attempt(previous, true); } }
       const preview = await wallet.prepareSwapToSend(value, spendable(url));
       if (BigInt(preview.fees.toString()) > limit) fail('The mint fee changed. Review the transfer again.');
-      const record = { ...entry('send', url, value, preview.fees), swap: serializeSwapPreview(preview) };
+      const record = { ...entry('send', url, value, preview.fees), ...(operationId ? {id:operationId} : {}), swap: serializeSwapPreview(preview) };
       await persistOperation(record); return attempt(record);
     }),
     getToken: operationId => serial(async () => { assertReady(); const record = operation(operationId); if (record.type !== 'send' || record.state !== 'complete' || !record.token) fail('This token is not ready.'); return record.token; }),
-    createInvoice: amount => serial(async () => {
+    createInvoice: (amount, { invoiceId }: {invoiceId?:string} = {}) => serial(async () => {
+      if (invoiceId) { const previous = data.invoices.find(item => item.id === invoiceId); if (previous) { if (previous.mint !== selected() || previous.amount !== integer(amount).toString()) fail('Invoice identifier belongs to a different request.'); return {id:previous.id, request:previous.quote.request, amount:previous.amount, state:previous.state, expiresAt:previous.quote.expiry}; } }
       const url = selected(), value = integer(amount), wallet = await sdk(url), quote = await wallet.createMintQuoteBolt11(value);
       if (quote.unit !== 'sat' || String(quote.amount) !== value.toString() || quote.pubkey || !quote.request || !quote.quote) fail('The mint returned a different or unsupported invoice.');
-      const record = { id: id(), mint: url, amount: value.toString(), state: quote.state, quote: json(quote), createdAt: now() };
+      const record = { id: invoiceId || id(), mint: url, amount: value.toString(), state: quote.state, quote: json(quote), createdAt: now() };
       await commit(next => { if (next.invoices.length >= 512) fail('Invoice history is full.'); next.invoices.push(record); });
       return { id: record.id, request: quote.request, amount: record.amount, state: record.state, expiresAt: quote.expiry };
     }),
@@ -379,7 +387,7 @@ export function createCashuWallet({ onChange = () => {}, vault = createVault({ b
     exportEncryptedBackup: passphrase => serial(async () => { assertReady(); await vault.flush(); try { return await encryptBackup(data, passphrase); } catch (cause) { fail(cause.message); } }),
     importEncryptedBackup: (text, passphrase, { password: localPassword }:{password?:string} = {}) => serial(async () => {
       if ((await vault.status()).exists) fail('Restore a backup only in a browser with no existing wallet. Existing funds will never be overwritten.');
-      let imported; try { imported = validateData(await decryptBackup(text, passphrase)); } catch (cause) { fail(cause.message); } imported.reviewRequired = true;
+      let imported; try { imported = validate(await decryptBackup(text, passphrase)); } catch (cause) { fail(cause.message); } imported.reviewRequired = true;
       // A stale snapshot must never reuse output counters advanced by the original wallet.
       // Existing proofs and pending outputs are complete recovery records, independent of this new seed.
       const newSeed = crypto.getRandomValues(new Uint8Array(64)); imported.seed = hex(newSeed); newSeed.fill(0);

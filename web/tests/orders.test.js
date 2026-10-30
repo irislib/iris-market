@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { generateSecretKey, getPublicKey, matchFilters, verifyEvent } from 'nostr-tools';
 import { createVault } from '../src/messaging/vault.ts';
 import { createMessaging } from '../src/messaging/client.ts';
+import {contextTags,messageContext,orderContext,messageThreadKey,listingContext} from '../src/message-context.ts';
 import { applyOrderEnvelope, createOrderBook, decodeOrder, LOCATION_TTL, ORDER_TAG } from '../src/orders.ts';
 
 const buyer='1'.repeat(64),seller='2'.repeat(64),courier='3'.repeat(64),outsider='4'.repeat(64),device='5'.repeat(64);
@@ -188,4 +189,47 @@ test('a sender sibling acknowledgement cannot mark the seller delivery sent', {t
  releaseCopy();await waitFor(()=>sibling.state().orders.some(item=>item.id===order.id));
  assert.equal(first.state().orders[0].sync,'queued');
  assert.equal(first.state().conversations.find(chat=>chat.pubkey===owner).messages.find(message=>message.orderId===order.id).delivery,'queued');
+});
+
+
+test('real order-book IDs survive private request and reply context and reject nonparticipants',{timeout:45000},async t=>{
+ const bus=relay(),buyerApp=app(bus),sellerApp=app(bus),outsiderApp=app(bus),apps=[buyerApp,sellerApp,outsiderApp];
+ t.after(async()=>{for(const client of apps)await client.destroy();});
+ for(const client of apps)await client.createAccount();await waitFor(()=>apps.every(client=>client.state().canSend));
+ const buyerOwner=buyerApp.state().ownerPubkey,sellerOwner=sellerApp.state().ownerPubkey,outsiderOwner=outsiderApp.state().ownerPubkey;
+ // requestOrder uses the production createOrderBook, including its established buyerHex:UUID identity.
+ const requested=await buyerApp.requestOrder({...listing,author:sellerOwner,id:`${sellerOwner}:context-bike`});
+ await waitFor(()=>sellerApp.state().orders.some(order=>order.id===requested.id));
+ assert.ok(requested.id.startsWith(buyerOwner+':'));
+ const context=orderContext(requested.id);assert.equal(context.thread_id,requested.id.slice(65));assert.deepEqual(messageContext(contextTags(context)),context);
+ const inquiry='Synthetic order-specific inquiry';await buyerApp.send(sellerOwner,inquiry,context);
+ await waitFor(()=>sellerApp.state().conversations.some(chat=>chat.messages.some(message=>message.text===inquiry)));
+ const received=sellerApp.state().conversations.flatMap(chat=>chat.messages).find(message=>message.text===inquiry);
+ assert.deepEqual(received.context,context);assert.equal(messageThreadKey(received),`order:${requested.id}`);
+ const reply='Synthetic reply in the same order';await sellerApp.send(buyerOwner,reply,received.context);
+ await waitFor(()=>buyerApp.state().conversations.some(chat=>chat.messages.some(message=>message.text===reply)));
+ const response=buyerApp.state().conversations.flatMap(chat=>chat.messages).find(message=>message.text===reply);
+ assert.deepEqual(response.context,context);assert.equal(response.orderId,requested.id);
+ await assert.rejects(buyerApp.send(outsiderOwner,'Must not escape the order participants',context),/not shared/);
+ await assert.rejects(outsiderApp.send(buyerOwner,'Cannot claim an unrelated order',context),/not shared/);
+ assert(!bus.frames.some(event=>JSON.stringify(event).includes(requested.id)||JSON.stringify(event).includes(inquiry)||JSON.stringify(event).includes(reply)), 'order identity and chat context remain inside encrypted rumors');
+});
+
+
+test('Buying listing inquiry uses the real card coordinate through NDR request and reply',{timeout:45000},async t=>{
+ const bus=relay(),requester=app(bus),responder=app(bus),apps=[requester,responder];
+ t.after(async()=>{for(const client of apps)await client.destroy();});
+ for(const client of apps)await client.createAccount();await waitFor(()=>apps.every(client=>client.state().canSend));
+ const requesterOwner=requester.state().ownerPubkey,responderOwner=responder.state().ownerPubkey;
+ const buying={...listing,author:requesterOwner,id:`${requesterOwner}:need-city-cycle`,side:'request',title:'Buying a city bicycle'};
+ const context=listingContext(buying.id);
+ await responder.open(buying.author);await responder.send(buying.author,'Synthetic response to the Buying listing',context);
+ await waitFor(()=>requester.state().conversations.some(chat=>chat.messages.some(message=>message.text==='Synthetic response to the Buying listing')));
+ const incoming=requester.state().conversations.flatMap(chat=>chat.messages).find(message=>message.text==='Synthetic response to the Buying listing');
+ assert.equal(incoming.context.listing,`30402:${buying.id}`);assert.deepEqual(incoming.context,context);assert.equal(incoming.orderId,undefined);
+ await requester.send(responderOwner,'Synthetic Buying inquiry reply',incoming.context);
+ await waitFor(()=>responder.state().conversations.some(chat=>chat.messages.some(message=>message.text==='Synthetic Buying inquiry reply')));
+ const reply=responder.state().conversations.flatMap(chat=>chat.messages).find(message=>message.text==='Synthetic Buying inquiry reply');
+ assert.deepEqual(reply.context,context);assert.equal(messageThreadKey(reply),`thread:${context.thread_id}`);
+ assert(!bus.frames.some(event=>JSON.stringify(event).includes(context.thread_id)||JSON.stringify(event).includes(buying.id)), 'Buying context stays inside encrypted rumors');
 });

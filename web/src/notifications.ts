@@ -31,9 +31,10 @@ export function createUnreadTracker({ kind, storage = browserStorage(), now = Da
   let streams = new Map<string, string[]>();
   const streamHash = (id: string) => hash(`${profile}:${kind}:stream:${id}`);
   const itemHash = (id: string) => hash(`${profile}:${kind}:item:${id}`);
-  function unreadHash(id: string) {
+  function unreadHash(id: string, selectedIds?: string[]) {
+    const selected = selectedIds ? new Set(selectedIds.map(itemHash)) : undefined;
     const read = new Set(markers.streams[id]?.ids || []);
-    return (streams.get(id) || []).filter(item => !read.has(item)).length;
+    return (streams.get(id) || []).filter(item => !read.has(item) && (!selected || selected.has(item))).length;
   }
   function report() {
     const next = [...streams.keys()].filter(id => unreadHash(id) > 0).length;
@@ -53,15 +54,17 @@ export function createUnreadTracker({ kind, storage = browserStorage(), now = Da
     markers.streams = Object.fromEntries(Object.entries(markers.streams).sort(([,a],[,b]) => b.at-a.at).slice(0,MAX_STREAMS));
     try { storage?.setItem(key, JSON.stringify(markers)); } catch { /* Keep the session usable when local storage is full or disabled. */ }
   }
-  function read(id: string) {
+  function read(id: string, visibleIds?: string[]) {
     if (!profile) return;
-    const stream = streamHash(id), incoming = streams.get(stream);
+    const stream = streamHash(id), allIncoming = streams.get(stream);
+    const visible=visibleIds?new Set(visibleIds.map(itemHash)):undefined;
+    const incoming=visible?allIncoming?.filter(id=>visible.has(id)):allIncoming;
     if (!incoming?.length || !unreadHash(stream)) return;
     const ids = [...new Set([...(markers.streams[stream]?.ids || []), ...incoming])].slice(-MAX_READ_IDS);
     markers.streams[stream] = {at:now(),ids}; save(); report();
   }
   return {
-    update(owner: string | null | undefined, values: NotificationStream[], visibleId?: string | null) {
+    update(owner: string | null | undefined, values: NotificationStream[], visibleId?: string | null, visibleIds?:string[]) {
       const next = owner || null;
       if (next !== profile) { profile=next; key=next?`iris-market-unread-v1:${kind}:${hash(next)}`:''; markers=next?load():{version:1,streams:{}}; }
       streams = new Map();
@@ -69,11 +72,11 @@ export function createUnreadTracker({ kind, storage = browserStorage(), now = Da
         const ids = [...new Set(value.items.filter(item => !item.mine && typeof item.id==='string' && item.id.length>0 && item.id.length<=256).map(item=>itemHash(item.id)))];
         if (ids.length) streams.set(streamHash(value.id), ids);
       }
-      if (visibleId) read(visibleId);
+      if (visibleId) read(visibleId,visibleIds);
       report();
     },
     read,
-    unread: (id: string) => profile ? unreadHash(streamHash(id)) : 0,
+    unread: (id: string, ids?: string[]) => profile ? unreadHash(streamHash(id), ids) : 0,
     count: () => Math.max(0,count),
   };
 }

@@ -26,6 +26,20 @@ test('read receipts persist across reload while late arrivals with older timesta
   final.update('owner',[stream('friend',incoming('seen',500),incoming('delayed',20))]);assert.equal(final.count(),0);
 });
 
+test('reading one thread leaves another thread from the same person unread across reload',()=>{
+  const local=storage(),tracker=createUnreadTracker({kind:'messages',storage:local});
+  const values=[stream('friend',incoming('order-reply'),incoming('general-reply'))];
+  tracker.update('owner',values,'friend',['order-reply']);
+  assert.equal(tracker.unread('friend',['order-reply']),0);
+  assert.equal(tracker.unread('friend',['general-reply']),1);
+  assert.equal(tracker.count(),1);
+  const reload=createUnreadTracker({kind:'messages',storage:local});
+  reload.update('owner',values,'friend',[]);
+  assert.equal(reload.unread('friend'),1);
+  reload.read('friend',['general-reply']);
+  assert.equal(reload.count(),0);
+});
+
 test('same-timestamp messages use IDs; duplicate projection does not multiply unread',()=>{
   const tracker=createUnreadTracker({kind:'messages',storage:storage()});
   tracker.update('owner',[stream('friend',incoming('a'))],'friend');

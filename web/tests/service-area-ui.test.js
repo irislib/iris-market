@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {setupServiceAreaPicker,createServiceAreaOverlay} from '../src/service-area-ui.ts';
+import {setupServiceAreaPicker,createServiceAreaOverlay,restoreServiceAreaCircle} from '../src/service-area-ui.ts';
 import {serviceAreaCircle,serviceAreaContains} from '../src/service-area.ts';
 
 class Element extends EventTarget{
   constructor(tag){super();this.tag=tag;this.children=[];this.attributes=new Map();this.dataset={};this.textContent='';this.value='';this.hidden=false;this.disabled=false;this.classList={toggle(){}};}
   append(...children){for(const child of children){child.remove();child.parent=this;this.children.push(child);}}
+  replaceChildren(...children){for(const child of [...this.children])child.remove();this.append(...children);}
   remove(){if(this.parent)this.parent.children=this.parent.children.filter(child=>child!==this);this.parent=null;}
   setAttribute(name,value){this.attributes.set(name,String(value));}
   getAttribute(name){return this.attributes.get(name)??null;}
@@ -132,4 +133,25 @@ test('map appearance follows app and system themes, including changes while open
   assert.equal(window.listeners.size,1);assert.equal(media.listeners.size,1);await f.ui.destroy();assert.equal(window.listeners.size,0);assert.equal(media.listeners.size,0);
   let finish;const appearances=[];const late=fixture({createMap:(_container,options)=>{appearances.push(options.dark);return new Promise(resolve=>{finish=()=>resolve({resize(){},async setDark(value){appearances.push(value);},async destroy(){}});});}});
   const opening=late.ui.show();document.documentElement.dataset.appearance='dark';window.dispatchEvent(new Event('market-themechange'));finish();await opening;assert.deepEqual(appearances,[false,true]);await late.ui.destroy();assert.equal(window.listeners.size,0);assert.equal(media.listeners.size,0);
+});
+
+
+test('place selection creates a boundary only after choosing a suggestion and stale searches cannot change roles',async()=>{
+  let resolve;const f=fixture({searchPlaces:()=>new Promise(done=>{resolve=done;})});await f.ui.show();
+  const search=label(f.ui.element,'Search places');search.value='Synthetic';search.oninput();
+  await new Promise(done=>setTimeout(done,270));
+  find(f.ui.element,'Destination').click();resolve([{name:'Synthetic place',lat:60,lng:24}]);await new Promise(done=>setTimeout(done,0));
+  assert.equal(f.ui.getValue(),null);assert.equal(find(f.ui.element,'Synthetic place'),undefined);
+  const pending=fixture({searchPlaces:async()=>[{name:'Synthetic place',lat:60,lng:24}]});await pending.ui.show();
+  const input=label(pending.ui.element,'Search places');input.value='Synthetic';input.oninput();await new Promise(done=>setTimeout(done,270));
+  assert.equal(pending.ui.getValue(),null);find(pending.ui.element,'Synthetic place').click();assert.ok(serviceAreaContains(pending.ui.getValue().pickup,[24,60]));
+  await pending.ui.destroy();await f.ui.destroy();
+});
+
+
+test('reopening a saved circle restores its point and radius without rewriting geometry',async()=>{
+ const area=serviceAreaCircle([24.94,60.17],25),saved={pickup:area,destination:area};
+ const restored=restoreServiceAreaCircle(area);assert.ok(Math.abs(restored.radius-25)<0.0001);assert.ok(Math.abs(restored.point[0]-24.94)<0.000001);
+ assert.equal(restoreServiceAreaCircle(polygon),null);
+ const f=fixture({value:saved});await f.ui.show();assert.deepEqual(f.ui.getValue(),saved);assert.deepEqual(f.changes,[]);assert.ok(all(f.ui.element).some(node=>node.textContent.includes('km around the selected point')));await f.ui.destroy();
 });

@@ -87,3 +87,7 @@ dialog { color:var(--ink); background:var(--bg); border:1px solid var(--line); b
 .transport-next-stop{display:grid;gap:10px;background:var(--soft);border:1px solid var(--line);border-radius:20px;padding:22px}.transport-next-stop h3,.transport-next-stop p{margin:0}.transport-next-stop h3{font-size:24px}.transport-next-stop .order-actions{margin-top:6px}.order-next-label{line-height:1.5}.orders-list>h3{margin:16px 0 0}
 
 .header-account-menu{padding:4px}.header-account-menu .user-avatar{width:28px;height:28px;border-radius:50%;object-fit:cover}.header-profile-item .user-avatar{flex:none;border-radius:50%;object-fit:cover}.header-profile-copy{display:grid;gap:3px;min-width:0}.header-profile-copy .user-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.header-profile-caption{font-size:12px;font-weight:400;color:var(--muted)}
+
+/* Shared place search and native service-area editor. */
+.native-map-page:has(.service-area-picker){padding:12px;overflow-y:auto}.service-area-picker input[type=search]{width:100%;min-height:44px;border:1px solid var(--line);border-radius:11px;padding:10px;background:var(--bg);color:var(--ink);font:inherit}.service-area-suggestions{display:grid;gap:6px}.service-area-suggestions:empty{display:none}.service-area-suggestions button{text-align:left;font-size:14px}.native-map-page .service-area-picker{border:0;padding:0}
+.service-area-picker [role=status]:empty{display:none}

@@ -1,3 +1,4 @@
+import {orderContext} from './message-context.ts';
 import { createSurface } from './surface.ts';
 import { createUnreadTracker, orderNotifications, readingSurface } from './notifications.ts';
 import type { Shipment, ShipmentStop } from './orders.ts';
@@ -237,7 +238,7 @@ export function setupOrders({ account, isPreview = () => false, onProfile = () =
     if (order.status === 'requested' && selfRole === 'seller') actions.append(action('Accept order', () => update(order, { status: 'accepted' }, 'Order accepted'), true));
     if (order.status === 'accepted' && selfRole === 'seller') actions.append(action('Mark on the way', () => update(order, { status: 'in-transit' }, 'Delivery started'), true));
     if (['accepted', 'in-transit'].includes(order.status) && ['seller', 'buyer'].includes(selfRole)) actions.append(action(selfRole === 'buyer' ? 'Mark received' : 'Mark delivered', () => update(order, { status: 'delivered' }, 'Order delivered'), selfRole === 'buyer'));
-    if (['buyer', 'seller'].includes(selfRole)) actions.append(action('Message', () => { dialog.hide(); void account.openChat(selfRole === 'buyer' ? order.seller : order.buyer); }));
+    if (['buyer', 'seller'].includes(selfRole)) actions.append(action('Message', () => { dialog.hide(); void account.openChat(selfRole === 'buyer' ? order.seller : order.buyer,{context:orderContext(order.id)}); }));
     if (!terminal(order) && ['buyer', 'seller'].includes(selfRole)) actions.append(action(order.status === 'requested' && selfRole === 'seller' ? 'Decline request' : 'Cancel order', () => update(order, { status: 'cancelled' }, 'Order cancelled')));
     if (terminal(order)) actions.append(action(order.archived ? 'Restore order' : 'Archive order', () => { void perform(async () => { await account.messaging.archiveOrder(order.id, !order.archived); live.textContent = order.archived ? 'Order restored' : 'Order archived'; }); }));
     if(actions.childElementCount)body.append(actions);

@@ -1,3 +1,4 @@
+import {groupMessageThreads,messageThreadKey,type MessageContext} from './message-context.ts';
 import { createSurface } from './surface.ts';
 import { setupHeaderIdentity } from './menu.ts';
 import { createProfileWithOptionalName } from './profile-setup.ts';
@@ -19,11 +20,14 @@ function dialog(markup:string, name:string, options:Parameters<typeof createSurf
   return node;
 }
 type AccountState = Partial<ReturnType<ReturnType<typeof createMessaging>['state']>> & {status:string;devices:Array<{pubkey:string;current:boolean}>;conversations:Array<{pubkey:string;messages:any[]}>};
-interface AccountOptions {getRelays:()=>string[];isPreview:()=>boolean;onIdentity?:(key:string,status:string,previous:string,pending:any[])=>void;onProfile?:(key:string)=>void;onOrder?:(id:string)=>void;onToken?:(token:string)=>unknown;onUnread?:(count:number)=>void;accountPage?:HTMLElement;onAccountPage?:()=>void;onAccountClose?:()=>void;messagePage?:HTMLElement;onMessagePage?:(peer?:string)=>void;onMessageClose?:()=>void}
-export function setupAccount({getRelays,isPreview,onIdentity=()=>{},onProfile=()=>{},onOrder=()=>{},onToken=()=>{},onUnread=()=>{},accountPage,onAccountPage=()=>{},onAccountClose=()=>{},messagePage,onMessagePage=()=>{},onMessageClose=()=>{}}:AccountOptions) {
+interface AccountOptions {listingTitle?:(coordinate:string)=>string|undefined;getRelays:()=>string[];isPreview:()=>boolean;onIdentity?:(key:string,status:string,previous:string,pending:any[])=>void;onProfile?:(key:string)=>void;onOrder?:(id:string)=>void;onToken?:(token:string)=>unknown;onUnread?:(count:number)=>void;accountPage?:HTMLElement;onAccountPage?:()=>void;onAccountClose?:()=>void;messagePage?:HTMLElement;onMessagePage?:(peer?:string)=>void;onMessageClose?:()=>void}
+export function setupAccount({listingTitle=()=>undefined,getRelays,isPreview,onIdentity=()=>{},onProfile=()=>{},onOrder=()=>{},onToken=()=>{},onUnread=()=>{},accountPage,onAccountPage=()=>{},onAccountClose=()=>{},messagePage,onMessagePage=()=>{},onMessageClose=()=>{}}:AccountOptions) {
   const unread=createUnreadTracker({kind:'messages',onUnread});
   const readyListeners=new Set<()=>void>(), stateListeners=new Set<(state:AccountState)=>void>();
   let drafts=createChatDrafts(), inboxRevision=0, pendingDraft='';
+  let selectedContext:MessageContext|undefined, selectedThreadKey='general', threadMode=true;
+  try{threadMode=localStorage.getItem('market-message-grouping')!=='people';}catch{}
+  const selectionKey=()=>selected?selected+'|'+selectedThreadKey:'';
   const incomingInvitation=captureInvitation(location.href,document.baseURI);
   let pendingInvite=incomingInvitation?.invite??null;
   if(incomingInvitation)history.replaceState(null,'',incomingInvitation.cleanURL);
@@ -34,17 +38,18 @@ export function setupAccount({getRelays,isPreview,onIdentity=()=>{},onProfile=()
   <details class="account-option" id="account-key-option"><summary>Private key</summary><form id="account-key-form"><label for="account-key">Private key</label><input id="account-key" type="password" placeholder="nsec…" autocomplete="off" spellcheck="false" required><button class="button secondary">Continue</button></form></details><button id="account-existing-back" class="text-button">Back</button></div></div>
   <form id="account-unlock" hidden><label for="account-password">Password</label><input id="account-password" type="password" autocomplete="current-password"><button class="button primary">Continue</button></form>
   <div id="account-ready" hidden><button id="account-open-invite" class="button primary" hidden>Open private invitation</button><div class="account-actions"><button id="account-inbox" class="button primary">Messages</button><button id="account-profile" class="button secondary">View profile</button><button id="account-lock" class="text-button">Lock</button></div><div id="posting-signer" hidden><p class="small muted">Connect a signer to post listings.</p><button id="posting-extension" class="button secondary">Use browser signer</button><button id="posting-remote" class="text-button">Use remote signer</button></div><details class="account-option"><summary>Edit profile</summary><form id="account-edit-profile"><label>Name<input id="account-edit-name" maxlength="80" required autocomplete="nickname"></label><label>Photo link<input id="account-edit-picture" type="url" placeholder="https://…" autocomplete="off"></label><button class="button secondary">Save profile</button></form></details><details class="account-option"><summary>Linked devices</summary><div id="account-devices"></div><p class="small muted">New messages reach your authorized devices. Earlier history is not copied automatically.</p></details><details class="account-option"><summary>Profile details</summary><button id="account-copy-id" class="text-button">Copy profile ID</button><button id="account-backup" class="text-button">Copy backup key</button><button id="account-invite" class="text-button">Copy private chat invitation</button></details></div>`, 'Profile settings',{pageHost:accountPage,onOpen:onAccountPage,onClose:onAccountClose});
-  const inbox=dialog(`<button data-close class="dialog-close icon-button" aria-label="Close messages">×</button><h2>Messages</h2><div class="chat-shell"><aside class="chat-sidebar"><form id="chat-new"><label class="sr-only" for="chat-recipient">User ID or private invitation</label><input id="chat-recipient" placeholder="User ID or invitation" autocomplete="off"><button class="button secondary" aria-label="Start conversation">New</button></form><div id="chat-list"></div></aside><section class="chat-main"><div id="chat-person"></div><div id="chat-messages" role="log" aria-live="polite"></div><p id="chat-status" class="small muted" role="status"></p><p id="chat-error" class="error" role="alert"></p><form id="chat-send"><label class="sr-only" for="chat-text">Message</label><textarea id="chat-text" placeholder="Message" rows="2" maxlength="8000"></textarea><button id="chat-send-button" class="button primary">Send</button></form></section></div>`, 'Messages',{pageHost:messagePage,onOpen:()=>onMessagePage(selected||undefined),onClose:onMessageClose});
+  const inbox=dialog(`<button data-close class="dialog-close icon-button" aria-label="Close messages">×</button><h2>Messages</h2><div class="chat-grouping" role="group" aria-label="Group conversations"><button type="button" id="chat-threads">Threads</button><button type="button" id="chat-people">People</button></div><div class="chat-shell"><aside class="chat-sidebar"><form id="chat-new"><label class="sr-only" for="chat-recipient">User ID or private invitation</label><input id="chat-recipient" placeholder="User ID or invitation" autocomplete="off"><button class="button secondary" aria-label="Start conversation">New</button></form><div id="chat-list"></div></aside><section class="chat-main"><div id="chat-person"></div><div id="chat-messages" role="log" aria-live="polite"></div><p id="chat-status" class="small muted" role="status"></p><p id="chat-error" class="error" role="alert"></p><form id="chat-send"><label class="sr-only" for="chat-text">Message</label><textarea id="chat-text" placeholder="Message" rows="2" maxlength="8000"></textarea><button id="chat-send-button" class="button primary">Send</button></form></section></div>`, 'Messages',{pageHost:messagePage,onOpen:()=>onMessagePage(selected||undefined),onClose:onMessageClose});
   inbox.classList.add('inbox-dialog');
   const $=byId;
   const headerIdentity=setupHeaderIdentity({createAvatar,createUserName,onProfile});
   const profileCopy=value=>String(value).replace(/\baccounts\b/gi,'profiles').replace(/\baccount\b/gi,'profile');
   const fail=error=>{ $('account-error').textContent=profileCopy(error.message||String(error)); };
   const withBusy=async task=>{if(busy)return;busy=true;$('account-error').textContent='';try{return await task()}catch(error){fail(error);throw error}finally{busy=false;renderAccount()}};
-  const messaging=createMessaging({getRelays,onChange:value=>{const previous=state.ownerPubkey;state=value;if(previous&&(previous!==value.ownerPubkey||['locked','signed-out'].includes(value.status))){inboxRevision++;drafts=createChatDrafts();pendingDraft='';selected=null;$('chat-text').value='';$('chat-messages').replaceChildren();}syncUnread();for(const listener of stateListeners)listener(value);if(value.profileEvent)cacheProfileMetadata(value.profileEvent,{relays:getRelays()});if(value.canSign)queueMicrotask(()=>{for(const listener of readyListeners)listener()});warmProfiles([value.ownerPubkey,...value.conversations.map(c=>c.pubkey)].filter(Boolean));renderAccount();renderInbox();onIdentity(value.ownerPubkey,value.status,previous,value.pendingListings||[]);if(pendingInbox&&value.status==='ready'){pendingInbox=false;account.hide();showInbox();if(selected)void messaging.open(selected).catch(error=>{$('chat-error').textContent=error.message;})}}});
+  const messaging=createMessaging({getRelays,onChange:value=>{const previous=state.ownerPubkey;state=value;if(previous&&(previous!==value.ownerPubkey||['locked','signed-out'].includes(value.status))){inboxRevision++;drafts=createChatDrafts();pendingDraft='';selected=null;selectedContext=undefined;$('chat-text').value='';$('chat-messages').replaceChildren();}syncUnread();for(const listener of stateListeners)listener(value);if(value.profileEvent)cacheProfileMetadata(value.profileEvent,{relays:getRelays()});if(value.canSign)queueMicrotask(()=>{for(const listener of readyListeners)listener()});warmProfiles([value.ownerPubkey,...value.conversations.map(c=>c.pubkey)].filter(Boolean));renderAccount();renderInbox();onIdentity(value.ownerPubkey,value.status,previous,value.pendingListings||[]);if(pendingInbox&&value.status==='ready'){pendingInbox=false;account.hide();showInbox();if(selected)void messaging.open(selected).catch(error=>{$('chat-error').textContent=error.message;})}}});
   function syncUnread(){
     const visible=readingSurface(inbox);
-    unread.update(state.status==='ready'&&!isPreview()?state.ownerPubkey:null,conversationNotifications(state.conversations),visible?selected:null);
+    const visibleIds=selectedThreadKey!=='*'?state.conversations.find(c=>c.pubkey===selected)?.messages.filter(m=>messageThreadKey(m)===selectedThreadKey).map(m=>m.id):undefined;
+    unread.update(state.status==='ready'&&!isPreview()?state.ownerPubkey:null,conversationNotifications(state.conversations),visible?selected:null,visibleIds);
   }
   function renderAccount(){
     const ready=state.status==='ready', locked=state.status==='locked';
@@ -68,13 +73,33 @@ export function setupAccount({getRelays,isPreview,onIdentity=()=>{},onProfile=()
     for(const button of account.querySelectorAll<HTMLButtonElement>('form button,#account-extension,#account-link-device,#account-existing-toggle,#account-existing-back'))button.disabled=busy;
     $('account-name').disabled=busy;
   }
+  function contextTitle(context?:MessageContext){
+    if(context?.order_id){const title=state.orders?.find(o=>o.id===context.order_id)?.items.map(i=>i.title).join(', ');return title?`Order · ${title}`:'Order';}
+    return context?.listing?(listingTitle(context.listing)||'Listing inquiry'):'Conversation';
+  }
   function renderInbox(){
     const revision=++inboxRevision;
     syncUnread();
     if(!inbox.open)return;
-    $('chat-list').replaceChildren(...state.conversations.map(c=>{const row=createUserRow(c.pubkey,{size:36,className:'chat-row',onClick:()=>{selectChat(c.pubkey);renderInbox()}});row.setAttribute('aria-pressed',String(selected===c.pubkey));if(unread.unread(c.pubkey)){const dot=el('span',undefined,'unread-dot');dot.setAttribute('aria-hidden','true');row.append(dot,el('span','Unread messages','unread-label'));}return row}));
+    $('chat-threads').setAttribute('aria-pressed',String(threadMode));$('chat-people').setAttribute('aria-pressed',String(!threadMode));
+    const rows=state.conversations.flatMap(c=>{
+      const groups=threadMode?groupMessageThreads(c.messages):[{key:'*',context:undefined,messages:c.messages}];
+      if(!groups.length)groups.push({key:'general',context:undefined,messages:[]});
+      return groups.map(group=>{
+        const context=group.context;
+        const row=createUserRow(c.pubkey,{size:36,className:'chat-row',onClick:()=>{selectChat(c.pubkey,undefined,context,group.key);renderInbox()}});
+        row.setAttribute('aria-pressed',String(selected===c.pubkey&&selectedThreadKey===group.key));
+        if(threadMode)row.append(el('span',contextTitle(context),'chat-thread-title'));
+        if(unread.unread(c.pubkey,group.messages.map(m=>m.id))){const dot=el('span',undefined,'unread-dot');dot.setAttribute('aria-hidden','true');row.append(dot,el('span','Unread messages','unread-label'));}
+        return row;
+      });
+    });
+    $('chat-list').replaceChildren(...rows);
     $('chat-person').replaceChildren(...(selected?[createUserRow(selected,{size:36,onClick:()=>{inbox.hide();onProfile(selected)}})]:[]));
-    const messages=state.conversations.find(c=>c.pubkey===selected)?.messages||[];
+    if(selectedContext?.order_id){const id=selectedContext.order_id,order=state.orders?.find(o=>o.id===id);const button=el('button',order?.items.map(i=>i.title).join(', ')||'View order','text-button chat-context');button.type='button';button.onclick=()=>{inbox.hide();onOrder(id)};$('chat-person').append(button);}
+    else if(selectedContext?.listing)$('chat-person').append(el('p',contextTitle(selectedContext),'small muted'));
+    const allMessages=state.conversations.find(c=>c.pubkey===selected)?.messages||[];
+    const messages=selectedThreadKey!=='*'?allMessages.filter(m=>messageThreadKey(m)===selectedThreadKey):allMessages;
     const area=$('chat-messages'), nearBottom=area.scrollHeight-area.scrollTop-area.clientHeight<100;
     area.replaceChildren(...messages.map(message=>{
       const item=el('div',undefined,`chat-message ${message.mine?'mine':''}`),body=el('div'),active=()=>inbox.open&&revision===inboxRevision&&state.status==='ready';
@@ -96,18 +121,19 @@ export function setupAccount({getRelays,isPreview,onIdentity=()=>{},onProfile=()
   function showAccount({posting=false}={}){if(isPreview()){$('account-error').textContent='Switch to the live market to sign in.'}signingOnly=false;if(!busy)loginView='new';renderAccount();account.showModal();if(!$('account-create').hidden)$('account-name').focus();if(posting&&readyForPostingSigner())$('account-status').textContent='Connect a signer to post.'}
   function readyForPostingSigner(){return state.status==='ready'&&!state.canSign;}
   function showInbox(){if(state.status!=='ready'){pendingInbox=true;showAccount();return}renderInbox();if(!inbox.open)inbox.showModal();renderInbox()}
-  function selectChat(pubkey:string,proposal?:string){
-    $('chat-text').value=drafts.select(pubkey,$('chat-text').value,proposal);selected=pubkey;if(inbox.open)onMessagePage(pubkey);
-    if(pendingDraft){const current=$('chat-text').value,next=current.trim()?current+'\n\n'+pendingDraft:pendingDraft;if(next.length<=8000){$('chat-text').value=next;drafts.select(pubkey,next);pendingDraft='';}else $('chat-error').textContent='Shorten this draft before adding the payment.';}
+  function selectChat(pubkey:string,proposal?:string,context?:MessageContext,threadKey=context?messageThreadKey({context}):threadMode?'general':'*'){
+    const nextKey=pubkey+'|'+threadKey;
+    $('chat-text').value=drafts.select(nextKey,$('chat-text').value,proposal);selected=pubkey;selectedContext=context;selectedThreadKey=threadKey;if(inbox.open)onMessagePage(pubkey);
+    if(pendingDraft){const current=$('chat-text').value,next=current.trim()?current+'\n\n'+pendingDraft:pendingDraft;if(next.length<=8000){$('chat-text').value=next;drafts.select(selectionKey(),next);pendingDraft='';}else $('chat-error').textContent='Shorten this draft before adding the payment.';}
   }
   function composeMessage(text){
     if(typeof text!=='string'||!text.trim()||text.length>8000)throw new Error('This message is too long to share.');
     const current=selected?$('chat-text').value:pendingDraft,next=current.trim()?current+'\n\n'+text:text;
     if(next.length>8000)throw new Error('Shorten this draft before adding the payment.');
-    if(selected){$('chat-text').value=next;drafts.select(selected,next);}else pendingDraft=next;
+    if(selected){$('chat-text').value=next;drafts.select(selectionKey(),next);}else pendingDraft=next;
     showInbox();if(selected)$('chat-text').focus();
   }
-  async function openChat(pubkey:string,{draft}: {draft?:string}={}){if(isPreview())throw new Error('Switch to the live market to send messages.');selectChat(normalizePublicKey(pubkey),draft);warmProfiles([selected]);if(state.status!=='ready'){pendingInbox=true;showAccount();return}await messaging.open(selected);showInbox()}
+  async function openChat(pubkey:string,{draft,context}: {draft?:string;context?:MessageContext}={}){if(isPreview())throw new Error('Switch to the live market to send messages.');selectChat(normalizePublicKey(pubkey),draft,context);warmProfiles([selected]);if(state.status!=='ready'){pendingInbox=true;showAccount();return}await messaging.open(selected);showInbox()}
   function ensureLive(){if(isPreview())throw new Error('Switch to the live market to sign in.');}
   const login=task=>withBusy(async()=>{ensureLive();await task();signingOnly=false;}).catch(()=>{});
   $('account-existing-toggle').onclick=()=>{loginView='existing';$('account-error').textContent='';renderAccount();};
@@ -132,7 +158,8 @@ export function setupAccount({getRelays,isPreview,onIdentity=()=>{},onProfile=()
   $('account-backup').onclick=()=>withBusy(async()=>{await navigator.clipboard.writeText(await messaging.exportKey());$('account-status').textContent='Backup key copied. Store it privately.';}).catch(()=>{});
   $('account-invite').onclick=()=>withBusy(async()=>{await navigator.clipboard.writeText(await messaging.inviteUrl());$('account-status').textContent='Private invitation copied.';}).catch(()=>{});
   $('chat-new').onsubmit=event=>{event.preventDefault();const input=$('chat-recipient').value.trim();$('chat-error').textContent='';(async()=>{selectChat(input.includes('://')?await messaging.acceptInvite(input):normalizePublicKey(input));await messaging.open(selected);$('chat-recipient').value='';renderInbox();})().catch(error=>{$('chat-error').textContent=error.message;});};
-  $('chat-send').onsubmit=event=>{event.preventDefault();const text=$('chat-text').value.trim(),peer=selected;if(!text||!peer)return;$('chat-send-button').disabled=true;$('chat-error').textContent='';messaging.send(peer,text).then(()=>{drafts.clear(peer);if(selected===peer&&$('chat-text').value.trim()===text)$('chat-text').value='';}).catch(error=>{$('chat-error').textContent=error.message;}).finally(()=>{$('chat-send-button').disabled=!state.canSend;});};
+  $('chat-send').onsubmit=event=>{event.preventDefault();const text=$('chat-text').value.trim(),peer=selected,context=selectedContext,key=selectionKey();if(!text||!peer)return;$('chat-send-button').disabled=true;$('chat-error').textContent='';messaging.send(peer,text,context).then(()=>{drafts.clear(key);if(selectionKey()===key&&$('chat-text').value.trim()===text)$('chat-text').value='';}).catch(error=>{$('chat-error').textContent=error.message;}).finally(()=>{$('chat-send-button').disabled=!state.canSend;});};
+  for(const [id,mode] of [['chat-threads',true],['chat-people',false]] as const)$(id).onclick=()=>{threadMode=mode;try{localStorage.setItem('market-message-grouping',mode?'threads':'people');}catch{}if(selected)selectChat(selected);renderInbox();};
   inbox.addEventListener('close',()=>{inboxRevision++;syncUnread();});
   const refreshUnread=()=>{syncUnread();if(inbox.open)renderInbox();};
   const uncovered=()=>queueMicrotask(refreshUnread);

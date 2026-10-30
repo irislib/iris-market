@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "kind": "iris-maps-place-search-index",
+  "generatedAt": "2026-09-21T23:58:18Z",
+  "source": "OpenFreeMap PMTiles generated from OpenMapTiles/OpenStreetMap data.",
+  "placeCount": 15303713,
+  "searchIndexVersion": 2,
+  "prefix": "p:",
+  "searchRoot": {
+    "hash": "cd346ed7f0b29dceb4aa73318749fb195374398050e671f765280d71ce86b434",
+    "key": "eb15e2187c3ad06b50d62b927905a8a3541062ff057a70038419b56559049949"
+  },
+  "searchOptions": {
+    "order": 64,
+    "minKeywordLength": 1
+  },
+  "recordPacking": {
+    "kind": "json-record-shard",
+    "version": 1,
+    "maxRecordsPerShard": 256
+  },
+  "locationContext": {
+    "kind": "administrative-boundary-context",
+    "release": "2026-08-19.0",
+    "source": "https://docs.overturemaps.org/guides/divisions/",
+    "license": "ODbL-1.0",
+    "method": "Representative-point containment in territorial polygons; published default hierarchy.",
+    "attribution": "Overture Maps Foundation, OpenStreetMap contributors, geoBoundaries.",
+    "records": 15303713,
+    "withCountry": 15286005,
+    "withLocality": 9865177,
+    "withContext": 15286005,
+    "scopePrefix": "g:"
+  }
+}

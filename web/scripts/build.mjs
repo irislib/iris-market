@@ -91,6 +91,7 @@ for (const [name, source, entry] of [['web', root, 'src/app.ts'], ['site', resol
     }
   }
   if (name === 'web') {
+    for (const file of ['demo-delivery.svg','demo-ride.svg']) await copyFile(resolve(root,file),resolve(dest,file));
     await copyFile(resolve(root, 'profiles.css'), resolve(dest, 'profiles.css'));
     await copyFile(resolve(root, 'account.css'), resolve(dest, 'account.css'));
     await copyFile(resolve(root, 'wallet.css'), resolve(dest, 'wallet.css'));

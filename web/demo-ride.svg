@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800">
+  <rect width="800" height="800" fill="#eeedf5"/>
+  <path d="M90 620C220 440 330 660 430 475S590 320 710 180" fill="none" stroke="#cbc5db" stroke-width="6" stroke-dasharray="12 16"/>
+  <circle cx="90" cy="620" r="15" fill="#aa99c5"/><circle cx="710" cy="180" r="15" fill="#aa99c5"/>
+  <g fill="#706284"><path d="M250 390l38-90c8-17 24-27 42-27h140c18 0 34 10 42 27l38 90v75H250z"/><rect x="268" y="433" width="48" height="60" rx="18"/><rect x="485" y="433" width="48" height="60" rx="18"/></g>
+  <path d="M318 302h164l26 70H292z" fill="#e4dfed"/>
+  <rect x="277" y="402" width="45" height="15" rx="7" fill="#f5eed5"/><rect x="478" y="402" width="45" height="15" rx="7" fill="#f5eed5"/>
+  <text x="400" y="710" text-anchor="middle" font-family="system-ui,sans-serif" font-size="24" letter-spacing="5" fill="#706284">SIMULATED RIDE</text>
+</svg>

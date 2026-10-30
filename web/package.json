@@ -11,6 +11,8 @@
     "test": "node --test tests/*.test.js",
     "dev": "node scripts/serve.mjs",
     "demo:transport": "node scripts/demo/server.ts",
+    "demo:public": "node scripts/demo/public-server.ts",
+    "demo:public-service": "node scripts/demo/service.ts --public",
     "demo:service": "node scripts/demo/service.ts",
     "check": "tsc --noEmit"
   },

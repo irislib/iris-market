@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800">
+  <rect width="800" height="800" fill="#eeedf5"/>
+  <path d="M90 620C220 440 330 660 430 475S590 320 710 180" fill="none" stroke="#cbc5db" stroke-width="6" stroke-dasharray="12 16"/>
+  <circle cx="90" cy="620" r="15" fill="#aa99c5"/><circle cx="710" cy="180" r="15" fill="#aa99c5"/>
+  <g stroke="#706284" stroke-width="14" stroke-linecap="round">
+    <path d="M320 290l160 100m0-100l-160 100"/>
+    <g fill="#e4dfed"><ellipse cx="305" cy="280" rx="65" ry="22"/><ellipse cx="495" cy="280" rx="65" ry="22"/><ellipse cx="305" cy="400" rx="65" ry="22"/><ellipse cx="495" cy="400" rx="65" ry="22"/></g>
+  </g>
+  <rect x="363" y="300" width="74" height="80" rx="25" fill="#706284"/>
+  <path d="M380 390v55m40-55v55" stroke="#aa99c5" stroke-width="6"/>
+  <rect x="355" y="440" width="90" height="75" rx="10" fill="#c9b797"/><path d="M400 440v28" stroke="#eee3ce" stroke-width="10"/>
+  <text x="400" y="710" text-anchor="middle" font-family="system-ui,sans-serif" font-size="24" letter-spacing="5" fill="#706284">SIMULATED DELIVERY</text>
+</svg>

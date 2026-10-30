@@ -357,6 +357,17 @@ Persistent mode retains the three bot identities, encrypted order/chat vaults, r
 
 The service uses the existing Ollama Mac app, checks its local endpoint, loads only the configured installed model and keeps it warm for quick replies. If Ollama is unavailable it attempts to open that app, while the scripted demo continues. It neither downloads models automatically nor starts another competing Ollama server. `MARKET_DEMO_MODEL` selects a different installed model when installing. Runtime health, model availability and generated-versus-scripted reply counts are available at `/_demo/status`, without exposing message contents or keys. The HTTP server and relay bind only to loopback; no public relay, LAN or Internet endpoint is created. On this single Mac, launchd avoids a Docker VM while keeping direct access to the native Ollama runtime.
 
+For demos available to anyone through `https://market.iris.to`, install the separate public bot service from an accepted, clean, committed checkout:
+
+```sh
+npm run demo:public-service --prefix web -- install
+npm run demo:public-service --prefix web -- status
+```
+
+This explicitly publishes simulation listings and connects the bots to Market's default public Nostr relays over outbound WSS. Buyers use the normal website and encrypted order/chat flow. Ollama stays on this Mac at its loopback endpoint. Only local health is served at `http://127.0.0.1:4194/_demo/status`; there is no public HTTP server, LAN listener or Ollama proxy. Public mode bundles the bot runtime without rebuilding or serving web assets.
+
+The public service has a separate launchd label (`to.iris.market.demo.public`), private installation directory (`Iris Market Public Demo` under the user's Application Support directory), password, encrypted vaults and kernel state lock. The existing local service and its state remain separate. Use `demo:public-service -- start`, `stop`, `restart` or `status` to manage only the public service. Reinstall after accepting source changes; model selection and digest checks follow the local service rules. Public listings renew while running. Journeys support up to eight simultaneous orders, one per buyer, with bounded chat queues. Replies and journeys require this Mac to be awake with its user service running; scripted replies continue if the model is unavailable. Public relays receive signed listings and encrypted message events; private bot vaults remain local.
+
 Web AI search displays completed evaluation counts such as **0 matches · 120 checked**, including while paused or finished. Counts reset on clearing or submitting a new query. Model loading and waiting for more listings are labeled separately. This counter currently applies to web; native completed-evaluation tracking is not yet exposed.
 
 Chat recognizes Cashu tokens locally and displays amount and mint, with explicit controls to show or copy the token or open it in the wallet. Parsing a token does not establish that it is valid or unspent. Receiving funds still requires the wallet’s review and confirmation. Wallet payment notes are sender-reported records, not independent payment proofs, and never mark an order paid automatically.

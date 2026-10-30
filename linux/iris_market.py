@@ -40,6 +40,15 @@ def browser_languages(names):
     return languages or ['en-US']
 
 
+def external_uri_allowed(uri):
+    parsed = urlsplit(uri)
+    if parsed.scheme in ('http', 'https'):
+        return bool(parsed.netloc) and f'{parsed.scheme}://{parsed.netloc}' != ORIGIN
+    # An explicit invoice link may hand off to the user's Lightning wallet.
+    # Never launch arbitrary custom protocols supplied by marketplace content.
+    return bool(re.fullmatch(r'lightning:ln(?:bc|tb|bcrt)[0-9]*[munp]?1[023456789acdefghjklmnpqrstuvwxyz]{90,4096}', uri, re.IGNORECASE))
+
+
 class AssetHandler(http.server.BaseHTTPRequestHandler):
     def __init__(self, *args, directory, **kwargs):
         self.root = Path(directory).resolve()
@@ -148,7 +157,7 @@ def main():
         if kind == WebKit2.PolicyDecisionType.NAVIGATION_ACTION and f'{parsed.scheme}://{parsed.netloc}' == ORIGIN:
             return False
         decision.ignore()
-        if parsed.scheme in ('http', 'https') and f'{parsed.scheme}://{parsed.netloc}' != ORIGIN:
+        if external_uri_allowed(uri):
             Gtk.show_uri_on_window(window, uri, 0)
         return True
 

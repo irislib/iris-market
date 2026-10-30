@@ -39,6 +39,8 @@ import Foundation
         do { _ = try marketRoutePatch(stops: Array(repeating: MarketStopDraft(), count: 13), tracking: "", eta: nil); fatalError("Overlong route accepted") } catch { checks += 1 }
         let cashu = try decoder.decode(CashuPayment.self, from: Data(#"{"token":"synthetic-not-redeemable","amount":"120","mint":"https://mint.example.invalid","unit":"sat","status":"unverified"}"#.utf8))
         check(cashu.formattedAmount == "120 sats" && cashu.mintLabel == "mint.example.invalid" && cashu.status == "unverified", "Cashu card amount and unverified state")
+        let testCashu = try decoder.decode(CashuPayment.self, from: Data(#"{"token":"synthetic-not-redeemable","amount":"128","mint":"https://testnut.cashu.space","unit":"sat","status":"unverified"}"#.utf8))
+        check(testCashu.formattedAmount == "128 test sats" && testCashu.isTestMoney, "Test tokens must remain separate from real sats")
         print("\(checks) native order projection checks passed.")
     }
 }

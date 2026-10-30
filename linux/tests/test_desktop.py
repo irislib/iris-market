@@ -76,6 +76,13 @@ class DesktopTest(unittest.TestCase):
         self.assertEqual(APP.browser_languages(['C.UTF-8', 'C', 'POSIX']), ['en-US'])
         self.assertEqual(APP.browser_languages(['fi_FI.UTF-8', 'fi_FI', 'en_US@variant', 'C']), ['fi-FI', 'en-US'])
 
+    def test_external_invoice_handoff_is_narrow(self):
+        self.assertTrue(APP.external_uri_allowed('lightning:lnbc10n1' + 'q' * 110))
+        self.assertTrue(APP.external_uri_allowed('https://example.com'))
+        for uri in ('file:///tmp/private', 'javascript:alert(1)', 'cashu:secret',
+                    'lightning:https://example.com', 'lightning:lnbc1q?x=1', APP.ORIGIN):
+            self.assertFalse(APP.external_uri_allowed(uri), uri)
+
     def test_persistent_profile_paths(self):
         self.assertEqual(APP.profile_paths({'HOME':'/test'}), (Path('/test/.local/share/iris-market'), Path('/test/.cache/iris-market')))
         self.assertEqual(APP.profile_paths({'HOME':'/test','XDG_DATA_HOME':'/data','XDG_CACHE_HOME':'/cache'}), (Path('/data/iris-market'), Path('/cache/iris-market')))

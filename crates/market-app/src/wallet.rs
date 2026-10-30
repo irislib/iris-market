@@ -90,3 +90,8 @@ impl MarketWallet {
             .map_err(error)
     }
 }
+
+#[uniffi::export]
+pub fn lightning_invoice_qr(invoice: String) -> Result<String, MarketError> {
+    serde_json::to_string(&wallet::lightning_invoice_qr(&invoice).map_err(error)?).map_err(error)
+}

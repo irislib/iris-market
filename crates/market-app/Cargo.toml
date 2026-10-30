@@ -9,7 +9,7 @@ name = "iris_market_app"
 crate-type = ["rlib", "cdylib", "staticlib"]
 
 [features]
-default = []
+default = ["cashu-wallet"]
 cashu-wallet = ["iris-market-core/cashu-wallet"]
 
 [dependencies]

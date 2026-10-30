@@ -91,6 +91,8 @@ fun MarketAppView(model: MarketModel, appearance: Appearance, changeAppearance: 
     var serviceArea by remember { mutableStateOf("") }
     var serviceAreas by remember { mutableStateOf<String?>(null) }
     var settings by remember { mutableStateOf(false) }
+    var walletOpen by remember { mutableStateOf(false) }
+    var walletToken by remember { mutableStateOf<String?>(null) }
     var photoFilter by remember { mutableStateOf<Boolean?>(null) }
     val pushRoute by model.pushRoute.collectAsStateWithLifecycle()
     val lifecycle=LocalLifecycleOwner.current.lifecycle
@@ -99,13 +101,14 @@ fun MarketAppView(model: MarketModel, appearance: Appearance, changeAppearance: 
     LaunchedEffect(pushRoute,resumed,state.publicKey,state.revision){
         val route=pushRoute
         if(resumed&&!state.demo&&!state.profileNameRequired&&route!=null){
-            selected=null;reviewListing=null;profileAuthor=null;posting=false;transport=false;settings=false
+            selected=null;reviewListing=null;profileAuthor=null;posting=false;transport=false;settings=false;walletOpen=false;walletToken=null
             if(route.orderID!=null){tab=3;if(state.orders.any {it.id==route.orderID}){orderId=route.orderID;model.consumePushRoute()}}
             else {orderId=null;tab=2}
         }
     }
     val hasProfile = !state.demo && !state.profileNameRequired && state.publicKey.isNotBlank()
     val ownPerson = state.people[state.publicKey] ?: PublicPerson.unnamed(state.publicKey).copy(name=NativeProfileNames.name(state.publicKey))
+    CompositionLocalProvider(LocalWalletAmountFormatter provides { amount,mint,test -> displayWalletAmount(amount,mint,state,test) }, LocalWalletOpener provides { token -> walletToken=token;walletOpen=true }) {
     Scaffold(
         containerColor = Cream,
         bottomBar = {
@@ -145,6 +148,7 @@ fun MarketAppView(model: MarketModel, appearance: Appearance, changeAppearance: 
                         if (hasProfile) DropdownMenuItem(text = { Column { Text(ownPerson.displayName, maxLines=1); Text("View profile", style=MaterialTheme.typography.bodySmall, color=Muted) } }, leadingIcon = { UserAvatar(ownPerson, 32.dp) }, onClick = { menuExpanded = false; tab = 4 })
                         else if (!state.demo) DropdownMenuItem(text = { Text("Sign in") }, leadingIcon = { Icon(Icons.Filled.Person, null) }, onClick = { menuExpanded = false; model.requestProfileSetup() }, enabled=state.publicKey.isNotBlank())
                         HorizontalDivider()
+                        DropdownMenuItem(text = { Text("Wallet") }, leadingIcon = { Icon(Icons.Filled.AccountBalanceWallet, null) }, onClick = { menuExpanded=false;walletToken=null;walletOpen=true }, enabled=!state.demo&&state.publicKey.isNotBlank())
                         DropdownMenuItem(text = { Text("Transport") }, leadingIcon = { Icon(Icons.Filled.DirectionsCar, null) }, onClick = { menuExpanded = false; transport = true })
                         DropdownMenuItem(text = { Text("Settings") }, leadingIcon = { Icon(Icons.Filled.Settings, null) }, onClick = { menuExpanded = false; tab = 5 })
                         DropdownMenuItem(text = { Text("AI settings") }, leadingIcon = { Icon(Icons.Filled.AutoAwesome, null) }, onClick = { menuExpanded = false; settings = true })
@@ -162,12 +166,16 @@ fun MarketAppView(model: MarketModel, appearance: Appearance, changeAppearance: 
             when (tab) {
                 0 -> BrowseView(state, model, busy, selected = { selected = it }, settings = { settings = true }, photoFilter=photoFilter, changePhotoFilter={photoFilter=it})
                 1 -> SavedView(state, model, selected = { selected = it })
-                2 -> InboxView(state, model, busy, openOrder = { orderId = it }, visible = orderId==null&&selected==null&&profileAuthor==null&&!posting&&!transport&&!settings&&!profileSetupRequested)
+                2 -> InboxView(state, model, busy, openOrder = { orderId = it }, visible = orderId==null&&selected==null&&profileAuthor==null&&!posting&&!transport&&!settings&&!walletOpen&&!profileSetupRequested)
                 3 -> OrdersView(state, openOrder = { orderId = it })
                 4 -> PublicProfileView(state.publicKey, state, model, openListing={selected=it}, message={author -> model.command(org.json.JSONObject().put("type","contact").put("author",author)) {tab=2} }) {tab=0}
-                5 -> ProfileView(state, busy, { settings = true }, { switchMode(!state.demo) }, model, appearance, changeAppearance, openProfile={profileAuthor=state.publicKey},openTransport={transport=true})
+                5 -> ProfileView(state, busy, { settings = true }, { switchMode(!state.demo) }, model, appearance, changeAppearance, openProfile={profileAuthor=state.publicKey},openTransport={transport=true},openWallet={walletToken=null;walletOpen=true})
             }
         }
+    }
+    }
+    if(walletOpen) ModalBottomSheet(onDismissRequest={walletOpen=false;walletToken=null},sheetState=rememberModalBottomSheetState(skipPartiallyExpanded=true),containerColor=Cream) {
+        key(state.publicKey,state.demo) { WalletView(model,state,walletToken) {walletOpen=false;walletToken=null} }
     }
     selected?.let { original ->
         val listing = state.listings.firstOrNull { it.id == original.id } ?: original

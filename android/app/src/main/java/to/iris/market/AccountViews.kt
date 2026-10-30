@@ -195,7 +195,7 @@ private fun inboxContextTitle(context:MessageContext?,state:MarketSnapshot):Stri
     }
 }
 
-@Composable fun ProfileView(state:MarketSnapshot,busy:Boolean,settings:()->Unit,switchMode:()->Unit,model:MarketModel,appearance:Appearance,changeAppearance:(Appearance)->Unit,openProfile:()->Unit,openTransport:()->Unit = {}) {
+@Composable fun ProfileView(state:MarketSnapshot,busy:Boolean,settings:()->Unit,switchMode:()->Unit,model:MarketModel,appearance:Appearance,changeAppearance:(Appearance)->Unit,openProfile:()->Unit,openTransport:()->Unit = {},openWallet:()->Unit = {}) {
     var signIn by remember {mutableStateOf(false)}
     if(signIn) { if(state.profileNameRequired) ProfileSetupView(model,busy){signIn=false} else AccountSignInView(model,busy){signIn=false};return }
     val ai=remember(state.settings){JSONObject(state.settings).optJSONObject("ai")?:JSONObject()}
@@ -209,6 +209,7 @@ private fun inboxContextTitle(context:MessageContext?,state:MarketSnapshot):Stri
         }
         OutlinedButton(onClick={signIn=true},enabled=!state.demo) {Icon(Icons.Filled.Login,null);Spacer(Modifier.width(8.dp));Text("Sign in")}
         if(!state.demo&&!state.canSign) Text("Sign in with your profile key to publish listings.",color=Muted,style=MaterialTheme.typography.bodySmall)
+        TextButton(onClick=openWallet,enabled=!state.demo&&!state.profileNameRequired) { Icon(Icons.Filled.AccountBalanceWallet,null);Spacer(Modifier.width(8.dp));Text("Wallet") }
         TextButton(onClick=openTransport) { Icon(Icons.Filled.DirectionsCar,null);Spacer(Modifier.width(8.dp));Text("Transport · work, jobs and services") }
         TextButton(onClick=openProfile) { Icon(Icons.Filled.AccountCircle,null);Spacer(Modifier.width(8.dp));Text("My listings") }
         Column {

@@ -7,6 +7,7 @@ struct MarketRootView: View {
     @State private var tab = MarketTab.browse
     @State private var compose = false
     @State private var transport = false
+    @State private var wallet = false
     @State private var aiSettings = false
     @State private var selected: MarketListing?
     @State private var photoFilter: Bool?
@@ -23,6 +24,7 @@ struct MarketRootView: View {
             HStack(spacing: 9) {
                 IrisMark().frame(width: 34, height: 34)
                 Text("iris market").font(.system(size: 23, weight: .semibold)).tracking(-0.8).foregroundStyle(MarketTheme.ink)
+                if NativeTestStorage.enabled { Text("LOCAL TEST").font(.system(size: 9, weight: .bold)).padding(5).background(MarketTheme.peach, in: Capsule()) }
                 if store.demo { Text("PREVIEW").font(.system(size: 9, weight: .bold)).tracking(1).padding(.horizontal, 7).padding(.vertical, 5).background(MarketTheme.peach.opacity(0.65), in: Capsule()).accessibilityIdentifier("previewBadge") }
                 Spacer(minLength: 2)
                 Button { if store.snapshot.profileNameRequired == true && !store.demo { store.requestProfileSetup() } else { compose = true } } label: { Image(systemName: "plus").font(.system(size: 20, weight: .medium)).frame(width: 41, height: 41).background(MarketTheme.action, in: Circle()).foregroundStyle(MarketTheme.onAction) }
@@ -34,6 +36,7 @@ struct MarketRootView: View {
                         Button { store.requestProfileSetup() } label: { Label("Sign in", systemImage: "person.crop.circle.fill") }.disabled(!store.ready)
                     }
                     Divider()
+                    Button { wallet = true } label: { Label("Wallet", systemImage: "wallet.pass.fill") }.accessibilityIdentifier("openWallet")
                     Button { transport = true } label: { Label("Transport", systemImage: "car.fill") }.accessibilityIdentifier("openTransport")
                     Button { tab = .settings } label: { Label("Settings", systemImage: "gearshape.fill") }
                     Button { aiSettings = true } label: { Label("AI settings", systemImage: "sparkles") }
@@ -44,9 +47,9 @@ struct MarketRootView: View {
                         Label("System", systemImage: "circle.lefthalf.filled").tag(MarketAppearance.system.rawValue)
                     }
                 } label: {
-                    if hasProfile { UserAvatar(person: ownPerson, size: 34).frame(width: 41, height: 41) }
+                    if hasProfile { UserAvatar(person: ownPerson, size: 34).frame(width: 41, height: 41).accessibilityHidden(true) }
                     else { Image(systemName: "ellipsis").font(.system(size: 20, weight: .semibold)).frame(width: 41, height: 41).foregroundStyle(MarketTheme.muted) }
-                }.menuIndicator(.hidden).accessibilityLabel("Menu").accessibilityIdentifier("mainMenu")
+                }.menuIndicator(.hidden).accessibilityElement(children: .ignore).accessibilityLabel(Text("Menu")).accessibilityIdentifier("mainMenu")
             }.padding(.horizontal, 23).padding(.top, 10).padding(.bottom, 16)
             Group {
                 switch tab {
@@ -83,6 +86,7 @@ struct MarketRootView: View {
         }.background(MarketTheme.paper)
             .sheet(isPresented: Binding(get: { store.profileSetupRequested && store.activeSheetCount == 0 }, set: { if !$0 { store.dismissProfileSetup() } })) { ProfileNameEntryView().environmentObject(store) }
             .sheet(isPresented: $aiSettings) { AISettingsView(settings: store.snapshot.settings).marketSheetScope() }
+            .sheet(isPresented: $wallet) { WalletView().marketSheetScope() }
             .sheet(isPresented: $transport) { CourierWorkspaceView().marketSheetScope() }
             .sheet(isPresented: $compose) { NewListingView().marketSheetScope() }
             .sheet(item: $selected) { listing in ListingDetailView(listing: listing, onContact: { tab = .inbox }, onOrder: { tab = .orders }).marketSheetScope() }
@@ -95,7 +99,7 @@ struct MarketRootView: View {
     }
     private func openPushRoute() {
         guard scenePhase == .active, store.ready, !store.demo, store.snapshot.profileNameRequired != true, let route = store.pushRoute else { return }
-        compose = false; transport = false; aiSettings = false; selected = nil
+        compose = false; transport = false; wallet = false; aiSettings = false; selected = nil
         if let id = route.orderID {
             tab = .orders
             guard store.activeSheetCount == 0, store.snapshot.orders.contains(where: { $0.id == id }) else { return }

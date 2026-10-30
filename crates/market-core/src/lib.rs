@@ -192,6 +192,8 @@ impl State {
                 && !self.search_plan_applied
                 && !self.search_plan_locked,
             exchange_rates: self.rates.snapshot(listing::now()),
+            sats_display_price: self.rates.convert("1", "SATS", &self.settings.currency, listing::now()),
+            supported_currencies: rates::CURRENCIES.iter().map(|code| (*code).to_owned()).collect(),
             local_curation: self
                 .local_curation
                 .as_ref()
@@ -790,7 +792,19 @@ impl Market {
                     self.notify.notify_waiters();
                 }
             }
-            Command::SetSettings { settings } => {
+            Command::InitializeCurrency { currency } => {
+                if !s.settings.currency_initialized {
+                    let currency = currency.trim().to_ascii_uppercase();
+                    rates::validate_currency(&currency)?;
+                    let mut settings = s.settings.clone();
+                    settings.currency = currency;
+                    settings.currency_initialized = true;
+                    s.store.save_settings(&settings)?;
+                    s.settings = settings;
+                }
+            }
+            Command::SetSettings { mut settings } => {
+                settings.currency_initialized = true;
                 network::validate_relays(&settings.relays)?;
                 ai::validate(&settings.ai)?;
                 image_proxy::validate(&settings.image_proxy)?;

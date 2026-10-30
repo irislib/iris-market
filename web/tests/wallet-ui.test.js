@@ -6,7 +6,7 @@ import {TEST_MINT} from '../src/wallet/mints.ts';
 class Element extends EventTarget {
  constructor(tag='div'){super();this.tag=tag;this.children=[];this.value='';this.textContent='';this.hidden=false;this.dataset={};this.elements={};this.classList={toggle(){}};}
  append(...nodes){this.children.push(...nodes);}replaceChildren(...nodes){this.children=nodes;}setAttribute(name,value){this[name]=value;}
- set innerHTML(html){const stack=[this];for(const part of html.matchAll(/<\/?([\w-]+)([^>]*)>/g)){const [raw,tag,attrs]=part;if(raw.startsWith('</')){while(stack.length>1&&stack.pop().tag!==tag){}continue;}const el=new Element(tag);el.hidden=/\bhidden\b/.test(attrs);for(const a of attrs.matchAll(/([\w-]+)="([^"]*)"/g)){el[a[1]]=a[2];if(a[1].startsWith('data-'))el.dataset[a[1].slice(5)]=a[2];}stack.at(-1).append(el);if(el.name){const form=stack.findLast(e=>e.tag==='form');if(form)form.elements[el.name]=el;}if(!['input','br','hr'].includes(tag))stack.push(el);}}
+ set innerHTML(html){const stack=[this];for(const part of html.matchAll(/<\/?([\w-]+)([^>]*)>/g)){const [raw,tag,attrs]=part;if(raw.startsWith('</')){while(stack.length>1&&stack.pop().tag!==tag){}continue;}const el=new Element(tag);el.hidden=/\bhidden\b/.test(attrs);for(const a of attrs.matchAll(/([\w-]+)="([^"]*)"/g)){el[a[1]]=a[2];if(a[1].startsWith('data-'))el.dataset[a[1].slice(5)]=a[2];}stack.at(-1).append(el);if(el.name){const form=stack.findLast(e=>e.tag==='form');if(form)form.elements[el.name]=el;}if(!['input','br','hr','img'].includes(tag))stack.push(el);}}
  all(){return this.children.flatMap(e=>[e,...e.all()]);}
  querySelector(selector){return this.querySelectorAll(selector)[0]||null;}
  querySelectorAll(selector){return this.all().filter(el=>selector.split(',').some(s=>s[0]==='#'?el.id===s.slice(1):s==='[data-receive]'?!!el.dataset.receive:s==='[data-send]'?!!el.dataset.send:s==='form button'?el.tag==='button':false));}
@@ -59,7 +59,7 @@ test('editing or closing during token preview rejects late quote and receive cal
  await ui.openToken(token(TEST_MINT),()=>returned++);field('wallet-receive-form').onsubmit({preventDefault(){}});await tick();ui.hide();wait.resolve({mint:TEST_MINT,received:'127',fee:'1'});await tick();assert.equal(field('wallet-receive-preview').hidden,true);assert.equal(calls.receive.length,0);assert.equal(returned,0);
 });
 test('real sats retain exchange estimate and are never labeled test money',async t=>{
- const {ui,field,calls}=fixture(t,{mint:'https://mint.coinos.io'});await ui.open();assert.equal(field('wallet-balance').textContent,'128 sats');assert.equal(field('wallet-test-money').hidden,true);assert.equal(field('wallet-estimate').textContent,'€0.01');assert.ok(calls.estimates.length>0);
+ const {ui,field,calls}=fixture(t,{mint:'https://mint.coinos.io'});await ui.open();assert.equal(field('wallet-balance').textContent,'€0.01');assert.equal(field('wallet-test-money').hidden,true);assert.equal(field('wallet-estimate').textContent,'128 sats');assert.ok(calls.estimates.length>0);
 });
 test('closing after receive starts preserves result without invoking a newer order return callback',async t=>{
  const wait=defer();const {ui,field}=fixture(t,{overrides:{receive:()=>wait.promise}});let previous=0,next=0;
@@ -84,4 +84,20 @@ test('reopening an order with zero remaining balance resends the durable token w
 test('pending saved order payment recovers exact token before delivery without a new quote or spend',async t=>{
  const id='order-payment:one:'+TEST_MINT+':16';let recovered=0;const {ui,field,state,calls}=fixture(t,{balance:'0',overrides:{recover:async key=>{assert.equal(key,id);recovered++;return{token:'cashuBrecovered'};}}});state.history.push({id,type:'send',mint:TEST_MINT,amount:'16',fee:'2',state:'pending',createdAt:1700000000});let delivered;
  await ui.payOrder(order(),async token=>delivered=token,()=>{});await field('wallet-order-pay').onclick();assert.equal(delivered,'cashuBrecovered');assert.equal(recovered,1);assert.equal(calls.preview.length,0);assert.equal(calls.send.length,0);
+});
+
+test('wallet opening never requests an invoice until explicit submit',async t=>{
+ let invoices=0;const {ui,field,state,client}=fixture(t,{mint:'https://mint.coinos.io',overrides:{createInvoice:async amount=>{invoices++;const invoice={id:'invoice',amount,mint:'https://mint.coinos.io',request:'lnbc10n1'+'q'.repeat(110),state:'UNPAID',expiresAt:Math.floor(Date.now()/1000)+600};state.invoices.push(invoice);return invoice;}}});
+ await ui.open();await field('wallet-receive-tab').onclick();assert.equal(invoices,0);assert.equal(field('wallet-invoice-qr').hidden,true);
+ field('wallet-invoice-form').elements.amount.value='100';await submit(field('wallet-invoice-form'));assert.equal(invoices,1);assert.equal(field('wallet-invoice-qr').hidden,false);assert.match(field('wallet-invoice-qr').src,/^data:image\/svg\+xml/);assert.match(field('wallet-open-invoice').href,/^lightning:lnbc/);
+ state.invoices[0].state='ISSUED';await client.selectMint('https://mint.coinos.io');assert.equal(invoices,1);assert.equal(field('wallet-open-invoice').hidden,true);assert.equal(field('wallet-invoice-qr').hidden,true);
+});
+test('fake-mint invoices never expose a real-wallet link or payable QR',async t=>{
+ const {ui,field,state}=fixture(t);state.invoices.push({id:'fake',mint:TEST_MINT,amount:'100',request:'lnbc10n1'+'q'.repeat(110),state:'UNPAID'});await ui.open();assert.equal(field('wallet-open-invoice').hidden,true);assert.equal(field('wallet-invoice-qr').hidden,true);
+});
+
+test('reclaim reviews fee and invalidation before spending and ignores a closed review',async t=>{
+ let reclaimed=0;const {ui,field,state}=fixture(t,{overrides:{previewReclaimToken:async()=>({mint:TEST_MINT,amount:'16',fee:'1',received:'15'}),reclaimToken:async(id,options)=>{reclaimed++;assert.equal(id,'sent');assert.equal(options.maxFee,'1');return{amount:'15'};}}});state.history.push({id:'sent',mint:TEST_MINT,type:'send',amount:'16',fee:'1',state:'complete',createdAt:1700000000,canReclaim:true});await ui.open();
+ const reclaim=field('wallet-history').all().find(el=>el.tag==='button'&&el.textContent==='Reclaim payment');await reclaim.onclick();assert.equal(reclaimed,0);assert.equal(field('wallet-reclaim').hidden,false);assert.match(field('wallet-reclaim-summary').textContent,/15 test sats.*1 test sats/);await field('wallet-reclaim-confirm').onclick();assert.equal(reclaimed,1);
+ await reclaim.onclick();ui.hide();await field('wallet-reclaim-confirm').onclick();assert.equal(reclaimed,1);
 });

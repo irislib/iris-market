@@ -9,7 +9,7 @@ TASK_FRAMEWORK="$TASK_IOS/Frameworks/IrisMarketCore.xcframework"
 TASK_ACTION="${1:-build}"
 if [[ "$TASK_ACTION" == "--help" ]]; then
   echo 'Usage: scripts/ios-build [project|framework|build]'
-  echo 'Consumes generated ios/Bindings and a prebuilt simulator Rust static library. Does not run Cargo.'
+  echo 'Consumes generated ios/Bindings and a prebuilt simulator Rust static library. Requires the cashu-wallet Rust feature and matching bindings. Does not run Cargo.'
   exit 0
 fi
 command -v xcodegen >/dev/null || { echo 'XcodeGen is required.' >&2; exit 1; }
@@ -23,6 +23,7 @@ TASK_HEADERS=("$TASK_BINDINGS"/*.h)
 TASK_MODULES=("$TASK_BINDINGS"/*.modulemap)
 TASK_SWIFT=("$TASK_BINDINGS"/*.swift)
 [[ ${#TASK_HEADERS[@]} -gt 0 && ${#TASK_MODULES[@]} -gt 0 && ${#TASK_SWIFT[@]} -gt 0 ]] || { echo 'Generate Swift bindings into ios/Bindings first.' >&2; exit 1; }
+grep -q 'class MarketWallet' "$TASK_BINDINGS/IrisMarketCore.swift" && grep -q 'func lightningInvoiceQr' "$TASK_BINDINGS/IrisMarketCore.swift" || { echo 'Regenerate Swift bindings from the Rust library built with cashu-wallet.' >&2; exit 1; }
 mkdir -p "$TASK_IOS/Frameworks" "$TASK_DERIVED/headers"
 cp "${TASK_HEADERS[@]}" "$TASK_DERIVED/headers/"
 cp "${TASK_MODULES[0]}" "$TASK_DERIVED/headers/module.modulemap"

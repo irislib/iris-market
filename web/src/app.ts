@@ -37,7 +37,7 @@ import { createHiddenListings, wantsPhotos, installListingMenus, listingMenu } f
 import { imageUrl, readImageSettings, saveImageSettings, createStaticImage } from './media.ts';
 import { setupWallet } from './wallet-ui.ts';
 import { setupOrders } from './orders-ui.ts';
-import { setupRates, formatPrice, DEFAULT_CURRENCY, CURRENCIES } from './currency.ts';
+import { setupRates, formatPrice, formatWalletAmount, initialCurrency, DEFAULT_CURRENCY, CURRENCIES } from './currency.ts';
 import { setupPeople, createUserRow, nameFor, warmProfiles, resetPeople, refreshPeople } from './people.ts';
 setupTheme();
 setupHeaderMenu();
@@ -89,8 +89,7 @@ let relays=load('market-relays',DEFAULT_RELAYS);
 try { relays=validateRelays(relays); if(!relays.length)relays=DEFAULT_RELAYS; } catch { relays=DEFAULT_RELAYS; }
 // Local browser acceptance can use an isolated relay; production URLs ignore it.
 if(['127.0.0.1','localhost'].includes(location.hostname)&&params.has('test-relay')){try{const testRelay=new URL(params.get('test-relay'));if(testRelay.protocol==='ws:'&&['127.0.0.1','localhost'].includes(testRelay.hostname))relays=validateRelays([testRelay.href]);}catch{}}
-let preferredCurrency=load('market-currency',DEFAULT_CURRENCY);
-if(!CURRENCIES.includes(preferredCurrency))preferredCurrency=DEFAULT_CURRENCY;
+let preferredCurrency=initialCurrency({saved:load('market-currency',null),locales:navigator.languages});
 let rateService;
 const priceFor=l=>formatPrice(l,{preferredCurrency,rates:rateService?.snapshot()});
 function priceNode(l,className){const info=priceFor(l),price=node('p',undefined,className);price.append(node('span',info.primary));if(info.original&&className==='detail-price')price.append(node('small',info.original+(info.stale?' · Last known rate':''),'original-price'));if(info.source){const note=`${info.source} · ${info.stale?'Last known':'Retrieved'} ${new Date(info.updatedAt*1000).toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'})}`;price.title=note;if(className==='detail-price')price.append(node('small',note,'original-price'));}return price;}
@@ -190,12 +189,12 @@ accountUI.onState(()=>profiles?.refreshReviews());
 composerUI=setupComposer({priceNode,page:$('workspace-page'),onNavigate:()=>pageOpened(pageURL('post',location.href)),onClose:backToBrowse,account:accountUI,isPreview:()=>preview,defaultCurrency:()=>preferredCurrency,onPublished:(event,receipt)=>{if(client){applyEvent(client.records,event);client.emitChange();}toast(receipt?.accepted?.length?'Listing published':'Listing queued');}});
 ordersUI=setupOrders({onPay:order=>walletUI.payOrder(order,token=>accountUI.messaging.send(order.seller,token,orderContext(order.id)),()=>ordersUI.open(order.id)),onReceiveToken:(token,id)=>walletUI.openToken(token,()=>ordersUI.open(id)),page:$('workspace-page'),onNavigate:(id,tab)=>pageOpened(pageURL(id?'orders/'+encodeURIComponent(id):tab==='deliveries'?'courier':'orders',location.href)),onClose:backToBrowse,onUnread:count=>unreadNav('orders-tab',count),account:accountUI,isPreview:()=>preview,onProfile:key=>profiles.open(key),onReview:key=>profiles.openReviews(key),courier:{getListings:()=>courierListings,onListing:openDetail,onAnnounce:draft=>composerUI.prefill(draft),onEditListing:listing=>composerUI.edit(listing),renderListing:courierCard,loadMore:async()=>{const active=courierClient;if(!active)return;const page=await active.loadOlder();if(page.error)throw new Error(page.error);},pagination:()=>courierClient?.pagination()||{}},formatPrice:item=>priceFor(item).primary});
 $('orders-tab').onclick=()=>navigate(pageURL('orders',location.href));$('post-button').onclick=()=>navigate(pageURL('post',location.href));$('inbox-tab').onclick=()=>navigate(pageURL('messages',location.href));
-walletUI=setupWallet({page:$('workspace-page'),onNavigate:()=>pageOpened(pageURL('wallet',location.href)),onClose:backToBrowse,isPreview:()=>preview,onShareMessage:text=>accountUI.composeMessage(text),formatEstimate:amount=>{const price=priceFor({price:amount,currency:'SATS'});return price.original?price.primary:''}});
+walletUI=setupWallet({page:$('workspace-page'),onNavigate:()=>pageOpened(pageURL('wallet',location.href)),onClose:backToBrowse,isPreview:()=>preview,onShareMessage:text=>accountUI.composeMessage(text),formatEstimate:amount=>formatWalletAmount(amount,{preferredCurrency,rates:rateService?.snapshot()})});
 $('my-listings-menu').onclick=()=>{const owner=accountUI.state().ownerPubkey;if(owner)profiles.open(owner);};
 $('courier-menu').onclick=()=>navigate(pageURL('courier',location.href));$('manage-profile').onclick=()=>navigate(pageURL('settings/profile',location.href));$('wallet-tab').onclick=()=>navigate(pageURL('wallet',location.href));$('appearance-settings').onclick=()=>navigate(pageURL('settings',location.href));
 mapUI=setupMap({getListings:()=>visibleResult,onSelect:openDetail,onVisibilityChange:visible=>{mapVisible=visible;gridUI.setVisible(!visible&&['home','saved'].includes(currentRoute.type));render();},onDiscover:cells=>{if(!preview)client?.setGeohashes(cells.length?cells:nearbyFilter?geohashQueryForViewport(nearbyViewport(nearbyFilter)):[])},isDiscoveryLimited:()=>!preview&&!!client?.pagination().limited});
 for(const currency of CURRENCIES){const option=node('option',currency==='SATS'?'Satoshis':currency);option.value=currency;$('preferred-currency').append(option);}$('preferred-currency').value=preferredCurrency;$('preferred-currency').onchange=()=>{preferredCurrency=$('preferred-currency').value;persist('market-currency',preferredCurrency);render();walletUI?.refresh();ordersUI?.refresh(accountUI.state());if(focusedListing)openDetail(focusedListing,false)};
-if(!preview)rateService=setupRates({getRelays:()=>relays,onChange:()=>{render();if(focusedListing)openDetail(focusedListing,false)}});
+if(!preview)rateService=setupRates({getRelays:()=>relays,onChange:()=>{render();walletUI?.refreshDisplay();if(focusedListing)openDetail(focusedListing,false)}});
 window.addEventListener('popstate',()=>{activateRoute();requestAnimationFrame(()=>window.scrollTo(0,history.state?.marketScroll||0));});
 userLocation=setupUserLocation({onChange:render,isPreview:preview});$('your-location-filters').append(userLocation.createControl());$('your-location-settings').append(userLocation.createControl());
 const disposeAIOptionsGesture=setupLongPress($('search-mode'),()=>{

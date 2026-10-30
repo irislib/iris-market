@@ -74,7 +74,7 @@ def binding_library(cache, host):
 
 
 def bindings(stage, cache, environment, language):
-    rust(environment, 'build', '--locked', '--release', '-p', 'iris-market-app', '-p', 'iris-market-bindgen')
+    rust(environment, 'build', '--locked', '--release', '-p', 'iris-market-app', '--features', 'iris-market-app/cashu-wallet', '-p', 'iris-market-bindgen')
     host = subprocess.check_output([environment.get('RUSTC', 'rustc'), '-vV'], env=environment, text=True)
     host = next(line.split(': ', 1)[1] for line in host.splitlines() if line.startswith('host: '))
     rust(environment, 'run', '--locked', '--release', '-p', 'iris-market-bindgen', '--', 'generate', '--library', binding_library(cache, host), '--language', language, '--out-dir', stage/'Bindings', '--config', ROOT/'crates/market-app/uniffi.toml')
@@ -117,7 +117,7 @@ def build_ios(args, stage, cache, environment):
     # enables its bundled feature. Never resolve a host Homebrew/pkg-config lib.
     environment.update(LIBSQLITE3_SYS_USE_PKG_CONFIG='1', SQLITE3_NO_PKG_CONFIG='1',
                        SQLITE3_STATIC='0', SQLITE3_LIB_DIR=str(sdk/'usr/lib'), SQLITE3_INCLUDE_DIR=str(sdk/'usr/include'))
-    rust(environment, 'build', '--locked', '--release', '-p', 'iris-market-app', '--target', 'aarch64-apple-ios')
+    rust(environment, 'build', '--locked', '--release', '-p', 'iris-market-app', '--features', 'iris-market-app/cashu-wallet', '--target', 'aarch64-apple-ios')
     headers = apple_headers(stage)
     run(['xcodebuild', '-create-xcframework', '-library', cache/'aarch64-apple-ios/release/libiris_market_app.a', '-headers', headers, '-output', stage/'IrisMarketCore.xcframework'], environment)
     apple_project(stage, args.platform, environment)
@@ -137,7 +137,7 @@ def build_macos(args, stage, cache, environment):
     release.require(sys.platform == 'darwin', 'macOS release requires macOS/Xcode')
     environment['MACOSX_DEPLOYMENT_TARGET'] = '14.0'
     bindings(stage, cache, environment, 'swift')
-    rust(environment, 'build', '--locked', '--release', '-p', 'iris-market-app', '--target', 'aarch64-apple-darwin')
+    rust(environment, 'build', '--locked', '--release', '-p', 'iris-market-app', '--features', 'iris-market-app/cashu-wallet', '--target', 'aarch64-apple-darwin')
     apple_project(stage, args.platform, environment)
     derived = Path(environment.get('MARKET_MACOS_RELEASE_DERIVED_DATA', ROOT/'macos/.build/ReleaseDerivedData'))
     archive = stage/'IrisMarket.xcarchive'
@@ -169,7 +169,7 @@ def build_android(args, stage, cache, environment):
     host = 'darwin-x86_64' if sys.platform == 'darwin' else 'linux-x86_64'
     tools = ndk/'toolchains/llvm/prebuilt'/host/'bin'
     environment.update(CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=str(tools/'aarch64-linux-android29-clang'), CC_aarch64_linux_android=str(tools/'aarch64-linux-android29-clang'), AR_aarch64_linux_android=str(tools/'llvm-ar'))
-    rust(environment, 'build', '--locked', '--release', '-p', 'iris-market-app', '--target', 'aarch64-linux-android')
+    rust(environment, 'build', '--locked', '--release', '-p', 'iris-market-app', '--features', 'iris-market-app/cashu-wallet', '--target', 'aarch64-linux-android')
     jni = stage/'jniLibs/arm64-v8a'; jni.mkdir(parents=True)
     shutil.copyfile(cache/'aarch64-linux-android/release/libiris_market_app.so', jni/'libiris_market_app.so')
     environment.update(MARKET_ANDROID_BINDINGS_DIR=str(stage/'Bindings'), MARKET_ANDROID_JNI_DIR=str(stage/'jniLibs'), MARKET_RELEASE_VERSION=args.tag[1:], MARKET_ANDROID_VERSION_CODE=str(args.build_number), ANDROID_HOME=str(sdk))

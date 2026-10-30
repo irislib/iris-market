@@ -569,6 +569,9 @@ fn display_currency_projects_browse_saved_and_author_without_mutating_signed_pri
     let dir = tempfile::tempdir().unwrap();
     offline(dir.path());
     let store = Store::open(&dir.path().join("market.sqlite")).unwrap();
+    let mut display_settings = store.settings().unwrap();
+    display_settings.currency = "EUR".into();
+    store.save_settings(&display_settings).unwrap();
     let now = listing::now();
     let book = iris_market_core::rates::RateBook::from_cache(
         &json!({"rates":{

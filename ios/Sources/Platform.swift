@@ -24,6 +24,15 @@ enum MarketPlatform {
         #endif
     }
 
+    /// Read only in response to the user's Paste token action.
+    static func paymentFromClipboard() -> String? {
+        #if os(macOS)
+        NSPasteboard.general.string(forType: .string)
+        #else
+        UIPasteboard.general.string
+        #endif
+    }
+
     static func openExternalURL(_ url: URL) {
         #if os(macOS)
         NSWorkspace.shared.open(url)

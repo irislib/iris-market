@@ -9,6 +9,7 @@ enum SecureStore {
         private var code: OSStatus { switch self { case .status(let s): return s } }
     }
     static func read(_ account: String) throws -> String? {
+        if NativeTestStorage.enabled { return try NativeTestStorage.read(account) }
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
                                    kSecAttrAccount as String: account, kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne]
         var result: CFTypeRef?
@@ -18,6 +19,7 @@ enum SecureStore {
         return value
     }
     static func write(_ value: String, account: String) throws {
+        if NativeTestStorage.enabled { try NativeTestStorage.write(value, account: account); return }
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account]
         let data = Data(value.utf8)
         let status = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
@@ -29,6 +31,7 @@ enum SecureStore {
         } else if status != errSecSuccess { throw StorageError.status(status) }
     }
     static func remove(_ account: String) throws {
+        if NativeTestStorage.enabled { try NativeTestStorage.write(nil, account: account); return }
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account]
         let status = SecItemDelete(query as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else { throw StorageError.status(status) }

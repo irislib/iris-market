@@ -307,3 +307,46 @@ test('HTTP local mint requires an explicit exact developer allowlist and survive
   assert.equal(wallet.state().balance,'64');await assert.rejects(wallet.addMint('http://127.0.0.1:3339'));
   await wallet.lock();const restored=createCashuWallet({...options,vault:createVault({backend})});await restored.restore();assert.equal(restored.state().balance,'64');await restored.destroy();
 });
+
+test('ordinary sent Cashu token is reclaimed by a fresh swap and cannot be shown or sent again',async()=>{
+ const app=make();await app.wallet.enable();await app.wallet.receive(token(64));
+ const sent=await app.wallet.send({amount:16,maxFee:0,idempotencyKey:'order-payment:reclaim'});
+ const old=getDecodedToken(sent.token,[KEYSET]).proofs.map(p=>p.secret);
+ assert.equal(app.wallet.state().history[0].canReclaim,true);
+ const before=structuredClone(app.service.calls),preview=await app.wallet.previewReclaimToken(sent.id);
+ assert.deepEqual(preview,{mint:DEFAULT_MINT,amount:'16',fee:'0',received:'16'});assert.equal(app.service.calls.reserves,before.reserves);
+ const result=await app.wallet.reclaimToken(sent.id,{maxFee:preview.fee});assert.equal(result.state,'cancelled');assert.equal(app.wallet.state().balance,'64');assert.equal(app.wallet.state().history[0].canReclaim,false);
+ const stored=await app.vault.get('wallet');assert(!stored.mints[0].proofs.some(item=>old.includes(item.proof.secret)));
+ assert(old.every(secret=>app.service.states.get(secret)==='SPENT'));
+ assert.equal(app.wallet.state().history.filter(op=>op.type==='receive').length,1,'internal reclaim is hidden');
+ await assert.rejects(app.wallet.getToken(sent.id),/not ready/);
+ await assert.rejects(app.wallet.send({amount:16,maxFee:0,idempotencyKey:'order-payment:reclaim'}),/reclaimed/);
+ const swaps=app.service.calls.swaps;await app.wallet.reclaimToken(sent.id);assert.equal(app.service.calls.swaps,swaps);
+});
+test('lost token reclaim response recovers across restart with exact outputs and never revives sent proofs',async()=>{
+ const app=make();await app.wallet.enable();await app.wallet.receive(token(64));const sent=await app.wallet.send({amount:16,maxFee:0});
+ app.service.interruptSwap();await assert.rejects(app.wallet.reclaimToken(sent.id));assert.equal(app.wallet.state().balance,'48');assert.equal(app.wallet.state().mints[0].reserved,'16');assert.equal(app.wallet.state().pending[0].id,sent.id);
+ await assert.rejects(app.wallet.getToken(sent.id));await app.wallet.lock();const restart=make(app.service,app.backend);await restart.wallet.restore();
+ const swaps=app.service.calls.swaps;await restart.wallet.recover(sent.id);assert.equal(restart.wallet.state().balance,'64');assert.equal(restart.wallet.state().pending.length,0);assert.equal(app.service.calls.swaps,swaps);assert.equal(restart.wallet.state().history[0].state,'cancelled');
+});
+test('token redeemed before reclaim or winning mint race never becomes spendable again',async()=>{
+ const app=make();await app.wallet.enable();await app.wallet.receive(token(64));const sent=await app.wallet.send({amount:16,maxFee:0});
+ for(const input of getDecodedToken(sent.token,[KEYSET]).proofs)app.service.states.set(input.secret,'SPENT');
+ const swaps=app.service.calls.swaps;await assert.rejects(app.wallet.previewReclaimToken(sent.id),/spent or pending/);await assert.rejects(app.wallet.reclaimToken(sent.id),/spent or pending/);assert.equal(app.service.calls.swaps,swaps);assert.equal(app.wallet.state().balance,'48');
+ const race=await app.wallet.send({amount:8,maxFee:0});app.service.meltWinsRace();await assert.rejects(app.wallet.reclaimToken(race.id));await assert.rejects(app.wallet.recover(race.id));assert.equal(app.wallet.state().balance,'40');assert.equal(app.wallet.state().mints[0].reserved,'8');
+});
+test('reclaim journal persistence failure prevents mint mutation and structured tokens are rejected',async()=>{
+ const app=make();await app.wallet.enable();await app.wallet.receive(token(32));const sent=await app.wallet.send({amount:8,maxFee:0}),swaps=app.service.calls.swaps;
+ const originalPut=app.vault.put.bind(app.vault);app.vault.put=async(name,next)=>{if(next.ops.some(op=>op.parentTokenId))throw Error('full');return originalPut(name,next);};
+ await assert.rejects(app.wallet.reclaimToken(sent.id));assert.equal(app.service.calls.swaps,swaps);assert.equal(app.wallet.state().history[0].canReclaim,true);assert.equal(await app.wallet.getToken(sent.id),sent.token);
+ app.vault.put=originalPut;const stored=await app.vault.get('wallet'),record=stored.ops.find(op=>op.id===sent.id),decoded=getDecodedToken(sent.token,[KEYSET]);
+ const secret=JSON.stringify(['P2PK',{nonce:'test',data:POINT,tags:[]}]);decoded.proofs[0].secret=secret;record.token=getEncodedToken(decoded);stored.mints[0].proofs.find(p=>p.operationId===sent.id&&p.state==='sent').proof.secret=secret;
+ await app.vault.put('wallet',stored);await app.wallet.lock();await app.wallet.unlock();assert.equal(app.wallet.state().history[0].canReclaim,false);await assert.rejects(app.wallet.reclaimToken(sent.id),/ordinary/);assert.equal(app.service.calls.swaps,swaps);
+});
+test('actual Cashu SDK reclaims sent token with mint fees and recovers lost response',async t=>{
+ const {createTestMint,TEST_MINT}=await import('./fixtures/cashu-mint.mjs');const mint=createTestMint({feePpk:1000}),previousFetch=globalThis.fetch;globalThis.fetch=mint.fetch;t.after(()=>{globalThis.fetch=previousFetch;});
+ const backend=memoryBackend(),wallet=createCashuWallet({vault:createVault({backend})});await wallet.enable({mintUrl:TEST_MINT});await wallet.receive(mint.issueToken(128));const quote=await wallet.previewSend(16),sent=await wallet.send({amount:16,maxFee:quote.fee});
+ const preview=await wallet.previewReclaimToken(sent.id);assert(BigInt(preview.fee)>0n);const before=BigInt(wallet.state().balance),swaps=mint.calls.swaps;
+ await assert.rejects(wallet.reclaimToken(sent.id,{maxFee:'0'}),/fee changed/);assert.equal(mint.calls.swaps,swaps);
+ mint.interruptNext('swap');await assert.rejects(wallet.reclaimToken(sent.id,{maxFee:preview.fee}));await wallet.lock();const restored=createCashuWallet({vault:createVault({backend})});await restored.restore();const count=mint.calls.swaps;await restored.recover(sent.id);assert.equal(mint.calls.swaps,count);assert.equal(BigInt(restored.state().balance),before+BigInt(preview.received));assert.equal(restored.state().history[0].state,'cancelled');
+});

@@ -142,7 +142,7 @@ final class MarketStore: ObservableObject {
             pushSyncSequence += 1; let sequence = pushSyncSequence
             Task { await pushRuntime.sync(owner:previousOwner,filtersJSON:"{}",enabled:false,token:nil,sequence:sequence) }
         }
-        if !demo { NativePushCredentials.remove() }
+        if !demo && !NativeTestStorage.enabled { NativePushCredentials.remove() }
         #endif
         localAIRequest = UUID(); localAITask?.cancel(); localAITask = nil; localAIProgress = nil; localAIStatus = nil
         let previous = app
@@ -163,12 +163,14 @@ final class MarketStore: ObservableObject {
                     if !demo { try SecureStore.write(try publicKeyForSecret(secret: secret), account: "identity.bootstrap") }
                     try SecureStore.write(secret, account: credential)
                 }
-                let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                let base = try NativeTestStorage.applicationSupportDirectory()
                 let baseFolder = base.appendingPathComponent(demo ? "IrisMarketPreview" : "IrisMarket", isDirectory: true)
                 let app: MarketApp
                 var publicDirectory = baseFolder
                 var notificationDeviceSecret = secret
-                if !demo, let owner = try SecureStore.read("active.account") {
+                if NativeTestStorage.enabled {
+                    app = try MarketApp(dataDir: baseFolder.path, secretKey: secret, demo: true)
+                } else if !demo, let owner = try SecureStore.read("active.account") {
                     guard let bundle = try NativeAccountBundle.load(owner) else { throw SecureStore.StorageError.status(-25300) }
                     let folder = bundle.legacy ? baseFolder : baseFolder.appendingPathComponent("accounts/\(bundle.ownerPublicKey)", isDirectory: true)
                     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -188,13 +190,21 @@ final class MarketStore: ObservableObject {
                         try SecureStore.remove("identity.bootstrap")
                     } else { app = try MarketApp(dataDir: baseFolder.path, secretKey: secret, demo: demo) }
                 }
-                if !demo {
+                if !demo && !NativeTestStorage.enabled {
                     let owner = try MarketJSON.decoder().decode(MarketSnapshot.self,from:Data(try app.snapshot().utf8)).publicKey
                     for payload in NativePushPendingFile.drain(owner:owner) { try? app.ingestPushPayload(payload:payload) }
                 }
                 var initial = try app.command(request: #"{"type":"set_filter","query":"","side":"offer","ai_search":false}"#)
+                let preferences = try MarketJSON.decoder().decode(MarketSnapshot.self, from: Data(initial.utf8))
+                if !preferences.settings.currencyInitialized {
+                    let supported = preferences.supportedCurrencies ?? nativeCurrencyOptions
+                    let regional = Locale.current.currency?.identifier.uppercased() ?? "USD"
+                    let currency = supported.contains(regional) ? regional : "USD"
+                    let request = String(decoding: try JSONSerialization.data(withJSONObject: ["type": "initialize_currency", "currency": currency]), as: UTF8.self)
+                    initial = try app.command(request: request)
+                }
                 let ownerForPush = try MarketJSON.decoder().decode(MarketSnapshot.self, from:Data(initial.utf8)).publicKey
-                if !demo {
+                if !demo && !NativeTestStorage.enabled {
                     initial = try app.command(request:"{\"type\":\"set_push_enabled\",\"enabled\":\(UserDefaults.standard.bool(forKey:"market.notifications.\(ownerForPush)") && NativePushStorage.configured)}")
                 }
                 let snapshot = try MarketJSON.decoder().decode(MarketSnapshot.self, from: Data(initial.utf8))
@@ -202,9 +212,9 @@ final class MarketStore: ObservableObject {
                     guard let self, self.accountGeneration == generation else { app.shutdown(); return }
                     self.app = app; self.snapshot = snapshot; self.ready = true
                     self.pushPublicDirectory = publicDirectory; self.pushDeviceSecret = notificationDeviceSecret
-                    self.pushEnabled = !demo && NativePushStorage.configured && UserDefaults.standard.bool(forKey:"market.notifications.\(snapshot.publicKey)")
+                    self.pushEnabled = !demo && !NativeTestStorage.enabled && NativePushStorage.configured && UserDefaults.standard.bool(forKey:"market.notifications.\(snapshot.publicKey)")
                     #if os(iOS)
-                    if !demo { MarketPushDelegate.store = self }
+                    if !demo && !NativeTestStorage.enabled { MarketPushDelegate.store = self }
                     if self.pushEnabled, let shared = NativePushStorage.directory(owner:snapshot.publicKey) {
                         try? NativePushCredentials(owner:snapshot.publicKey,deviceSecret:notificationDeviceSecret,directory:shared.path).save()
                         UIApplication.shared.registerForRemoteNotifications()
@@ -575,7 +585,7 @@ final class MarketStore: ObservableObject {
     }
 
     func signIn(secret: String, completion: @escaping (Bool) -> Void) {
-        guard !demo, !busy else { return }
+        guard !NativeTestStorage.enabled, !demo, !busy else { return }
         busy = true; alert = nil
         let relays = snapshot.settings.relays
         let attempt = accountGeneration
@@ -630,7 +640,7 @@ final class MarketStore: ObservableObject {
         }
     }
     func beginDeviceLink() {
-        guard !demo, !busy else { return }
+        guard !NativeTestStorage.enabled, !demo, !busy else { return }
         busy = true; alert = nil
         queue.async { [weak self] in
             do {
@@ -644,11 +654,11 @@ final class MarketStore: ObservableObject {
         }
     }
     func pollDeviceLink() {
-        guard !linkPolling, let link = deviceLink, let secret = linkingSecret, deviceLinkURL != nil else { return }
+        guard !NativeTestStorage.enabled, !linkPolling, let link = deviceLink, let secret = linkingSecret, deviceLinkURL != nil else { return }
         linkPolling = true
         queue.async { [weak self] in
             do {
-                let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("IrisMarket/accounts", isDirectory: true)
+                let base = try NativeTestStorage.applicationSupportDirectory().appendingPathComponent("IrisMarket/accounts", isDirectory: true)
                 let approval = try link.poll(accountRoot: base.path)
                 try SecureStore.write(link.bootstrap(), account: "device-link.bootstrap")
                 if let raw = approval, let result = try JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any], let owner = result["owner_public_key"] as? String, let proof = result["authorization"] {
@@ -672,6 +682,7 @@ final class MarketStore: ObservableObject {
     func consumePushRoute() { pushRoute = nil }
     func setActivePushContext(peerID:String?,threadID:String?) { activePushPeerID = peerID; activePushThreadID = threadID }
     func syncPush() {
+        guard !NativeTestStorage.enabled else { return }
         #if os(iOS)
         guard !demo, ready, let app, !snapshot.publicKey.isEmpty else { return }
         let owner = snapshot.publicKey, generation = accountGeneration, intent = pushIntent
@@ -687,7 +698,7 @@ final class MarketStore: ObservableObject {
     }
     func setPushEnabled(_ enabled: Bool) {
         #if os(iOS)
-        guard !demo, ready, !busy, (!enabled || NativePushStorage.configured), snapshot.profileNameRequired != true, let app else { return }
+        guard !NativeTestStorage.enabled, !demo, ready, !busy, (!enabled || NativePushStorage.configured), snapshot.profileNameRequired != true, let app else { return }
         pushIntent += 1
         let intent = pushIntent, owner = snapshot.publicKey, generation = accountGeneration
         let source = pushPublicDirectory, device = pushDeviceSecret
@@ -768,4 +779,20 @@ private struct NativeAccountBundle: Codable {
         return try JSONDecoder().decode(Self.self, from: Data(value.utf8))
     }
     func save() throws { try SecureStore.write(String(decoding: JSONEncoder().encode(self), as: UTF8.self), account: "account.\(ownerPublicKey)") }
+}
+
+extension MarketStore {
+    /// Called only after the user explicitly opens the independent money wallet.
+    func walletCredentials() throws -> WalletCredentials.Material {
+        guard !demo, ready else { throw WalletCredentials.Failure.invalidIdentity }
+        let owner = snapshot.publicKey
+        let device: String
+        if let active = try SecureStore.read("active.account"), active == owner,
+           let bundle = try NativeAccountBundle.load(owner) {
+            device = try publicKeyForSecret(secret: bundle.deviceSecret)
+        } else if let secret = try SecureStore.read("identity"), try publicKeyForSecret(secret: secret) == owner {
+            device = owner
+        } else { throw WalletCredentials.Failure.invalidIdentity }
+        return try WalletCredentials.loadOrCreate(owner: owner, device: device)
+    }
 }

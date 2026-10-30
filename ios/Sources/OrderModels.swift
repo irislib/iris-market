@@ -91,12 +91,14 @@ struct MarketShipmentLocation: Codable, Hashable {
 }
 
 struct CashuPayment: Decodable, Hashable {
+    let testOnly: Bool?
     let token: String
     let amount: String
     let mint: String
     let unit: String
     let status: String
-    var formattedAmount: String { amount + " " + (["sat", "sats"].contains(unit.lowercased()) ? "sats" : unit.uppercased()) }
+    var isTestMoney: Bool { testOnly == true || ["testnut.cashu.space", "nofees.testnut.cashu.space"].contains(URL(string: mint)?.host ?? "") }
+    var formattedAmount: String { amount + " " + (["sat", "sats"].contains(unit.lowercased()) ? (isTestMoney ? "test sats" : "sats") : unit.uppercased()) }
     var mintLabel: String { URL(string: mint)?.host ?? "Mint" }
 }
 

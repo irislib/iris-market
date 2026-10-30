@@ -109,8 +109,13 @@ pub struct Settings {
     pub relays: Vec<String>,
     pub ai: AiSettings,
     pub image_proxy: ImageProxySettings,
+    #[serde(default = "eur")]
     pub currency: String,
+    // Missing in an existing saved record means preserve that user's choice.
+    #[serde(default = "currency_already_initialized")]
+    pub currency_initialized: bool,
 }
+fn currency_already_initialized() -> bool { true }
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -124,7 +129,8 @@ impl Default for Settings {
             ],
             ai: AiSettings::default(),
             image_proxy: ImageProxySettings::default(),
-            currency: eur(),
+            currency: "USD".into(),
+            currency_initialized: false,
         }
     }
 }
@@ -157,6 +163,8 @@ pub struct Snapshot {
     pub search_plan_tags: Vec<String>,
     pub search_plan_pending: bool,
     pub exchange_rates: crate::rates::RateSnapshot,
+    pub sats_display_price: Option<crate::rates::DisplayPrice>,
+    pub supported_currencies: Vec<String>,
     pub local_curation: Option<crate::local_ai::Batch>,
     pub public_key: String,
     pub can_sign: bool,
@@ -230,6 +238,9 @@ pub enum Command {
     },
     SetSettings {
         settings: Settings,
+    },
+    InitializeCurrency {
+        currency: String,
     },
     BeginLocalCuration,
     ContinueSearch,

@@ -44,14 +44,14 @@ if [[ "$skip_rust" == false ]]; then
     *) echo 'Build on macOS or Linux.' >&2; exit 1 ;;
   esac
   cd "$root"
-  CARGO_TARGET_DIR="$target" cargo build --locked -p iris-market-app
+  CARGO_TARGET_DIR="$target" cargo build --locked -p iris-market-app --features cashu-wallet
   CARGO_TARGET_DIR="$target" cargo run --locked -p iris-market-bindgen -- generate --library "$host_lib" --language kotlin --out-dir "$root/android/app/build/generated/uniffi" --config "$root/crates/market-app/uniffi.toml"
   bin="$ndk/toolchains/llvm/prebuilt/$host_tag/bin"
   CARGO_TARGET_DIR="$target" \
     CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$bin/aarch64-linux-android29-clang" \
     CC_aarch64_linux_android="$bin/aarch64-linux-android29-clang" \
     AR_aarch64_linux_android="$bin/llvm-ar" \
-    cargo build --locked -p iris-market-app --target aarch64-linux-android
+    cargo build --locked -p iris-market-app --features cashu-wallet --target aarch64-linux-android
 fi
 lib="$target/aarch64-linux-android/debug/libiris_market_app.so"
 if [[ ! -f "$lib" ]]; then echo 'Missing Android Rust library; build the shared core first.' >&2; exit 1; fi

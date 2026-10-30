@@ -32,6 +32,8 @@ struct MarketSnapshot: Decodable {
     var aiConfigured: Bool?
     var profileNameRequired: Bool?
     var settings: MarketSettings = .init()
+    var satsDisplayPrice: MarketDisplayPrice?
+    var supportedCurrencies: [String]?
     var conversations: [MarketConversation] = []
     var orders: [MarketOrder] = []
     var invite: String?
@@ -120,15 +122,17 @@ struct MarketSettings: Codable, Equatable {
     var relays: [String] = ["wss://temp.iris.to", "wss://vault.iris.to", "wss://relay.damus.io", "wss://relay.snort.social", "wss://relay.primal.net", "wss://nos.lol"]
     var ai: AISettings = .init()
     var imageProxy: ImageProxySettings = .init()
-    var currency = "EUR"
+    var currency = "USD"
+    var currencyInitialized = true
     init() {}
-    private enum CodingKeys: String, CodingKey { case relays, ai, imageProxy, currency }
+    private enum CodingKeys: String, CodingKey { case relays, ai, imageProxy, currency, currencyInitialized }
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         relays = try values.decodeIfPresent([String].self, forKey: .relays) ?? relays
         ai = try values.decodeIfPresent(AISettings.self, forKey: .ai) ?? ai
         imageProxy = try values.decodeIfPresent(ImageProxySettings.self, forKey: .imageProxy) ?? imageProxy
         currency = try values.decodeIfPresent(String.self, forKey: .currency) ?? currency
+        currencyInitialized = try values.decodeIfPresent(Bool.self, forKey: .currencyInitialized) ?? true
     }
 }
 struct ImageProxySettings: Codable, Equatable {

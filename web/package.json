@@ -34,7 +34,8 @@
     "nostr-social-graph": "https://github.com/mmalmi/nostr-social-graph/releases/download/v2.0.4/nostr-social-graph-2.0.4.tgz",
     "nostr-tools": "2.25.2",
     "onnxruntime-web": "1.31.0-dev.20260914-8d85527a0",
-    "pmtiles": "4.4.1"
+    "pmtiles": "4.4.1",
+    "qrcode-generator": "2.0.4"
   },
   "devDependencies": {
     "esbuild": "0.25.12",

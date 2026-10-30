@@ -13,7 +13,7 @@ TASK_HEADERS="$TASK_MACOS/.build/headers"
 TASK_ACTION="${1:-build}"
 if [[ "$TASK_ACTION" == "--help" ]]; then
   echo 'Usage: scripts/macos-build [project|build]'
-  echo 'Consumes matching ios/Bindings and a prebuilt host macOS Rust static library. Does not run Cargo.'
+  echo 'Consumes matching ios/Bindings and a prebuilt host macOS Rust static library. Requires the cashu-wallet Rust feature and matching bindings. Does not run Cargo.'
   echo 'MARKET_MACOS_STATIC_LIB selects that archive; MARKET_MACOS_DERIVED_DATA selects the Xcode cache.'
   exit 0
 fi
@@ -21,6 +21,7 @@ fi
 [[ "$(uname -s)" == Darwin ]] || { echo 'The macOS build requires macOS and Xcode.' >&2; exit 1; }
 command -v xcodegen >/dev/null || { echo 'XcodeGen is required.' >&2; exit 1; }
 [[ -f "$TASK_BINDINGS/IrisMarketCore.swift" && -f "$TASK_BINDINGS/IrisMarketCoreFFI.h" && -f "$TASK_BINDINGS/IrisMarketCoreFFI.modulemap" ]] || { echo 'Generate matching Swift bindings into ios/Bindings first.' >&2; exit 1; }
+grep -q 'class MarketWallet' "$TASK_BINDINGS/IrisMarketCore.swift" && grep -q 'func lightningInvoiceQr' "$TASK_BINDINGS/IrisMarketCore.swift" || { echo 'Regenerate Swift bindings from the Rust library built with cashu-wallet.' >&2; exit 1; }
 mkdir -p "$TASK_HEADERS"
 cp "$TASK_BINDINGS/IrisMarketCoreFFI.h" "$TASK_HEADERS/"
 cp "$TASK_BINDINGS/IrisMarketCoreFFI.modulemap" "$TASK_HEADERS/module.modulemap"

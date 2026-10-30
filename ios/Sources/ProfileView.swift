@@ -8,12 +8,15 @@ struct ProfileView: View {
     @State private var publicProfile = false
     @State private var connectionSettings = false
     @State private var transport = false
+    @State private var wallet = false
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 25) {
                 Text("Settings").font(.system(size: 30, weight: .medium)).tracking(-1).foregroundStyle(MarketTheme.ink)
                 VStack(spacing: 0) {
                     profileRow("Sign in", symbol: "person.crop.circle.badge.checkmark") { signIn = true }.disabled(store.demo)
+                    Divider().padding(.leading, 61)
+                    profileRow("Wallet", subtitle: "Cashu tokens and Lightning top ups", symbol: "wallet.pass.fill") { wallet = true }.accessibilityIdentifier("walletSettingsRow")
                     Divider().padding(.leading, 61)
                     profileRow("Transport", subtitle: "Find work, manage jobs and offer your service", symbol: "car.fill") { transport = true }.accessibilityIdentifier("transportWorkspace")
                     Divider().padding(.leading, 61)
@@ -38,7 +41,8 @@ struct ProfileView: View {
                 }.padding(20).background(MarketTheme.surface, in: RoundedRectangle(cornerRadius: 23))
                 if store.demo { Label("Preview mode uses sample listings and stays offline.", systemImage: "eye").font(.system(size: 12)).foregroundStyle(MarketTheme.muted) }
             }.padding(23)
-        }.sheet(isPresented: $transport) { CourierWorkspaceView().marketSheetScope() }
+        }.sheet(isPresented: $wallet) { WalletView().marketSheetScope() }
+            .sheet(isPresented: $transport) { CourierWorkspaceView().marketSheetScope() }
             .sheet(isPresented: $signIn) { if store.snapshot.profileNameRequired == true { ProfileNameEntryView() } else { AccountSignInView().marketSheetScope() } }
             .sheet(isPresented: $aiSettings) { AISettingsView(settings: store.snapshot.settings).marketSheetScope() }
             .sheet(isPresented: $publicProfile) { AuthorProfileView(author: store.snapshot.publicKey).marketSheetScope() }

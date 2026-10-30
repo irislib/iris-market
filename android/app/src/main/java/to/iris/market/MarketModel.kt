@@ -92,6 +92,8 @@ data class MarketSnapshot(
     val localCuration: LocalCurationBatch? = null,
     val searchDiscovery: SearchDiscoveryStatus? = null,
     val searchGeneration: Long = 0, val searchPlanPending: Boolean = false, val searchPlanTags: List<String> = emptyList(),
+    val satsDisplayPrice: PriceDisplay? = null,
+    val supportedCurrencies: List<String> = emptyList(),
     val revision: Long = 0, val aiMessage: String? = null, val aiTestResult: NativeAITestResult? = null, val savedListings: List<Listing>? = null, val aiConfigured: Boolean = true, val profileNameRequired: Boolean = false
 ) {
     companion object {
@@ -105,6 +107,8 @@ data class MarketSnapshot(
                 query = o.optString("query"), side = o.optString("side", "offer"),
                 listings = (0 until ls.length()).map { Listing.parse(ls.getJSONObject(it)) }, savedCount = o.optInt("saved_count"),
                 settings = (o.optJSONObject("settings") ?: JSONObject()).toString(),
+                supportedCurrencies = o.optJSONArray("supported_currencies")?.let { list -> (0 until list.length()).map { list.getString(it) } } ?: emptyList(),
+                satsDisplayPrice = o.optJSONObject("sats_display_price")?.let { d -> PriceDisplay(d.optDouble("amount"),d.optString("currency"),d.optBoolean("approximate"),d.optBoolean("stale")) },
                 savedListings = o.optJSONArray("saved_listings")?.let { a -> (0 until a.length()).map { Listing.parse(a.getJSONObject(it)) } },
                 aiConfigured = o.optBoolean("ai_configured",true), profileNameRequired = o.optBoolean("profile_name_required"),
                 conversations = (0 until cs.length()).map { i ->
@@ -255,6 +259,14 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
             catch (_: Exception) { alert.value = "Your market could not open. Close and reopen the app to try again." }
         }
     }
+    /** Called only after an explicit wallet action; returns a separate secure wallet seed. */
+    suspend fun walletMaterial(expectedOwner:String): WalletCredentials.Material = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            check(!preview && state.value.publicKey==expectedOwner && expectedOwner.isNotBlank()) { "Choose your profile before opening its wallet." }
+            val device=pushDeviceSecret ?: error("Your device is not ready.")
+            WalletCredentials.loadOrCreate(getApplication(),state.value.publicKey,publicKeyForSecret(device))
+        }
+    }
     private fun openSavedAccount() {
         pushAccountReady=false
         invalidateAITest()
@@ -295,6 +307,14 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
             } else MarketApp(base.absolutePath,legacy,preview)
         }
         core?.command(JSONObject().put("type", "set_filter").put("query", "").put("side", "offer").put("ai_search", false).toString())
+        core?.let { app ->
+            val initial = MarketSnapshot.parse(app.snapshot())
+            if (!JSONObject(initial.settings).optBoolean("currency_initialized", true)) {
+                val regional = runCatching { java.util.Currency.getInstance(java.util.Locale.getDefault()).currencyCode }.getOrDefault("USD")
+                val preferred = if (initial.supportedCurrencies.contains(regional)) regional else "USD"
+                app.command(JSONObject().put("type","initialize_currency").put("currency",preferred).toString())
+            }
+        }
         refreshSnapshot(reset = true)
         val notificationsEnabled=!preview && pushSecure.get("enabled-${state.value.publicKey}")=="true"
         core?.command(JSONObject().put("type","set_push_enabled").put("enabled",notificationsEnabled).toString())

@@ -11,8 +11,18 @@ export interface RatesOptions extends RateFetchOptions { getRelays?: () => strin
 export interface PriceOptions { preferredCurrency?: string; rates?: RateSnapshot; locale?: string | string[]; now?: number }
 export interface PriceListing { price: string | number; currency: string }
 
-export const DEFAULT_CURRENCY = 'EUR'
+export const DEFAULT_CURRENCY = 'USD'
 export const CURRENCIES = Object.freeze(['EUR', 'USD', 'GBP', 'SEK', 'NOK', 'DKK', 'CHF', 'CAD', 'AUD', 'JPY', 'CNY', 'INR', 'SATS', 'BTC'])
+/** First-run default only; an explicit choice always wins. No location/network access. */
+export function initialCurrency({saved,knownCountry,locales=[]}:{saved?:unknown;knownCountry?:string;locales?:readonly string[]}={}) {
+  const choice=normalizeCurrency(saved);if(CURRENCIES.includes(choice))return choice;
+  const byCountry:Record<string,string>={US:'USD',GB:'GBP',SE:'SEK',NO:'NOK',DK:'DKK',CH:'CHF',LI:'CHF',CA:'CAD',AU:'AUD',JP:'JPY',CN:'CNY',IN:'INR'};
+  for(const country of 'AT BE BG CY DE EE ES FI FR GR HR IE IT LT LU LV MT NL PT SI SK AD MC SM VA'.split(' '))byCountry[country]='EUR';
+  const known=byCountry[knownCountry?.toUpperCase()||''];if(known)return known;
+  for(const language of locales)try{const region=new Intl.Locale(language).region;if(region&&byCountry[region])return byCountry[region];}catch{}
+  return DEFAULT_CURRENCY;
+}
+
 export const RATE_POLICY = Object.freeze({ freshSeconds: 15 * 60, maxAgeSeconds: 4 * 60 * 60, refreshMs: 5 * 60 * 1000, requestTimeoutMs: 8000, nostrTimeoutMs: 2500, maxHttpBytes: 128 * 1024, maxRates: 1024, maxNostrEvents: 64 })
 // Source schema and publisher reviewed at this immutable Snort revision:
 // https://github.com/v0l/snort/blob/d750544e9ba29f929bbc019a747399359fa9f9fa/packages/app/src/Hooks/useRates.tsx
@@ -208,6 +218,13 @@ function displayAmount(value, currency, locale, original = false) {
     const smallDigits = number > 0 && number < 0.01 ? Math.min(8, Math.ceil(-Math.log10(number)) + 1) : baseDigits
     return new Intl.NumberFormat(locale, { style: 'currency', currency, maximumFractionDigits: original ? Math.max(baseDigits, fractionDigits(value)) : Math.max(baseDigits, smallDigits) }).format(number)
   } catch { return `${value} ${currency}` }
+}
+
+export function formatWalletAmount(sats: string, { preferredCurrency = DEFAULT_CURRENCY, rates, locale, now = seconds() }: PriceOptions = {}) {
+  const currency = normalizeCurrency(preferredCurrency);
+  if (currency === 'SATS') return '';
+  const converted = convert(sats, 'SATS', currency, rates, { now });
+  return converted ? displayAmount(converted.amount, currency, locale, !converted.approximate) : '';
 }
 
 export function formatPrice(listing: PriceListing, { preferredCurrency = DEFAULT_CURRENCY, rates, locale, now = seconds() }: PriceOptions = {}) {

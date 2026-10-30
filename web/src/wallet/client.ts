@@ -9,10 +9,10 @@ type OperationState='pending'|'complete'|'cancelled';
 type OperationType='send'|'receive'|'mint'|'lightning';
 interface StoredQuote {quote:string;request:string;amount:string;unit:string;state:string;expiry:number;fee_reserve?:string;pubkey?:string}
 interface StoredPreview {quote:StoredQuote;inputs?:SerializedProof[];outputData:SerializedOutputData[]}
-interface WalletOperation {id:string;type:OperationType;mint:string;amount:string;fee:string;state:OperationState;createdAt:number;error?:string;phase?:string;invoiceId?:string;parentPaymentId?:string;reclaimId?:string;capacityProofs?:number;capacityBytes?:number;swap?:SerializedSwapPreview;preview?:StoredPreview;quote?:StoredQuote;meltInputs?:SerializedProof[];token?:string}
+interface WalletOperation {id:string;type:OperationType;mint:string;amount:string;fee:string;state:OperationState;createdAt:number;error?:string;phase?:string;invoiceId?:string;parentPaymentId?:string;parentTokenId?:string;reclaimId?:string;capacityProofs?:number;capacityBytes?:number;swap?:SerializedSwapPreview;preview?:StoredPreview;quote?:StoredQuote;meltInputs?:SerializedProof[];token?:string}
 interface MintRecord {url:string;proofs:{proof:SerializedProof;state:ProofState;operationId?:string}[];counters:Record<string,number>}
 interface WalletData {schema:1;seed:string;selectedMint:string;mints:MintRecord[];ops:WalletOperation[];invoices:{id:string;mint:string;amount:string;state:string;quote:StoredQuote}[];quotes:{id:string;mint:string;quote:StoredQuote}[];reviewRequired?:boolean}
-export interface WalletState {status:string;busy:boolean;error:string;password:boolean;selectedMint:string;balance:string;reviewRequired:boolean;mints:{url:string;supported:boolean;balance:string;reserved:string}[];invoices:{id:string;mint:string;request:string;amount:string;state:string;expiresAt:number}[];history:{id:string;mint:string;type:OperationType;amount:string;fee:string;state:OperationState;createdAt:number}[];pending:{id:string;mint:string;type:OperationType;amount:string;state:'pending';canReclaim:boolean;error:string}[]}
+export interface WalletState {status:string;busy:boolean;error:string;password:boolean;selectedMint:string;balance:string;reviewRequired:boolean;mints:{url:string;supported:boolean;balance:string;reserved:string}[];invoices:{id:string;mint:string;request:string;amount:string;state:string;expiresAt:number}[];history:{id:string;mint:string;type:OperationType;amount:string;fee:string;state:OperationState;createdAt:number;canReclaim:boolean}[];pending:{id:string;mint:string;type:OperationType;amount:string;state:'pending';canReclaim:boolean;error:string}[]}
 interface WalletOptions {onChange?:(state:WalletState)=>void;vault?:Vault;sdkFactory?:typeof createSdk;allowedMints?:string[];developerMint?:string}
 
 export const DEFAULT_MINT = 'https://mint.coinos.io';
@@ -32,6 +32,7 @@ const hex = bytes => [...bytes].map(byte => byte.toString(16).padStart(2, '0')).
 const fromHex = (text:string) => Uint8Array.from(text.match(/../g), part => parseInt(part, 16));
 const id = () => crypto.randomUUID();
 const now = () => Math.floor(Date.now() / 1000);
+const ordinaryProof = proof => {if(proof.witness)return false;try{const secret=JSON.parse(proof.secret);return !secret||typeof secret!=='object';}catch{return true;}};
 export function normalizeMint(value, developerMint?:string) {
   let url;
   try { url = new URL(value); } catch { fail('Enter a valid HTTPS mint address.'); }
@@ -61,6 +62,13 @@ function validateData(raw:unknown, developerMint?:string):WalletData {
     if (operation.swap) deserializeSwapPreview(operation.swap);
     if (operation.preview) unpackPreview(operation.preview);
   }
+  for(const operation of value.ops){
+    if(operation.parentTokenId){
+      const parent=value.ops.find(item=>item.id===operation.parentTokenId);
+      if(operation.type!=='receive'||operation.parentPaymentId||!parent||parent.type!=='send'||parent.mint!==operation.mint||parent.reclaimId!==operation.id||!['complete','cancelled'].includes(parent.state))fail('Invalid token reclaim recovery record.');
+    }
+    if(operation.type==='send'&&operation.reclaimId&&!value.ops.some(child=>child.id===operation.reclaimId&&child.parentTokenId===operation.id))fail('Missing token reclaim recovery record.');
+  }
   for (const mint of value.mints) for (const proof of mint.proofs) if (proof.state === 'reserved' && !operationIds.has(proof.operationId)) fail('A reserved proof is missing its recovery record.');
   return value;
 }
@@ -76,13 +84,18 @@ export function createCashuWallet({ onChange = () => {}, vault = createVault({ b
   const supported = allowedMints ? new Set(allowedMints.map(normalize)) : null;
   const isSupported = url => !supported || supported.has(url);
   const requireSupported = url => { if (!isSupported(url)) fail('This mint is not supported by this Market website. Its saved wallet data is preserved.'); };
+  const reclaimable = operation => {
+    if(operation.type!=='send'||operation.state!=='complete'||operation.reclaimId||!operation.token)return false;
+    const sent=data.mints.find(mint=>mint.url===operation.mint)?.proofs.filter(item=>item.operationId===operation.id&&item.state==='sent')||[];
+    return sent.length>0&&sent.every(item=>ordinaryProof(item.proof));
+  };
   const publicState = ():WalletState => {
     const mints = (data?.mints || []).map(mint => ({ url: mint.url, supported: isSupported(mint.url), balance: sum(mint.proofs.filter(item => item.state === 'ready').map(item => item.proof)).toString(), reserved: sum(mint.proofs.filter(item => item.state === 'reserved').map(item => item.proof)).toString() }));
     return { status, busy, error, password, selectedMint: data?.selectedMint || '', balance: mints.find(mint => mint.url === data?.selectedMint)?.balance || '0', mints,
       reviewRequired: !!data?.reviewRequired,
       invoices: (data?.invoices || []).map(invoice => ({ id: invoice.id, mint: invoice.mint, request: invoice.quote.request, amount: invoice.amount, state: invoice.state, expiresAt: invoice.quote.expiry })),
-      history: (data?.ops || []).filter(operation => !operation.parentPaymentId).map(operation => ({ id: operation.id, mint: operation.mint, type: operation.type, amount: operation.amount, fee: operation.fee, state: operation.state, createdAt: operation.createdAt })).reverse(),
-      pending: (data?.ops || []).filter(operation => operation.state === 'pending' && !operation.parentPaymentId).map(operation => ({ id: operation.id, mint:operation.mint, type: operation.type, amount: operation.amount, state: 'pending', canReclaim: operation.type === 'lightning' && ['melt-ready', 'melt'].includes(operation.phase) && !operation.reclaimId, error: operation.error || 'Check the mint to finish this operation.' })) };
+      history: (data?.ops || []).filter(operation => !operation.parentPaymentId&&!operation.parentTokenId).map(operation => ({ id: operation.id, mint: operation.mint, type: operation.type, amount: operation.amount, fee: operation.fee, state: operation.state, createdAt: operation.createdAt, canReclaim:!!reclaimable(operation) })).reverse(),
+      pending: (data?.ops || []).filter(operation => (operation.state === 'pending'||operation.type==='send'&&operation.reclaimId&&data.ops.find(item=>item.id===operation.reclaimId)?.state==='pending') && !operation.parentPaymentId&&!operation.parentTokenId).map(operation => ({ id: operation.id, mint:operation.mint, type: operation.type, amount: operation.amount, state: 'pending', canReclaim: operation.type === 'lightning' && ['melt-ready', 'melt'].includes(operation.phase) && !operation.reclaimId, error: operation.error || 'Check the mint to finish this operation.' })) };
   };
   const emit = () => { if (!destroyed) onChange(publicState()); };
   const assertReady = () => { if (status !== 'ready' || !data) fail('Unlock your wallet first.'); };
@@ -145,6 +158,11 @@ export function createCashuWallet({ onChange = () => {}, vault = createVault({ b
     const outputCount = (entry.swap?.keepOutputs?.length || 0) + (entry.swap?.sendOutputs?.length || 0) + (entry.preview?.outputData?.length || 0) + (entry.type === 'lightning' ? 64 : 0);
     const ownInputs = (entry.swap?.inputs || entry.preview?.inputs || []).filter(proof => next.mints.find(mint => mint.url === entry.mint).proofs.some(item => item.proof.secret === proof.secret)).length;
     entry = { ...entry, capacityProofs: Math.max(0, outputCount - ownInputs), capacityBytes: 16384 + outputCount * 4096 };
+    if(entry.parentTokenId){
+      const parent=next.ops.find(item=>item.id===entry.parentTokenId);
+      if(!parent||parent.type!=='send'||parent.state!=='complete'||parent.reclaimId||parent.mint!==entry.mint)fail('This token already has a reclaim operation.');
+      parent.reclaimId=entry.id;
+    }
     if (entry.parentPaymentId) {
       const parent = next.ops.find(item => item.id === entry.parentPaymentId);
       if (!parent || parent.state !== 'pending' || parent.reclaimId) fail('This payment already has a recovery operation.');
@@ -156,7 +174,7 @@ export function createCashuWallet({ onChange = () => {}, vault = createVault({ b
     for (const proof of inputs) {
       const own = mint.proofs.find(item => item.proof.secret === proof.secret);
       if (entry.type !== 'receive' && (!own || own.state !== 'ready')) fail('These funds are already reserved.');
-      if (own) { if (own.state !== 'ready' && !(entry.parentPaymentId && own.state === 'reserved' && own.operationId === entry.parentPaymentId)) fail('This token has already been used.'); own.state = 'reserved'; own.operationId = entry.id; }
+      if (own) { if (own.state !== 'ready' && !(entry.parentPaymentId && own.state === 'reserved' && own.operationId === entry.parentPaymentId)&&!(entry.parentTokenId&&own.state==='sent'&&own.operationId===entry.parentTokenId)) fail('This token has already been used.'); own.state = 'reserved'; own.operationId = entry.id; }
     }
   });
   const addProofs = (mint, proofs, state, operationId) => {
@@ -177,9 +195,10 @@ export function createCashuWallet({ onChange = () => {}, vault = createVault({ b
         addProofs(mint, result.send, 'reserved', entry.id); record.phase = 'melt-ready'; record.meltInputs = json(result.send);
       } else { addProofs(mint, result.send || [], 'sent', entry.id); record.state = 'complete'; if (token) record.token = token; }
       record.error = '';
+      if(entry.parentTokenId){const parent=next.ops.find(item=>item.id===entry.parentTokenId);parent.state='cancelled';parent.fee=(BigInt(parent.fee)+BigInt(record.fee)).toString();delete parent.token;parent.error='';}
       if (entry.parentPaymentId) { const parent = next.ops.find(item => item.id === entry.parentPaymentId); parent.state = 'cancelled'; parent.fee = (BigInt(parent.swap.fees) + BigInt(record.fee)).toString(); parent.error = ''; }
     });
-    return { id: entry.parentPaymentId || entry.id, ...(entry.parentPaymentId ? {state:'cancelled'} : {}), amount: entry.type === 'send' ? amount : entry.amount, fee: entry.fee, ...(token ? { token } : {}) };
+    return { id: entry.parentPaymentId || entry.parentTokenId || entry.id, ...(entry.parentPaymentId||entry.parentTokenId ? {state:'cancelled'} : {}), amount: entry.type === 'send' ? amount : entry.amount, fee: entry.fee, ...(token ? { token } : {}) };
   };
   const finishMint = async (entry, proofs) => {
     if (sum(proofs) !== BigInt(entry.amount)) fail('The mint returned an unexpected amount. Recovery is still pending.');
@@ -199,6 +218,8 @@ export function createCashuWallet({ onChange = () => {}, vault = createVault({ b
     try { return await attemptInner(entry, recovering); } finally { activeOperationId = previous; }
   };
   const attemptInner = async (entry, recovering = false) => {
+    if(entry.type==='send'&&entry.reclaimId){const result=await attempt(operation(entry.reclaimId),true);return {...result,id:entry.id,...(operation(entry.id).state==='cancelled'?{state:'cancelled'}:{})};}
+    if(entry.state==='cancelled')return {id:entry.id,amount:entry.amount,fee:entry.fee,state:'cancelled'};
     if (entry.state === 'complete') return { id: entry.id, amount: entry.amount, fee: entry.fee, state: 'complete', ...(entry.token ? { token: entry.token } : {}) };
     const wallet = await sdk(entry.mint);
     try {
@@ -278,6 +299,18 @@ export function createCashuWallet({ onChange = () => {}, vault = createVault({ b
     if (!selected.length || sum(selected) < amount + receiverFee + fee) fail('There are not enough available sats at this mint.');
     return { fee, receiverFee };
   };
+  const reclaimInputs=async operationId=>{
+    assertReady();if(data.reviewRequired)fail('Refresh the restored wallet before reclaiming. Stop using its original copy.');
+    const parent=operation(operationId);if(!reclaimable(parent))fail('Only an ordinary sent Cashu token can be reclaimed.');
+    const wallet=await sdk(parent.mint),info=tokenInfo(parent.token),decoded=wallet.decodeToken(parent.token);
+    if(info.mint!==parent.mint||info.amount!==parent.amount||!decoded.proofs.length||decoded.proofs.length>2048||!decoded.proofs.every(ordinaryProof)||new Set(decoded.proofs.map(proof=>proof.secret)).size!==decoded.proofs.length)fail('This token cannot be reclaimed.');
+    const saved=mintData(parent.mint).proofs;
+    if(!decoded.proofs.every(proof=>saved.some(item=>item.proof.secret===proof.secret&&item.state==='sent'&&item.operationId===parent.id)))fail('This token has already been used.');
+    const states=await wallet.checkProofsStates(decoded.proofs);
+    if(states.length!==decoded.proofs.length||states.some(state=>state.state!=='UNSPENT'))fail('This token is spent or pending. It cannot be reclaimed.');
+    const fee=BigInt(wallet.getFeesForProofs(decoded.proofs).toString());if(fee>=BigInt(parent.amount))fail('This token does not cover its reclaim fee.');
+    return {parent,wallet,decoded,fee};
+  };
   const claimInvoice = async invoiceId => {
     const invoice = data.invoices.find(invoice => invoice.id === invoiceId); if (!invoice) fail('Invoice not found.');
     const existing = data.ops.find(item => item.invoiceId === invoiceId); if (existing) return attempt(existing, true);
@@ -326,13 +359,24 @@ export function createCashuWallet({ onChange = () => {}, vault = createVault({ b
     send: ({ amount, maxFee, operationId, idempotencyKey }: {amount:unknown;maxFee:unknown;operationId?:string;idempotencyKey?:string}) => serial(async () => {
       operationId = idempotencyKey || operationId;
       const url = selected(), value = integer(amount), limit = integer(maxFee, false), wallet = await sdk(url);
-      if (operationId) { const previous = data.ops.find(item => item.id === operationId); if (previous) { if (previous.type !== 'send' || previous.mint !== url || previous.amount !== value.toString()) fail('Operation identifier belongs to a different transfer.'); return attempt(previous, true); } }
+      if (operationId) { const previous = data.ops.find(item => item.id === operationId); if (previous) { if (previous.type !== 'send' || previous.mint !== url || previous.amount !== value.toString()) fail('Operation identifier belongs to a different transfer.');if(previous.reclaimId||previous.state==='cancelled')fail('This token was reclaimed or is being reclaimed. Create a new transfer instead.'); return attempt(previous, true); } }
       const preview = await wallet.prepareSwapToSend(value, spendable(url));
       if (BigInt(preview.fees.toString()) > limit) fail('The mint fee changed. Review the transfer again.');
       const record = { ...entry('send', url, value, preview.fees), ...(operationId ? {id:operationId} : {}), swap: serializeSwapPreview(preview) };
       await persistOperation(record); return attempt(record);
     }),
-    getToken: operationId => serial(async () => { assertReady(); const record = operation(operationId); if (record.type !== 'send' || record.state !== 'complete' || !record.token) fail('This token is not ready.'); return record.token; }),
+    getToken: operationId => serial(async () => { assertReady(); const record = operation(operationId); if (record.type !== 'send' || record.state !== 'complete' || record.reclaimId || !record.token) fail('This token is not ready.'); return record.token; }),
+    previewReclaimToken: operationId=>serial(async()=>{const {parent,fee}=await reclaimInputs(operationId);return {mint:parent.mint,amount:parent.amount,fee:fee.toString(),received:(BigInt(parent.amount)-fee).toString()};}),
+    reclaimToken:(operationId,{maxFee='0'}:{maxFee?:unknown}={})=>serial(async()=>{
+      assertReady();const parent=operation(operationId);
+      if(parent.type!=='send')fail('Only a sent Cashu token can be reclaimed.');
+      if(parent.reclaimId)return attempt(parent,true);
+      const limit=integer(maxFee,false),{wallet,decoded}=await reclaimInputs(operationId);
+      const preview=await wallet.prepareSwapToReceive(decoded);
+      if(BigInt(preview.fees.toString())>limit)fail('The reclaim fee changed. Review the token again.');
+      const record={...entry('receive',parent.mint,preview.amount,preview.fees),parentTokenId:parent.id,swap:serializeSwapPreview(preview)};
+      await persistOperation(record);return attempt(record);
+    }),
     createInvoice: (amount, { invoiceId }: {invoiceId?:string} = {}) => serial(async () => {
       if (invoiceId) { const previous = data.invoices.find(item => item.id === invoiceId); if (previous) { if (previous.mint !== selected() || previous.amount !== integer(amount).toString()) fail('Invoice identifier belongs to a different request.'); return {id:previous.id, request:previous.quote.request, amount:previous.amount, state:previous.state, expiresAt:previous.quote.expiry}; } }
       const url = selected(), value = integer(amount), wallet = await sdk(url), quote = await wallet.createMintQuoteBolt11(value);

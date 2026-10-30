@@ -5,7 +5,7 @@ import Security
 /// Called only by the optional wallet's explicit open flow, never on app startup.
 enum WalletCredentials {
     private static let lock = NSLock()
-    struct Material: CustomStringConvertible, CustomDebugStringConvertible {
+    struct Material: Sendable, CustomStringConvertible, CustomDebugStringConvertible {
         var description: String { "Wallet credentials" }
         var debugDescription: String { description }
         let baseDirectory: URL
@@ -27,7 +27,7 @@ enum WalletCredentials {
     static func loadOrCreate(owner: String, device: String) throws -> Material {
         lock.lock(); defer { lock.unlock() }
         guard validHex(owner, count: 64), validHex(device, count: 64) else { throw Failure.invalidIdentity }
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let base = try NativeTestStorage.applicationSupportDirectory()
             .appendingPathComponent("IrisMarket/wallets", isDirectory: true)
         let directory = base.appendingPathComponent(owner, isDirectory: true).appendingPathComponent(device, isDirectory: true)
         let account = "cashu.seed.\(owner).\(device)"

@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { finalizeEvent, generateSecretKey, getPublicKey, verifiedSymbol } from 'nostr-tools'
-import { DEFAULT_CURRENCY, RATE_POLICY, SNORT_RATES, COINBASE_RATES_URL, normalizeCurrency, parseSnortRateEvent, parseCoinbaseRates, fetchCoinbaseRates, setupRates, convert, formatPrice } from '../src/currency.ts'
+import { DEFAULT_CURRENCY, RATE_POLICY, SNORT_RATES, COINBASE_RATES_URL, normalizeCurrency, parseSnortRateEvent, parseCoinbaseRates, fetchCoinbaseRates, setupRates, convert, formatPrice, initialCurrency, formatWalletAmount } from '../src/currency.ts'
 
 const now = 1_790_000_000
 const body = { data: { currency: 'BTC', rates: { BTC: '1.0', EUR: '90000', USD: '100000', GBP: '80000', JPY: '15000000' } } }
@@ -10,8 +10,8 @@ const secret = generateSecretKey(), publisher = getPublicKey(secret)
 const signedRate = (tags = [['d', 'BTCEUR', '90001', '89999', '89000', '91000']], created_at = now) => finalizeEvent({ kind: 1009, created_at, tags, content: '' }, secret)
 const freeze = event => { event.tags.forEach(Object.freeze); Object.freeze(event.tags); return Object.freeze(event) }
 
-test('currency aliases share exact Bitcoin units and EUR is the explicit default', () => {
-  assert.equal(DEFAULT_CURRENCY, 'EUR')
+test('currency aliases share exact Bitcoin units and USD is the regional fallback', () => {
+  assert.equal(DEFAULT_CURRENCY, 'USD')
   for (const alias of ['sat', 'SATS', 'satoshi', 'SATOSHIS']) assert.equal(normalizeCurrency(alias), 'SATS')
   assert.equal(normalizeCurrency('xbt'), 'BTC')
   assert.equal(normalizeCurrency(' eur '), 'EUR')
@@ -36,7 +36,7 @@ test('foreign and satoshi prices convert through consistent BTC base rates for s
 })
 
 test('formatted estimates retain original amounts and expose source, time, and sort value', () => {
-  const result = formatPrice({ price: '100000', currency: 'SAT' }, { rates: snapshot(now), now, locale: 'en-US' })
+  const result = formatPrice({ price: '100000', currency: 'SAT' }, { preferredCurrency:'EUR', rates: snapshot(now), now, locale: 'en-US' })
   assert.equal(result.primary, '€90.00')
   assert.equal(result.original, '100,000 sats')
   assert.equal(result.converted, 90)
@@ -46,16 +46,16 @@ test('formatted estimates retain original amounts and expose source, time, and s
   assert.equal(formatPrice({ price: '0.005', currency: 'BTC' }, { preferredCurrency: 'SATS', locale: 'en-US' }).primary, '500,000 sats')
   assert.equal(formatPrice({ price: '54.99', currency: 'EUR' }, { locale: 'en-US' }).primary, '€54.99')
   assert.equal(formatPrice({ price: '123456789012345.123', currency: 'EUR' }, { locale: 'en-US' }).primary, '123456789012345.123 EUR')
-  assert.notEqual(formatPrice({ price: '1', currency: 'SATS' }, { rates: snapshot(now), now, locale: 'en-US' }).primary, '€0.00')
+  assert.notEqual(formatPrice({ price: '1', currency: 'SATS' }, { preferredCurrency:'EUR', rates: snapshot(now), now, locale: 'en-US' }).primary, '€0.00')
 })
 
 test('missing, stale and expired rates never silently become current price estimates', () => {
   const listing = { price: '100', currency: 'USD' }
-  const missing = formatPrice(listing, { now, locale: 'en-US' })
+  const missing = formatPrice(listing, { preferredCurrency:'EUR',now, locale: 'en-US' })
   assert.equal(missing.primary, '$100.00'); assert.equal(missing.converted, null); assert.equal(missing.approximate, false)
-  const stale = formatPrice(listing, { rates: snapshot(now - 901), now, locale: 'en-US' })
+  const stale = formatPrice(listing, { preferredCurrency:'EUR',rates: snapshot(now - 901), now, locale: 'en-US' })
   assert.equal(stale.primary, '€90.00'); assert.equal(stale.stale, true); assert.equal(stale.updatedAt, now - 901)
-  const expired = formatPrice(listing, { rates: snapshot(now - RATE_POLICY.maxAgeSeconds - 1), now, locale: 'en-US' })
+  const expired = formatPrice(listing, { preferredCurrency:'EUR',rates: snapshot(now - RATE_POLICY.maxAgeSeconds - 1), now, locale: 'en-US' })
   assert.equal(expired.primary, '$100.00'); assert.equal(expired.converted, null)
   assert.equal(formatPrice({ price: '', currency: 'EUR' }).primary, 'Negotiable')
   assert.equal(formatPrice({ price: '0', currency: 'SATS' }).primary, 'Free')
@@ -131,10 +131,10 @@ test('failed refresh exposes last-known estimates as stale and drops them after 
     await rates.ready
     fail = true; at += 901; await rates.refresh()
     assert.equal(rates.snapshot().status, 'stale')
-    assert.equal(formatPrice({ price: '100', currency: 'USD' }, { rates: rates.snapshot(), now: at }).stale, true)
+    assert.equal(formatPrice({ price: '100', currency: 'USD' }, { preferredCurrency:'EUR',rates: rates.snapshot(), now: at }).stale, true)
     at += RATE_POLICY.maxAgeSeconds; await rates.refresh()
     assert.equal(rates.snapshot().status, 'unavailable')
-    assert.equal(formatPrice({ price: '100', currency: 'USD' }, { rates: rates.snapshot(), now: at }).converted, null)
+    assert.equal(formatPrice({ price: '100', currency: 'USD' }, { preferredCurrency:'EUR',rates: rates.snapshot(), now: at }).converted, null)
     assert.equal(changes, 3)
   } finally { rates.close() }
 })
@@ -154,4 +154,21 @@ test('closing cancels an in-flight HTTP read and prevents late UI updates', asyn
 test('test sats are labeled and never converted into fiat or real bitcoin',()=>{
   const price=formatPrice({price:'16',currency:'TESTSAT'},{preferredCurrency:'EUR',rates:{rates:{TESTSAT:{value:1,updatedAt:1000},EUR:{value:65000,updatedAt:1000}}},now:1000});
   assert.equal(price.primary,'16 test sats');assert.equal(price.converted,null);assert.equal(price.original,null);
+});
+
+test('first-run currency uses explicit choice, known region, device region, then USD',()=>{
+ assert.equal(initialCurrency({saved:'SATS',knownCountry:'FI',locales:['en-US']}),'SATS');
+ assert.equal(initialCurrency({knownCountry:'FI',locales:['en-US']}),'EUR');
+ assert.equal(initialCurrency({locales:['fi-FI']}),'EUR');
+ assert.equal(initialCurrency({locales:['en-GB']}),'GBP');
+ assert.equal(initialCurrency({locales:['en','not_a_locale']}),'USD');
+ assert.equal(initialCurrency({locales:['ja-JP']}),'JPY');
+});
+test('wallet amounts use selected currency, preserve zero, and fall back when rates unavailable',()=>{
+ const options={preferredCurrency:'EUR',rates:snapshot(now),now,locale:'en-US'};
+ assert.equal(formatWalletAmount('100000',options),'€90.00');
+ assert.equal(formatWalletAmount('0',{...options,rates:undefined}),'€0.00');
+ assert.equal(formatWalletAmount('100000',{...options,rates:undefined}),'');
+ assert.equal(formatWalletAmount('100000000',{preferredCurrency:'BTC',locale:'en-US'}),'1 BTC');
+ assert.equal(formatWalletAmount('1000',{preferredCurrency:'SATS'}),'');
 });

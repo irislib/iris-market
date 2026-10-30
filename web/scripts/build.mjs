@@ -35,13 +35,15 @@ async function writeNotices(dest, bundleResults, includeRuntime) {
     const files = (await readdir(folder, { withFileTypes: true }))
       .filter(file => file.isFile() && /^(licen[sc]e|copying|notice)(?:[.-]|$)/i.test(file.name))
       .map(file => file.name).sort();
-    if (!files.length && !['pmtiles','nostr-double-ratchet','@fips/tcp'].includes(info.name) && !info.name.startsWith('onnxruntime-')) {
+    if (!files.length && !['pmtiles','nostr-double-ratchet','@fips/tcp','qrcode-generator'].includes(info.name) && !info.name.startsWith('onnxruntime-')) {
       throw new Error(`Missing bundled dependency license: ${info.name}@${info.version}`);
     }
     const texts = await Promise.all(files.map(file => readFile(resolve(folder, file), 'utf8')));
     if (info.name === 'nostr-double-ratchet') texts.push(await readFile(resolve(root, 'licenses/NOSTR-DOUBLE-RATCHET-LICENSE.txt'), 'utf8'));
     // fips-tcp's pinned 0.2.3 package omits its root license (upstream commit 975a368f597db5c86ca0231245493da92e4e5ea9).
     if (info.name === '@fips/tcp') texts.push(await readFile(resolve(root, 'licenses/FIPS-TCP-LICENSE.txt'), 'utf8'));
+    // qrcode-generator 2.0.4 omits its root license; source 83b7e8fe3fddd3b0368dbafd6ce56995bd25e3c8.
+    if (info.name === 'qrcode-generator') texts.push(await readFile(resolve(root, 'licenses/QRCODE-GENERATOR-LICENSE.txt'), 'utf8'));
     if (info.name === 'pmtiles') texts.push(await readFile(resolve(root, 'licenses/PMTILES-LICENSE.txt'), 'utf8'));
     notices.push(`${info.name}@${info.version} (${info.license ?? 'see license below'})\n${texts.join('\n\n') || 'Covered by the ONNX Runtime notices below.'}`);
   }

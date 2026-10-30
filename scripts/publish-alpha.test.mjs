@@ -11,6 +11,10 @@ test('draft omitted by the tag endpoint is reused from the authenticated invento
   assert.equal(lookupGitHubRelease(expected.tag,notFound,()=>[{tag_name:'other'},draft]),draft);
   assert.equal(lookupGitHubRelease(expected.tag,notFound,()=>[]),undefined);
   assert.throws(()=>lookupGitHubRelease(expected.tag,notFound,()=>[draft,{...draft}]),/Multiple releases/);
+  for(const stderr of ['gh: Not Found (HTTP 404)','gh: Forbidden (HTTP 403)','connection failed']) {
+    const failure=Object.assign(new Error(stderr),{stderr});
+    assert.throws(()=>lookupGitHubRelease(expected.tag,notFound,()=>{throw failure;}),error=>error===failure);
+  }
 });
 
 test('release lookup does not reinterpret other failures as a missing draft',()=>{

@@ -338,17 +338,66 @@ final class MarketStore: ObservableObject {
         filter(query: query, side: side, aiSearch: true) { success in if success { self.searchContinuation.start(self.searchContext); self.runAI(type: "curate") } }
     }
     func save(_ listing: MarketListing) { command(["type": "save", "id": listing.id]) }
-    func requestOrder(_ listing: MarketListing, quantity: Int, note: String, completion: @escaping (Bool) -> Void) {
+    func loadReviews(target: String, product: Bool, refresh: Bool) async throws -> [MarketReview] {
+        guard let app else { return [] }
+        let generation = accountGeneration
+        let raw = try await Task.detached(priority: .utility) { try app.reviews(target: target, product: product, refresh: refresh) }.value
+        guard generation == accountGeneration else { throw CancellationError() }
+        return try MarketJSON.decoder().decode([MarketReview].self, from: Data(raw.utf8))
+    }
+    func publishReview(target: String, rating: UInt8, body: String, expectedOwner: String) async throws -> [MarketReview] {
+        try Task.checkCancellation()
+        guard let app, !demo, snapshot.publicKey == expectedOwner, snapshot.canSign else { throw CancellationError() }
+        let generation = accountGeneration
+        let raw = try await Task.detached(priority: .userInitiated) { try app.publishReview(target: target, rating: rating, body: body) }.value
+        guard generation == accountGeneration else { throw CancellationError() }
+        return try MarketJSON.decoder().decode([MarketReview].self, from: Data(raw.utf8))
+    }
+    func uploadMedia(_ file: PreparedListingFile, expectedOwner: String) async throws -> ListingMediaUpload {
+        try Task.checkCancellation()
+        guard let app, !demo, snapshot.publicKey == expectedOwner, snapshot.canSign else { throw CancellationError() }
+        let generation = accountGeneration
+        let raw = try await Task.detached(priority: .userInitiated) {
+            try app.uploadMedia(bytes: file.data, name: file.name, mime: file.mime)
+        }.value
+        guard generation == accountGeneration else { throw CancellationError() }
+        return try JSONDecoder().decode(ListingMediaUpload.self, from: Data(raw.utf8))
+    }
+    func requestOrder(_ listing: MarketListing, quantity: Int, note: String, deliveryRequest: MarketDeliveryRequest? = nil, completion: @escaping (Bool) -> Void) {
         let existing = Set(snapshot.orders.map(\.id))
-        command(["type": "request_order", "listing_id": listing.id, "quantity": quantity, "note": note]) { success in
+        var request: [String: Any] = ["type": "request_order", "listing_id": listing.id, "quantity": quantity, "note": note]
+        do { if let deliveryRequest { request["delivery_request"] = try deliveryRequest.projection() } }
+        catch { alert = error.localizedDescription; completion(false); return }
+        command(request) { success in
             if success {
                 self.activeOrderID = self.snapshot.orders.first { !existing.contains($0.id) && $0.buyer == self.snapshot.publicKey && $0.items.contains { $0.id == listing.id } }?.id
             }
             completion(success)
         }
     }
+    func requestDelivery(sourceOrderID: String, listing: MarketListing, destination: MarketDeliveryPlace, completion: @escaping (Bool) -> Void) {
+        let existing = Set(snapshot.orders.map(\.id))
+        do {
+            command(["type": "request_delivery", "source_order_id": sourceOrderID, "listing_id": listing.id, "destination": try destination.projection()]) { success in
+                if success { self.activeOrderID = self.snapshot.orders.first { !existing.contains($0.id) && $0.buyer == self.snapshot.publicKey && $0.items.contains { $0.id == listing.id } }?.id }
+                completion(success)
+            }
+        } catch { alert = error.localizedDescription; completion(false) }
+    }
     func updateOrder(_ id: String, patch: [String: Any], completion: ((Bool) -> Void)? = nil) {
         command(["type": "update_order", "order_id": id, "patch": patch], completion: completion)
+    }
+    func sendOrderPaymentToken(orderID: String, token: String, expectedOwner: String) async throws {
+        try Task.checkCancellation()
+        guard !demo, snapshot.publicKey == expectedOwner,
+              let order = snapshot.orders.first(where: { $0.id == orderID }), order.buyer == expectedOwner,
+              order.payment?.status == "requested" else { throw CancellationError() }
+        let generation = accountGeneration
+        let success = await withCheckedContinuation { continuation in
+            command(["type": "send_order_payment_token", "order_id": orderID, "token": token]) { continuation.resume(returning: $0) }
+        }
+        guard generation == accountGeneration else { throw CancellationError() }
+        guard success else { throw MarketError.Operation(reason: "Payment is saved in your wallet. Retry sending it to this order.") }
     }
     func archiveOrder(_ order: MarketOrder, completion: ((Bool) -> Void)? = nil) {
         command(["type": "archive_order", "order_id": order.id, "archived": !order.archived], completion: completion)
@@ -800,7 +849,7 @@ private struct NativeAccountBundle: Codable {
 
 extension MarketStore {
     /// Called only after the user explicitly opens the independent money wallet.
-    func walletCredentials() throws -> WalletCredentials.Material {
+    func walletCredentials(importedSeed: String? = nil) throws -> WalletCredentials.Material {
         guard !demo, ready else { throw WalletCredentials.Failure.invalidIdentity }
         let owner = snapshot.publicKey
         let device: String
@@ -810,6 +859,6 @@ extension MarketStore {
         } else if let secret = try SecureStore.read("identity"), try publicKeyForSecret(secret: secret) == owner {
             device = owner
         } else { throw WalletCredentials.Failure.invalidIdentity }
-        return try WalletCredentials.loadOrCreate(owner: owner, device: device)
+        return try WalletCredentials.loadOrCreate(owner: owner, device: device, importedSeed: importedSeed)
     }
 }

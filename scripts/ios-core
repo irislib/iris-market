@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-cargo build --locked -p iris-market-app -p iris-market-bindgen
+cargo build --locked -p iris-market-app --features iris-market-app/cashu-wallet -p iris-market-bindgen
 cargo run --locked -p iris-market-bindgen -- generate --library target/debug/libiris_market_app.dylib --language swift --out-dir ios/Bindings --config crates/market-app/uniffi.toml
 TASK_SDK="$(xcrun --sdk iphonesimulator --show-sdk-path)"
 [[ -f "$TASK_SDK/usr/lib/libsqlite3.tbd" ]] || { echo 'Selected iOS SDK lacks system SQLite.' >&2; exit 1; }
 LIBSQLITE3_SYS_USE_PKG_CONFIG=1 SQLITE3_NO_PKG_CONFIG=1 SQLITE3_STATIC=0 \
 SQLITE3_LIB_DIR="$TASK_SDK/usr/lib" SQLITE3_INCLUDE_DIR="$TASK_SDK/usr/include" \
-IPHONEOS_DEPLOYMENT_TARGET=16.0 CFLAGS_aarch64_apple_ios_sim='-mios-simulator-version-min=16.0' cargo build --locked -p iris-market-app --target aarch64-apple-ios-sim
+IPHONEOS_DEPLOYMENT_TARGET=16.0 CFLAGS_aarch64_apple_ios_sim='-mios-simulator-version-min=16.0' cargo build --locked -p iris-market-app --features iris-market-app/cashu-wallet --target aarch64-apple-ios-sim

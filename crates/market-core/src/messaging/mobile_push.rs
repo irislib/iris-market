@@ -88,11 +88,10 @@ impl Messaging {
         if let Some(key) = self.engine.local_invite_response_pubkey() {
             invite_keys.insert(key.to_hex());
         }
-        if let Some(invite) = &self.state.public_invite {
-            if let Ok(key) = PublicKey::from_slice(&invite.inviter_ephemeral_public_key.to_bytes())
-            {
-                invite_keys.insert(key.to_hex());
-            }
+        if let Some(invite) = &self.state.public_invite
+            && let Ok(key) = PublicKey::from_slice(&invite.inviter_ephemeral_public_key.to_bytes())
+        {
+            invite_keys.insert(key.to_hex());
         }
         if !invite_keys.is_empty() {
             filters.push(serde_json::json!({"kinds":[INVITE_RESPONSE_KIND],"#p":invite_keys}));
@@ -325,10 +324,10 @@ fn resolve_inner(
         for event in pending {
             if let Some(event) =
                 crate::mobile_push::payload_event(&serde_json::json!({"event":event}).to_string())
+                && event.id != current.id
+                && !events.iter().any(|e: &Event| e.id == event.id)
             {
-                if event.id != current.id && !events.iter().any(|e: &Event| e.id == event.id) {
-                    events.push(event);
-                }
+                events.push(event);
             }
         }
     }
@@ -396,14 +395,13 @@ fn resolve_inner(
         if let Some(resolution) = cached
             .iter()
             .find(|r| r.notification_id == event.id.to_hex())
+            && permitted(resolution, &policy)
         {
-            if permitted(resolution, &policy) {
-                resolutions.push((
-                    event.id == current.id,
-                    event.created_at.as_secs(),
-                    resolution.clone(),
-                ));
-            }
+            resolutions.push((
+                event.id == current.id,
+                event.created_at.as_secs(),
+                resolution.clone(),
+            ));
         }
         for message in preview_event(&mut engine, &mut state.public_invite, keys, &event) {
             let event_id = message

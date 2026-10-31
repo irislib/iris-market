@@ -15,6 +15,18 @@ struct MarketOrder: Decodable, Hashable, Identifiable {
     let role: String?
     let sync: String
     let locationFresh: Bool
+    let displayPrice: MarketOrderDisplayPrice?
+    let payment: MarketOrderPayment?
+    let deliveryRequest: MarketDeliveryRequest?
+    let pickupAuthorization: MarketPickupAuthorization?
+    let sourceOrderId: String?
+    let deliveryOrderId: String?
+    var formattedPrice: String {
+        guard let displayPrice, displayPrice.amount.isFinite else { return items.first?.formattedPrice ?? "Negotiable" }
+        let format = NumberFormatter(); format.numberStyle = .currency; format.currencyCode = displayPrice.currency
+        if ["SAT", "SATS", "BTC"].contains(displayPrice.currency.uppercased()) { format.numberStyle = .decimal; format.maximumFractionDigits = displayPrice.currency.uppercased() == "BTC" ? 8 : 0; return (format.string(from: NSNumber(value: displayPrice.amount)) ?? String(displayPrice.amount)) + " " + (displayPrice.currency.uppercased() == "BTC" ? "BTC" : "sats") }
+        return (format.string(from: NSNumber(value: displayPrice.amount)) ?? items.first?.formattedPrice ?? "Negotiable") + (displayPrice.stale ? " · older rate" : "")
+    }
     var terminal: Bool { status == "delivered" || status == "cancelled" }
     var title: String { items.map(\.title).filter { !$0.isEmpty }.joined(separator: ", ") }
     var statusLabel: String {
@@ -27,8 +39,34 @@ struct MarketOrder: Decodable, Hashable, Identifiable {
         default: return "Updating"
         }
     }
-    func handlesDelivery(_ owner: String) -> Bool { shipment.stops.contains { seller == owner || $0.courierPubkey == owner } }
+    func handlesDelivery(_ owner: String) -> Bool { (seller == owner && deliveryRequest != nil) || shipment.stops.contains { seller == owner || $0.courierPubkey == owner } }
 }
+
+struct MarketOrderDisplayPrice: Decodable, Hashable { let amount: Double; let currency: String; let stale: Bool }
+
+struct MarketDeliveryPlace: Codable, Hashable {
+    var label: String
+    var address: String
+    var coordinates: [Double]?
+    init(label: String, address: String = "", coordinates: [Double]? = nil) { self.label = label; self.address = address; self.coordinates = coordinates }
+    func projection() throws -> [String: Any] {
+        let address = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !address.isEmpty, address.count <= 500, label.count <= 120 else { throw MarketRouteError.message("Enter an address or meeting point.") }
+        var result: [String: Any] = ["label": label, "address": address]
+        if let coordinates { guard MarketShipment.validCoordinates(coordinates) else { throw MarketRouteError.message("Choose a valid map point.") }; result["coordinates"] = coordinates }
+        return result
+    }
+}
+struct MarketDeliveryCollection: Codable, Hashable { let merchant: String; let reference: String }
+struct MarketDeliveryRequest: Codable, Hashable {
+    let pickup: MarketDeliveryPlace
+    let destination: MarketDeliveryPlace
+    let collection: MarketDeliveryCollection?
+    init(pickup: MarketDeliveryPlace, destination: MarketDeliveryPlace, collection: MarketDeliveryCollection? = nil) { self.pickup = pickup; self.destination = destination; self.collection = collection }
+    func projection() throws -> [String: Any] { var value: [String: Any] = ["pickup": try pickup.projection(), "destination": try destination.projection()]; if let collection { value["collection"] = ["merchant": collection.merchant, "reference": collection.reference] }; return value }
+}
+struct MarketOrderPayment: Codable, Hashable { let mint: String; let amount: String; let unit: String; let status: String }
+struct MarketPickupAuthorization: Codable, Hashable { let courierPubkey: String; let reference: String }
 
 struct MarketOrderItem: Decodable, Hashable, Identifiable {
     let id: String
@@ -38,6 +76,7 @@ struct MarketOrderItem: Decodable, Hashable, Identifiable {
     let quantity: Int
     var formattedPrice: String {
         guard !price.isEmpty else { return "Negotiable" }
+        if ["TESTSAT", "TESTSATS"].contains(currency.uppercased()) { return price + " test sats" }
         if Decimal(string: price) == 0 { return "Free" }
         let symbols = ["EUR": "€", "USD": "$", "GBP": "£"]
         if let symbol = symbols[currency] { return symbol + price }

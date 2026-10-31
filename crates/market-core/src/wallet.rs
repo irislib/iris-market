@@ -6,7 +6,7 @@ use cashu::{CurrencyUnit, Token};
 use cashu_service::{CashuWalletSeedStore, CashuWalletService};
 use nostr::PublicKey;
 use rand::{RngCore, rngs::OsRng};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     fs,
@@ -50,6 +50,7 @@ pub struct WalletSnapshot {
     pub test_sats: u64,
     pub activity: Vec<Activity>,
     pub warning_count: usize,
+    pub review_required: bool,
 }
 #[derive(Serialize)]
 pub struct TokenPreview {
@@ -110,6 +111,7 @@ fn redact_activity(entry: cashu_service::CashuWalletActivityEntry) -> Activity {
 pub struct Wallet {
     service: CashuWalletService,
     developer_mint: Option<String>,
+    seed: Zeroizing<[u8; 64]>,
 }
 struct FixedSeedStore(Zeroizing<[u8; 64]>);
 impl CashuWalletSeedStore for FixedSeedStore {
@@ -257,17 +259,22 @@ impl Wallet {
     pub async fn open(directory: &Path, encoded_seed: &str) -> Result<Self> {
         let seed = parse_seed(encoded_seed)?;
         bind_seed(directory, &seed)?;
+        let backup_seed = Zeroizing::new(*seed);
         let service =
             CashuWalletService::open_with_seed_store(directory, Arc::new(FixedSeedStore(seed)))
                 .await?;
         Ok(Self {
             service,
             developer_mint: None,
+            seed: backup_seed,
         })
     }
     pub async fn snapshot(&self, refresh: bool) -> Result<WalletSnapshot> {
         // A refresh is an explicit Wallet action. CDK retains and recovers its
         // own durable operations; no separate generic Market outbox is used.
+        if refresh {
+            self.service.review_restored_wallet().await?;
+        }
         let recovery_warnings = if refresh {
             self.service.recover_startup_state().await.warnings.len()
         } else {
@@ -306,6 +313,7 @@ impl Wallet {
                 .collect(),
             activity,
             warning_count: overview.warnings.len() + recovery_warnings,
+            review_required: self.service.restored_review_required(),
         })
     }
     pub async fn top_up(&self, mint: &str, amount: u64) -> Result<TopUp> {
@@ -360,9 +368,97 @@ impl Wallet {
             token: payment.token,
         })
     }
+    pub async fn preview_send(
+        &self,
+        mint: &str,
+        amount: u64,
+        request_id: &str,
+    ) -> Result<cashu_service::CashuSendReview> {
+        self.service
+            .preview_payment_token_reviewed(
+                &normalize_mint(mint, self.developer_mint.as_deref())?,
+                amount,
+                request_id,
+            )
+            .await
+    }
+    pub async fn send_reviewed(
+        &self,
+        mint: &str,
+        amount: u64,
+        max_fee: u64,
+        request_id: &str,
+    ) -> Result<SentToken> {
+        let payment = self
+            .service
+            .send_payment_token_reviewed(
+                &normalize_mint(mint, self.developer_mint.as_deref())?,
+                amount,
+                max_fee,
+                request_id,
+            )
+            .await?;
+        Ok(SentToken {
+            test_only: test_mint(&payment.mint_url),
+            mint: payment.mint_url,
+            amount: payment.amount_sat,
+            fee: payment.send_fee_sat,
+            operation_id: payment.operation_id,
+            token: payment.token,
+        })
+    }
+    pub async fn preview_lightning(
+        &self,
+        mint: &str,
+        invoice: &str,
+    ) -> Result<cashu_service::CashuLightningReview> {
+        ensure!(
+            !test_mint(mint) || self.developer_mint.as_deref() == Some(mint),
+            "Test invoices must not be paid with real Lightning funds"
+        );
+        self.service
+            .preview_lightning_payment_reviewed(
+                &normalize_mint(mint, self.developer_mint.as_deref())?,
+                invoice,
+            )
+            .await
+    }
+    pub async fn pay_lightning(
+        &self,
+        mint: &str,
+        quote_id: &str,
+        max_fee: u64,
+    ) -> Result<cashu_service::CashuLightningResult> {
+        ensure!(
+            !test_mint(mint) || self.developer_mint.as_deref() == Some(mint),
+            "Test invoices cannot be paid as real Lightning payments"
+        );
+        self.service
+            .confirm_lightning_payment_reviewed(
+                &normalize_mint(mint, self.developer_mint.as_deref())?,
+                quote_id,
+                max_fee,
+            )
+            .await
+    }
+    pub async fn export_backup(&self, owner: &str, password: &str) -> Result<String> {
+        let database = self.service.export_wallet_database().await?;
+        encrypt_native_backup(owner, &self.seed, &database, password)
+    }
     /// Pending bearer tokens remain recoverable after closing the share screen.
     /// This explicit private action is separate from the redacted history view.
     pub async fn pending_token(&self, operation_id: &str) -> Result<SentToken> {
+        ensure!(
+            !self
+                .service
+                .payment_token_is_reclaiming(operation_id)
+                .await?,
+            "This payment is reclaiming or reclaimed"
+        );
+        ensure!(
+            !self.service.restored_review_required(),
+            "Refresh the restored wallet before sharing a saved token"
+        );
         let entries = self.service.load_wallet_activity().await?;
         let entry = entries
             .into_iter()
@@ -394,9 +490,259 @@ impl Wallet {
     }
 }
 
+const BACKUP_SCHEMA: &str = "iris-market-native-cashu-v1";
+const BACKUP_ROUNDS: u32 = 600_000;
+const MAX_BACKUP_BYTES: usize = 64 * 1024 * 1024;
+#[derive(Serialize, Deserialize)]
+struct BackupEnvelope {
+    schema: String,
+    rounds: u32,
+    salt: String,
+    nonce: String,
+    ciphertext: String,
+}
+#[derive(Serialize, Deserialize)]
+struct BackupPayload {
+    owner: String,
+    seed: String,
+    database: String,
+}
+impl Drop for BackupPayload {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.seed.zeroize();
+        self.database.zeroize();
+    }
+}
+fn backup_key(password: &str, salt: &[u8]) -> Result<Zeroizing<[u8; 32]>> {
+    ensure!(
+        password.len() >= 12 && password.len() <= 1024,
+        "Use a backup password between 12 and 1024 bytes"
+    );
+    pbkdf2_backup_key(password, salt, BACKUP_ROUNDS)
+}
+fn pbkdf2_backup_key(password: &str, salt: &[u8], rounds: u32) -> Result<Zeroizing<[u8; 32]>> {
+    use hmac::{Hmac, Mac};
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(password.as_bytes())
+        .map_err(|_| anyhow::anyhow!("Invalid backup password"))?;
+    mac.update(salt);
+    mac.update(&1u32.to_be_bytes());
+    let mut block = Zeroizing::new(<[u8; 32]>::from(mac.finalize().into_bytes()));
+    let mut key = Zeroizing::new(*block);
+    for _ in 1..rounds {
+        let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(password.as_bytes())
+            .map_err(|_| anyhow::anyhow!("Invalid backup password"))?;
+        mac.update(block.as_ref());
+        *block = mac.finalize().into_bytes().into();
+        for (value, byte) in key.iter_mut().zip(block.iter()) {
+            *value ^= *byte;
+        }
+    }
+    Ok(key)
+}
+fn encrypt_native_backup(
+    owner: &str,
+    seed: &[u8; 64],
+    database: &[u8],
+    password: &str,
+) -> Result<String> {
+    use base64::{Engine, engine::general_purpose::STANDARD as B64};
+    use chacha20poly1305::{
+        XChaCha20Poly1305, XNonce,
+        aead::{Aead, KeyInit, Payload},
+    };
+    let mut salt = [0u8; 16];
+    let mut nonce = [0u8; 24];
+    OsRng.fill_bytes(&mut salt);
+    OsRng.fill_bytes(&mut nonce);
+    let key = backup_key(password, &salt)?;
+    let seed: String = seed.iter().map(|b| format!("{b:02x}")).collect();
+    let owner = PublicKey::parse(owner)
+        .context("Invalid backup profile")?
+        .to_hex();
+    let payload = Zeroizing::new(serde_json::to_vec(&BackupPayload {
+        owner,
+        seed,
+        database: B64.encode(database),
+    })?);
+    ensure!(
+        payload.len() <= MAX_BACKUP_BYTES,
+        "Wallet backup is too large"
+    );
+    let cipher = XChaCha20Poly1305::new_from_slice(key.as_ref())
+        .map_err(|_| anyhow::anyhow!("Could not encrypt backup"))?;
+    let ciphertext = cipher
+        .encrypt(
+            XNonce::from_slice(&nonce),
+            Payload {
+                msg: &payload,
+                aad: BACKUP_SCHEMA.as_bytes(),
+            },
+        )
+        .map_err(|_| anyhow::anyhow!("Could not encrypt backup"))?;
+    Ok(serde_json::to_string(&BackupEnvelope {
+        schema: BACKUP_SCHEMA.into(),
+        rounds: BACKUP_ROUNDS,
+        salt: B64.encode(salt),
+        nonce: B64.encode(nonce),
+        ciphertext: B64.encode(ciphertext),
+    })?)
+}
+type DecryptedNativeBackup = (Zeroizing<[u8; 64]>, Zeroizing<Vec<u8>>);
+
+fn decrypt_native_backup(
+    backup: &str,
+    password: &str,
+    expected_owner: &str,
+) -> Result<DecryptedNativeBackup> {
+    use base64::{Engine, engine::general_purpose::STANDARD as B64};
+    use chacha20poly1305::{
+        XChaCha20Poly1305, XNonce,
+        aead::{Aead, KeyInit, Payload},
+    };
+    ensure!(
+        backup.len() <= MAX_BACKUP_BYTES,
+        "Wallet backup is too large"
+    );
+    let value: BackupEnvelope =
+        serde_json::from_str(backup).context("Invalid native wallet backup")?;
+    ensure!(
+        value.schema == BACKUP_SCHEMA && value.rounds == BACKUP_ROUNDS,
+        "Unsupported wallet backup format"
+    );
+    let salt = B64.decode(value.salt)?;
+    let nonce = B64.decode(value.nonce)?;
+    ensure!(
+        salt.len() == 16 && nonce.len() == 24,
+        "Invalid wallet backup"
+    );
+    let key = backup_key(password, &salt)?;
+    let cipher = XChaCha20Poly1305::new_from_slice(key.as_ref())
+        .map_err(|_| anyhow::anyhow!("Could not decrypt backup"))?;
+    let ciphertext = Zeroizing::new(B64.decode(value.ciphertext)?);
+    let plaintext = Zeroizing::new(
+        cipher
+            .decrypt(
+                XNonce::from_slice(&nonce),
+                Payload {
+                    msg: &ciphertext,
+                    aad: BACKUP_SCHEMA.as_bytes(),
+                },
+            )
+            .map_err(|_| {
+                anyhow::anyhow!("Backup password is incorrect or the backup was changed")
+            })?,
+    );
+    let payload: BackupPayload = serde_json::from_slice(&plaintext)?;
+    ensure!(
+        payload.owner == PublicKey::parse(expected_owner)?.to_hex(),
+        "This backup belongs to another profile; its wallet was preserved"
+    );
+    let seed = parse_seed(&payload.seed)?;
+    let database = Zeroizing::new(B64.decode(&payload.database)?);
+    ensure!(
+        database.len() <= 32 * 1024 * 1024 && database.starts_with(b"SQLite format 3\0"),
+        "Invalid wallet database backup"
+    );
+    Ok((seed, database))
+}
+/// Explicit private restore preview: platform writes/read-backs this seed in its
+/// secure wallet store before installing database bytes. Never put it in a snapshot.
+pub fn native_backup_seed(backup: &str, password: &str, expected_owner: &str) -> Result<String> {
+    let (seed, _) = decrypt_native_backup(backup, password, expected_owner)?;
+    Ok(seed.iter().map(|b| format!("{b:02x}")).collect())
+}
+pub fn restore_native_backup(
+    directory: &Path,
+    expected_owner: &str,
+    backup: &str,
+    password: &str,
+    saved_seed: &str,
+) -> Result<()> {
+    let (seed, database) = decrypt_native_backup(backup, password, expected_owner)?;
+    ensure!(
+        *seed == *parse_seed(saved_seed)?,
+        "Save the imported recovery key securely before restoring"
+    );
+    // Validate an existing binding before installing any database. For a new
+    // wallet, bind the already-secured seed first: bind_seed deliberately
+    // refuses to create a binding beside an existing unbound database.
+    bind_seed(directory, &seed)?;
+    cashu_service::restore_wallet_database(directory, &database)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn password_kdf_matches_pbkdf2_sha256_vectors() {
+        let value = pbkdf2_backup_key("password", b"salt", 1).unwrap();
+        assert_eq!(
+            value.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+            "120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b"
+        );
+        let value = pbkdf2_backup_key("password", b"salt", 2).unwrap();
+        assert_eq!(
+            value.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+            "ae4d0c95af6b46d32d0adff928f06dd02a303f8ef3c251dfd6e2d85a95474c43"
+        );
+        assert!(backup_key("short", b"salt").is_err());
+    }
+    #[test]
+    fn encrypted_backup_is_authenticated_randomized_and_owner_bound() {
+        let owner = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+        let other = "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5";
+        let seed = [42; 64];
+        let database = b"SQLite format 3\0test-database";
+        let password = "a private testing password";
+        let backup = encrypt_native_backup(owner, &seed, database, password).unwrap();
+        assert!(!backup.contains("test-database"));
+        let (restored_seed, restored_database) =
+            decrypt_native_backup(&backup, password, owner).unwrap();
+        assert_eq!(*restored_seed, seed);
+        assert_eq!(restored_database.as_slice(), database);
+        assert!(decrypt_native_backup(&backup, password, other).is_err());
+        assert!(decrypt_native_backup(&backup, "a wrong testing password", owner).is_err());
+        let mut changed: serde_json::Value = serde_json::from_str(&backup).unwrap();
+        changed["rounds"] = 1.into();
+        assert!(decrypt_native_backup(&changed.to_string(), password, owner).is_err());
+        changed["rounds"] = BACKUP_ROUNDS.into();
+        changed["ciphertext"] = "AAAAAAAA".into();
+        assert!(decrypt_native_backup(&changed.to_string(), password, owner).is_err());
+    }
+    #[tokio::test]
+    async fn backup_restore_preflights_binding_and_supports_fresh_device() {
+        let owner = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+        let password = "a private restore testing password";
+        let source = tempfile::TempDir::new().unwrap();
+        let seed = generate_seed();
+        let wallet = Wallet::open(source.path(), &seed).await.unwrap();
+        let backup = wallet.export_backup(owner, password).await.unwrap();
+        let conflict = tempfile::TempDir::new().unwrap();
+        bind_seed(conflict.path(), &parse_seed(&generate_seed()).unwrap()).unwrap();
+        let original_binding = fs::read(conflict.path().join("cashu/seed-binding")).unwrap();
+        assert!(restore_native_backup(conflict.path(), owner, &backup, password, &seed).is_err());
+        assert!(!cashu_service::cashu_wallet_database_exists(
+            conflict.path()
+        ));
+        assert!(!conflict.path().join("cashu/restore.pending").exists());
+        assert_eq!(
+            fs::read(conflict.path().join("cashu/seed-binding")).unwrap(),
+            original_binding
+        );
+        let fresh = tempfile::TempDir::new().unwrap();
+        restore_native_backup(fresh.path(), owner, &backup, password, &seed).unwrap();
+        let restored = Wallet::open(fresh.path(), &seed).await.unwrap();
+        assert!(restored.snapshot(false).await.unwrap().review_required);
+        drop(restored);
+        let installed = fs::read(cashu_service::cashu_wallet_db_path(fresh.path())).unwrap();
+        assert!(restore_native_backup(fresh.path(), owner, &backup, password, &seed).is_err());
+        assert_eq!(
+            fs::read(cashu_service::cashu_wallet_db_path(fresh.path())).unwrap(),
+            installed
+        );
+    }
     #[tokio::test]
     async fn empty_wallet_seed_binding_and_writer_lock_fail_closed() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -503,7 +849,8 @@ mod wallet_acceptance {
         let encoded = format!("cashuA{}", URL_SAFE_NO_PAD.encode(token.to_string()));
         assert!(
             preview_token(&encoded)
-                .err().unwrap()
+                .err()
+                .unwrap()
                 .to_string()
                 .contains("Locked ecash")
         );
@@ -530,17 +877,55 @@ mod wallet_acceptance {
         receiver.developer_mint = Some(mint.clone());
         let quote = sender.top_up(&mint, 128).await.unwrap();
         assert!(quote.test_only);
-        for attempt in 0..40 {
+        // Respect the service mint-poll budget instead of requiring issuance
+        // to complete inside a four-second UI polling window.
+        for attempt in 0..120 {
             if sender.snapshot(true).await.unwrap().test_sats == 128 {
                 break;
             }
-            assert!(attempt < 39, "local issuance did not complete");
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            assert!(attempt < 119, "local issuance did not complete");
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
         assert_eq!(sender.snapshot(false).await.unwrap().total_sats, 0);
-        let sent = sender.send(&mint, 16).await.unwrap();
+        let review = sender
+            .preview_send(&mint, 16, "native-order:reviewed")
+            .await
+            .unwrap();
+        let sent = sender
+            .send_reviewed(&mint, 16, review.fee_sat, "native-order:reviewed")
+            .await
+            .unwrap();
+        assert_eq!(
+            Token::from_str(&sent.token)
+                .unwrap()
+                .value()
+                .unwrap()
+                .to_u64(),
+            16
+        );
+        drop(sender);
+        let mut sender = Wallet::open(source.path(), &seed).await.unwrap();
+        sender.developer_mint = Some(mint.clone());
+        let resumed_review = sender
+            .preview_send(&mint, 16, "native-order:reviewed")
+            .await
+            .unwrap();
+        assert!(resumed_review.existing);
+        let retried = sender
+            .send_reviewed(&mint, 16, resumed_review.fee_sat, "native-order:reviewed")
+            .await
+            .unwrap();
+        assert_eq!(retried.token, sent.token);
+        assert_eq!(retried.operation_id, sent.operation_id);
         assert!(sent.test_only);
-        assert!(sender.pending_token(&sent.operation_id).await.unwrap().token == sent.token);
+        assert!(
+            sender
+                .pending_token(&sent.operation_id)
+                .await
+                .unwrap()
+                .token
+                == sent.token
+        );
         let received = receiver
             .receive(&format!("cashu://{}", sent.token), &mint)
             .await
@@ -577,6 +962,48 @@ mod wallet_acceptance {
             receive.is_ok(),
             reclaim.is_ok(),
             "only recipient or sender may claim the same proofs"
+        );
+        let backup_review = sender
+            .preview_send(&mint, 4, "native-backup:pending")
+            .await
+            .unwrap();
+        let backed_up_token = sender
+            .send_reviewed(&mint, 4, backup_review.fee_sat, "native-backup:pending")
+            .await
+            .unwrap();
+        let expected_balance = sender.snapshot(false).await.unwrap().test_sats;
+        let owner = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+        let password = "a private local mint backup password";
+        let backup = sender.export_backup(owner, password).await.unwrap();
+        drop(sender); // Model explicit migration: stop using the original wallet.
+        let target = tempfile::TempDir::new().unwrap();
+        let imported_seed = native_backup_seed(&backup, password, owner).unwrap();
+        assert_eq!(imported_seed, seed);
+        restore_native_backup(target.path(), owner, &backup, password, &imported_seed).unwrap();
+        let mut restored = Wallet::open(target.path(), &imported_seed).await.unwrap();
+        restored.developer_mint = Some(mint.clone());
+        assert!(restored.snapshot(false).await.unwrap().review_required);
+        assert!(
+            restored
+                .preview_send(&mint, 1, "restore:blocked")
+                .await
+                .is_err()
+        );
+        restored.snapshot(true).await.unwrap();
+        assert_eq!(
+            restored.snapshot(false).await.unwrap().test_sats,
+            expected_balance
+        );
+        let restored_retry = restored
+            .send_reviewed(&mint, 4, backup_review.fee_sat, "native-backup:pending")
+            .await
+            .unwrap();
+        assert_eq!(restored_retry.token, backed_up_token.token);
+        assert!(
+            restored
+                .pending_token(&unclaimed.operation_id)
+                .await
+                .is_err()
         );
     }
 }

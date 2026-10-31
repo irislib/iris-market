@@ -48,6 +48,7 @@ import org.json.JSONObject
     var serviceAreas by remember {mutableStateOf(initialServiceAreas)}
     var chooseServiceAreas by remember {mutableStateOf(false)}
     var imageUrl by remember { mutableStateOf("") };var categoriesOpen by remember { mutableStateOf(false) }
+    var uploading by remember {mutableStateOf(false)}
     Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).imePadding().padding(horizontal=24.dp).padding(bottom=30.dp),
         verticalArrangement=Arrangement.spacedBy(13.dp)) {
         Text("New listing",style=MaterialTheme.typography.headlineMedium)
@@ -93,19 +94,35 @@ import org.json.JSONObject
             Text("Search a place, drop a pin, and choose your range. Boundaries become public only when you publish.",color=Muted,style=MaterialTheme.typography.bodySmall)
         }
         MarketField(imageUrl,{imageUrl=it},"Photo link · optional",hint="https://…",keyboard=KeyboardType.Uri)
+        key(state.publicKey) { ListingUploadButton(model,!state.demo&&state.canSign,{uploading=it}) { upload ->
+            val name=upload.name.replace("[","").replace("]","")
+            if(upload.isImage)imageUrl=upload.url else description+=(if(description.isEmpty()) "" else "\n\n")+"[$name](${upload.url})\n${upload.fileLink}"
+        } }
         if(state.demo) Surface(color=Sand,shape=RoundedCornerShape(14.dp)) {
             Text("This is Preview. Switch to your live market to publish a listing.",Modifier.padding(14.dp),style=MaterialTheme.typography.bodySmall)
         } else Text("This listing will be public. Keep personal contact details and exact addresses out of the description.",color=Muted,style=MaterialTheme.typography.bodySmall)
         if(!state.demo && !state.canSign) Text("Sign in with your profile’s secret key to publish listings.",color=Muted,style=MaterialTheme.typography.bodySmall)
-        Button(enabled=!state.demo && state.canSign && !busy && title.isNotBlank() && description.isNotBlank() && (category!="Transport" || transport==null || serviceAreas!=null),onClick={confirmPublish=true},modifier=Modifier.fillMaxWidth().height(54.dp),shape=RoundedCornerShape(16.dp)) {
-            Text(if(busy) "Publishing…" else "Publish listing")
+        Button(enabled=!state.demo && state.canSign && !busy && !uploading && title.isNotBlank() && description.isNotBlank() && (category!="Transport" || transport==null || serviceAreas!=null),onClick={confirmPublish=true},modifier=Modifier.fillMaxWidth().height(54.dp),shape=RoundedCornerShape(16.dp)) {
+            Text(if(busy) "Publishing…" else "Review listing")
         }
     }
     if(chooseServiceAreas) ServiceAreaEditor(serviceAreas,{serviceAreas=it},{chooseServiceAreas=false})
     if(confirmPublish) AlertDialog(onDismissRequest={confirmPublish=false},title={Text("Publish your listing?")},
-        text={Text("$title\n$location\nYour listing and availability for private enquiries will be public. Conversations stay encrypted.")},
+        text={Column(Modifier.fillMaxWidth().heightIn(max=400.dp).verticalScroll(rememberScrollState()).testTag("listingReview"),verticalArrangement=Arrangement.spacedBy(12.dp)) {
+            Text(title.trim(),style=MaterialTheme.typography.titleLarge)
+            Text((if(side=="request") "Buying" else "Selling")+" · "+category,style=MaterialTheme.typography.labelLarge)
+            Text(if(price.isBlank()) (if(side=="request") "Budget by agreement" else "Price by agreement") else price.trim()+" "+currency.trim(),style=MaterialTheme.typography.titleMedium)
+            if(location.isNotBlank())Text(location.trim(),style=MaterialTheme.typography.bodyMedium)
+            if(category=="Transport")Text("Service · "+(transport?.label ?: "Other"),style=MaterialTheme.typography.bodyMedium)
+            Text(if(expiry==NativeListingExpiry.NEVER) "No expiry" else "Expires "+expiry.label+" after publication",style=MaterialTheme.typography.bodySmall)
+            HorizontalDivider()
+            Text(description.trim(),style=MaterialTheme.typography.bodyMedium)
+            if(imageUrl.isNotBlank())Text("Photo included",style=MaterialTheme.typography.bodySmall)
+            HorizontalDivider()
+            Text("Your listing and availability for private enquiries will be public. Conversations stay encrypted.",style=MaterialTheme.typography.bodySmall)
+        }},
         dismissButton={TextButton(onClick={confirmPublish=false}){Text("Keep editing")}},
-        confirmButton={TextButton(onClick={
+        confirmButton={TextButton(enabled=!busy&&!uploading&&!state.demo&&state.canSign,onClick={
             confirmPublish=false
             val draft=JSONObject().put("title",title.trim()).put("description",description.trim()).put("side",side)
                 .put("price",price.trim()).put("currency",currency.trim()).put("location",location.trim())

@@ -307,6 +307,14 @@ final class MarketUITests: XCTestCase {
         XCTAssertTrue(buy.isEnabled)
         buy.tap()
         XCTAssertTrue(app.navigationBars["Review order"].waitForExistence(timeout: 5))
+        for (label, address) in [("pickup", "Synthetic pickup meeting point"), ("destination", "Synthetic destination meeting point")] {
+            let identifier = "deliveryPlaceAddress." + label
+            let field = app.descendants(matching: .any).matching(identifier: identifier).firstMatch
+            for _ in 0..<4 where !field.isHittable { app.swipeUp() }
+            XCTAssertTrue(field.waitForExistence(timeout: 5))
+            field.tap()
+            field.typeText(address)
+        }
         capture("local-02-native-review")
         let request = app.buttons["requestOrder"]
         for _ in 0..<3 where !request.isHittable { app.swipeUp() }

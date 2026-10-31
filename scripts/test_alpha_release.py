@@ -135,14 +135,48 @@ class AlphaContract(unittest.TestCase):
         output=self.root/'output';output.mkdir()
         args=SimpleNamespace(tag=TAG,build_number=12,platform='ios-arm64',output=output)
         environment={'MARKET_APPLE_TEAM_ID':'fixture-team','MARKET_IOS_SIGNING_IDENTITY':'fixture-identity','MARKET_IOS_PROFILE_UUID':'fixture-main','MARKET_IOS_NSE_PROFILE_UUID':'fixture-nse'}
-        with patch.object(native,'ROOT',source),patch.object(native.sys,'platform','darwin'),patch.object(native,'bindings'),patch.object(native,'rust'),patch.object(native,'apple_headers'),patch.object(native,'apple_project'),patch.object(native.subprocess,'check_output',return_value=str(sdk)),patch.object(native,'run') as run:
+        with patch.object(native,'ROOT',source),patch.object(native.sys,'platform','darwin'),patch.object(native,'ios_push_preflight'),patch.object(native,'bindings'),patch.object(native,'rust'),patch.object(native,'apple_headers'),patch.object(native,'apple_project'),patch.object(native.subprocess,'check_output',return_value=str(sdk)),patch.object(native,'run') as run:
             native.build_ios(args,stage,self.root/'cache',environment)
         archive=next(call.args[0] for call in run.call_args_list if 'archive' in call.args[0])
+        self.assertIn('MARKET_PUSH_CONFIGURED=YES', archive)
         self.assertFalse(any(str(value).startswith('PROVISIONING_PROFILE_SPECIFIER=') for value in archive))
         options=plistlib.loads((stage/'ExportOptions.plist').read_bytes())
         self.assertEqual(options['provisioningProfiles'],{'to.iris.market':'fixture-main','to.iris.market.NotificationService':'fixture-nse'})
         self.assertTrue(options['testFlightInternalTestingOnly'])
         self.assertEqual(environment['MARKET_APS_ENVIRONMENT'],'production')
+
+    def test_ios_push_profiles_fail_closed_before_compilation(self):
+        with patch.object(native.sys, 'platform', 'darwin'), patch.object(native, 'bindings') as bindings, patch.object(native, 'ios_push_preflight', side_effect=ValueError('profile capability missing')):
+            with self.assertRaisesRegex(ValueError, 'profile capability missing'):
+                native.build_ios(SimpleNamespace(), self.root, self.root, {})
+            bindings.assert_not_called()
+
+    def test_ios_push_profile_entitlements_and_distribution(self):
+        import datetime
+        repository = Path(__file__).resolve().parents[1]
+        home = self.root/'home'; directory = home/'Library/MobileDevice/Provisioning Profiles'; directory.mkdir(parents=True)
+        environment = {'MARKET_APPLE_TEAM_ID':'TESTTEAM', 'MARKET_IOS_PROFILE_UUID':'main', 'MARKET_IOS_NSE_PROFILE_UUID':'nse'}
+        profiles = {}
+        for name, bundle, filename in (('main','to.iris.market','Market.entitlements'), ('nse','to.iris.market.NotificationService','NotificationService/NotificationService.entitlements')):
+            entitlements = plistlib.loads((repository/'ios'/filename).read_bytes())
+            for key, value in entitlements.items():
+                def expand(item):
+                    return item.replace('$(APS_ENVIRONMENT)','production').replace('$(AppIdentifierPrefix)','TESTTEAM.').replace('$(CFBundleIdentifier)',bundle) if isinstance(item,str) else item
+                entitlements[key] = [expand(item) for item in value] if isinstance(value,list) else expand(value)
+            entitlements.update({'application-identifier':'TESTTEAM.'+bundle, 'com.apple.developer.team-identifier':'TESTTEAM', 'get-task-allow':False})
+            profiles[name] = {'UUID':name, 'TeamIdentifier':['TESTTEAM'], 'ExpirationDate':datetime.datetime.now()+datetime.timedelta(days=1), 'Entitlements':entitlements}
+            (directory/(name+'.mobileprovision')).write_bytes(b'fixture')
+        def decode(command, **kwargs): return plistlib.dumps(profiles[Path(command[-1]).stem])
+        with patch.object(native.Path,'home',return_value=home), patch.object(native.subprocess,'check_output',side_effect=decode):
+            native.ios_push_preflight(environment)
+            profiles['nse']['Entitlements'].pop('com.apple.developer.usernotifications.filtering')
+            with self.assertRaisesRegex(ValueError,'usernotifications.filtering'): native.ios_push_preflight(environment)
+            profiles['nse']['Entitlements']['com.apple.developer.usernotifications.filtering'] = True
+            profiles['main']['Entitlements']['aps-environment'] = 'development'
+            with self.assertRaisesRegex(ValueError,'aps-environment'): native.ios_push_preflight(environment)
+            profiles['main']['Entitlements']['aps-environment'] = 'production'
+            profiles['main']['ProvisionedDevices'] = ['fixture']
+            with self.assertRaisesRegex(ValueError,'App Store'): native.ios_push_preflight(environment)
 
     def test_release_path_remaps_preserve_flags_and_paths_with_spaces(self):
         home = self.root/'private user'

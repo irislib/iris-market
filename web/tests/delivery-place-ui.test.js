@@ -21,7 +21,7 @@ test('private point requires address, never auto-locates, and typing drops previ
 });
 test('local suggestion adds a point and stale suggestions or GPS cannot alter a destroyed editor',async()=>{
  let callback;const ui=createDeliveryPlaceInput({label:'Pickup',searchPlaces:async()=>[{name:'Station',displayName:'Central station',lat:60,lng:24}],geolocation:{getCurrentPosition(success){callback=success;}}});
- const input=find(ui,'Pickup address or meeting point');input.value='Station';input.oninput();await tick();find(ui,'Station').onclick();assert.deepEqual(ui.read(),{label:'Station',address:'Central station',coordinates:[24,60]});
+ const input=find(ui,'Pickup address or meeting point');input.value='Station';input.oninput();await tick();find(ui,'Station · Central station').onclick();assert.deepEqual(ui.read(),{label:'Station',address:'Station',coordinates:[24,60]});
  find(ui,'Use my location for pickup').onclick();input.value='Changed';input.oninput();callback({coords:{longitude:25,latitude:61}});assert.equal(ui.read().coordinates,undefined);
  ui.destroy();callback({coords:{longitude:25,latitude:61}});assert.equal(ui.read().coordinates,undefined);
 });

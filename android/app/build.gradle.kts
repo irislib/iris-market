@@ -11,8 +11,8 @@ android {
         applicationId = "to.iris.market"
         minSdk = 29
         targetSdk = 36
-        versionCode = providers.environmentVariable("MARKET_ANDROID_VERSION_CODE").orNull?.toInt() ?: 11
-        versionName = providers.environmentVariable("MARKET_RELEASE_VERSION").orNull ?: "0.1.3-alpha.4"
+        versionCode = providers.environmentVariable("MARKET_ANDROID_VERSION_CODE").orNull?.toInt() ?: 12
+        versionName = providers.environmentVariable("MARKET_RELEASE_VERSION").orNull ?: "0.1.4-alpha.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk { abiFilters += "arm64-v8a" }
     }
@@ -63,6 +63,7 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("net.java.dev.jna:jna:5.12.0@aar")
+    implementation("com.google.zxing:core:3.5.3")
     debugImplementation("androidx.compose.ui:ui-tooling")
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation(platform("androidx.compose:compose-bom:2025.09.01"))

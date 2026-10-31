@@ -1,0 +1,1422 @@
+{
+  "version": 1,
+  "source": "web/scripts/generate-review-interop.ts; actual web profile builder and profile/product projectors",
+  "now": 1700000100,
+  "profileTarget": "95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d",
+  "productTarget": "30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:blue",
+  "events": {
+    "profile_old": {
+      "kind": 7368,
+      "content": "",
+      "created_at": 1700000000,
+      "tags": [
+        [
+          "i",
+          "12345678-1234-4234-8234-123456789abc",
+          "subject"
+        ],
+        [
+          "i",
+          "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4"
+        ],
+        [
+          "i",
+          "iris-market:profile:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d"
+        ],
+        [
+          "i",
+          "iris-market:review:12345678-1234-4234-8234-123456789abc"
+        ],
+        [
+          "p",
+          "95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d"
+        ],
+        [
+          "p",
+          "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4"
+        ],
+        [
+          "body",
+          "Synthetic profile fixture profile_old"
+        ],
+        [
+          "published_at",
+          "1700000000"
+        ],
+        [
+          "rating",
+          "2",
+          "5"
+        ],
+        [
+          "review_of",
+          "95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d"
+        ],
+        [
+          "reviewer",
+          "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4"
+        ],
+        [
+          "source",
+          "iris-market"
+        ],
+        [
+          "source_id",
+          "iris-market:review:12345678-1234-4234-8234-123456789abc"
+        ],
+        [
+          "type",
+          "review"
+        ],
+        [
+          "updated_at",
+          "1700000000"
+        ]
+      ],
+      "pubkey": "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4",
+      "id": "7f54815fcf4f18ba560e8a481a11092bcd079a79768292de5fb37bad4d0e2bcf",
+      "sig": "2fa601526c70f855acc21c2fe3437f7685b19ed75ceb686964048aad4adc09a911d386e655e401cf61f299107064b19704e953a9ad350fc1ada7d953a4302a47"
+    },
+    "profile_new": {
+      "kind": 7368,
+      "content": "",
+      "created_at": 1700000010,
+      "tags": [
+        [
+          "i",
+          "12345678-1234-4234-8234-123456789abc",
+          "subject"
+        ],
+        [
+          "i",
+          "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4"
+        ],
+        [
+          "i",
+          "iris-market:profile:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d"
+        ],
+        [
+          "i",
+          "iris-market:review:12345678-1234-4234-8234-123456789abc"
+        ],
+        [
+          "p",
+          "95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d"
+        ],
+        [
+          "p",
+          "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4"
+        ],
+        [
+          "body",
+          "Synthetic profile fixture profile_new"
+        ],
+        [
+          "published_at",
+          "1700000000"
+        ],
+        [
+          "rating",
+          "5",
+          "5"
+        ],
+        [
+          "review_of",
+          "95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d"
+        ],
+        [
+          "reviewer",
+          "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4"
+        ],
+        [
+          "source",
+          "iris-market"
+        ],
+        [
+          "source_id",
+          "iris-market:review:12345678-1234-4234-8234-123456789abc"
+        ],
+        [
+          "type",
+          "review"
+        ],
+        [
+          "updated_at",
+          "1700000010"
+        ]
+      ],
+      "pubkey": "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4",
+      "id": "e58082dc6f24a343dc30f22f8bda5ee9a073688297300c2b059c020e37ad4622",
+      "sig": "36e0e8ce99ecbf9405e79fa2906204ff50cc6d1ff620569087d0d1ed9f89dd3c2588043ba7cbc5663a16dc7c65ce3b95b58324bf6c414e27a397cd436c653f09"
+    },
+    "profile_other_subject": {
+      "kind": 7368,
+      "content": "",
+      "created_at": 1700000020,
+      "tags": [
+        [
+          "i",
+          "22345678-1234-4234-8234-123456789abc",
+          "subject"
+        ],
+        [
+          "i",
+          "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4"
+        ],
+        [
+          "i",
+          "iris-market:profile:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d"
+        ],
+        [
+          "i",
+          "iris-market:review:22345678-1234-4234-8234-123456789abc"
+        ],
+        [
+          "p",
+          "95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d"
+        ],
+        [
+          "p",
+          "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4"
+        ],
+        [
+          "body",
+          "Synthetic profile fixture profile_other_subject"
+        ],
+        [
+          "published_at",
+          "1700000020"
+        ],
+        [
+          "rating",
+          "4",
+          "5"
+        ],
+        [
+          "review_of",
+          "95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d"
+        ],
+        [
+          "reviewer",
+          "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4"
+        ],
+        [
+          "source",
+          "iris-market"
+        ],
+        [
+          "source_id",
+          "iris-market:review:22345678-1234-4234-8234-123456789abc"
+        ],
+        [
+          "type",
+          "review"
+        ],
+        [
+          "updated_at",
+          "1700000020"
+        ]
+      ],
+      "pubkey": "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4",
+      "id": "39a1949bbb28f347aba37c9ee50e9ac103dd39a6b871953028a9d7010a1a781a",
+      "sig": "81e573c46dfa1ad893569be534d6c9e3566745ccb6acb430be3d477ffe65ccb9fc232ea4c78294ba323d35b2ccc97b6d8d81b86b88107688f7ea90cd792b8e1e"
+    },
+    "profile_other_author": {
+      "kind": 7368,
+      "content": "",
+      "created_at": 1700000015,
+      "tags": [
+        [
+          "i",
+          "12345678-1234-4234-8234-123456789abc",
+          "subject"
+        ],
+        [
+          "i",
+          "166459e99ec351aa35b459935000b339f7091358e03fb2b6e938ddd7154a97cb"
+        ],
+        [
+          "i",
+          "iris-market:profile:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d"
+        ],
+        [
+          "i",
+          "iris-market:review:12345678-1234-4234-8234-123456789abc"
+        ],
+        [
+          "p",
+          "166459e99ec351aa35b459935000b339f7091358e03fb2b6e938ddd7154a97cb"
+        ],
+        [
+          "p",
+          "95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d"
+        ],
+        [
+          "body",
+          "Synthetic profile fixture profile_other_author"
+        ],
+        [
+          "published_at",
+          "1700000015"
+        ],
+        [
+          "rating",
+          "3",
+          "5"
+        ],
+        [
+          "review_of",
+          "95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d"
+        ],
+        [
+          "reviewer",
+          "166459e99ec351aa35b459935000b339f7091358e03fb2b6e938ddd7154a97cb"
+        ],
+        [
+          "source",
+          "iris-market"
+        ],
+        [
+          "source_id",
+          "iris-market:review:12345678-1234-4234-8234-123456789abc"
+        ],
+        [
+          "type",
+          "review"
+        ],
+        [
+          "updated_at",
+          "1700000015"
+        ]
+      ],
+      "pubkey": "166459e99ec351aa35b459935000b339f7091358e03fb2b6e938ddd7154a97cb",
+      "id": "ee7f10b3d09fd57a42d32f906ea7d67a05693f636cf5280ee21118220031ae85",
+      "sig": "1b291d5be43ec8c344480d9ccfb871e67cc3a1db578fd1661add1e972d8dfb41dde485518be64d29892f3c9f91a0ca6a48f61b13726632ed7f2eab31f6cfe7b4"
+    },
+    "market_spec": {
+      "kind": 31555,
+      "created_at": 1700000000,
+      "content": "Synthetic product fixture market_spec",
+      "tags": [
+        [
+          "d",
+          "a:30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:blue"
+        ],
+        [
+          "rating",
+          "1",
+          "thumb"
+        ],
+        [
+          "rating",
+          "0.8",
+          "quality"
+        ]
+      ],
+      "pubkey": "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4",
+      "id": "215e2cb38044fed58ade0a01866e6bf447c7343c3f00527f537817cf6d216662",
+      "sig": "8242f9184557ce491d63944c53e9fdd95d2261ecac355ee40e3a998f1adca9dd1a29c713c13e3b6e511e75355f983129b7404b66cdd1f334435c0fe59522298e"
+    },
+    "shopstr_legacy": {
+      "kind": 31555,
+      "created_at": 1700000001,
+      "content": "Synthetic product fixture shopstr_legacy",
+      "tags": [
+        [
+          "d",
+          "30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:blue"
+        ],
+        [
+          "rating",
+          "0.5",
+          "thumb"
+        ]
+      ],
+      "pubkey": "166459e99ec351aa35b459935000b339f7091358e03fb2b6e938ddd7154a97cb",
+      "id": "6c05f1c97463dcb5b05df91145a83b5d690e60f1911e29e72e89270564edce77",
+      "sig": "2744b6cb5bb40652b862424fe6217500f4b354030f31d228485a71b1444b97e02ff26be94a8cde06c263fa369793d80733f4fa952a42bad48e33795bb2f86d50"
+    },
+    "shopstr_address": {
+      "kind": 31555,
+      "created_at": 1700000002,
+      "content": "Synthetic product fixture shopstr_address",
+      "tags": [
+        [
+          "d",
+          "opaque-review:v1"
+        ],
+        [
+          "rating",
+          "0.25",
+          "thumb"
+        ],
+        [
+          "a",
+          "30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:blue"
+        ],
+        [
+          "rating",
+          ".75",
+          "value"
+        ]
+      ],
+      "pubkey": "f24d23e7b74cc9b424447f78b206c4a4634b3893e60f716560b886cff2d768a4",
+      "id": "896b7a516532185c1d0b6df19df41eda5db850f3f5b3d23c602a822793966459",
+      "sig": "ac21ce6dc2caf543257c021760f1d98abaf6a1471da34aae556baff6883f6537f84b43f8f00f1d41ba7e76ca6d6fc045e40683c4341d756e07fcbabdabfe1627"
+    },
+    "product_same_author_alias": {
+      "kind": 31555,
+      "created_at": 1700000001,
+      "content": "Synthetic product fixture product_same_author_alias",
+      "tags": [
+        [
+          "d",
+          "30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:blue"
+        ],
+        [
+          "rating",
+          "0.6",
+          "thumb"
+        ]
+      ],
+      "pubkey": "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4",
+      "id": "bccd91a9e8d1019f900957af69f1785a078feb05631df34d63f1a2e3d055d64d",
+      "sig": "3ebb8a445efa552b350ee11fb4e1d9e51caf76721100a956419daa4c06267d8c1c12429b010048775dca05812ed91d273927d1770ec7eab882a7b53d39745db8"
+    },
+    "product_replacement": {
+      "kind": 31555,
+      "created_at": 1700000010,
+      "content": "Synthetic product fixture product_replacement",
+      "tags": [
+        [
+          "d",
+          "a:30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:blue"
+        ],
+        [
+          "rating",
+          "0.8",
+          "thumb"
+        ]
+      ],
+      "pubkey": "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4",
+      "id": "28022a3efccaaa739fe91309355a33bfc8d88750c7a1e934ff4b5322615b52a5",
+      "sig": "65364819b53fc64eddbb2377f2cb2966d996cc4e1f30d869df8e707156614d1091a03ad5047d9009eca8604bb04c0fe259792bbe83fd9be756f5c8593d2e6e88"
+    },
+    "product_invalid_newer": {
+      "kind": 31555,
+      "created_at": 1700000011,
+      "content": "Synthetic product fixture product_invalid_newer",
+      "tags": [
+        [
+          "d",
+          "a:30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:blue"
+        ],
+        [
+          "rating",
+          "2",
+          "thumb"
+        ]
+      ],
+      "pubkey": "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4",
+      "id": "e803f2607ebb3a614c87111c24b2c43b43d67e183623c131b9f629e0905bd6a3",
+      "sig": "43ba6bc819d181585f4cc9f7271fe2587957b9d45bdf4b729ef448669907e27cf4fd68d35dc5b6fcb1a4ef4a9fdff7a66d938f3ce7e0caade8403f17964b665b"
+    },
+    "product_duplicate_d_newer": {
+      "kind": 31555,
+      "created_at": 1700000016,
+      "content": "Synthetic product fixture product_duplicate_d_newer",
+      "tags": [
+        [
+          "d",
+          "a:30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:blue"
+        ],
+        [
+          "rating",
+          "0.9",
+          "thumb"
+        ],
+        [
+          "d",
+          "extra-identifier"
+        ]
+      ],
+      "pubkey": "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4",
+      "id": "318aa5486a53912e84a21a67ffede8034d3707df72c5977075822cfa76dbd95a",
+      "sig": "951abc89cd259b32052fcb83e24b8df4874fc14c1ddc11acf331d32a2b8432ec2c3f4aecad8e0fc0e310c72ae882dd37a9ac965167d66de1505213dcd1ed1e72"
+    },
+    "product_plus_expiry": {
+      "kind": 31555,
+      "created_at": 1700000000,
+      "content": "Synthetic product fixture product_plus_expiry",
+      "tags": [
+        [
+          "d",
+          "a:30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:blue"
+        ],
+        [
+          "rating",
+          "0.5",
+          "thumb"
+        ],
+        [
+          "expiration",
+          "+1700000200"
+        ]
+      ],
+      "pubkey": "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4",
+      "id": "9cadd0518c0c00d977433ac657327569b603ae85935b8cfdeb099875bfde512b",
+      "sig": "736a04be28f71b688f4a2e17838d52432bdfa3100b0b4ead155793567d4eab07c68affa7953c03cab745ab2a43c70749a8c35d7ab773ccae74e1e1a181173a35"
+    },
+    "product_invalid_alias": {
+      "kind": 31555,
+      "created_at": 1700000012,
+      "content": "Synthetic product fixture product_invalid_alias",
+      "tags": [
+        [
+          "d",
+          "30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:blue"
+        ],
+        [
+          "rating",
+          "2",
+          "thumb"
+        ]
+      ],
+      "pubkey": "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4",
+      "id": "d82c0159a3b4ee19b520b0632b2bdd8394ccf0a9c69409cff4666c22004fad22",
+      "sig": "26e3d6b1a6c41781e8914e3e087d2a30dfbcc0d5df3e45be51c5c3429d2d464ddb6ead2f260f77db5442c5fd4d6dff7e19bde1bb6883e7ad5079af9568fb3f55"
+    },
+    "product_expired_newer": {
+      "kind": 31555,
+      "created_at": 1700000013,
+      "content": "Synthetic product fixture product_expired_newer",
+      "tags": [
+        [
+          "d",
+          "a:30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:blue"
+        ],
+        [
+          "rating",
+          "0.9",
+          "thumb"
+        ],
+        [
+          "expiration",
+          "1700000100"
+        ]
+      ],
+      "pubkey": "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4",
+      "id": "2156bd777412ed0b03836fe049484938a550b4b805ec5dcf824bc8f18a4235ab",
+      "sig": "7e5d86408c78b2996d4ddae5c8a01b6d8a9941aa8a0256bbb35851faae285720ee7dfeedfd9ea8a5d831d9f0e7ef502009d669b1eeb90e53307768489618398b"
+    },
+    "product_moved": {
+      "kind": 31555,
+      "created_at": 1700000014,
+      "content": "Synthetic product fixture product_moved",
+      "tags": [
+        [
+          "d",
+          "opaque-review:v1"
+        ],
+        [
+          "rating",
+          "0.6",
+          "thumb"
+        ],
+        [
+          "a",
+          "30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:green"
+        ]
+      ],
+      "pubkey": "f24d23e7b74cc9b424447f78b206c4a4634b3893e60f716560b886cff2d768a4",
+      "id": "8e58066ad522c2be4cbefa63d18326f787a8fb48ce08aaa468fe29f9ab2566e9",
+      "sig": "453e1e87a80ca3281f3f9f8c98f059a1a313ed33d7a81529569081c489cc7697c9ac96b985429adb401a93671d9098f965e89cf72dda62c6d357fd762782659d"
+    },
+    "product_after_deletion": {
+      "kind": 31555,
+      "created_at": 1700000030,
+      "content": "Synthetic product fixture product_after_deletion",
+      "tags": [
+        [
+          "d",
+          "a:30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:blue"
+        ],
+        [
+          "rating",
+          "0.4",
+          "thumb"
+        ]
+      ],
+      "pubkey": "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4",
+      "id": "266397d827ff206f9bbdf678a03631396810f452fe8ecd7301052f5f0dce45b1",
+      "sig": "fb63978cc6cda95440ec0d4eb3708225735ed3dfd046d6f69911eca3961315a0d5d6706a2e1eab6d85f512f649c549f394080727be4cd98876515e4b7c1b6df6"
+    },
+    "delete_event": {
+      "kind": 5,
+      "created_at": 1700000020,
+      "content": "",
+      "tags": [
+        [
+          "e",
+          "28022a3efccaaa739fe91309355a33bfc8d88750c7a1e934ff4b5322615b52a5"
+        ]
+      ],
+      "pubkey": "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4",
+      "id": "d33912ad9be2cddd7342623a69cd852dfd39f431ddaa5d4c6e6f24635ca32f86",
+      "sig": "c94da8db358597b51a3f5551eef02f5758c561c01f0afb389991a76bbbf0141b60972cd99d4fa4c62ee984faf8c46e9f59c92350ece187aa1f7e0600d06f83a3"
+    },
+    "delete_coordinate": {
+      "kind": 5,
+      "created_at": 1700000020,
+      "content": "",
+      "tags": [
+        [
+          "a",
+          "31555:9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4:a:30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:blue"
+        ]
+      ],
+      "pubkey": "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4",
+      "id": "1f53e0ea3fcf12a0e17fdbee2d8a725b7858e92e49ed7a20a0590adeb82f1629",
+      "sig": "a90c5ca94bd4b520f82789a8fbaafd774afd8d37f61cb432d453da5c6f20e02b2281cb9ca27b5bba250a33fa8f7d9c0d798637b1e960037e8316151dda7eef36"
+    },
+    "foreign_delete": {
+      "kind": 5,
+      "created_at": 1700000020,
+      "content": "",
+      "tags": [
+        [
+          "e",
+          "28022a3efccaaa739fe91309355a33bfc8d88750c7a1e934ff4b5322615b52a5"
+        ]
+      ],
+      "pubkey": "ea68cc3c8c37fb5cc5241b99f7537c36f8b82b940f6dba49f7ef3ef98203d0f6",
+      "id": "1c588e234c6f6fb33eeba890236d0b6a7a407287a605c977e7b1a5d46b30e70e",
+      "sig": "643459af9d82e986e9c42a1ec97903d7bfbc539db8f901200cc3676f7be430815ddd5b195f24a1df602c9753d9a4f03145dd437a0540c6bfd54088a30553438d"
+    },
+    "product_self": {
+      "kind": 31555,
+      "created_at": 1700000000,
+      "content": "Synthetic product fixture product_self",
+      "tags": [
+        [
+          "d",
+          "a:30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:blue"
+        ],
+        [
+          "rating",
+          "1",
+          "thumb"
+        ]
+      ],
+      "pubkey": "95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d",
+      "id": "4cccca2afd24ad7a85e90b77bb7b2e6d6598d41327030b73d19e44409bc3223c",
+      "sig": "d51fea557ecedc0c24affd1603afa1ce35ce9babd86f38f2a6f8eb6b610c6d1fb951fca4e269e26d5762cffd2cd87a4917a0976db83f5e29c3ce87126b254bc1"
+    },
+    "product_ambiguous": {
+      "kind": 31555,
+      "created_at": 1700000000,
+      "content": "Synthetic product fixture product_ambiguous",
+      "tags": [
+        [
+          "d",
+          "a:30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:blue"
+        ],
+        [
+          "rating",
+          "1",
+          "thumb"
+        ],
+        [
+          "a",
+          "30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:green"
+        ]
+      ],
+      "pubkey": "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4",
+      "id": "9083513392e17ca617ce05b0cb4976a3b41d76fd5dafa4a601e9640ca6b625a0",
+      "sig": "fe29b78a918d3f5549d808fff5cb863d1ff9dabc21af990fc7518899fd1e188c7092502930364d1ea635191f86d296166315b29d595f80600a96cd084ba189ae"
+    },
+    "product_wrong_scale": {
+      "kind": 31555,
+      "created_at": 1700000000,
+      "content": "Synthetic product fixture product_wrong_scale",
+      "tags": [
+        [
+          "d",
+          "a:30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:blue"
+        ],
+        [
+          "rating",
+          "5",
+          "thumb"
+        ]
+      ],
+      "pubkey": "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4",
+      "id": "ebe4d623ac8f1117cbbf91b419b17ba0b6f3e094e8beb3ea14908e1a1cf58833",
+      "sig": "c0b36d13f3b4704371348b7161dd258c168089291004701dbc071e5f2c2b26bbac1aef639eb775cffaaaf7088dcf567e46996567b88f782af0c893ee7c9af3ae"
+    },
+    "product_duplicate_dimension": {
+      "kind": 31555,
+      "created_at": 1700000000,
+      "content": "Synthetic product fixture product_duplicate_dimension",
+      "tags": [
+        [
+          "d",
+          "a:30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:blue"
+        ],
+        [
+          "rating",
+          "0.5",
+          "thumb"
+        ],
+        [
+          "rating",
+          "0.7",
+          "thumb"
+        ]
+      ],
+      "pubkey": "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4",
+      "id": "aea296a1c676ccda592ed02e7607337bb7a64178a310fc40b1af475b8201b505",
+      "sig": "879cee5f50accb12f7602893dbc2dcb17342f8b5a88c5c5c2a5c6a347bfe3aed996ac79e1ba4ad36c436988a28a298fedcec3444c560ca7adc1e6b10d44d6e77"
+    },
+    "product_plus_rating": {
+      "kind": 31555,
+      "created_at": 1700000000,
+      "content": "Synthetic product fixture product_plus_rating",
+      "tags": [
+        [
+          "d",
+          "a:30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:blue"
+        ],
+        [
+          "rating",
+          "+0.5",
+          "thumb"
+        ]
+      ],
+      "pubkey": "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4",
+      "id": "a5ca854e16cbc096932758daddcb709da885af757ab427d3ffb25c5357e59439",
+      "sig": "9cb735ebfa65e95dc8b1113b953436dce27d932640bcfb3f9173e4b758ce597f0d1f526424c6fd9df94ef732cbc8798e90d60ac5a191263871a2a817e2ba2d37"
+    },
+    "product_trailing_dot_rating": {
+      "kind": 31555,
+      "created_at": 1700000000,
+      "content": "Synthetic product fixture product_trailing_dot_rating",
+      "tags": [
+        [
+          "d",
+          "a:30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:blue"
+        ],
+        [
+          "rating",
+          "1.",
+          "thumb"
+        ]
+      ],
+      "pubkey": "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4",
+      "id": "b59bbc45a4f6778469ea3b815d30f31477e47b2bbe946b17654ed3c52d58f20b",
+      "sig": "3f4ae731683b5fcbde0f3b3cf755cc4c9481db83d23fdc11a33b14e987b62b55f27d174b41b7758fdb2a07ad719bd5c4f35f7347a90e6d25eb2de519215c5bc8"
+    },
+    "product_negative_zero": {
+      "kind": 31555,
+      "created_at": 1700000000,
+      "content": "Synthetic product fixture product_negative_zero",
+      "tags": [
+        [
+          "d",
+          "a:30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:blue"
+        ],
+        [
+          "rating",
+          "-0",
+          "thumb"
+        ]
+      ],
+      "pubkey": "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4",
+      "id": "c3e43a45aef7a7b1cd972af6c750cf1a87131575418898b81349896e30d54a8e",
+      "sig": "743e9f12cab8f62247c0813274d45e2af0ee383b8bd6935103b061432714ce05528545cbe73351fec92f548f7cfaa51d59fdacae002a0d34c7c8c4719dd897a2"
+    },
+    "product_oversized_tag": {
+      "kind": 31555,
+      "created_at": 1700000000,
+      "content": "Synthetic product fixture product_oversized_tag",
+      "tags": [
+        [
+          "d",
+          "a:30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:blue"
+        ],
+        [
+          "rating",
+          "0.5",
+          "thumb"
+        ],
+        [
+          "context",
+          "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        ]
+      ],
+      "pubkey": "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4",
+      "id": "327078484a6046c08d07de4337eafc1651e63356fc272b4f55e304f0d82a60db",
+      "sig": "be0cdec463d402ba6eeb1496576375dd252f2c002fbd5eaaa59fb91708117aeb98e7ba8e20655dccc2e03ab8da138cc0c589007f67a260d170ea668b8483b671"
+    },
+    "profile_self": {
+      "kind": 7368,
+      "content": "",
+      "created_at": 1700000000,
+      "tags": [
+        [
+          "i",
+          "12345678-1234-4234-8234-123456789abc",
+          "subject"
+        ],
+        [
+          "i",
+          "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4"
+        ],
+        [
+          "i",
+          "iris-market:profile:9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4"
+        ],
+        [
+          "i",
+          "iris-market:review:12345678-1234-4234-8234-123456789abc"
+        ],
+        [
+          "p",
+          "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4"
+        ],
+        [
+          "p",
+          "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4"
+        ],
+        [
+          "published_at",
+          "1700000000"
+        ],
+        [
+          "rating",
+          "5",
+          "5"
+        ],
+        [
+          "review_of",
+          "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4"
+        ],
+        [
+          "reviewer",
+          "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4"
+        ],
+        [
+          "source",
+          "iris-market"
+        ],
+        [
+          "source_id",
+          "iris-market:review:12345678-1234-4234-8234-123456789abc"
+        ],
+        [
+          "type",
+          "review"
+        ],
+        [
+          "updated_at",
+          "1700000000"
+        ]
+      ],
+      "pubkey": "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4",
+      "id": "adc6fae67e56b908de944f85899d0e2e87f1083eb114bed453be7655f502dfb9",
+      "sig": "1f20a246ee7517ddf46c9f36e987509822a634db108a8a5ec9db1ca7946d0df8dec28f98d1409ff37ccaec9d474ed9028a915146a3770a832175dc451505696b"
+    },
+    "profile_wrong_scale": {
+      "kind": 7368,
+      "content": "",
+      "created_at": 1700000000,
+      "tags": [
+        [
+          "i",
+          "12345678-1234-4234-8234-123456789abc",
+          "subject"
+        ],
+        [
+          "i",
+          "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4"
+        ],
+        [
+          "i",
+          "iris-market:profile:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d"
+        ],
+        [
+          "i",
+          "iris-market:review:12345678-1234-4234-8234-123456789abc"
+        ],
+        [
+          "p",
+          "95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d"
+        ],
+        [
+          "p",
+          "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4"
+        ],
+        [
+          "published_at",
+          "1700000000"
+        ],
+        [
+          "rating",
+          "0.5",
+          "1"
+        ],
+        [
+          "review_of",
+          "95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d"
+        ],
+        [
+          "reviewer",
+          "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4"
+        ],
+        [
+          "source",
+          "iris-market"
+        ],
+        [
+          "source_id",
+          "iris-market:review:12345678-1234-4234-8234-123456789abc"
+        ],
+        [
+          "type",
+          "review"
+        ],
+        [
+          "updated_at",
+          "1700000000"
+        ]
+      ],
+      "pubkey": "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4",
+      "id": "516854455c2145dcac9d9cb6a3902722006d4771b67cbf1267268c4fccb7d641",
+      "sig": "b5785262c5a5426d7c08f399978bd3c7fb6cd86440f4ec3618b56cba8aa151cd69010b70fc27bebd27261fb5d3f6900cc26f3ed5b58c75d59fa096f4b0be938e"
+    },
+    "profile_plus_time": {
+      "kind": 7368,
+      "content": "",
+      "created_at": 1700000000,
+      "tags": [
+        [
+          "i",
+          "12345678-1234-4234-8234-123456789abc",
+          "subject"
+        ],
+        [
+          "i",
+          "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4"
+        ],
+        [
+          "i",
+          "iris-market:profile:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d"
+        ],
+        [
+          "i",
+          "iris-market:review:12345678-1234-4234-8234-123456789abc"
+        ],
+        [
+          "p",
+          "95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d"
+        ],
+        [
+          "p",
+          "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4"
+        ],
+        [
+          "published_at",
+          "+1700000000"
+        ],
+        [
+          "rating",
+          "5",
+          "5"
+        ],
+        [
+          "review_of",
+          "95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d"
+        ],
+        [
+          "reviewer",
+          "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4"
+        ],
+        [
+          "source",
+          "iris-market"
+        ],
+        [
+          "source_id",
+          "iris-market:review:12345678-1234-4234-8234-123456789abc"
+        ],
+        [
+          "type",
+          "review"
+        ],
+        [
+          "updated_at",
+          "+1700000000"
+        ]
+      ],
+      "pubkey": "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4",
+      "id": "272bba799f54b2b92e47e905c1e7cc570f72009c1d0d2cee5394056f0e8a688d",
+      "sig": "ba77d8c305adf159db018599576b6fb656cc87d98c2a38de47eaf4abe4a8de52b648a0eaf71d1f504e3984f0f62ef819e9fd0b95bf3d3e7ff1ea07da233608d5"
+    },
+    "profile_forged": {
+      "kind": 7368,
+      "content": "",
+      "created_at": 1700000000,
+      "tags": [
+        [
+          "i",
+          "12345678-1234-4234-8234-123456789abc",
+          "subject"
+        ],
+        [
+          "i",
+          "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4"
+        ],
+        [
+          "i",
+          "iris-market:profile:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d"
+        ],
+        [
+          "i",
+          "iris-market:review:12345678-1234-4234-8234-123456789abc"
+        ],
+        [
+          "p",
+          "95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d"
+        ],
+        [
+          "p",
+          "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4"
+        ],
+        [
+          "body",
+          "Forged body, signature not updated"
+        ],
+        [
+          "published_at",
+          "1700000000"
+        ],
+        [
+          "rating",
+          "2",
+          "5"
+        ],
+        [
+          "review_of",
+          "95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d"
+        ],
+        [
+          "reviewer",
+          "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4"
+        ],
+        [
+          "source",
+          "iris-market"
+        ],
+        [
+          "source_id",
+          "iris-market:review:12345678-1234-4234-8234-123456789abc"
+        ],
+        [
+          "type",
+          "review"
+        ],
+        [
+          "updated_at",
+          "1700000000"
+        ]
+      ],
+      "pubkey": "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4",
+      "id": "7f54815fcf4f18ba560e8a481a11092bcd079a79768292de5fb37bad4d0e2bcf",
+      "sig": "2fa601526c70f855acc21c2fe3437f7685b19ed75ceb686964048aad4adc09a911d386e655e401cf61f299107064b19704e953a9ad350fc1ada7d953a4302a47"
+    },
+    "product_forged": {
+      "kind": 31555,
+      "created_at": 1700000040,
+      "content": "Forged body, signature not updated",
+      "tags": [
+        [
+          "d",
+          "a:30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:blue"
+        ],
+        [
+          "rating",
+          "1",
+          "thumb"
+        ],
+        [
+          "rating",
+          "0.8",
+          "quality"
+        ]
+      ],
+      "pubkey": "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4",
+      "id": "215e2cb38044fed58ade0a01866e6bf447c7343c3f00527f537817cf6d216662",
+      "sig": "8242f9184557ce491d63944c53e9fdd95d2261ecac355ee40e3a998f1adca9dd1a29c713c13e3b6e511e75355f983129b7404b66cdd1f334435c0fe59522298e"
+    }
+  },
+  "cases": [
+    {
+      "name": "web_profile_draft",
+      "product": false,
+      "target": "95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d",
+      "events": [
+        "profile_old"
+      ],
+      "expected": [
+        {
+          "event": "profile_old",
+          "rating": 2,
+          "ratingMax": 5,
+          "body": "Synthetic profile fixture profile_old"
+        }
+      ]
+    },
+    {
+      "name": "profile_same_subject_replacement",
+      "product": false,
+      "target": "95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d",
+      "events": [
+        "profile_new",
+        "profile_old"
+      ],
+      "expected": [
+        {
+          "event": "profile_new",
+          "rating": 5,
+          "ratingMax": 5,
+          "body": "Synthetic profile fixture profile_new"
+        }
+      ]
+    },
+    {
+      "name": "profile_one_voice_across_subjects",
+      "product": false,
+      "target": "95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d",
+      "events": [
+        "profile_old",
+        "profile_other_subject",
+        "profile_new",
+        "profile_other_author"
+      ],
+      "expected": [
+        {
+          "event": "profile_other_subject",
+          "rating": 4,
+          "ratingMax": 5,
+          "body": "Synthetic profile fixture profile_other_subject"
+        },
+        {
+          "event": "profile_other_author",
+          "rating": 3,
+          "ratingMax": 5,
+          "body": "Synthetic profile fixture profile_other_author"
+        }
+      ]
+    },
+    {
+      "name": "all_product_formats",
+      "product": true,
+      "target": "30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:blue",
+      "events": [
+        "market_spec",
+        "shopstr_legacy",
+        "shopstr_address"
+      ],
+      "expected": [
+        {
+          "event": "market_spec",
+          "rating": 1,
+          "ratingMax": 1,
+          "body": "Synthetic product fixture market_spec"
+        },
+        {
+          "event": "shopstr_legacy",
+          "rating": 0.5,
+          "ratingMax": 1,
+          "body": "Synthetic product fixture shopstr_legacy"
+        },
+        {
+          "event": "shopstr_address",
+          "rating": 0.25,
+          "ratingMax": 1,
+          "body": "Synthetic product fixture shopstr_address"
+        }
+      ]
+    },
+    {
+      "name": "product_coordinate_replacement",
+      "product": true,
+      "target": "30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:blue",
+      "events": [
+        "product_replacement",
+        "market_spec"
+      ],
+      "expected": [
+        {
+          "event": "product_replacement",
+          "rating": 0.8,
+          "ratingMax": 1,
+          "body": "Synthetic product fixture product_replacement"
+        }
+      ]
+    },
+    {
+      "name": "product_invalid_newer_hides_old",
+      "product": true,
+      "target": "30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:blue",
+      "events": [
+        "market_spec",
+        "product_invalid_newer"
+      ],
+      "expected": []
+    },
+    {
+      "name": "product_duplicate_d_newer_hides_older_alias",
+      "product": true,
+      "target": "30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:blue",
+      "events": [
+        "product_same_author_alias",
+        "product_duplicate_d_newer"
+      ],
+      "expected": []
+    },
+    {
+      "name": "product_duplicate_d_newer_hides_old",
+      "product": true,
+      "target": "30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:blue",
+      "events": [
+        "market_spec",
+        "product_duplicate_d_newer"
+      ],
+      "expected": []
+    },
+    {
+      "name": "product_invalid_alias_hides_other_alias",
+      "product": true,
+      "target": "30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:blue",
+      "events": [
+        "market_spec",
+        "product_invalid_alias"
+      ],
+      "expected": []
+    },
+    {
+      "name": "product_expired_newer_hides_old",
+      "product": true,
+      "target": "30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:blue",
+      "events": [
+        "market_spec",
+        "product_expired_newer"
+      ],
+      "expected": []
+    },
+    {
+      "name": "product_moved_target_hides_old",
+      "product": true,
+      "target": "30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:blue",
+      "events": [
+        "shopstr_address",
+        "product_moved"
+      ],
+      "expected": []
+    },
+    {
+      "name": "product_event_deletion",
+      "product": true,
+      "target": "30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:blue",
+      "events": [
+        "market_spec",
+        "delete_event",
+        "product_replacement"
+      ],
+      "expected": []
+    },
+    {
+      "name": "product_coordinate_deletion",
+      "product": true,
+      "target": "30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:blue",
+      "events": [
+        "market_spec",
+        "delete_coordinate",
+        "product_replacement"
+      ],
+      "expected": []
+    },
+    {
+      "name": "newer_review_after_coordinate_deletion",
+      "product": true,
+      "target": "30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:blue",
+      "events": [
+        "product_after_deletion",
+        "delete_coordinate",
+        "product_replacement"
+      ],
+      "expected": [
+        {
+          "event": "product_after_deletion",
+          "rating": 0.4,
+          "ratingMax": 1,
+          "body": "Synthetic product fixture product_after_deletion"
+        }
+      ]
+    },
+    {
+      "name": "foreign_deletion_cannot_remove",
+      "product": true,
+      "target": "30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:blue",
+      "events": [
+        "product_replacement",
+        "foreign_delete"
+      ],
+      "expected": [
+        {
+          "event": "product_replacement",
+          "rating": 0.8,
+          "ratingMax": 1,
+          "body": "Synthetic product fixture product_replacement"
+        }
+      ]
+    },
+    {
+      "name": "forged_newer_cannot_replace",
+      "product": true,
+      "target": "30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:blue",
+      "events": [
+        "market_spec",
+        "product_forged"
+      ],
+      "expected": [
+        {
+          "event": "market_spec",
+          "rating": 1,
+          "ratingMax": 1,
+          "body": "Synthetic product fixture market_spec"
+        }
+      ]
+    },
+    {
+      "name": "profile_ignores_product_scale",
+      "product": false,
+      "target": "95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d",
+      "events": [
+        "profile_new",
+        "market_spec",
+        "shopstr_legacy"
+      ],
+      "expected": [
+        {
+          "event": "profile_new",
+          "rating": 5,
+          "ratingMax": 5,
+          "body": "Synthetic profile fixture profile_new"
+        }
+      ]
+    },
+    {
+      "name": "product_ignores_profile_stars",
+      "product": true,
+      "target": "30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:blue",
+      "events": [
+        "profile_new",
+        "market_spec",
+        "shopstr_legacy"
+      ],
+      "expected": [
+        {
+          "event": "market_spec",
+          "rating": 1,
+          "ratingMax": 1,
+          "body": "Synthetic product fixture market_spec"
+        },
+        {
+          "event": "shopstr_legacy",
+          "rating": 0.5,
+          "ratingMax": 1,
+          "body": "Synthetic product fixture shopstr_legacy"
+        }
+      ]
+    }
+  ],
+  "invalid": [
+    {
+      "event": "profile_self",
+      "product": false,
+      "target": "9a7cc47e15784786149e6fabe18c215ba66e7f70b2a885d1e80e1008954aebb4"
+    },
+    {
+      "event": "profile_wrong_scale",
+      "product": false,
+      "target": "95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d"
+    },
+    {
+      "event": "profile_forged",
+      "product": false,
+      "target": "95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d"
+    },
+    {
+      "event": "profile_plus_time",
+      "product": false,
+      "target": "95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d"
+    },
+    {
+      "event": "product_plus_expiry",
+      "product": true,
+      "target": "30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:blue"
+    },
+    {
+      "event": "product_duplicate_d_newer",
+      "product": true,
+      "target": "30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:blue"
+    },
+    {
+      "event": "product_self",
+      "product": true,
+      "target": "30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:blue"
+    },
+    {
+      "event": "product_ambiguous",
+      "product": true,
+      "target": "30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:blue"
+    },
+    {
+      "event": "product_wrong_scale",
+      "product": true,
+      "target": "30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:blue"
+    },
+    {
+      "event": "product_duplicate_dimension",
+      "product": true,
+      "target": "30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:blue"
+    },
+    {
+      "event": "product_plus_rating",
+      "product": true,
+      "target": "30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:blue"
+    },
+    {
+      "event": "product_trailing_dot_rating",
+      "product": true,
+      "target": "30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:blue"
+    },
+    {
+      "event": "product_negative_zero",
+      "product": true,
+      "target": "30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:blue"
+    },
+    {
+      "event": "product_oversized_tag",
+      "product": true,
+      "target": "30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:blue"
+    },
+    {
+      "event": "product_forged",
+      "product": true,
+      "target": "30402:95f231a5c34f0bfa99c30fd3f8a21000ae1c1fe8fc048f24a2ce527798a9da3d:catalog:item:blue"
+    }
+  ]
+}

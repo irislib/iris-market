@@ -90,6 +90,7 @@ import org.json.JSONObject
             }
         }
         if(selection==0) {
+            item(span={GridItemSpan(maxLineSpan)}) { ReviewsView(author,model) }
             items(authorListings,key={it.id}) { listing ->
                 ListingCard(listing,state.demo,{openListing(listing)},{model.save(listing.id)})
             }

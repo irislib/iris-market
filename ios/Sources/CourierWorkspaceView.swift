@@ -78,7 +78,7 @@ struct CourierWorkspaceView: View {
                 .sheet(item: $selected) { listing in ListingDetailView(listing: listing, onContact: { inbox = true }, onOrder: { section = "jobs" }).marketSheetScope() }
                 .sheet(item: $order) { value in OrderDetailView(orderID: value.id).marketSheetScope() }
                 .sheet(isPresented: $chooseServiceAreas) { ServiceAreaEditor(areas: $serviceAreas).marketSheetScope() }
-                .sheet(isPresented: $compose) { NewListingView(transport: type, area: area.trimmingCharacters(in: .whitespacesAndNewlines), serviceAreas: serviceAreas).marketSheetScope() }
+                .sheet(isPresented: $compose) { NewListingView(transport: type, area: area.trimmingCharacters(in: .whitespacesAndNewlines), serviceAreas: serviceAreas).marketListingEditorSheetScope() }
                 .sheet(isPresented: $inbox) { NavigationStack { InboxView().navigationTitle("Inbox").toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { inbox = false } } } }.marketSheetScope() }
         }
     }

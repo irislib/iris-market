@@ -133,6 +133,29 @@ impl Store {
         self.db.execute("DELETE FROM relevance", [])?;
         Ok(())
     }
+    pub(crate) fn review_events(&self, target: &str) -> Result<Vec<Event>> {
+        let raw: Option<String> = self
+            .db
+            .query_row(
+                "SELECT value FROM preferences WHERE key=?1 AND length(value)<=1048576",
+                [format!("reviews:{target}")],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(raw
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_default())
+    }
+    pub(crate) fn save_review_events(&self, target: &str, events: &[Event]) -> Result<()> {
+        let raw = serde_json::to_string(events)?;
+        anyhow::ensure!(raw.len() <= 1048576, "Review cache is full");
+        self.db.execute(
+            "INSERT OR REPLACE INTO preferences VALUES (?1,?2)",
+            params![format!("reviews:{target}"), raw],
+        )?;
+        self.db.execute("DELETE FROM preferences WHERE key LIKE 'reviews:%' AND rowid NOT IN (SELECT rowid FROM preferences WHERE key LIKE 'reviews:%' ORDER BY rowid DESC LIMIT 16)",[])?;
+        Ok(())
+    }
     pub fn clear_relevance(&self) -> Result<()> {
         self.db.execute("DELETE FROM relevance", [])?;
         Ok(())

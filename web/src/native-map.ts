@@ -1,4 +1,5 @@
 import {mountNativeArea} from './native-area.ts';
+import {mountNativePlace} from './native-place.ts';
 import { createMarketMap, type MapListing } from './map/index.ts';
 import { setupShipmentMap, type Shipment } from './map/shipment.ts';
 import { validateServiceArea, type ServiceAreas } from './service-area.ts';
@@ -111,6 +112,7 @@ export async function mountNativeMap() {
   const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
   const params = new URLSearchParams(location.search), shipmentMode = params.get('mode') === 'shipment';
   if(params.get('mode')==='area'){document.documentElement.dataset.appearance=params.get('theme')==='dark'?'dark':'light';return mountNativeArea();}
+  if(params.get('mode')==='place'){document.documentElement.dataset.appearance=params.get('theme')==='dark'?'dark':'light';return mountNativePlace();}
   const dark = params.get('theme') === 'dark';
   let disposed = false, instance: Awaited<ReturnType<typeof createMarketMap>> | null = null;
   const showError = (_error: unknown) => { if (!disposed) $('map-status').textContent = 'Map unavailable'; };

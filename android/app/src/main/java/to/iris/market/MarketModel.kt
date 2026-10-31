@@ -261,11 +261,11 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
         }
     }
     /** Called only after an explicit wallet action; returns a separate secure wallet seed. */
-    suspend fun walletMaterial(expectedOwner:String): WalletCredentials.Material = withContext(Dispatchers.IO) {
+    suspend fun walletMaterial(expectedOwner:String,importedSeed:String?=null): WalletCredentials.Material = withContext(Dispatchers.IO) {
         mutex.withLock {
             check(!preview && state.value.publicKey==expectedOwner && expectedOwner.isNotBlank()) { "Choose your profile before opening its wallet." }
             val device=pushDeviceSecret ?: error("Your device is not ready.")
-            WalletCredentials.loadOrCreate(getApplication(),state.value.publicKey,publicKeyForSecret(device))
+            WalletCredentials.loadOrCreate(getApplication(),state.value.publicKey,publicKeyForSecret(device),importedSeed)
         }
     }
     private fun openSavedAccount() {
@@ -466,7 +466,38 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
         if(reset) mutable.value=next else publishSnapshot(next)
     } }
     fun dismissNotice() { alert.value = null }
+    internal suspend fun uploadMedia(file:PreparedListingFile,expectedOwner:String):ListingMediaUpload {
+        val generation=accountGeneration;val app=core ?: error("App is opening")
+        check(!preview&&state.value.publicKey==expectedOwner&&state.value.canSign)
+        val raw=withContext(Dispatchers.IO){app.uploadMedia(file.data,file.name,file.mime)}
+        check(generation==accountGeneration)
+        return ListingMediaUpload.parse(raw)
+    }
+    internal suspend fun loadReviews(target:String,product:Boolean,refresh:Boolean):List<MarketReview> {
+        val generation=accountGeneration;val app=core ?: return emptyList()
+        val raw=withContext(Dispatchers.IO){app.reviews(target,product,refresh)}
+        check(generation==accountGeneration)
+        return MarketReview.parse(raw)
+    }
+    internal suspend fun publishReview(target:String,rating:Int,body:String,expectedOwner:String):List<MarketReview> {
+        val generation=accountGeneration;val app=core ?: error("App is opening")
+        check(!preview&&rating in 1..5&&state.value.publicKey==expectedOwner&&state.value.canSign)
+        val raw=withContext(Dispatchers.IO){app.publishReview(target,rating.toUByte(),body)}
+        check(generation==accountGeneration)
+        return MarketReview.parse(raw)
+    }
     fun command(request: JSONObject, onSuccess: (() -> Unit)? = null) = submit(request, onSuccess, null)
+    suspend fun sendOrderPaymentToken(orderID:String,token:String,expectedOwner:String) {
+        val generation=accountGeneration
+        check(!preview&&state.value.publicKey==expectedOwner)
+        val order=state.value.orders.firstOrNull {it.id==orderID} ?: error("Order unavailable")
+        check(order.buyer==expectedOwner&&order.payment?.status=="requested")
+        kotlinx.coroutines.suspendCancellableCoroutine<Unit> { continuation ->
+            submit(JSONObject().put("type","send_order_payment_token").put("order_id",orderID).put("token",token),
+                {if(continuation.isActive)continuation.resumeWith(if(generation==accountGeneration)Result.success(Unit)else Result.failure(kotlinx.coroutines.CancellationException()))},
+                {if(continuation.isActive)continuation.resumeWith(Result.failure(IllegalStateException("Payment is saved in your wallet. Retry sending it to this order.")))})
+        }
+    }
     fun publishListing(draft: JSONObject, expiry: NativeListingExpiry, onSuccess: () -> Unit) = submit(JSONObject().put("type","publish").put("draft",JSONObject(draft.toString())), onSuccess, null, publishExpiry=expiry)
     fun orderCommand(request: JSONObject, onSuccess: () -> Unit = {}, onError: (String) -> Unit) = submit(request, onSuccess, onError)
     private fun submit(request: JSONObject, onSuccess: (() -> Unit)?, onError: ((String) -> Unit)?, expectedAIIntent: Long? = null, publishExpiry: NativeListingExpiry? = null) {

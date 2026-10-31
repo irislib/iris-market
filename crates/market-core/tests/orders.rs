@@ -168,17 +168,256 @@ fn actual_order_ids_keep_request_reply_context_and_reject_unrelated_peers() {
     let mut seller = Messaging::open(bd.path(), bk.clone()).unwrap();
     seller.accept_invite(&buyer.invite().unwrap()).unwrap();
     exchange(&mut buyer, &mut seller);
-    let id = buyer.request_order(&listing(&bk), 1, "Synthetic order context").unwrap();
+    let id = buyer
+        .request_order(&listing(&bk), 1, "Synthetic order context")
+        .unwrap();
     exchange(&mut buyer, &mut seller);
     let context = MessageContext::for_order(&id);
     context.validate().unwrap();
     assert_eq!(context.thread_id, id.split_once(':').unwrap().1);
-    buyer.send_with_context(&bk.public_key().to_hex(), "Synthetic order inquiry", Some(context.clone())).unwrap();
+    buyer
+        .send_with_context(
+            &bk.public_key().to_hex(),
+            "Synthetic order inquiry",
+            Some(context.clone()),
+        )
+        .unwrap();
     exchange(&mut buyer, &mut seller);
-    let incoming = seller.conversations().into_iter().flat_map(|c| c.messages).find(|m| m.text == "Synthetic order inquiry").unwrap();
+    let incoming = seller
+        .conversations()
+        .into_iter()
+        .flat_map(|c| c.messages)
+        .find(|m| m.text == "Synthetic order inquiry")
+        .unwrap();
     assert_eq!(incoming.context, Some(context.clone()));
-    seller.send_with_context(&ak.public_key().to_hex(), "Synthetic order reply", incoming.context).unwrap();
+    seller
+        .send_with_context(
+            &ak.public_key().to_hex(),
+            "Synthetic order reply",
+            incoming.context,
+        )
+        .unwrap();
     exchange(&mut buyer, &mut seller);
-    assert!(buyer.conversations().iter().flat_map(|c| &c.messages).any(|m| m.text == "Synthetic order reply" && m.context == Some(context.clone())));
-    assert!(buyer.send_with_context(&outsider.public_key().to_hex(), "Must not escape the order", Some(context)).unwrap_err().contains("not shared"));
+    assert!(
+        buyer
+            .conversations()
+            .iter()
+            .flat_map(|c| &c.messages)
+            .any(|m| m.text == "Synthetic order reply" && m.context == Some(context.clone()))
+    );
+    assert!(
+        buyer
+            .send_with_context(
+                &outsider.public_key().to_hex(),
+                "Must not escape the order",
+                Some(context)
+            )
+            .unwrap_err()
+            .contains("not shared")
+    );
+}
+
+fn relay_three(buyer: &mut Messaging, merchant: &mut Messaging, courier: &mut Messaging) {
+    for _ in 0..12 {
+        buyer.retry().unwrap();
+        merchant.retry().unwrap();
+        courier.retry().unwrap();
+        let mut count = 0;
+        for event in buyer.pending_outbound() {
+            merchant.receive(&event).unwrap();
+            courier.receive(&event).unwrap();
+            buyer.acknowledge_published(&event.id.to_hex()).unwrap();
+            count += 1;
+        }
+        for event in merchant.pending_outbound() {
+            buyer.receive(&event).unwrap();
+            courier.receive(&event).unwrap();
+            merchant.acknowledge_published(&event.id.to_hex()).unwrap();
+            count += 1;
+        }
+        for event in courier.pending_outbound() {
+            buyer.receive(&event).unwrap();
+            merchant.receive(&event).unwrap();
+            courier.acknowledge_published(&event.id.to_hex()).unwrap();
+            count += 1;
+        }
+        if count == 0 {
+            break;
+        }
+    }
+}
+fn metadata_token(amount: u64, mint: &str) -> String {
+    format!("cashuA{}",URL_SAFE_NO_PAD.encode(json!({"token":[{"mint":mint,"proofs":[{"amount":amount,"id":"009a1f293253e41e","secret":"synthetic-metadata-only-not-redeemable","C":"0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"}]}],"unit":"sat"}).to_string()))
+}
+#[test]
+fn private_separate_checkout_payment_send_boundary_and_live_location_actual_ndr() {
+    use iris_market_core::{
+        conversation_context::MessageContext,
+        orders::{DeliveryPlace, PaymentStatus},
+    };
+    let bd = TempDir::new().unwrap();
+    let md = TempDir::new().unwrap();
+    let cd = TempDir::new().unwrap();
+    let bk = Keys::generate();
+    let mk = Keys::generate();
+    let ck = Keys::generate();
+    let mut b = Messaging::open(bd.path(), bk.clone()).unwrap();
+    let mut m = Messaging::open(md.path(), mk.clone()).unwrap();
+    let mut c = Messaging::open(cd.path(), ck.clone()).unwrap();
+    b.accept_invite(&m.invite().unwrap()).unwrap();
+    exchange(&mut b, &mut m);
+    b.accept_invite(&c.invite().unwrap()).unwrap();
+    exchange(&mut b, &mut c);
+    let product = b
+        .request_order(&listing(&mk), 1, "Private parcel contents")
+        .unwrap();
+    relay_three(&mut b, &mut m, &mut c);
+    m.update_order(&product,json!({"payment":{"mint":"https://testnut.cashu.space","amount":"8","unit":"sat","status":"requested"}})).unwrap();
+    relay_three(&mut b, &mut m, &mut c);
+    assert!(
+        b.send_order_payment_token(&product, &metadata_token(9, "https://testnut.cashu.space"))
+            .is_err()
+    );
+    assert!(
+        b.send_order_payment_token(&product, &metadata_token(8, "https://other.example"))
+            .is_err()
+    );
+    assert!(
+        m.send_order_payment_token(&product, &metadata_token(8, "https://testnut.cashu.space"))
+            .is_err()
+    );
+    let token = metadata_token(8, "https://testnut.cashu.space");
+    b.send_order_payment_token(&product, &token).unwrap();
+    let count = b
+        .conversations()
+        .iter()
+        .flat_map(|thread| thread.messages.iter())
+        .count();
+    b.send_order_payment_token(&product, &token).unwrap();
+    assert_eq!(
+        count,
+        b.conversations()
+            .iter()
+            .flat_map(|thread| thread.messages.iter())
+            .count()
+    );
+    relay_three(&mut b, &mut m, &mut c);
+    assert_eq!(
+        m.orders()[0].order.payment.as_ref().unwrap().status,
+        PaymentStatus::Requested,
+        "token metadata and transport do not prove payment"
+    );
+    drop(b);
+    let mut b = Messaging::open(bd.path(), bk.clone()).unwrap();
+    let count = b
+        .conversations()
+        .iter()
+        .flat_map(|thread| thread.messages.iter())
+        .count();
+    b.send_order_payment_token(&product, &token).unwrap();
+    assert_eq!(
+        count,
+        b.conversations()
+            .iter()
+            .flat_map(|thread| thread.messages.iter())
+            .count()
+    );
+    // This explicit seller assertion is a protocol fixture, not a claimed Cashu redemption.
+    m.update_order(&product,json!({"payment":{"mint":"https://testnut.cashu.space","amount":"8","unit":"sat","status":"received"}})).unwrap();
+    m.update_order(&product, json!({"status":"accepted"}))
+        .unwrap();
+    m.update_order(&product,json!({"shipment":{"stops":[{"id":"shop","label":"Shop","address":"Private pickup","coordinates":[24.,60.]}]}})).unwrap();
+    relay_three(&mut b, &mut m, &mut c);
+    let delivery = b
+        .request_delivery(
+            &product,
+            &listing(&ck),
+            DeliveryPlace {
+                label: "Home".into(),
+                address: "Private destination".into(),
+                coordinates: Some([25., 61.]),
+            },
+        )
+        .unwrap();
+    relay_three(&mut b, &mut m, &mut c);
+    assert_eq!(c.orders().len(), 1);
+    assert_eq!(c.orders()[0].order.id, delivery);
+    assert!(c.orders()[0].source_order_id.is_none());
+    assert_eq!(m.orders().len(), 1);
+    assert!(m.orders()[0].delivery_order_id.is_none());
+    assert!(
+        c.conversations()
+            .iter()
+            .flat_map(|thread| thread.messages.iter())
+            .all(|message| !message.text.contains("Private parcel contents"))
+    );
+    assert!(
+        b.send_with_context(
+            &ck.public_key().to_hex(),
+            "Do not leak",
+            Some(MessageContext::for_order(&product))
+        )
+        .is_err()
+    );
+    c.update_order(&delivery, json!({"status":"accepted"}))
+        .unwrap();
+    c.update_order(&delivery,json!({"shipment":{"stops":[{"id":"pickup","label":"Shop","address":"Private pickup"},{"id":"home","label":"Home","address":"Private destination"}]}})).unwrap();
+    relay_three(&mut b, &mut m, &mut c);
+    c.update_order(
+        &delivery,
+        json!({"location":{"stopId":"pickup","coordinates":[111.12345,22.54321]}}),
+    )
+    .unwrap();
+    c.retry().unwrap();
+    let superseded = c.pending_outbound();
+    assert!(!superseded.is_empty());
+    c.update_order(
+        &delivery,
+        json!({"location":{"stopId":"pickup","coordinates":[112.12345,23.54321]}}),
+    )
+    .unwrap();
+    assert!(superseded.iter().all(|event| {
+        c.pending_outbound()
+            .iter()
+            .all(|pending| pending.id != event.id)
+    }));
+    relay_three(&mut b, &mut m, &mut c);
+    let tracked = b
+        .orders()
+        .into_iter()
+        .find(|view| view.order.id == delivery)
+        .unwrap();
+    assert!(tracked.location_fresh);
+    assert_eq!(
+        tracked.order.shipment.location.unwrap().coordinates,
+        [112.12345, 23.54321]
+    );
+    for event in superseded {
+        b.receive(&event).unwrap();
+    }
+    assert_eq!(
+        b.orders()
+            .into_iter()
+            .find(|view| view.order.id == delivery)
+            .unwrap()
+            .order
+            .shipment
+            .location
+            .unwrap()
+            .coordinates,
+        [112.12345, 23.54321]
+    );
+    c.update_order(&delivery, json!({"location":null})).unwrap();
+    relay_three(&mut b, &mut m, &mut c);
+    assert!(
+        b.orders()
+            .into_iter()
+            .find(|view| view.order.id == delivery)
+            .unwrap()
+            .order
+            .shipment
+            .location
+            .is_none()
+    );
+    assert!(m.orders()[0].order.shipment.location.is_none());
 }

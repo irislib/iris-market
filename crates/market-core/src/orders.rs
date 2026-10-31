@@ -107,9 +107,53 @@ pub struct OrderItem {
     pub currency: String,
     pub quantity: u16,
 }
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PaymentStatus {
+    Requested,
+    Received,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OrderPayment {
+    pub mint: String,
+    pub amount: String,
+    pub unit: String,
+    pub status: PaymentStatus,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct DeliveryPlace {
+    pub label: String,
+    pub address: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordinates: Option<[f64; 2]>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Collection {
+    pub merchant: String,
+    pub reference: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct DeliveryRequest {
+    pub pickup: DeliveryPlace,
+    pub destination: DeliveryPlace,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collection: Option<Collection>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PickupAuthorization {
+    pub courier_pubkey: String,
+    pub reference: String,
+}
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Order {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payment: Option<OrderPayment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_request: Option<DeliveryRequest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pickup_authorization: Option<PickupAuthorization>,
     pub id: String,
     pub buyer: String,
     pub seller: String,
@@ -126,6 +170,16 @@ pub struct Order {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OrderView {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_order_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_order_id: Option<String>,
+    #[serde(
+        default,
+        rename = "display_price",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub display_price: Option<crate::rates::DisplayPrice>,
     #[serde(flatten)]
     pub order: Order,
     pub archived: bool,
@@ -150,6 +204,10 @@ pub struct Envelope {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Record {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_order_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    delivery_order_id: Option<String>,
     order: Order,
     clocks: BTreeMap<String, u64>,
     archived: bool,
@@ -171,12 +229,103 @@ struct Pending {
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct OrderBook {
+    #[serde(default)]
+    ephemeral: Vec<Ephemeral>,
+    #[serde(skip)]
+    developer_mint: Option<String>,
     records: BTreeMap<String, Record>,
     pub(crate) jobs: Vec<Job>,
     #[serde(default)]
     blocked: BTreeSet<String>,
     #[serde(default)]
     pending: Vec<Pending>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct Ephemeral {
+    id: String,
+    order_id: String,
+    op_id: String,
+    expires_at: u64,
+}
+
+fn local_mint(value: &str) -> Result<String> {
+    let url = url::Url::parse(value).map_err(|_| "Invalid local test mint")?;
+    require(
+        url.scheme() == "http"
+            && url.host_str() == Some("127.0.0.1")
+            && url.port().is_some()
+            && url.path() == "/"
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.query().is_none()
+            && url.fragment().is_none(),
+        "Invalid local test mint",
+    )?;
+    Ok(url.as_str().trim_end_matches('/').to_owned())
+}
+fn payment(mut value: OrderPayment, developer_mint: Option<&str>) -> Result<OrderPayment> {
+    require(
+        value.unit == "sat"
+            && !value.amount.is_empty()
+            && value.amount.len() <= 13
+            && value.amount.bytes().all(|b| b.is_ascii_digit()),
+        "Invalid payment",
+    )?;
+    let amount = value
+        .amount
+        .parse::<u64>()
+        .map_err(|_| "Invalid payment amount")?;
+    require(
+        (1..=1_000_000_000_000).contains(&amount),
+        "Invalid payment amount",
+    )?;
+    let url = url::Url::parse(&value.mint).map_err(|_| "Invalid payment mint")?;
+    let mint = url
+        .as_str()
+        .strip_suffix('/')
+        .unwrap_or(url.as_str())
+        .to_owned();
+    let permitted_local = developer_mint
+        .is_some_and(|expected| local_mint(expected).is_ok_and(|expected| expected == mint));
+    require(
+        text(&value.mint, 2048, false)
+            && (url.scheme() == "https" || permitted_local)
+            && url.host_str().is_some()
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.query().is_none()
+            && url.fragment().is_none(),
+        "Use a secure payment mint",
+    )?;
+    value.mint = mint;
+    value.amount = amount.to_string();
+    Ok(value)
+}
+fn delivery_place(value: &DeliveryPlace) -> Result<()> {
+    require(
+        text(&value.label, 120, true)
+            && text(&value.address, 500, false)
+            && value.coordinates.is_none_or(coordinates),
+        "Invalid delivery place",
+    )
+}
+fn delivery_request(value: &DeliveryRequest) -> Result<()> {
+    delivery_place(&value.pickup)?;
+    delivery_place(&value.destination)?;
+    if let Some(collection) = &value.collection {
+        require(
+            hex(&collection.merchant) && text(&collection.reference, 80, false),
+            "Invalid collection reference",
+        )?;
+    }
+    Ok(())
+}
+fn pickup_authorization(value: &PickupAuthorization) -> Result<()> {
+    require(
+        hex(&value.courier_pubkey) && text(&value.reference, 80, false),
+        "Invalid pickup authorization",
+    )
 }
 
 fn require(condition: bool, message: &str) -> Result<()> {
@@ -239,7 +388,17 @@ fn wire_shipment(mut value: Shipment) -> Result<Shipment> {
     value.location = None; // Snapshots and routes never carry position history.
     Ok(value)
 }
-fn snapshot(mut value: Order) -> Result<Order> {
+fn snapshot_with_mint(mut value: Order, developer_mint: Option<&str>) -> Result<Order> {
+    value.payment = value
+        .payment
+        .map(|value| payment(value, developer_mint))
+        .transpose()?;
+    if let Some(value) = &value.delivery_request {
+        delivery_request(value)?;
+    }
+    if let Some(value) = &value.pickup_authorization {
+        pickup_authorization(value)?;
+    }
     require(
         hex(&value.buyer)
             && hex(&value.seller)
@@ -292,6 +451,7 @@ fn immutable(a: &Order, b: &Order) -> bool {
         && a.items == b.items
         && a.note == b.note
         && a.created_at == b.created_at
+        && a.delivery_request == b.delivery_request
 }
 fn role(order: &Order, owner: &str) -> Option<&'static str> {
     if order.buyer == owner {
@@ -321,14 +481,16 @@ fn recipients(order: &Order) -> BTreeSet<String> {
         )
         .collect()
 }
-fn apply(
+fn apply_with_mint(
     previous: Option<&Record>,
     event: &Envelope,
     sender: &str,
     device: &str,
     owner: &str,
     now: u64,
+    developer_mint: Option<&str>,
 ) -> Result<(Record, bool)> {
+    let snapshot = |value| snapshot_with_mint(value, developer_mint);
     require(
         hex(sender)
             && hex(device)
@@ -351,7 +513,9 @@ fn apply(
                     && order.status == OrderStatus::Requested
                     && order.shipment.stops.is_empty()
                     && order.shipment.tracking_url.is_none()
-                    && order.route_id.is_empty(),
+                    && order.route_id.is_empty()
+                    && order.payment.is_none()
+                    && order.pickup_authorization.is_none(),
                 "Invalid order request",
             )?;
             order
@@ -372,6 +536,8 @@ fn apply(
             return Err("Order not found".into());
         };
         Record {
+            source_order_id: None,
+            delivery_order_id: None,
             order,
             clocks: BTreeMap::new(),
             archived: false,
@@ -391,8 +557,7 @@ fn apply(
     }
     let sender_role = role(order, sender).ok_or("This person cannot update the order")?;
     if previous.is_some()
-        && sender_role == "seller"
-        && !order.status.terminal()
+        && matches!(sender_role, "seller" | "buyer")
         && let Some(current) = event.snapshot.clone()
     {
         let current = snapshot(current)?;
@@ -400,12 +565,26 @@ fn apply(
             immutable(order, &current),
             "Delivery update changed the order",
         )?;
-        if !current.route_id.is_empty() {
-            order.shipment = current.shipment;
-            order.route_id = current.route_id;
-        }
-        if !current.status.terminal() && current.status.rank() > order.status.rank() {
-            order.status = current.status;
+        if sender_role == "seller" {
+            if current.payment.is_some()
+                && !order
+                    .payment
+                    .as_ref()
+                    .is_some_and(|payment| payment.status == PaymentStatus::Received)
+            {
+                order.payment = current.payment;
+            }
+            if !order.status.terminal() {
+                if !current.route_id.is_empty() {
+                    order.shipment = current.shipment;
+                    order.route_id = current.route_id;
+                }
+                if !current.status.terminal() && current.status.rank() > order.status.rank() {
+                    order.status = current.status;
+                }
+            }
+        } else if matches!(order.status, OrderStatus::Accepted | OrderStatus::InTransit) {
+            order.pickup_authorization = current.pickup_authorization;
         }
     }
     match event.action.as_str() {
@@ -415,6 +594,34 @@ fn apply(
                 && immutable(order, &snapshot(parse(event.payload.clone())?)?),
             "Order request cannot replace an order",
         )?,
+        "payment" => {
+            require(
+                sender_role == "seller",
+                "Only the seller can update payment",
+            )?;
+            let next = payment(parse(event.payload.clone())?, developer_mint)?;
+            require(
+                !order.payment.as_ref().is_some_and(|previous| {
+                    previous.status == PaymentStatus::Received && previous != &next
+                }),
+                "Received payment cannot change",
+            )?;
+            order.payment = Some(next);
+        }
+        "pickup" => {
+            require(
+                sender_role == "buyer"
+                    && matches!(order.status, OrderStatus::Accepted | OrderStatus::InTransit),
+                "Only the buyer can authorize pickup on an accepted order",
+            )?;
+            order.pickup_authorization = if event.payload.is_null() {
+                None
+            } else {
+                let value: PickupAuthorization = parse(event.payload.clone())?;
+                pickup_authorization(&value)?;
+                Some(value)
+            };
+        }
         "status" => {
             let next: OrderStatus =
                 parse(event.payload.get("status").cloned().unwrap_or(Value::Null))?;
@@ -561,6 +768,18 @@ fn apply(
     Ok((record, true))
 }
 
+#[cfg(test)]
+fn apply(
+    previous: Option<&Record>,
+    event: &Envelope,
+    sender: &str,
+    device: &str,
+    owner: &str,
+    now: u64,
+) -> Result<(Record, bool)> {
+    apply_with_mint(previous, event, sender, device, owner, now, None)
+}
+
 pub fn is_order_message(rumor: &UnsignedEvent) -> bool {
     rumor
         .tags
@@ -594,6 +813,14 @@ fn message_text(event: &Envelope, order: &Order) -> String {
                 format!("\n{}", order.note)
             }
         ),
+        "payment" => {
+            if event.payload["status"] == "received" {
+                "Payment received (seller confirmation).".into()
+            } else {
+                "Payment requested.".into()
+            }
+        }
+        "pickup" => format!("Pickup authorization updated for {title}."),
         "route" => format!("Delivery details updated for {title}."),
         "stop" => format!(
             "Delivery stop {} for {title}.",
@@ -617,6 +844,30 @@ fn message_text(event: &Envelope, order: &Order) -> String {
     }
 }
 impl OrderBook {
+    pub(crate) fn get(&self, id: &str) -> Option<&Order> {
+        self.records.get(id).map(|record| &record.order)
+    }
+    pub(crate) fn buyer_payment_request(
+        &self,
+        id: &str,
+        owner: &str,
+    ) -> Result<(String, OrderPayment)> {
+        let order = self.get(id).ok_or("Order not found")?;
+        require(
+            order.buyer == owner,
+            "Only the buyer can send this order payment",
+        )?;
+        require(!order.status.terminal(), "This order is finished")?;
+        let request = order.payment.clone().ok_or("No payment requested")?;
+        require(
+            request.status == PaymentStatus::Requested,
+            "Payment is already received",
+        )?;
+        Ok((
+            order.seller.clone(),
+            payment(request, self.developer_mint.as_deref())?,
+        ))
+    }
     pub(crate) fn context_participant(&self, id: &str, owner: &str, peer: &str) -> bool {
         self.records.get(id).is_some_and(|record| {
             let people = recipients(&record.order);
@@ -630,34 +881,39 @@ impl OrderBook {
             .collect()
     }
     pub fn views(&self, owner: &str, now: u64) -> Vec<OrderView> {
-        let mut result: Vec<_> = self
-            .records
-            .values()
-            .map(|r| {
-                let fresh = r
-                    .order
-                    .shipment
-                    .location
-                    .as_ref()
-                    .is_some_and(|p| now >= p.at && now - p.at < LOCATION_TTL);
-                let mut order = r.order.clone();
-                if !fresh {
-                    order.shipment.location = None;
-                }
-                OrderView {
-                    role: role(&order, owner).map(str::to_string),
-                    order,
-                    archived: r.archived,
-                    sync: if self.jobs.iter().any(|job| job.order_id == r.order.id) {
-                        "queued"
-                    } else {
-                        "sent"
+        let mut result: Vec<_> =
+            self.records
+                .values()
+                .map(|r| {
+                    let fresh = r
+                        .order
+                        .shipment
+                        .location
+                        .as_ref()
+                        .is_some_and(|p| now >= p.at && now - p.at < LOCATION_TTL);
+                    let mut order = r.order.clone();
+                    if !fresh {
+                        order.shipment.location = None;
                     }
-                    .into(),
-                    location_fresh: fresh,
-                }
-            })
-            .collect();
+                    OrderView {
+                        source_order_id: r.source_order_id.clone(),
+                        delivery_order_id: r.delivery_order_id.clone(),
+                        display_price: None,
+                        role: role(&order, owner).map(str::to_string),
+                        order,
+                        archived: r.archived,
+                        sync: if self.jobs.iter().any(|job| {
+                            job.order_id == r.order.id && self.can_publish_at(&job.id, now)
+                        }) {
+                            "queued"
+                        } else {
+                            "sent"
+                        }
+                        .into(),
+                        location_fresh: fresh,
+                    }
+                })
+                .collect();
         result.sort_by(|a, b| {
             b.order
                 .updated_at
@@ -675,32 +931,136 @@ impl OrderBook {
         device: &str,
         now: u64,
     ) -> Result<String> {
+        self.request_with_delivery(listing, quantity, note, None, owner, device, now)
+    }
+    #[allow(clippy::too_many_arguments)] // Keep request data and authenticated owner/device explicit.
+    pub fn request_with_delivery(
+        &mut self,
+        listing: &crate::model::Listing,
+        quantity: u16,
+        note: &str,
+        delivery: Option<DeliveryRequest>,
+        owner: &str,
+        device: &str,
+        now: u64,
+    ) -> Result<String> {
         require(
             listing.side == "offer"
                 && listing.status != "sold"
                 && listing.expires_at.is_none_or(|at| at > now),
             "Choose an available selling listing",
         )?;
-        let order = snapshot(Order {
-            id: format!("{owner}:{}", Uuid::new_v4()),
-            buyer: owner.into(),
-            seller: listing.author.clone(),
-            items: vec![OrderItem {
-                id: listing.id.clone(),
-                title: listing.title.clone(),
-                price: listing.price.clone(),
-                currency: listing.currency.clone(),
-                quantity,
-            }],
-            note: note.into(),
-            status: OrderStatus::Requested,
-            created_at: now,
-            updated_at: now,
-            shipment: Shipment::default(),
-            route_id: String::new(),
-        })?;
+        let order = snapshot_with_mint(
+            Order {
+                payment: None,
+                pickup_authorization: None,
+                delivery_request: delivery,
+                id: format!("{owner}:{}", Uuid::new_v4()),
+                buyer: owner.into(),
+                seller: listing.author.clone(),
+                items: vec![OrderItem {
+                    id: listing.id.clone(),
+                    title: listing.title.clone(),
+                    price: listing.price.clone(),
+                    currency: listing.currency.clone(),
+                    quantity,
+                }],
+                note: note.into(),
+                status: OrderStatus::Requested,
+                created_at: now,
+                updated_at: now,
+                shipment: Shipment::default(),
+                route_id: String::new(),
+            },
+            self.developer_mint.as_deref(),
+        )?;
         let id = order.id.clone();
         self.local(&id, "request", json!(order), owner, device, now)?;
+        Ok(id)
+    }
+    /// Explicit test-fixture policy only; normal native constructors never enable HTTP mints.
+    pub fn set_developer_mint(&mut self, mint: Option<&str>) -> Result<()> {
+        self.developer_mint = mint.map(local_mint).transpose()?;
+        Ok(())
+    }
+    pub fn request_delivery(
+        &mut self,
+        source_id: &str,
+        listing: &crate::model::Listing,
+        destination: DeliveryPlace,
+        owner: &str,
+        device: &str,
+        now: u64,
+    ) -> Result<String> {
+        let source = self.records.get(source_id).ok_or("Order not found")?;
+        require(
+            source.order.buyer == owner
+                && matches!(
+                    source.order.status,
+                    OrderStatus::Accepted | OrderStatus::InTransit
+                ),
+            "Choose your accepted product order",
+        )?;
+        require(
+            source.delivery_order_id.is_none(),
+            "Delivery has already been requested",
+        )?;
+        require(
+            source.order.delivery_request.is_none()
+                && !source
+                    .order
+                    .shipment
+                    .stops
+                    .iter()
+                    .any(|stop| stop.courier_pubkey.is_some()),
+            "Choose a product pickup shared only with its merchant",
+        )?;
+        let pickup = source
+            .order
+            .shipment
+            .stops
+            .first()
+            .ok_or("The merchant must provide a pickup place first")?;
+        require(
+            listing.author != source.order.seller,
+            "Choose a separate delivery service",
+        )?;
+        let reference = Uuid::new_v4().to_string();
+        let delivery = DeliveryRequest {
+            pickup: DeliveryPlace {
+                label: pickup.label.clone(),
+                address: pickup.address.clone(),
+                coordinates: pickup.coordinates,
+            },
+            destination,
+            collection: Some(Collection {
+                merchant: source.order.seller.clone(),
+                reference: reference.clone(),
+            }),
+        };
+        delivery_request(&delivery)?;
+        let mut next = self.clone();
+        let id = next.request_with_delivery(listing, 1, "", Some(delivery), owner, device, now)?;
+        next.local(
+            source_id,
+            "pickup",
+            json!(PickupAuthorization {
+                courier_pubkey: listing.author.clone(),
+                reference
+            }),
+            owner,
+            device,
+            now,
+        )?;
+        next.records
+            .get_mut(source_id)
+            .ok_or("Order not found")?
+            .delivery_order_id = Some(id.clone());
+        next.records
+            .get_mut(&id)
+            .ok_or("Order not found")?
+            .source_order_id = Some(source_id.into());
+        *self = next;
         Ok(id)
     }
     pub fn update(
@@ -711,14 +1071,33 @@ impl OrderBook {
         device: &str,
         now: u64,
     ) -> Result<()> {
-        let (action, payload) = if let Some(location) = patch.get("location") {
-            // The pinned engine cannot selectively retire remote plaintext sends.
-            // Do not enqueue coordinates until that public protocol API exists.
-            require(
-                location.is_null(),
-                "Live location sharing is currently available in the web app",
-            )?;
-            ("location", Value::Null)
+        let (action, payload) = if let Some(value) = patch.get("payment") {
+            (
+                "payment",
+                json!(payment(
+                    parse(value.clone())?,
+                    self.developer_mint.as_deref()
+                )?),
+            )
+        } else if let Some(value) = patch.get("pickupAuthorization") {
+            if !value.is_null() {
+                pickup_authorization(&parse(value.clone())?)?;
+            }
+            ("pickup", value.clone())
+        } else if let Some(location) = patch.get("location") {
+            if !location.is_null() {
+                let stop = location
+                    .get("stopId")
+                    .and_then(Value::as_str)
+                    .ok_or("Missing delivery stop")?;
+                require(text(stop, 80, false), "Invalid delivery stop")?;
+                let point: [f64; 2] =
+                    parse(location.get("coordinates").cloned().unwrap_or(Value::Null))?;
+                require(coordinates(point), "Invalid map location")?;
+                ("location", json!({"stopId":stop,"coordinates":point}))
+            } else {
+                ("location", Value::Null)
+            }
         } else if patch.get("stopId").is_some() {
             (
                 "stop",
@@ -775,9 +1154,20 @@ impl OrderBook {
         if matches!(action, "stop" | "location") {
             event.route_id = Some(previous.ok_or("Order not found")?.order.route_id.clone());
         }
-        let (record, _) = apply(previous, &event, owner, device, owner, now)?;
+        let (record, _) = apply_with_mint(
+            previous,
+            &event,
+            owner,
+            device,
+            owner,
+            now,
+            self.developer_mint.as_deref(),
+        )?;
         if matches!(role(&record.order, owner), Some("buyer" | "seller")) && action != "location" {
-            event.snapshot = Some(snapshot(record.order.clone())?);
+            event.snapshot = Some(snapshot_with_mint(
+                record.order.clone(),
+                self.developer_mint.as_deref(),
+            )?);
         }
         require(
             previous.is_some() || self.records.len() < MAX_ORDERS,
@@ -806,9 +1196,31 @@ impl OrderBook {
         let wire = serde_json::to_string(&event).map_err(|_| "Invalid order update")?;
         require(wire.len() <= 24_000, "Order details are too large")?;
         let mut jobs = Vec::new();
+        let mut ephemeral = Vec::new();
         for peer in peers {
             let mut rumor = UnsignedEvent::from_json(json!({"kind":14,"pubkey":device,"created_at":now,"content":message_text(&event,&record.order),"tags":[["p",peer],[ORDER_TAG,"1",wire],["ms",(now*1000).to_string()]]}).to_string()).map_err(|_| "Invalid private order message")?;
+            if action == "location" && !event.payload.is_null() {
+                rumor.tags.push(
+                    nostr::Tag::parse([
+                        "expiration",
+                        &now.saturating_add(LOCATION_TTL).to_string(),
+                    ])
+                    .map_err(|_| "Invalid location expiry")?,
+                );
+            }
             rumor.ensure_id();
+            if action == "location" {
+                ephemeral.push(Ephemeral {
+                    id: rumor.id.ok_or("Missing location identity")?.to_hex(),
+                    order_id: id.into(),
+                    op_id: event.op_id.clone(),
+                    expires_at: if event.payload.is_null() {
+                        0
+                    } else {
+                        now.saturating_add(LOCATION_TTL)
+                    },
+                });
+            }
             jobs.push(Job {
                 id: rumor.id.ok_or("Missing order message identity")?.to_hex(),
                 order_id: id.into(),
@@ -818,6 +1230,11 @@ impl OrderBook {
                 handed: false,
             });
         }
+        require(
+            self.ephemeral.len() + ephemeral.len() <= 4096,
+            "The private tracking queue is full",
+        )?;
+        self.ephemeral.extend(ephemeral);
         self.jobs.retain(|j| !retired.contains(&j.id));
         self.blocked.extend(retired);
         self.jobs.extend(jobs);
@@ -838,7 +1255,15 @@ impl OrderBook {
     ) -> Option<(String, bool)> {
         let event = decode(rumor)?;
         let previous = self.records.get(&event.id);
-        let applied = apply(previous, &event, sender, device, owner, now);
+        let applied = apply_with_mint(
+            previous,
+            &event,
+            sender,
+            device,
+            owner,
+            now,
+            self.developer_mint.as_deref(),
+        );
         let Ok((mut record, changed)) = applied else {
             if previous.is_none()
                 && !matches!(event.action.as_str(), "request" | "location")
@@ -851,7 +1276,9 @@ impl OrderBook {
                 && uuid(&event.op_id)
                 && (1..=1_000_000_000).contains(&event.seq)
             {
-                let claimed = snapshot(event.snapshot.clone()?).ok()?;
+                let claimed =
+                    snapshot_with_mint(event.snapshot.clone()?, self.developer_mint.as_deref())
+                        .ok()?;
                 if claimed.id == event.id
                     && ((sender == claimed.seller && owner == claimed.buyer)
                         || (sender == claimed.buyer
@@ -885,23 +1312,63 @@ impl OrderBook {
                 .then(a.event.op_id.cmp(&b.event.op_id))
         });
         for item in pending {
-            if let Ok((next, _)) = apply(
+            if let Ok((next, _)) = apply_with_mint(
                 Some(&record),
                 &item.event,
                 &item.sender,
                 &item.device,
                 owner,
                 now,
+                self.developer_mint.as_deref(),
             ) {
                 record = next;
             }
         }
         self.pending.retain(|p| p.event.id != event.id);
+        if record.order.status.terminal() {
+            let retired = self
+                .jobs
+                .iter()
+                .filter(|job| job.order_id == event.id && job.action == "location")
+                .map(|job| job.id.clone())
+                .collect::<Vec<_>>();
+            self.blocked.extend(retired);
+            self.jobs
+                .retain(|job| job.order_id != event.id || job.action != "location");
+        }
         self.records.insert(event.id.clone(), record);
         Some((event.id, event.action == "location"))
     }
     pub(crate) fn can_publish(&self, id: &str) -> bool {
-        !self.blocked.contains(id)
+        self.can_publish_at(id, crate::listing::now())
+    }
+    fn can_publish_at(&self, id: &str, now: u64) -> bool {
+        if self.blocked.contains(id) {
+            return false;
+        }
+        let Some(item) = self.ephemeral.iter().find(|item| item.id == id) else {
+            return true;
+        };
+        let Some(record) = self.records.get(&item.order_id) else {
+            return false;
+        };
+        !record.order.status.terminal()
+            && self
+                .ephemeral
+                .iter()
+                .rev()
+                .find(|other| other.order_id == item.order_id)
+                .is_some_and(|latest| latest.op_id == item.op_id)
+            && (item.expires_at == 0 || now < item.expires_at)
+    }
+    pub(crate) fn prune(&mut self, now: u64) {
+        let retired = self
+            .jobs
+            .iter()
+            .filter(|job| job.action == "location" && !self.can_publish_at(&job.id, now))
+            .map(|job| job.id.clone())
+            .collect::<BTreeSet<_>>();
+        self.jobs.retain(|job| !retired.contains(&job.id));
     }
     pub(crate) fn sent(&mut self, id: &str, recipient: &str) {
         self.jobs.retain(|j| j.id != id || j.recipient != recipient);
@@ -1044,17 +1511,15 @@ mod tests {
         )
         .unwrap();
         assert!(receive(&mut b, &take(&c, "stop", &buyer), &courier, &buyer));
-        assert!(
-            c.update(
-                &id,
-                json!({"location":{"stopId":"pickup","coordinates":[25.,61.]}}),
-                &courier,
-                &courier,
-                1000
-            )
-            .is_err()
-        );
-        let mut location = decode(&take(&c, "stop", &buyer)).unwrap();
+        c.update(
+            &id,
+            json!({"location":{"stopId":"pickup","coordinates":[25.,61.]}}),
+            &courier,
+            &courier,
+            1000,
+        )
+        .unwrap();
+        let mut location = decode(&take(&c, "location", &buyer)).unwrap();
         location.op_id = Uuid::new_v4().to_string();
         location.seq += 1;
         location.action = "location".into();
@@ -1145,6 +1610,238 @@ mod tests {
         let serialized = serde_json::to_string(&sibling_book).unwrap();
         let restored: OrderBook = serde_json::from_str(&serialized).unwrap();
         assert_eq!(restored.views(&buyer, 1000)[0].sync, "queued");
+    }
+    #[test]
+    fn separate_checkout_keeps_product_private_and_links_only_local_records() {
+        let buyer = "a".repeat(64);
+        let merchant = "b".repeat(64);
+        let courier = "c".repeat(64);
+        let mut b = OrderBook::default();
+        let mut m = OrderBook::default();
+        let mut c = OrderBook::default();
+        let product = b
+            .request(
+                &listing(&merchant),
+                1,
+                "Private parcel contents",
+                &buyer,
+                &buyer,
+                1000,
+            )
+            .unwrap();
+        receive(&mut m, &take(&b, "request", &merchant), &buyer, &merchant);
+        m.update(&product,json!({"payment":{"mint":"https://testnut.cashu.space/","amount":"0016","unit":"sat","status":"requested"}}),&merchant,&merchant,1000).unwrap();
+        m.update(&product,json!({"payment":{"mint":"https://testnut.cashu.space","amount":"16","unit":"sat","status":"received"}}),&merchant,&merchant,1000).unwrap();
+        m.update(
+            &product,
+            json!({"status":"accepted"}),
+            &merchant,
+            &merchant,
+            1000,
+        )
+        .unwrap();
+        m.update(&product,json!({"shipment":{"stops":[{"id":"shop","label":"Shop","address":"Private merchant pickup","coordinates":[24.0,60.0]}]}}),&merchant,&merchant,1000).unwrap();
+        // Later seller snapshots must recover its payment even if earlier operations arrived late.
+        receive(&mut b, &take(&m, "route", &buyer), &merchant, &buyer);
+        assert_eq!(
+            b.records[&product].order.payment.as_ref().unwrap().status,
+            PaymentStatus::Received
+        );
+        let destination = DeliveryPlace {
+            label: "Home".into(),
+            address: "Private destination".into(),
+            coordinates: Some([25.0, 61.0]),
+        };
+        let delivery = b
+            .request_delivery(
+                &product,
+                &listing(&courier),
+                destination.clone(),
+                &buyer,
+                &buyer,
+                1000,
+            )
+            .unwrap();
+        assert_eq!(
+            b.records[&product].delivery_order_id.as_deref(),
+            Some(delivery.as_str())
+        );
+        assert_eq!(
+            b.records[&delivery].source_order_id.as_deref(),
+            Some(product.as_str())
+        );
+        assert!(
+            b.jobs
+                .iter()
+                .filter(|job| job.order_id == product)
+                .all(|job| job.recipient == merchant)
+        );
+        let request = take(&b, "request", &courier);
+        let wire = request.as_json();
+        assert!(!wire.contains("Private parcel contents"));
+        assert!(!wire.contains(&product));
+        assert!(!wire.contains("sourceOrderId"));
+        assert!(receive(&mut c, &request, &buyer, &courier));
+        assert_eq!(c.records.len(), 1);
+        assert!(c.records[&delivery].source_order_id.is_none());
+        let auth = take(&b, "pickup", &merchant);
+        assert!(!auth.as_json().contains("Private destination"));
+        assert!(receive(&mut m, &auth, &buyer, &merchant));
+        assert!(m.records[&product].delivery_order_id.is_none());
+        assert_eq!(
+            m.records[&product]
+                .order
+                .pickup_authorization
+                .as_ref()
+                .unwrap()
+                .courier_pubkey,
+            courier
+        );
+        assert!(
+            b.request_delivery(
+                &product,
+                &listing(&courier),
+                destination,
+                &buyer,
+                &buyer,
+                1000
+            )
+            .is_err()
+        );
+        let restored: OrderBook =
+            serde_json::from_str(&serde_json::to_string(&b).unwrap()).unwrap();
+        assert_eq!(restored.records[&delivery].source_order_id, Some(product));
+    }
+    #[test]
+    fn payment_ownership_irreversibility_immutable_delivery_and_explicit_local_policy() {
+        let buyer = "a".repeat(64);
+        let seller = "b".repeat(64);
+        let mut b = OrderBook::default();
+        let mut s = OrderBook::default();
+        let context = DeliveryRequest {
+            pickup: DeliveryPlace {
+                label: "Shop".into(),
+                address: "Pickup".into(),
+                coordinates: None,
+            },
+            destination: DeliveryPlace {
+                label: "Home".into(),
+                address: "Destination".into(),
+                coordinates: None,
+            },
+            collection: None,
+        };
+        let id = b
+            .request_with_delivery(
+                &listing(&seller),
+                1,
+                "",
+                Some(context.clone()),
+                &buyer,
+                &buyer,
+                1000,
+            )
+            .unwrap();
+        receive(&mut s, &take(&b, "request", &seller), &buyer, &seller);
+        let requested = json!({"payment":{"mint":"https://testnut.cashu.space","amount":"8","unit":"sat","status":"requested"}});
+        assert!(
+            b.update(&id, requested.clone(), &buyer, &buyer, 1000)
+                .is_err()
+        );
+        s.update(&id, requested, &seller, &seller, 1000).unwrap();
+        s.update(&id, json!({"status":"accepted"}), &seller, &seller, 1000)
+            .unwrap();
+        assert_eq!(
+            s.records[&id].order.payment.as_ref().unwrap().status,
+            PaymentStatus::Requested
+        );
+        let mut changed = decode(&take(&s, "status", &buyer)).unwrap();
+        changed
+            .snapshot
+            .as_mut()
+            .unwrap()
+            .delivery_request
+            .as_mut()
+            .unwrap()
+            .destination
+            .address = "Changed".into();
+        assert!(apply(b.records.get(&id), &changed, &seller, &seller, &buyer, 1000).is_err());
+        s.update(&id,json!({"payment":{"mint":"https://testnut.cashu.space","amount":"8","unit":"sat","status":"received"}}),&seller,&seller,1000).unwrap();
+        assert!(s.update(&id,json!({"payment":{"mint":"https://testnut.cashu.space","amount":"8","unit":"sat","status":"requested"}}),&seller,&seller,1000).is_err());
+        assert!(s.update(&id,json!({"payment":{"mint":"https://testnut.cashu.space","amount":"9","unit":"sat","status":"received"}}),&seller,&seller,1000).is_err());
+        let local = json!({"payment":{"mint":"http://127.0.0.1:3338","amount":"8","unit":"sat","status":"requested"}});
+        let other = b
+            .request(&listing(&seller), 1, "", &buyer, &buyer, 1000)
+            .unwrap();
+        receive(&mut s, &take(&b, "request", &seller), &buyer, &seller);
+        assert!(
+            s.update(&other, local.clone(), &seller, &seller, 1000)
+                .is_err()
+        );
+        s.set_developer_mint(Some("http://127.0.0.1:3338")).unwrap();
+        s.update(&other, local, &seller, &seller, 1000).unwrap();
+        assert!(
+            s.set_developer_mint(Some("http://192.168.1.1:3338"))
+                .is_err()
+        );
+    }
+    #[test]
+    fn live_coordinates_coalesce_expire_stop_and_never_retain_prior_plaintext() {
+        let buyer = "a".repeat(64);
+        let seller = "b".repeat(64);
+        let mut b = OrderBook::default();
+        let mut s = OrderBook::default();
+        let id = b
+            .request(&listing(&seller), 1, "", &buyer, &buyer, 1000)
+            .unwrap();
+        receive(&mut s, &take(&b, "request", &seller), &buyer, &seller);
+        s.update(&id, json!({"status":"accepted"}), &seller, &seller, 1000)
+            .unwrap();
+        s.update(
+            &id,
+            json!({"shipment":{"stops":[{"id":"pickup","label":"Shop"}]}}),
+            &seller,
+            &seller,
+            1000,
+        )
+        .unwrap();
+        s.update(
+            &id,
+            json!({"location":{"stopId":"pickup","coordinates":[111.12345,22.54321]}}),
+            &seller,
+            &seller,
+            1000,
+        )
+        .unwrap();
+        let old = take(&s, "location", &buyer);
+        assert!(s.can_publish_at(&old.id.unwrap().to_hex(), 1000));
+        s.update(
+            &id,
+            json!({"location":{"stopId":"pickup","coordinates":[112.12345,23.54321]}}),
+            &seller,
+            &seller,
+            1001,
+        )
+        .unwrap();
+        let latest = take(&s, "location", &buyer);
+        assert!(!s.can_publish_at(&old.id.unwrap().to_hex(), 1001));
+        assert!(s.can_publish_at(&latest.id.unwrap().to_hex(), 1120));
+        assert!(!s.can_publish_at(&latest.id.unwrap().to_hex(), 1121));
+        assert_eq!(
+            s.jobs.iter().filter(|job| job.action == "location").count(),
+            1
+        );
+        assert!(!serde_json::to_string(&s).unwrap().contains("111.12345"));
+        assert_eq!(latest.tags.expiration().unwrap().as_secs(), 1121);
+        s.update(&id, json!({"location":null}), &seller, &seller, 1002)
+            .unwrap();
+        assert!(!s.can_publish_at(&latest.id.unwrap().to_hex(), 1002));
+        assert!(!serde_json::to_string(&s).unwrap().contains("112.12345"));
+        assert!(s.records[&id].order.shipment.location.is_none());
+        let mut restored: OrderBook =
+            serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert!(!restored.can_publish_at(&old.id.unwrap().to_hex(), 1002));
+        restored.prune(1200);
     }
     #[test]
     fn bound_payloads_and_conservative_identity() {

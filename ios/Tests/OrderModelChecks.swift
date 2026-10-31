@@ -41,6 +41,21 @@ import Foundation
         check(cashu.formattedAmount == "120 sats" && cashu.mintLabel == "mint.example.invalid" && cashu.status == "unverified", "Cashu card amount and unverified state")
         let testCashu = try decoder.decode(CashuPayment.self, from: Data(#"{"token":"synthetic-not-redeemable","amount":"128","mint":"https://testnut.cashu.space","unit":"sat","status":"unverified"}"#.utf8))
         check(testCashu.formattedAmount == "128 test sats" && testCashu.isTestMoney, "Test tokens must remain separate from real sats")
+        var checkout = try JSONSerialization.jsonObject(with: Data(source.utf8)) as! [String: Any]
+        checkout["payment"] = ["mint": "https://testnut.cashu.space", "amount": "16", "unit": "sat", "status": "requested"]
+        checkout["deliveryRequest"] = ["pickup": ["label": "Shop", "address": "Shop entrance", "coordinates": [24.9, 60.2]], "destination": ["label": "Home", "address": "Private meeting point"], "collection": ["merchant": "seller", "reference": "opaque-reference"]]
+        checkout["pickupAuthorization"] = ["courierPubkey": "courier", "reference": "opaque-reference"]
+        checkout["sourceOrderId"] = "source-local-only"; checkout["deliveryOrderId"] = "delivery-local-only"
+        checkout["display_price"] = ["amount": 13.0, "currency": "USD", "stale": false]
+        let decoded = try decoder.decode(MarketOrder.self, from: JSONSerialization.data(withJSONObject: checkout))
+        check(decoded.payment?.amount == "16" && decoded.deliveryRequest?.collection?.reference == "opaque-reference", "Separate delivery request and payment decode")
+        check(decoded.pickupAuthorization?.courierPubkey == "courier" && decoded.sourceOrderId == "source-local-only" && decoded.deliveryOrderId == "delivery-local-only", "Authorization and local links decode")
+        check(decoded.displayPrice?.currency == "USD", "Selected display currency is a local order projection")
+        let request = try decoded.deliveryRequest!.projection()
+        let privateJSON = String(decoding: try JSONSerialization.data(withJSONObject: request), as: UTF8.self)
+        check(!privateJSON.contains("sourceOrderId") && !privateJSON.contains("deliveryOrderId") && !privateJSON.contains("source-local-only"), "Local links never enter delivery request payload")
+        do { _ = try MarketDeliveryPlace(label: "Destination").projection(); fatalError("Empty destination accepted") } catch { checks += 1 }
+        do { _ = try MarketDeliveryPlace(label: "Destination", address: "Entrance", coordinates: [181, 60]).projection(); fatalError("Invalid destination coordinates accepted") } catch { checks += 1 }
         print("\(checks) native order projection checks passed.")
     }
 }

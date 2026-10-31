@@ -67,7 +67,7 @@ import java.util.UUID
                     Column(Modifier.padding(17.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                             Text(order.title, Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
-                            Text(order.items.firstOrNull()?.displayPrice ?: "", fontWeight = FontWeight.Medium)
+                            Text(order.formattedPrice, fontWeight = FontWeight.Medium)
                         }
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                             Text(orderDate(order.createdAt), color = Muted, style = MaterialTheme.typography.bodySmall)
@@ -84,6 +84,8 @@ import java.util.UUID
 @Composable fun OrderReview(listing: Listing, state: MarketSnapshot, model: MarketModel, busy: Boolean, done: (String?) -> Unit) {
     var quantity by remember(listing.id) { mutableStateOf("1") }
     var note by remember(listing.id) { mutableStateOf("") }
+    var pickup by remember(listing.id){mutableStateOf(OrderDeliveryPlace("Pickup"))}
+    var destination by remember(listing.id){mutableStateOf(OrderDeliveryPlace("Destination"))}
     var error by remember { mutableStateOf<String?>(null) }
     Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).imePadding().padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -95,18 +97,26 @@ import java.util.UUID
         UserRow(state.people[listing.author] ?: PublicPerson.unnamed(listing.author))
         MarketField(quantity, { quantity = it.filter(Char::isDigit).take(3) }, "Quantity", keyboard = KeyboardType.Number)
         MarketField(note, { note = it.take(2000) }, "Note · optional", lines = 3)
+        if(listing.category.lowercase()=="transport"||NativeTransportType.classify(listing.tags)!=null){PrivateDeliveryPlaceField(pickup,{pickup=it});PrivateDeliveryPlaceField(destination,{destination=it})}
         Text("The seller will confirm your order. No payment is taken here.", color = Muted, style = MaterialTheme.typography.bodySmall)
         error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         Button(enabled = !busy && !state.demo && (quantity.toIntOrNull() ?: 0) in 1..999, onClick = {
             error = null
-            model.orderCommand(JSONObject().put("type", "request_order").put("listing_id", listing.id).put("quantity", quantity.toInt()).put("note", note.trim()),
-                onSuccess = { done(model.state.value.orders.filter { order -> order.buyer == state.publicKey && order.items.any { it.id == listing.id } }.maxByOrNull { it.createdAt }?.id) },
-                onError = { error = it })
+            runCatching {
+                val request=JSONObject().put("type", "request_order").put("listing_id", listing.id).put("quantity", quantity.toInt()).put("note", note.trim())
+                if(listing.category.lowercase()=="transport"||NativeTransportType.classify(listing.tags)!=null)request.put("delivery_request",OrderDeliveryRequest(pickup,destination).json())
+                model.orderCommand(request,onSuccess = { done(model.state.value.orders.filter { order -> order.buyer == state.publicKey && order.items.any { it.id == listing.id } }.maxByOrNull { it.createdAt }?.id) },onError = { error = it })
+            }.onFailure {error=it.message?:"Enter pickup and destination."}
         }, modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(16.dp)) { Text(NativeTransportType.classify(listing.tags)?.requestLabel ?: "Request order") }
     }
 }
 
-@Composable fun OrderDetail(order: MarketOrder, state: MarketSnapshot, model: MarketModel, busy: Boolean, openProfile: (String) -> Unit, close: () -> Unit) {
+@Composable fun OrderDetail(order: MarketOrder, state: MarketSnapshot, model: MarketModel, busy: Boolean, openProfile: (String) -> Unit, openOrder:(String)->Unit={}, close: () -> Unit) {
+    var arrangingDelivery by remember(order.id){mutableStateOf(false)}
+    var requestingPayment by remember(order.id){mutableStateOf(false)}
+    var confirmingPayment by remember(order.id){mutableStateOf(false)}
+    var showingChat by remember(order.id){mutableStateOf(false)}
+    var paying by remember(order.id){mutableStateOf(false)}
     var editRoute by remember(order.id) { mutableStateOf(false) }
     var error by remember(order.id) { mutableStateOf<String?>(null) }
     val uri = LocalUriHandler.current
@@ -116,6 +126,11 @@ import java.util.UUID
         error = null
         model.orderCommand(JSONObject().put("type", "update_order").put("order_id", order.id).put("patch", patch), onError = { error = it })
     }
+    if(showingChat){val other=if(seller)order.buyer else order.seller;val c=state.conversations.firstOrNull {it.id==other}?:Conversation(other,"Conversation",emptyList());ConversationView(c.copy(messages=c.messages.filter {it.threadKey=="order:"+order.id}),state.people[other]?:PublicPerson.unnamed(other),model,busy,openOrder,context=MessageContext.order(order.id),accountID=state.publicKey,threadKey="order:"+order.id,back={showingChat=false});return}
+    if(requestingPayment){OrderPaymentRequestView(order,model,busy){requestingPayment=false};return}
+    if(confirmingPayment)AlertDialog(onDismissRequest={confirmingPayment=false},title={Text("Confirm payment received?")},text={Text("Confirm after checking your wallet. This records your confirmation for the buyer.")},confirmButton={TextButton(onClick={confirmingPayment=false;order.payment?.let {update(JSONObject().put("payment",JSONObject().put("mint",it.mint).put("amount",it.amount).put("unit",it.unit).put("status","received")))}}){Text("Confirm received")}},dismissButton={TextButton(onClick={confirmingPayment=false}){Text("Cancel")}})
+    if(arrangingDelivery){OrderArrangeDeliveryView(order,state,model,busy,booked={arrangingDelivery=false;openOrder(it)},close={arrangingDelivery=false});return}
+    if(paying){OrderPaymentView(order,state,model,close={paying=false});return}
     if (editRoute) { RouteEditor(order, state, model, busy) { editRoute = false }; return }
     Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp).padding(bottom = 30.dp), verticalArrangement = Arrangement.spacedBy(17.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -127,12 +142,30 @@ import java.util.UUID
             Text(order.statusLabel, fontWeight = FontWeight.SemiBold)
             Text(orderDate(order.createdAt), color = Muted, style = MaterialTheme.typography.bodySmall)
         }
-        order.items.forEach { item -> Text("${item.quantity} × ${item.displayPrice}", style = MaterialTheme.typography.titleMedium) }
+        order.items.forEach { item -> Text("${item.quantity} × ${order.formattedPrice}", style = MaterialTheme.typography.titleMedium);if(order.displayPrice!=null)Text(item.displayPrice,style=MaterialTheme.typography.bodySmall,color=Muted) }
         val other = if (seller) order.buyer else order.seller
         Row(Modifier.fillMaxWidth().clickable { openProfile(other) }.padding(vertical = 4.dp)) {
             UserRow(state.people[other] ?: PublicPerson.unnamed(other), if (seller) "Buyer" else "Seller")
         }
         if (order.note.isNotBlank()) Text(order.note)
+        order.deliveryRequest?.let {request->Text("Requested route",style=MaterialTheme.typography.titleMedium);Text("Pickup · "+request.pickup.address);Text("Destination · "+request.destination.address);request.collection?.let {Text("Pickup reference · "+it.reference,style=MaterialTheme.typography.bodySmall,color=Muted)}}
+        order.pickupAuthorization?.let {authorization->Text("Authorized collection",style=MaterialTheme.typography.titleMedium);UserRow(state.people[authorization.courierPubkey]?:PublicPerson.unnamed(authorization.courierPubkey),"Courier");Text("Pickup reference · "+authorization.reference,style=MaterialTheme.typography.bodySmall,color=Muted)}
+        order.payment?.let {payment->
+            Text(if(payment.status=="received")"Payment received" else "Payment requested",style=MaterialTheme.typography.titleMedium)
+            val test=payment.mint.trimEnd('/') in setOf("https://testnut.cashu.space","https://nofees.testnut.cashu.space")
+            Text(displayWalletAmount(payment.amount,payment.mint,state,testOnly=test),style=MaterialTheme.typography.headlineSmall)
+            Text(payment.amount+" "+(if(test)"test sats" else "sats")+" · "+runCatching {java.net.URI(payment.mint).host}.getOrDefault("Mint"),style=MaterialTheme.typography.bodySmall,color=Muted)
+            if(test)Text("Test money · no bitcoin value",style=MaterialTheme.typography.bodySmall,color=Muted)
+            if(payment.status=="received")Text("Confirmed by seller",style=MaterialTheme.typography.bodySmall,color=Muted)
+            else if(order.buyer==state.publicKey&&!order.terminal)Button(enabled=!busy,onClick={paying=true},modifier=Modifier.fillMaxWidth()){Text("Pay order")}
+        }
+        if(seller&&!order.terminal&&order.payment==null)TextButton(onClick={requestingPayment=true}){Text("Request payment")}
+        if(seller&&order.payment?.status=="requested")TextButton(onClick={confirmingPayment=true}){Text("Confirm payment received")}
+        if(participant)TextButton(onClick={model.command(JSONObject().put("type","contact").put("author",if(seller)order.buyer else order.seller)){showingChat=true}}){Text("Message")}
+        order.deliveryOrderId?.let {TextButton(onClick={openOrder(it)}){Text("Open delivery order")}}
+        order.sourceOrderId?.let {TextButton(onClick={openOrder(it)}){Text("Open product order")}}
+        if(order.buyer==state.publicKey&&order.status in listOf("accepted","in-transit")&&order.deliveryRequest==null&&order.deliveryOrderId==null&&order.shipment.stops.isNotEmpty()&&order.shipment.stops.none {it.courierPubkey!=null})Button(enabled=!busy,onClick={arrangingDelivery=true},modifier=Modifier.fillMaxWidth()){Text("Arrange delivery")}
+
         if (order.sync == "queued") Text("Waiting to send", color = Muted, style = MaterialTheme.typography.bodySmall)
         error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         if (!order.terminal) {
@@ -179,7 +212,7 @@ import java.util.UUID
             }
         }
         order.shipment.trackingUrl?.takeIf { it.startsWith("https://") }?.let { tracking -> OutlinedButton(onClick = { runCatching { uri.openUri(tracking) } }) { Icon(Icons.Filled.OpenInNew, null); Spacer(Modifier.width(8.dp)); Text("Track delivery") } }
-        if (!order.terminal && order.status != "requested" && order.handlesDelivery(state.publicKey)) DeliveryLocationSharing(order, state.publicKey, model, state.liveLocationSupported)
+        if (!order.terminal && order.status != "requested" && order.handlesDelivery(state.publicKey)) DeliveryLocationSharing(order, state.publicKey, model, state.liveLocationSupported && !confirmingPayment)
         if (!order.terminal && participant) TextButton(enabled = !busy, onClick = { update(JSONObject().put("status", "cancelled")) }) { Text("Cancel order") }
         if (order.terminal) TextButton(enabled = !busy, onClick = {
             model.orderCommand(JSONObject().put("type", "archive_order").put("order_id", order.id).put("archived", !order.archived), onSuccess = close, onError = { error = it })
@@ -272,7 +305,7 @@ private data class StopDraft(val id: String = UUID.randomUUID().toString(), val 
     LaunchedEffect(eligible.map { it.id }) { if (eligible.none { it.id == stopId }) { sharing = false; stopId = eligible.firstOrNull()?.id ?: "" } }
     LaunchedEffect(sharing) { if (sharing) { delay(60 * 60 * 1000L); sharing = false } }
     DisposableEffect(lifecycle) {
-        val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_STOP) sharing = false }
+        val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_PAUSE || event == Lifecycle.Event.ON_STOP) sharing = false }
         lifecycle.addObserver(observer); onDispose { lifecycle.removeObserver(observer) }
     }
     DisposableEffect(sharing, stopId, order.id, owner) {
@@ -283,9 +316,10 @@ private data class StopDraft(val id: String = UUID.randomUUID().toString(), val 
         val listener = object : LocationListener {
             override fun onLocationChanged(location: Location) {
                 val elapsed = android.os.SystemClock.elapsedRealtime()
-                if (closed || !sharing || elapsed - last < 15_000 || !lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) return
-                if (android.os.SystemClock.elapsedRealtimeNanos() - location.elapsedRealtimeNanos > 120_000_000_000L) return
-                if (!location.latitude.isFinite() || !location.longitude.isFinite()) return
+                if (closed || !sharing || last > 0 && elapsed - last < 15_000 || !lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) return
+                val sampleAge=android.os.SystemClock.elapsedRealtimeNanos()-location.elapsedRealtimeNanos
+                if(sampleAge<0||sampleAge>=120_000_000_000L)return
+                if (!location.latitude.isFinite() || !location.longitude.isFinite() || kotlin.math.abs(location.latitude)>90 || kotlin.math.abs(location.longitude)>180) return
                 last = elapsed
                 val point = JSONObject().put("coordinates", JSONArray(listOf(location.longitude, location.latitude))).put("stopId", stopId)
                 model.orderCommand(JSONObject().put("type", "update_order").put("order_id", order.id).put("patch", JSONObject().put("location", point)), onError = { error = it; sharing = false })

@@ -17,10 +17,12 @@ pub mod public_cache;
 mod public_reconcile;
 pub mod ranking;
 pub mod rates;
+pub mod reviews;
 mod search_discovery;
 mod search_plan;
 pub mod service_area;
 pub mod store;
+pub mod uploads;
 #[cfg(feature = "cashu-wallet")]
 pub mod wallet;
 
@@ -184,6 +186,21 @@ impl State {
             image_proxy::profile(profile, &self.settings.image_proxy);
         }
         // Keep all results in the snapshot: UI can offer a curated view without making hidden items inaccessible.
+        let mut orders = self
+            .messaging
+            .as_ref()
+            .map(|messaging| messaging.orders())
+            .unwrap_or_default();
+        for view in &mut orders {
+            if let Some(item) = view.order.items.first() {
+                view.display_price = self.rates.convert(
+                    &item.price,
+                    &item.currency,
+                    &self.settings.currency,
+                    listing::now(),
+                );
+            }
+        }
         Ok(Snapshot {
             search_discovery: self.search_discovery.status(),
             search_generation: self.search_request,
@@ -214,7 +231,7 @@ impl State {
                 .messaging
                 .as_ref()
                 .is_some_and(|messaging| messaging.can_send()),
-            live_location_supported: false,
+            live_location_supported: true,
             demo: self.demo,
             status: self.status.clone(),
             error: self.error.clone(),
@@ -259,11 +276,7 @@ impl State {
                         .collect()
                 })
                 .unwrap_or_default(),
-            orders: self
-                .messaging
-                .as_ref()
-                .map(|m| m.orders())
-                .unwrap_or_default(),
+            orders,
             invite: self.invite.clone(),
             profile,
             profile_listings: self
@@ -943,13 +956,36 @@ impl Market {
                 listing_id,
                 quantity,
                 note,
+                delivery_request,
             } => {
                 let event = s.store.event(&listing_id)?;
                 let listing = listing::parse(&event, listing::now())?;
                 s.messaging
                     .as_mut()
                     .context("Leave Preview to request an order")?
-                    .request_order(&listing, quantity, &note)
+                    .request_order_with_delivery(&listing, quantity, &note, delivery_request)
+                    .map_err(anyhow::Error::msg)?;
+                self.notify.notify_waiters();
+            }
+            Command::RequestDelivery {
+                source_order_id,
+                listing_id,
+                destination,
+            } => {
+                let event = s.store.event(&listing_id)?;
+                let listing = listing::parse(&event, listing::now())?;
+                s.messaging
+                    .as_mut()
+                    .context("Private orders unavailable")?
+                    .request_delivery(&source_order_id, &listing, destination)
+                    .map_err(anyhow::Error::msg)?;
+                self.notify.notify_waiters();
+            }
+            Command::SendOrderPaymentToken { order_id, token } => {
+                s.messaging
+                    .as_mut()
+                    .context("Private orders unavailable")?
+                    .send_order_payment_token(&order_id, &token)
                     .map_err(anyhow::Error::msg)?;
                 self.notify.notify_waiters();
             }

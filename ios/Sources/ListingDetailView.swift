@@ -29,7 +29,8 @@ struct ListingDetailView: View {
                         UserRow(person: store.snapshot.people[current.author] ?? .unnamed(current.author))
                     }.accessibilityIdentifier("listingAuthor")
                     Rectangle().fill(MarketTheme.line).frame(height: 1)
-                    Text(current.description).font(.system(size: 16)).lineSpacing(6).foregroundStyle(MarketTheme.ink.opacity(0.90))
+                    Text((try? AttributedString(markdown: current.description, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(current.description)).font(.system(size: 16)).lineSpacing(6).foregroundStyle(MarketTheme.ink.opacity(0.90))
+                    ReviewsView(target: "30402:\(current.id)", product: true)
                     if let relevance = current.relevance { Label(relevance.reason, systemImage: "sparkles").font(.system(size: 13)).foregroundStyle(MarketTheme.green).padding(15).frame(maxWidth: .infinity, alignment: .leading).background(MarketTheme.mint.opacity(0.4), in: RoundedRectangle(cornerRadius: 16)) }
                     MarketInlineError()
                     if current.mine {
@@ -70,6 +71,7 @@ struct NewListingView: View {
     @State private var location = ""
     @State private var category = "Other"
     @State private var imageURL = ""
+    @State private var uploading = false
     @State private var expiry: NativeListingExpiry = .never
     @State private var transport: NativeTransportType? = nil
     @State private var serviceAreas: MarketServiceAreas?
@@ -89,8 +91,8 @@ struct NewListingView: View {
             Form {
                 Section {
                     Picker("Listing type", selection: $side) { Text("Selling").tag("offer"); Text("Buying").tag("request") }.pickerStyle(.segmented).accessibilityIdentifier("listingSide")
-                    TextField("Title", text: $title, prompt: Text("Title").foregroundColor(MarketTheme.muted)).focused($entryFocused).accessibilityIdentifier("listingTitle")
-                    TextField("Description", text: $description, prompt: Text("Description").foregroundColor(MarketTheme.muted), axis: .vertical).lineLimit(4...8).accessibilityIdentifier("listingDescription")
+                    TextField("Title", text: $title, prompt: Text("Title").foregroundColor(MarketTheme.muted)).labelsHidden().focused($entryFocused).accessibilityIdentifier("listingTitle")
+                    TextField("Description", text: $description, prompt: Text("Description").foregroundColor(MarketTheme.muted), axis: .vertical).labelsHidden().lineLimit(4...8).accessibilityIdentifier("listingDescription")
                     Picker("Category", selection: $category) { ForEach(categories, id: \.self) { Text($0) } }
                     if category == "Transport" {
                         Picker("Service type", selection: $transport) {
@@ -100,24 +102,28 @@ struct NewListingView: View {
                     }
                 }
                 Section("Details") {
-                    HStack { TextField("Price or budget", text: $price, prompt: Text("Price or budget").foregroundColor(MarketTheme.muted)).marketDecimalKeyboard().accessibilityIdentifier("listingPrice"); Picker("Currency", selection: $currency) { Text("EUR").tag("EUR"); Text("USD").tag("USD"); Text("GBP").tag("GBP"); Text("BTC").tag("BTC") }.labelsHidden().frame(width: 90) }
+                    HStack { TextField("Price or budget", text: $price, prompt: Text("Price or budget").foregroundColor(MarketTheme.muted)).labelsHidden().marketDecimalKeyboard().accessibilityIdentifier("listingPrice"); Picker("Currency", selection: $currency) { Text("EUR").tag("EUR"); Text("USD").tag("USD"); Text("GBP").tag("GBP"); Text("BTC").tag("BTC") }.labelsHidden().frame(width: 90) }
                     Picker("Expires in", selection: $expiry) { ForEach(NativeListingExpiry.presets, id: \.self) { Text($0.label).tag($0) } }.accessibilityIdentifier("listingExpiry")
-                    TextField(transport == nil ? "Town, area, or remote" : "Pickup area", text: $location, prompt: Text(transport == nil ? "Town, area, or remote" : "Pickup area").foregroundColor(MarketTheme.muted)).accessibilityIdentifier("listingLocation")
+                    TextField(transport == nil ? "Town, area, or remote" : "Pickup area", text: $location, prompt: Text(transport == nil ? "Town, area, or remote" : "Pickup area").foregroundColor(MarketTheme.muted)).labelsHidden().accessibilityIdentifier("listingLocation")
                     if transport != nil && category == "Transport" {
                         Button { chooseServiceAreas = true } label: { Label(serviceAreas == nil ? "Choose pickup and destination areas" : "Edit service areas", systemImage: "map.fill") }.disabled(store.demo).accessibilityIdentifier("transportServiceAreas")
-                        Text("Search a place, drop a pin, and choose your range. Boundaries become public only when you publish.").font(.footnote).foregroundStyle(MarketTheme.muted)
+                        Text("Search a place, drop a pin, and choose your range. Boundaries become public only when you publish.").font(.footnote).foregroundStyle(MarketTheme.muted).fixedSize(horizontal: false, vertical: true)
                     }
-                    TextField("Photo URL (optional)", text: $imageURL, prompt: Text("Photo URL (optional)").foregroundColor(MarketTheme.muted)).marketNoAutocapitalization().autocorrectionDisabled().marketURLKeyboard()
+                    TextField("Photo link · optional", text: $imageURL, prompt: Text("Photo link · optional").foregroundColor(MarketTheme.muted)).labelsHidden().marketNoAutocapitalization().autocorrectionDisabled().marketURLKeyboard()
+                    ListingUploadButton(uploading: $uploading) { upload in
+                        if upload.isImage { imageURL = upload.url }
+                        else { let name = upload.name.replacingOccurrences(of: "[", with: "").replacingOccurrences(of: "]", with: ""); description += (description.isEmpty ? "" : "\n\n") + "[\(name)](\(upload.url))\n\(upload.fileLink)" }
+                    }
                 }
                 Section {
                     if store.demo { Label("Preview mode: publishing is turned off.", systemImage: "eye").font(.system(size: 13)).foregroundStyle(MarketTheme.muted) }
                     else if !store.snapshot.canSign { Text("Sign in with your profile’s secret key to publish listings.").font(.system(size: 13)).foregroundStyle(MarketTheme.muted) }
-                    else { Text("Your listing will be public, and people can contact you privately. Keep exact addresses and private contact details out of your listing.").font(.system(size: 13)).foregroundStyle(MarketTheme.muted) }
+                    else { Text("Your listing will be public, and people can contact you privately. Keep exact addresses and private contact details out of your listing.").font(.system(size: 13)).foregroundStyle(MarketTheme.muted).fixedSize(horizontal: false, vertical: true) }
                     MarketInlineError()
-                    Button { reviewPublish = true } label: { HStack { Spacer(); if store.busy { ProgressView() } else { Text("Publish listing").fontWeight(.semibold) }; Spacer() }.padding(.vertical, 8) }
-                        .disabled(store.demo || store.busy || !store.snapshot.canSign || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || category == "Transport" && transport != nil && serviceAreas == nil).accessibilityIdentifier("publishListing")
+                    Button { reviewPublish = true } label: { HStack { Spacer(); if store.busy { ProgressView() } else { Text("Review listing").fontWeight(.semibold) }; Spacer() }.padding(.vertical, 8) }
+                        .disabled(store.demo || store.busy || uploading || !store.snapshot.canSign || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || category == "Transport" && transport != nil && serviceAreas == nil).accessibilityIdentifier("publishListing")
                 }
-            }.scrollContentBackground(.hidden).background(MarketTheme.paper).marketKeyboardDismissal().navigationTitle("New listing").marketInlineTitle()
+            }.formStyle(.grouped).scrollContentBackground(.hidden).background(MarketTheme.paper).marketKeyboardDismissal().navigationTitle("New listing").marketInlineTitle()
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                     #if !os(macOS)
@@ -125,15 +131,53 @@ struct NewListingView: View {
                     #endif
                 }
             .sheet(isPresented: $chooseServiceAreas) { ServiceAreaEditor(areas: $serviceAreas).marketSheetScope() }
-            .confirmationDialog("Publish this listing?", isPresented: $reviewPublish, titleVisibility: .visible) {
-                Button("Publish listing") { publish() }
-                Button("Keep editing", role: .cancel) { }
-            } message: { Text("\(title)\n\(location)\nYour listing will be public. Conversations stay private.") }
+            .sheet(isPresented: $reviewPublish) { publicationReview.marketListingEditorSheetScope() }
         }
+    }
+    private var publicationReview: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    Text(title).font(.title2.weight(.semibold))
+                    reviewDetail("Listing", side == "offer" ? "Selling" : "Buying")
+                    reviewDetail("Description", description.isEmpty ? "No description" : description)
+                    reviewDetail(side == "offer" ? "Price" : "Budget", price.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Negotiable" : price + " " + currency)
+                    reviewDetail("Category", category)
+                    if category == "Transport" { reviewDetail("Service type", transport?.label ?? "Other transport") }
+                    reviewDetail("Location", location.isEmpty ? "Not specified" : location)
+                    reviewDetail("Expires in", expiry.label)
+                    if category == "Transport", transport != nil { reviewDetail("Service areas", serviceAreas == nil ? "Not selected" : "Pickup and destination areas selected") }
+                    if !imageURL.isEmpty { Label("Photo included", systemImage: "photo") }
+                    Text("Your listing will be public. Conversations stay private.").font(.callout).foregroundStyle(MarketTheme.muted)
+                    MarketInlineError()
+                    Button("Publish listing") { publish() }.buttonStyle(PrimaryButton())
+                        .disabled(store.demo || store.busy || uploading || !store.snapshot.canSign)
+                        .accessibilityIdentifier("confirmPublishListing")
+                }.padding(24).frame(maxWidth: 600, alignment: .leading).frame(maxWidth: .infinity)
+            }.background(MarketTheme.paper).navigationTitle("Review listing").marketInlineTitle()
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Keep editing") { reviewPublish = false } } }
+        }
+    }
+    private func reviewDetail(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(label).font(.caption).foregroundStyle(MarketTheme.muted)
+            Text(value).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+        }.frame(maxWidth: .infinity, alignment: .leading)
     }
     private func publish() {
         var draft: [String: Any] = ["title": title, "description": description, "side": side, "price": price, "currency": currency, "location": location, "category": category, "tags": category == "Transport" ? (transport?.tags ?? []) : [], "image_url": imageURL.isEmpty ? NSNull() : imageURL as Any]
         if category == "Transport", let serviceAreas, let data = try? JSONEncoder().encode(serviceAreas), let geometry = try? JSONSerialization.jsonObject(with: data) { draft["service_areas"] = geometry }
         store.command(["type": "publish", "draft": draft], publishExpiry: expiry) { if $0 { dismiss() } }
+    }
+}
+
+extension View {
+    /// Apply editor dimensions at the sheet boundary, without the default narrow sheet frame.
+    @ViewBuilder func marketListingEditorSheetScope() -> some View {
+        #if os(macOS)
+        frame(width: 680, height: 720).modifier(MarketSheetScope())
+        #else
+        marketSheetScope()
+        #endif
     }
 }

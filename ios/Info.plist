@@ -65,5 +65,6 @@
 	<string>$(AppIdentifierPrefix)to.iris.market.notifications</string>
 	<key>MarketPushConfigured</key>
 	<string>$(MARKET_PUSH_CONFIGURED)</string>
+<key>NSCameraUsageDescription</key><string>Scan a Cashu token or Lightning invoice when you choose Scan.</string>
 </dict>
 </plist>

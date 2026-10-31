@@ -46,7 +46,7 @@ private struct OrderRow: View {
             HStack(alignment: .top, spacing: 15) {
                 Text(order.title.isEmpty ? "Order" : order.title).font(.system(size: 17, weight: .semibold)).multilineTextAlignment(.leading)
                 Spacer(minLength: 0)
-                if let first = order.items.first { Text(first.formattedPrice).font(.system(size: 16, weight: .medium)) }
+                if !order.items.isEmpty { Text(order.formattedPrice).font(.system(size: 16, weight: .medium)) }
             }
             HStack {
                 Text(Date(timeIntervalSince1970: Double(order.createdAt)), format: .dateTime.day().month()).foregroundStyle(MarketTheme.muted)
@@ -65,6 +65,9 @@ struct OrderReviewView: View {
     let onRequested: () -> Void
     @State private var quantity = 1
     @State private var note = ""
+    @State private var pickup = MarketDeliveryPlace(label: "Pickup")
+    @State private var destination = MarketDeliveryPlace(label: "Destination")
+    @State private var requestError: String?
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -75,12 +78,17 @@ struct OrderReviewView: View {
                     Stepper("Quantity: \(quantity)", value: $quantity, in: 1...999).accessibilityIdentifier("orderQuantity")
                     TextField("Note · optional", text: $note, axis: .vertical).lineLimit(3...6).padding(16).background(MarketTheme.surface, in: RoundedRectangle(cornerRadius: 16)).accessibilityIdentifier("orderNote")
                         .onChange(of: note) { value in if value.count > 2000 { note = String(value.prefix(2000)) } }
+                    if listing.category.lowercased() == "transport" || NativeTransportType.classify(listing.tags ?? []) != nil { PrivateDeliveryPlaceField(place: $pickup); PrivateDeliveryPlaceField(place: $destination) }
+                    if let requestError { Text(requestError).foregroundStyle(.red).font(.caption) }
                     Text("The seller will confirm your order. No payment is taken here.").font(.system(size: 13)).foregroundStyle(MarketTheme.muted)
                     MarketInlineError()
                     Button {
-                        store.requestOrder(listing, quantity: quantity, note: note.trimmingCharacters(in: .whitespacesAndNewlines)) { success in
-                            if success { dismiss(); onRequested() }
-                        }
+                        do {
+                            let delivery = (listing.category.lowercased() != "transport" && NativeTransportType.classify(listing.tags ?? []) == nil) ? nil : MarketDeliveryRequest(pickup: pickup, destination: destination)
+                            if let delivery { _ = try delivery.projection() }
+                            requestError = nil
+                            store.requestOrder(listing, quantity: quantity, note: note.trimmingCharacters(in: .whitespacesAndNewlines), deliveryRequest: delivery) { success in if success { dismiss(); onRequested() } }
+                        } catch { requestError = error.localizedDescription }
                     } label: { if store.busy { ProgressView() } else { Text(NativeTransportType.classify(listing.tags ?? [])?.requestLabel ?? "Request order") } }
                         .buttonStyle(PrimaryButton()).disabled(store.demo || store.busy || !store.snapshot.canSign).accessibilityIdentifier("requestOrder")
                 }.padding(24)
@@ -96,6 +104,12 @@ struct OrderDetailView: View {
     let orderID: String
     @State private var editingRoute = false
     @State private var cancelling = false
+    @State private var arrangingDelivery = false
+    @State private var paying = false
+    @State private var requestingPayment = false
+    @State private var confirmingPayment = false
+    @State private var showingChat = false
+    @State private var relatedOrder: OrderSelection?
     @State private var profile: OrderSelection?
     private var order: MarketOrder? { store.snapshot.orders.first { $0.id == orderID } }
     var body: some View {
@@ -105,6 +119,12 @@ struct OrderDetailView: View {
                 else { MarketEmptyState(symbol: "shippingbox.fill", title: "Order unavailable", description: "This order is not available for this profile.") }
             }.background(MarketTheme.paper).foregroundStyle(MarketTheme.ink).navigationTitle("Order").marketInlineTitle()
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+                .sheet(isPresented: $arrangingDelivery) { if let order { OrderArrangeDeliveryView(order: order).marketSheetScope() } }
+                .sheet(isPresented: $showingChat) { if let order { let peer = order.seller == store.snapshot.publicKey ? order.buyer : order.seller; ConversationView(conversation: store.snapshot.conversations.first(where: { $0.id == peer }) ?? MarketConversation(id: peer, name: "Conversation", messages: []), context: .order(order.id), threadKey: "order:" + order.id).marketSheetScope() } }
+                .sheet(isPresented: $requestingPayment) { if let order { OrderPaymentRequestView(order: order).marketSheetScope() } }
+                .confirmationDialog("Confirm payment received?", isPresented: $confirmingPayment, titleVisibility: .visible) { Button("Confirm received") { if let order, let payment = order.payment { store.updateOrder(order.id, patch: ["payment": ["mint": payment.mint, "amount": payment.amount, "unit": payment.unit, "status": "received"]]) } }; Button("Cancel", role: .cancel) {} } message: { Text("Confirm after checking your wallet. This records your confirmation for the buyer.") }
+                .sheet(isPresented: $paying) { NativeOrderPaymentView(orderID: orderID).marketSheetScope() }
+                .sheet(item: $relatedOrder) { value in OrderDetailView(orderID: value.id).marketSheetScope() }
                 .sheet(isPresented: $editingRoute) { if let order { OrderRouteEditor(order: order).marketSheetScope() } }
                 .sheet(item: $profile) { value in AuthorProfileView(author: value.id).marketSheetScope() }
                 .confirmationDialog("Cancel this order?", isPresented: $cancelling, titleVisibility: .visible) {
@@ -121,11 +141,22 @@ struct OrderDetailView: View {
         VStack(alignment: .leading, spacing: 21) {
             Text(order.title.isEmpty ? "Order" : order.title).font(.system(size: 30, weight: .medium))
             HStack { Text(order.statusLabel).fontWeight(.semibold); Spacer(); Text(Date(timeIntervalSince1970: Double(order.createdAt)), format: .dateTime.day().month()).foregroundStyle(MarketTheme.muted) }.font(.system(size: 13))
-            ForEach(order.items) { item in Text("\(item.quantity) × \(item.formattedPrice)").font(.system(size: 22, weight: .semibold)) }
+            ForEach(order.items) { item in
+                VStack(alignment: .leading, spacing: 5) { Text("\(item.quantity) × \(order.formattedPrice)").font(.system(size: 22, weight: .semibold)); if order.displayPrice != nil { Text(item.formattedPrice).font(.caption).foregroundStyle(MarketTheme.muted) } }
+            }
             Button { profile = OrderSelection(id: other) } label: { UserRow(person: store.snapshot.people[other] ?? .unnamed(other), subtitle: seller ? "Buyer" : "Seller") }.buttonStyle(.plain)
             if !order.note.isEmpty { Text(order.note).font(.system(size: 15)).lineSpacing(4) }
             if order.sync == "queued" { Text("Waiting to send").font(.system(size: 12)).foregroundStyle(MarketTheme.muted) }
             MarketInlineError()
+            if let request = order.deliveryRequest { VStack(alignment: .leading, spacing: 8) { Text("Requested route").font(.headline); Text("Pickup · " + request.pickup.address); Text("Destination · " + request.destination.address); if let collection = request.collection { Text("Pickup reference · " + collection.reference).font(.caption).foregroundStyle(MarketTheme.muted) } } }
+            if let authorization = order.pickupAuthorization { VStack(alignment: .leading, spacing: 8) { Text("Authorized collection").font(.headline); UserRow(person: store.snapshot.people[authorization.courierPubkey] ?? .unnamed(authorization.courierPubkey), subtitle: "Courier"); Text("Pickup reference · " + authorization.reference).font(.caption).foregroundStyle(MarketTheme.muted) } }
+            if let payment = order.payment { orderPayment(payment, order: order) }
+            if seller && !order.terminal && order.payment == nil { Button("Request payment") { requestingPayment = true } }
+            if seller && order.payment?.status == "requested" { Button("Confirm payment received") { confirmingPayment = true } }
+            if participant { Button("Message") { store.command(["type": "contact", "author": other]) { if $0 { showingChat = true } } } }
+            if let delivery = order.deliveryOrderId { Button("Open delivery order") { relatedOrder = OrderSelection(id: delivery) } }
+            if let source = order.sourceOrderId { Button("Open product order") { relatedOrder = OrderSelection(id: source) } }
+            if order.buyer == store.snapshot.publicKey && ["accepted", "in-transit"].contains(order.status) && order.deliveryRequest == nil && order.deliveryOrderId == nil && !order.shipment.stops.isEmpty && !order.shipment.stops.contains(where: { $0.courierPubkey != nil }) { Button("Arrange delivery") { arrangingDelivery = true }.buttonStyle(PrimaryButton()).disabled(store.busy) }
             if !order.terminal {
                 if seller && order.status == "requested" { statusButton("Accept order", status: "accepted") }
                 if seller && order.status == "accepted" { statusButton("Mark on the way", status: "in-transit") }
@@ -154,12 +185,21 @@ struct OrderDetailView: View {
                 stopView(stop, number: index + 1, order: order, seller: seller)
             }
             if let tracking = order.shipment.trackingLink { Link(destination: tracking) { Label("Track delivery", systemImage: "arrow.up.right.square") }.font(.system(size: 14, weight: .medium)) }
-            if !order.terminal && order.handlesDelivery(store.snapshot.publicKey) && !store.snapshot.liveLocationSupported {
-                Text("Live location is not available in this app yet.").font(.system(size: 12)).foregroundStyle(MarketTheme.muted)
-            }
+            if !order.terminal && order.status != "requested" && order.handlesDelivery(store.snapshot.publicKey) && store.snapshot.liveLocationSupported { OrderLocationSharing(order: order, active: !editingRoute && !arrangingDelivery && !paying && !requestingPayment && !confirmingPayment && !showingChat && profile == nil && relatedOrder == nil) }
             if !order.terminal && participant { Button("Cancel order", role: .destructive) { cancelling = true }.disabled(store.busy).font(.system(size: 13)) }
             if order.terminal { Button(order.archived ? "Restore order" : "Archive order") { store.archiveOrder(order) { if $0 { dismiss() } } }.buttonStyle(PrimaryButton(dark: false)).disabled(store.busy) }
         }.padding(24)
+    }
+    private func orderPayment(_ payment: MarketOrderPayment, order: MarketOrder) -> some View {
+        let amount = UInt64(payment.amount) ?? 0, rate = store.snapshot.satsDisplayPrice
+        let display = NativeMoney.display(sats: amount, currency: store.snapshot.settings.currency, testOnly: NativeWalletUnits.isTest(payment.mint), rate: rate?.amount, rateCurrency: rate?.currency, stale: rate?.stale ?? false)
+        return VStack(alignment: .leading, spacing: 9) {
+            Text(payment.status == "received" ? "Payment received" : "Payment requested").font(.headline)
+            Text(display).font(.title2.weight(.semibold)); Text(NativeWalletUnits.amount(amount, mint: payment.mint) + " · " + NativeWalletUnits.mintName(payment.mint)).font(.caption).foregroundStyle(MarketTheme.muted)
+            if payment.status == "received" { Text("Confirmed by seller").font(.caption).foregroundStyle(MarketTheme.muted) }
+            else if order.buyer == store.snapshot.publicKey && !order.terminal { Button("Pay order") { paying = true }.buttonStyle(PrimaryButton()).disabled(store.busy) }
+            if NativeWalletUnits.isTest(payment.mint) { Text("Test money · no bitcoin value").font(.caption).foregroundStyle(MarketTheme.muted) }
+        }
     }
     private func statusButton(_ label: String, status: String, primary: Bool = true) -> some View {
         Button { store.updateOrder(orderID, patch: ["status": status]) } label: { Text(label) }.buttonStyle(PrimaryButton(dark: primary)).disabled(store.busy || store.demo)

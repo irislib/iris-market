@@ -78,6 +78,7 @@ struct AuthorProfileView: View {
                                 Button("Load more") { loadMore() }.frame(maxWidth: .infinity).disabled(feed?.loading == true).accessibilityIdentifier("profileLoadMore")
                             }
                         }
+                        ReviewsView(target: author)
                     } else { ProgressView("Loading profile…").frame(maxWidth: .infinity).padding(.vertical, 60) }
                 }.padding(23)
             }.background(MarketTheme.paper).navigationTitle("Profile").marketInlineTitle()

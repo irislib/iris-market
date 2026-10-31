@@ -14,6 +14,18 @@ struct WalletView: View {
     @State private var reclaimConfirmation: NativeWalletActivity?
     @State private var copied = false
     @State private var actionMode = "receive"
+    @State private var scanToken = false
+    @State private var scanInvoice = false
+    @State private var lightningRequest = ""
+    @State private var payConfirmation = false
+    @State private var sendRequestID = UUID().uuidString
+    @State private var backupPassword = ""
+    @State private var backupRepeat = ""
+    @State private var restorePassword = ""
+    @State private var restoreEnvelope = ""
+    @State private var stoppedOriginal = false
+    @State private var chooseRestore = false
+    @State private var exportBackup = false
     let incomingToken: String?
     init(incomingToken: String? = nil) { self.incomingToken = incomingToken }
     private var amountValue: UInt64? { guard !amount.isEmpty, amount.allSatisfy(\.isNumber), let value = UInt64(amount), value > 0 else { return nil }; return value }
@@ -28,6 +40,7 @@ struct WalletView: View {
                             Text("Tokens, kept on this device.").font(.title2.weight(.semibold))
                             Text("Your recovery key stays in secure storage. Mints hold your balance.").font(.callout).foregroundStyle(MarketTheme.muted)
                             Button("Open wallet") { open() }.buttonStyle(.borderedProminent).controlSize(.large).disabled(store.demo || wallet.busy)
+                            restoreControls
                             if store.demo { Text("Switch to your live profile to use a wallet.").font(.caption).foregroundStyle(MarketTheme.muted) }
                         }
                     } else {
@@ -35,12 +48,14 @@ struct WalletView: View {
                         Picker("Wallet action", selection: $actionMode) {
                             Text("Receive").tag("receive")
                             Text("Send").tag("send")
+                            Text("Pay invoice").tag("pay")
                             Text("Add funds").tag("lightning")
                         }.pickerStyle(.segmented).labelsHidden().accessibilityLabel("Wallet action")
-                        if actionMode == "receive" { receive } else { transfer }
+                        if actionMode == "receive" { receive } else if actionMode == "pay" { lightningPayment } else { transfer }
                         if let invoice = wallet.invoice { invoiceSection(invoice) }
                         if let token = wallet.token { tokenSection(token) }
                         activity
+                        backupControls
                     }
                     if wallet.busy { ProgressView("Working…").frame(maxWidth: .infinity) }
                     if let error = wallet.error { Text(error).font(.callout).foregroundStyle(.red).textSelection(.enabled).fixedSize(horizontal: false, vertical: true) }
@@ -57,21 +72,42 @@ struct WalletView: View {
                 ToolbarItem(placement: .primaryAction) { if wallet.opened { Button { wallet.refresh() } label: { Label("Refresh", systemImage: "arrow.clockwise") }.disabled(wallet.busy) } }
             }
             .confirmationDialog("Create a Cashu token?", isPresented: $sendConfirmation, titleVisibility: .visible) {
-                Button("Create token") { if let value = amountValue { wallet.send(mint: mint, amount: value) } }
+                Button("Create token") { if let review = wallet.sendReview { wallet.send(review) } }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("Send \(amountValue.map { displayAmount($0, mint: mint) } ?? "") at \(NativeWalletUnits.mintName(mint)). Mint fees may apply. Keep the token until its recipient redeems it.")
+                Text("Send \(wallet.sendReview.map { displayAmount($0.amountSat, mint: $0.mintUrl) } ?? ""). Fee: \(wallet.sendReview.map { displayAmount($0.feeSat, mint: $0.mintUrl) } ?? ""). Keep the token until its recipient redeems it.")
             }
+            .confirmationDialog("Pay this Lightning invoice?", isPresented: $payConfirmation, titleVisibility: .visible) {
+                Button("Pay invoice") { if let review = wallet.lightningReview { wallet.payLightning(review) } }
+                Button("Cancel", role: .cancel) {}
+            } message: { if let review = wallet.lightningReview { Text("Pay " + displayAmount(review.amountSat, mint: review.mintUrl) + ". Fee up to " + displayAmount(review.feeSat, mint: review.mintUrl) + ".") } }
             .confirmationDialog("Reclaim this token?", isPresented: Binding(get: { reclaimConfirmation != nil }, set: { if !$0 { reclaimConfirmation = nil } }), titleVisibility: .visible) {
                 Button("Reclaim unredeemed funds") { if let item = reclaimConfirmation { wallet.reclaim(item) }; reclaimConfirmation = nil }
                 Button("Cancel", role: .cancel) { reclaimConfirmation = nil }
             } message: { Text("Only ordinary tokens that have not been redeemed can return to this wallet. Locked payments may require the recipient. A successful reclaim makes the old token stop working.") }
+            .fileExporter(isPresented: $exportBackup, document: WalletBackupDocument(text: wallet.encryptedBackup ?? ""), contentType: .json, defaultFilename: "iris-market-wallet-backup") { result in
+                if case .failure = result { wallet.error = "The encrypted backup could not be saved." }; wallet.encryptedBackup = nil
+            }
+            .fileImporter(isPresented: $chooseRestore, allowedContentTypes: [.json]) { result in
+                do {
+                    let url = try result.get(); let access = url.startAccessingSecurityScopedResource(); defer { if access { url.stopAccessingSecurityScopedResource() } }
+                    guard (try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? Int.max) <= 64 * 1024 * 1024 else { throw CocoaError(.fileReadTooLarge) }
+                    restoreEnvelope = try String(contentsOf: url, encoding: .utf8)
+                } catch { wallet.error = "Choose an encrypted native-wallet backup under 64 MB." }
+            }
+            .onChange(of: wallet.encryptedBackup) { value in if value != nil { exportBackup = true } }
+            .onChange(of: amount) { _ in wallet.sendReview = nil; sendRequestID = UUID().uuidString }
+            .onChange(of: mint) { _ in wallet.sendReview = nil; wallet.lightningReview = nil; sendRequestID = UUID().uuidString }
+            .onChange(of: lightningRequest) { _ in wallet.lightningReview = nil }
+            .sheet(isPresented: $scanInvoice) { WalletQRScanner(kind: .invoice) { lightningRequest = $0 }.marketSheetScope() }
+            .sheet(isPresented: $scanToken) { WalletQRScanner(kind: .token) { incoming = $0 }.marketSheetScope() }
             .onAppear { if let incomingToken { incoming = incomingToken } }
-            .onDisappear { incoming = ""; reviewedToken = ""; wallet.clear() }
+            .onDisappear { incoming = ""; reviewedToken = ""; backupPassword = ""; backupRepeat = ""; restorePassword = ""; restoreEnvelope = ""; wallet.clear() }
             .onChange(of: scenePhase) { phase in if phase != .active { wallet.token = nil; incoming = ""; reviewedToken = "" } }
             .onChange(of: store.snapshot.publicKey) { _ in wallet.clear(); incoming = ""; reviewedToken = ""; dismiss() }
             .onChange(of: wallet.notice) { value in if value == "Token received." { incoming = ""; reviewedToken = "" } }
-            .onChange(of: incoming) { _ in wallet.preview = nil; reviewedToken = "" }
+            .onChange(of: incoming) { _ in wallet.clearTokenReview(); reviewedToken = "" }
+            .onChange(of: actionMode) { _ in wallet.clearActionFeedback(); reviewedToken = "" }
             .marketSheetFrame()
         }
     }
@@ -103,6 +139,7 @@ struct WalletView: View {
                     if NativeWalletUnits.isTest(balance.mint) { Text("Test money · no bitcoin value").font(.caption).foregroundStyle(MarketTheme.muted) }
                 }.padding(.vertical, 4)
             }
+            if wallet.snapshot.reviewRequired { Text("Refresh this restored wallet before spending. Stop using the original copy.").font(.callout).foregroundStyle(MarketTheme.muted) }
             if wallet.snapshot.warningCount > 0 { Text("Some mint requests need another check. Refresh to recover pending operations.").font(.caption).foregroundStyle(MarketTheme.muted) }
         }
     }
@@ -119,6 +156,7 @@ struct WalletView: View {
                 .disabled(wallet.busy).marketNoAutocapitalization().autocorrectionDisabled().accessibilityLabel("Cashu token")
             HStack {
                 Button("Paste token") { if let value = MarketPlatform.paymentFromClipboard() { incoming = value } }.disabled(wallet.busy)
+                Button { scanToken = true } label: { Label("Scan", systemImage: "qrcode.viewfinder") }.disabled(wallet.busy)
                 Spacer()
                 Button("Review token") { reviewedToken = incoming.trimmingCharacters(in: .whitespacesAndNewlines); wallet.review(reviewedToken) }.buttonStyle(.borderedProminent).disabled(wallet.busy || incoming.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
@@ -143,9 +181,60 @@ struct WalletView: View {
             if actionMode == "lightning" {
                 Button("Create Lightning invoice") { if let value = amountValue { wallet.topUp(mint: mint, amount: value) } }.buttonStyle(.borderedProminent).controlSize(.large).disabled(wallet.busy || amountValue == nil)
             } else {
-                Button("Review transfer") { sendConfirmation = true }.buttonStyle(.borderedProminent).controlSize(.large).disabled(wallet.busy || amountValue == nil)
+                if let review = wallet.sendReview {
+                    Text("Fee: " + displayAmount(review.feeSat, mint: review.mintUrl)).font(.callout)
+                    Text("Total: " + displayAmount(review.maxTotalSat, mint: review.mintUrl)).font(.headline)
+                    Button("Create token") { sendConfirmation = true }.buttonStyle(.borderedProminent).controlSize(.large).disabled(wallet.busy || wallet.snapshot.reviewRequired)
+                } else {
+                    Button("Review transfer") { if let value = amountValue { wallet.reviewSend(mint: mint, amount: value, requestID: sendRequestID) } }.buttonStyle(.borderedProminent).controlSize(.large).disabled(wallet.busy || amountValue == nil || wallet.snapshot.reviewRequired)
+                }
             }
             if actionMode == "lightning" { Text("Request an invoice, then pay with your Lightning wallet.").font(.caption).foregroundStyle(MarketTheme.muted) }
+        }
+    }
+    private var lightningPayment: some View {
+        walletCard("Pay a Lightning invoice") {
+            Picker("Mint", selection: $mint) { ForEach(mintOptions, id: \.self) { value in Text(NativeWalletUnits.mintName(value)).tag(value) } }.labelsHidden()
+            TextEditor(text: $lightningRequest).accessibilityLabel("Lightning invoice").font(.system(size: 12, design: .monospaced)).frame(height: 90).marketNoAutocapitalization().autocorrectionDisabled()
+            HStack {
+                Button("Paste invoice") { if let text = MarketPlatform.paymentFromClipboard(), let invoice = WalletQRInput.invoice(text) { lightningRequest = invoice } }
+                Button { scanInvoice = true } label: { Label("Scan", systemImage: "qrcode.viewfinder") }
+            }
+            if let review = wallet.lightningReview {
+                Text(displayAmount(review.amountSat, mint: review.mintUrl)).font(.headline)
+                Text("Fee up to " + displayAmount(review.feeSat, mint: review.mintUrl))
+                Text("Total up to " + displayAmount(review.maxTotalSat, mint: review.mintUrl))
+                if review.state == "paid" { Text("This invoice was already paid.") }
+                else { Button(review.state == "pending" ? "Check saved payment" : "Pay invoice") { payConfirmation = true }.buttonStyle(.borderedProminent).disabled(wallet.busy || wallet.snapshot.reviewRequired) }
+            } else {
+                Button("Review payment") { if let invoice = WalletQRInput.invoice(lightningRequest) { wallet.reviewLightning(mint: mint, invoice: invoice) } }.buttonStyle(.borderedProminent).disabled(wallet.busy || WalletQRInput.invoice(lightningRequest) == nil || NativeWalletUnits.isTest(mint) || wallet.snapshot.reviewRequired)
+            }
+        }
+    }
+    private var backupControls: some View {
+        walletCard("Wallet backup") {
+            DisclosureGroup("Save an encrypted backup") {
+                SecureField("Backup password · at least 12 characters", text: $backupPassword)
+                SecureField("Repeat password", text: $backupRepeat)
+                Button("Save backup") { let password = backupPassword; backupPassword = ""; backupRepeat = ""; wallet.exportBackup(password: password) }.disabled(wallet.busy || backupPassword.utf8.count < 12 || backupPassword != backupRepeat)
+                Text("Includes funds, pending transfers and recovery records. Store the password separately.").font(.caption).foregroundStyle(MarketTheme.muted)
+            }
+        }
+    }
+    private var restoreControls: some View {
+        DisclosureGroup("Restore an encrypted backup") {
+            Button(restoreEnvelope.isEmpty ? "Choose backup file" : "Backup file selected") { chooseRestore = true }
+            SecureField("Backup password", text: $restorePassword)
+            Text("Restore to your current profile on this device. Existing wallets are preserved.").font(.caption).foregroundStyle(MarketTheme.muted)
+            Toggle("I stopped using the original wallet and want to restore on this device", isOn: $stoppedOriginal)
+            Button("Restore wallet") {
+                let expectedOwner = store.snapshot.publicKey, password = restorePassword, backup = restoreEnvelope
+                restorePassword = ""; restoreEnvelope = ""
+                wallet.restoreBackup(backup: backup, password: password, owner: expectedOwner) { seed in
+                    guard store.snapshot.publicKey == expectedOwner else { throw WalletCredentials.Failure.invalidIdentity }
+                    return try store.walletCredentials(importedSeed: seed)
+                }
+            }.disabled(wallet.busy || !stoppedOriginal || restoreEnvelope.isEmpty || restorePassword.utf8.count < 12)
         }
     }
     private func invoiceSection(_ invoice: NativeWalletInvoice) -> some View {

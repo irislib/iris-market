@@ -196,7 +196,7 @@ fun MarketAppView(model: MarketModel, appearance: Appearance, changeAppearance: 
     orderId?.let { id ->
         ModalBottomSheet(onDismissRequest = { orderId = null }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = Cream) {
             val order = state.orders.firstOrNull { it.id == id }
-            if (order != null) OrderDetail(order, state, model, busy, openProfile = { profileAuthor = it; orderId = null }) { orderId = null }
+            if (order != null) OrderDetail(order, state, model, busy, openProfile = { profileAuthor = it; orderId = null }, openOrder = { orderId = it }) { orderId = null }
             else Column(Modifier.padding(24.dp)) { Text("This order is not available on this device yet."); TextButton(onClick = { orderId = null }) { Text("Done") } }
         }
     }

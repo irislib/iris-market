@@ -5,6 +5,8 @@ Requires checksum-verified build inputs and externally provisioned signing state
 Generated bindings/projects remain in a new ignored artifact staging directory.
 """
 import argparse
+import datetime
+import fnmatch
 import importlib.util
 import json
 import os
@@ -135,9 +137,49 @@ def apple_project(stage, platform, environment):
     return headers
 
 
+def ios_push_preflight(environment):
+    """Fail before compilation unless both installed distribution profiles allow push."""
+    team = environment.get('MARKET_APPLE_TEAM_ID', '')
+    release.require(team, 'Missing MARKET_APPLE_TEAM_ID')
+    directories = (Path.home()/'Library/MobileDevice/Provisioning Profiles',
+                   Path.home()/'Library/Developer/Xcode/UserData/Provisioning Profiles')
+    profiles = []
+    for directory in directories:
+        for path in directory.glob('*.mobileprovision'):
+            try:
+                raw = subprocess.check_output(['security', 'cms', '-D', '-i', str(path)], stderr=subprocess.DEVNULL)
+                profiles.append(plistlib.loads(raw))
+            except (subprocess.CalledProcessError, plistlib.InvalidFileException, ValueError):
+                continue
+    for key, bundle, filename in (
+        ('MARKET_IOS_PROFILE_UUID', 'to.iris.market', 'Market.entitlements'),
+        ('MARKET_IOS_NSE_PROFILE_UUID', 'to.iris.market.NotificationService', 'NotificationService/NotificationService.entitlements'),
+    ):
+        selected = environment.get(key)
+        matches = [p for p in profiles if selected and selected in (p.get('UUID'), p.get('Name'))]
+        release.require(len(matches) == 1, 'Install exactly one matching distribution profile for '+key)
+        profile = matches[0]; allowed = profile.get('Entitlements', {})
+        expiry = profile.get('ExpirationDate')
+        release.require(isinstance(expiry, datetime.datetime) and expiry.replace(tzinfo=datetime.timezone.utc) > datetime.datetime.now(datetime.timezone.utc), 'Expired distribution profile for '+key)
+        release.require(profile.get('TeamIdentifier') == [team] and allowed.get('com.apple.developer.team-identifier') == team, 'Distribution profile team mismatch for '+key)
+        release.require(allowed.get('application-identifier') == team+'.'+bundle and allowed.get('get-task-allow') is False and not profile.get('ProvisionedDevices') and not profile.get('ProvisionsAllDevices'), 'Expected exact App Store distribution profile for '+key)
+        requested = plistlib.loads((ROOT/'ios'/filename).read_bytes())
+        for entitlement, value in requested.items():
+            def expand(item):
+                return item.replace('$(APS_ENVIRONMENT)', 'production').replace('$(AppIdentifierPrefix)', team+'.').replace('$(CFBundleIdentifier)', bundle) if isinstance(item, str) else item
+            value = [expand(item) for item in value] if isinstance(value, list) else expand(value)
+            permission = allowed.get(entitlement)
+            if isinstance(value, list):
+                valid = isinstance(permission, list) and all(any(isinstance(pattern, str) and fnmatch.fnmatchcase(item, pattern) for pattern in permission) for item in value)
+            else:
+                valid = permission == value
+            release.require(valid, 'Distribution profile lacks required '+entitlement+' for '+key)
+
+
 def build_ios(args, stage, cache, environment):
     release.require(sys.platform == 'darwin', 'iOS release requires macOS/Xcode')
     release.require((ROOT/'ios/Assets.xcassets/AppIcon.appiconset/Contents.json').is_file(), 'iOS distribution needs a reviewed AppIcon asset catalog')
+    ios_push_preflight(environment)
     bindings(stage, cache, environment, 'swift')
     environment.update(IPHONEOS_DEPLOYMENT_TARGET='16.0', CFLAGS_aarch64_apple_ios='-miphoneos-version-min=16.0', MARKET_APS_ENVIRONMENT='production')
     environment['CFLAGS_aarch64_apple_ios'] += ' '+ ' '.join(shlex.quote('-ffile-prefix-map='+str(path)+'='+virtual) for path, virtual in private_path_remaps(environment))
@@ -152,7 +194,7 @@ def build_ios(args, stage, cache, environment):
     run(['xcodebuild', '-create-xcframework', '-library', cache/'aarch64-apple-ios/release/libiris_market_app.a', '-headers', headers, '-output', stage/'IrisMarketCore.xcframework'], environment)
     apple_project(stage, args.platform, environment)
     archive = stage/'IrisMarket.xcarchive'
-    run(['xcodebuild', '-project', stage/'IrisMarket.xcodeproj', '-scheme', 'IrisMarket', '-configuration', 'Release', '-destination', 'generic/platform=iOS', '-archivePath', archive, '-derivedDataPath', environment.get('MARKET_IOS_RELEASE_DERIVED_DATA', ROOT/'ios/.build/ReleaseDerivedData'), '-jobs', '2', 'CODE_SIGN_STYLE=Manual', 'CODE_SIGN_IDENTITY='+environment['MARKET_IOS_SIGNING_IDENTITY'], 'DEVELOPMENT_TEAM='+environment['MARKET_APPLE_TEAM_ID'], 'MARKETING_VERSION='+args.tag[1:].split('-')[0], 'CURRENT_PROJECT_VERSION='+str(args.build_number), 'archive'], environment)
+    run(['xcodebuild', '-project', stage/'IrisMarket.xcodeproj', '-scheme', 'IrisMarket', '-configuration', 'Release', '-destination', 'generic/platform=iOS', '-archivePath', archive, '-derivedDataPath', environment.get('MARKET_IOS_RELEASE_DERIVED_DATA', ROOT/'ios/.build/ReleaseDerivedData'), '-jobs', '2', 'CODE_SIGN_STYLE=Manual', 'CODE_SIGN_IDENTITY='+environment['MARKET_IOS_SIGNING_IDENTITY'], 'DEVELOPMENT_TEAM='+environment['MARKET_APPLE_TEAM_ID'], 'MARKETING_VERSION='+args.tag[1:].split('-')[0], 'CURRENT_PROJECT_VERSION='+str(args.build_number), 'MARKET_PUSH_CONFIGURED=YES', 'archive'], environment)
     options = {'method': 'app-store-connect', 'destination': 'export', 'signingStyle': 'manual', 'teamID': environment['MARKET_APPLE_TEAM_ID'], 'signingCertificate': environment['MARKET_IOS_SIGNING_IDENTITY'], 'provisioningProfiles': {'to.iris.market': environment['MARKET_IOS_PROFILE_UUID'], 'to.iris.market.NotificationService': environment['MARKET_IOS_NSE_PROFILE_UUID']}, 'testFlightInternalTestingOnly': True, 'uploadSymbols': False, 'manageAppVersionAndBuildNumber': False}
     export_options = stage/'ExportOptions.plist'
     with export_options.open('xb') as stream: plistlib.dump(options, stream)

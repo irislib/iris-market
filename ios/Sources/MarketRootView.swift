@@ -88,7 +88,7 @@ struct MarketRootView: View {
             .sheet(isPresented: $aiSettings) { AISettingsView(settings: store.snapshot.settings).marketSheetScope() }
             .sheet(isPresented: $wallet) { WalletView().marketSheetScope() }
             .sheet(isPresented: $transport) { CourierWorkspaceView().marketSheetScope() }
-            .sheet(isPresented: $compose) { NewListingView().marketSheetScope() }
+            .sheet(isPresented: $compose) { NewListingView().marketListingEditorSheetScope() }
             .sheet(item: $selected) { listing in ListingDetailView(listing: listing, onContact: { tab = .inbox }, onOrder: { tab = .orders }).marketSheetScope() }
             .onAppear { openPushRoute() }
             .onChange(of: store.pushRoute) { _ in openPushRoute() }

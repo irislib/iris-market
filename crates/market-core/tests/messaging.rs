@@ -541,7 +541,7 @@ fn encrypted_peer_receipts_reactions_and_preferences_are_durable_without_loops()
     }
     exchange(&mut a, &mut b);
     assert_eq!(subject(&a).delivery, "delivered");
-    b.mark_messages_read(&[id.clone()]).unwrap();
+    b.mark_messages_read(std::slice::from_ref(&id)).unwrap();
     exchange(&mut a, &mut b);
     assert_eq!(subject(&a).delivery, "seen");
     b.toggle_reaction(&ak.public_key().to_hex(), &id, "❤️")
@@ -585,7 +585,7 @@ fn encrypted_peer_receipts_reactions_and_preferences_are_durable_without_loops()
         .unwrap()
         .id
         .clone();
-    b.mark_messages_read(&[next.clone()]).unwrap();
+    b.mark_messages_read(std::slice::from_ref(&next)).unwrap();
     exchange(&mut a, &mut b);
     assert_eq!(
         a.conversations()[0]

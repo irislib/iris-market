@@ -24,14 +24,16 @@ enum WalletCredentials {
             }
         }
     }
-    static func loadOrCreate(owner: String, device: String) throws -> Material {
+    static func loadOrCreate(owner: String, device: String, importedSeed: String? = nil) throws -> Material {
         lock.lock(); defer { lock.unlock() }
         guard validHex(owner, count: 64), validHex(device, count: 64) else { throw Failure.invalidIdentity }
         let base = try NativeTestStorage.applicationSupportDirectory()
             .appendingPathComponent("IrisMarket/wallets", isDirectory: true)
         let directory = base.appendingPathComponent(owner, isDirectory: true).appendingPathComponent(device, isDirectory: true)
         let account = "cashu.seed.\(owner).\(device)"
+        if let importedSeed, !validHex(importedSeed, count: 128) { throw Failure.invalidRecoveryKey }
         if let seed = try SecureStore.read(account) {
+            if let importedSeed, importedSeed != seed { throw Failure.missingRecoveryKey }
             guard validHex(seed, count: 128) else { throw Failure.invalidRecoveryKey }
             try protect(directory)
             return Material(baseDirectory: base, owner: owner, device: device, seed: seed)
@@ -40,6 +42,12 @@ enum WalletCredentials {
         let existing = ["seed-binding", "wallet.sqlite", "wallet.sqlite-wal", "wallet.sqlite-shm", "seed.json"]
             .contains { FileManager.default.fileExists(atPath: walletFolder.appendingPathComponent($0).path) }
         guard !existing else { throw Failure.missingRecoveryKey }
+        if let importedSeed {
+            try SecureStore.write(importedSeed, account: account)
+            guard try SecureStore.read(account) == importedSeed else { throw Failure.secureWrite }
+            try protect(directory)
+            return Material(baseDirectory: base, owner: owner, device: device, seed: importedSeed)
+        }
         var bytes = [UInt8](repeating: 0, count: 64)
         guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else { throw Failure.secureWrite }
         let seed = bytes.map { String(format: "%02x", $0) }.joined()

@@ -30,6 +30,8 @@ import org.json.JSONObject
 import to.iris.market.core.MarketWallet
 import to.iris.market.core.previewCashuToken
 import to.iris.market.core.lightningInvoiceQr
+import to.iris.market.core.nativeWalletBackupSeed
+import to.iris.market.core.restoreNativeWalletBackup
 
 val LocalWalletAmountFormatter = staticCompositionLocalOf<(String,String,Boolean)->String> { { amount,_,test -> "$amount ${if(test)"test sats" else "sats"}" } }
 internal fun displayWalletAmount(sats:String,mint:String,profile:MarketSnapshot,testOnly:Boolean=false):String {
@@ -49,22 +51,24 @@ internal fun displayWalletAmount(sats:String,mint:String,profile:MarketSnapshot,
 val LocalWalletOpener = staticCompositionLocalOf<(String?) -> Unit> { {} }
 private const val DEFAULT_WALLET_MINT = "https://mint.coinos.io"
 private const val TEST_WALLET_MINT = "https://testnut.cashu.space"
-private fun mintLabel(mint:String)=runCatching {java.net.URI(mint).host}.getOrNull()?:"Mint"
-private fun isTestMint(mint:String)=mint.trimEnd('/')==TEST_WALLET_MINT
+private const val TOKEN_REVIEW_ERROR = "Could not read this Cashu token. Check that you copied the whole token."
+internal fun mintLabel(mint:String)=runCatching {java.net.URI(mint).host}.getOrNull()?:"Mint"
+internal fun isTestMint(mint:String)=mint.trimEnd('/')==TEST_WALLET_MINT
 private fun exactAmountLabel(value:JSONObject):String="${value.optString("amount","0")} ${if(value.optBoolean("test_only")||isTestMint(value.optString("mint"))) "test sats" else "sats"}"
 private fun entries(value:JSONObject,key:String):List<JSONObject> = value.optJSONArray(key)?.let { list -> (0 until list.length()).map {list.getJSONObject(it)} }?:emptyList()
 private fun positiveAmount(value:String):ULong {
     require(value.matches(Regex("[1-9][0-9]{0,12}"))) { "Enter a whole amount of sats." }
     return value.toULong().also {require(it<=1_000_000_000_000uL)}
 }
-private data class NativeWalletState(val ready:Boolean=false,val busy:Boolean=false,val error:String="",val message:String="",val snapshot:JSONObject=JSONObject(),val preview:JSONObject?=null,val invoice:JSONObject?=null,val token:JSONObject?=null,val qr:JSONObject?=null)
+internal data class NativeWalletState(val ready:Boolean=false,val busy:Boolean=false,val error:String="",val message:String="",val snapshot:JSONObject=JSONObject(),val preview:JSONObject?=null,val invoice:JSONObject?=null,val token:JSONObject?=null,val qr:JSONObject?=null,val sendReview:JSONObject?=null,val lightningReview:JSONObject?=null,val backup:String="")
 /** One serialized session, separate from profile snapshots and messaging. */
-private class NativeWalletSession(private val model:MarketModel,private val owner:String) {
+internal class NativeWalletSession(private val model:MarketModel,private val owner:String) {
     val state=MutableStateFlow(NativeWalletState())
     private val scope=CoroutineScope(SupervisorJob()+Dispatchers.Main.immediate)
     private val mutex=Mutex()
     private var wallet:MarketWallet?=null
     private var closing=false
+    private val tokenReviewGeneration=java.util.concurrent.atomic.AtomicLong()
     fun run(task:suspend NativeWalletSession.()->Unit) {
         if(closing||state.value.busy)return
         state.value=state.value.copy(busy=true,error="",message="")
@@ -77,10 +81,27 @@ private class NativeWalletSession(private val model:MarketModel,private val owne
     }
     suspend fun open(){val material=model.walletMaterial(owner);wallet?.close();wallet=null;wallet=MarketWallet(material.baseDirectory.absolutePath,material.owner,material.device,material.seed);refresh(false);state.value=state.value.copy(ready=true)}
     fun refresh(network:Boolean){state.value=state.value.copy(snapshot=JSONObject(requireNotNull(wallet).snapshot(network)))}
-    fun preview(token:String){require(token.length<=2*1024*1024);state.value=state.value.copy(preview=JSONObject(previewCashuToken(token)))}
-    fun clearPreview(){state.value=state.value.copy(preview=null)}
+    fun reviewToken(token:String){
+        val generation=tokenReviewGeneration.get()
+        run {
+            try {
+                require(token.length<=2*1024*1024)
+                val preview=JSONObject(previewCashuToken(token))
+                if(!closing&&generation==tokenReviewGeneration.get())state.value=state.value.copy(preview=preview)
+            } catch(e:CancellationException){throw e}
+            catch(_:Exception){if(!closing&&generation==tokenReviewGeneration.get())state.value=state.value.copy(preview=null,error=TOKEN_REVIEW_ERROR)}
+        }
+    }
+    fun clearPreview(){tokenReviewGeneration.incrementAndGet();state.value=state.value.copy(preview=null,error=if(state.value.error==TOKEN_REVIEW_ERROR)"" else state.value.error)}
+    fun clearActionFeedback(){clearPreview();state.value=state.value.copy(message="")}
     fun receive(token:String,mint:String){requireNotNull(wallet).receive(token,mint);refresh(false);state.value=state.value.copy(preview=null,message="Token received in your wallet.")}
-    fun send(mint:String,amount:ULong){val token=JSONObject(requireNotNull(wallet).send(mint,amount));refresh(false);state.value=state.value.copy(token=token)}
+    fun reviewSend(mint:String,amount:ULong,id:String){state.value=state.value.copy(sendReview=JSONObject(requireNotNull(wallet).previewSend(mint,amount,id)))}
+    fun sendReviewed(review:JSONObject):JSONObject {val token=JSONObject(requireNotNull(wallet).sendReviewed(review.getString("mint_url"),review.getLong("amount_sat").toULong(),review.getLong("fee_sat").toULong(),review.getString("request_id")));refresh(false);state.value=state.value.copy(token=token,sendReview=null);return token}
+    suspend fun payOrder(review:JSONObject,orderID:String){val token=sendReviewed(review);withContext(Dispatchers.Main){model.sendOrderPaymentToken(orderID,token.getString("token"),owner)};state.value=state.value.copy(message="Payment queued privately. The seller confirms receipt.")}
+    fun reviewLightning(mint:String,invoice:String){state.value=state.value.copy(lightningReview=JSONObject(requireNotNull(wallet).previewLightning(mint,invoice)))}
+    fun payLightning(review:JSONObject){requireNotNull(wallet).payLightning(review.getString("mint_url"),review.getString("quote_id"),review.getLong("fee_sat").toULong());refresh(false);state.value=state.value.copy(lightningReview=null,message="Lightning payment completed.")}
+    fun exportBackup(password:String){state.value=state.value.copy(backup=requireNotNull(wallet).exportBackup(password))}
+    suspend fun restoreBackup(backup:String,password:String){check(wallet==null);val seed=nativeWalletBackupSeed(backup,password,owner);val material=model.walletMaterial(owner,seed);restoreNativeWalletBackup(material.baseDirectory.absolutePath,material.owner,material.device,backup,password,material.seed);open()}
     fun pending(id:String){state.value=state.value.copy(token=JSONObject(requireNotNull(wallet).pendingToken(id)))}
     fun reclaim(mint:String,id:String){val reclaimed=requireNotNull(wallet).reclaim(mint,id);refresh(true);state.value=state.value.copy(token=null,message=if(reclaimed>0uL)"$reclaimed ${if(isTestMint(mint))"test sats" else "sats"} reclaimed into this wallet." else "No unredeemed funds were returned. Refresh to check this payment.")}
     fun topUp(mint:String,amount:ULong){val invoice=JSONObject(requireNotNull(wallet).topUp(mint,amount));state.value=state.value.copy(invoice=invoice,qr=null);runCatching {require(!invoice.optBoolean("test_only")&&!isTestMint(invoice.getString("mint")));JSONObject(lightningInvoiceQr(invoice.getString("invoice")))}.getOrNull()?.let {state.value=state.value.copy(qr=it)};refresh(false)}
@@ -98,9 +119,14 @@ private class NativeWalletSession(private val model:MarketModel,private val owne
     var amount by remember {mutableStateOf("")}
     var mode by remember(initialToken){mutableStateOf(if(initialToken.isNullOrBlank()) "" else "receive")}
     var approveMint by remember(state.preview){mutableStateOf(false)}
-    var confirmSend by remember {mutableStateOf(false)}
+    var sendID by remember {mutableStateOf(java.util.UUID.randomUUID().toString())}
+    var scan by remember {mutableStateOf(false)}
+    var lightningText by remember {mutableStateOf("")}
+    var backupText by remember {mutableStateOf("")}
+    var backupPassword by remember {mutableStateOf("")}
     var confirmReclaim by remember {mutableStateOf<Pair<String,String>?>(null)}
     var notice by remember {mutableStateOf("")}
+    LaunchedEffect(mode,session){session.clearActionFeedback();notice=""}
     DisposableEffect(session){onDispose {session.close()}}
     fun copy(text:String){clipboard.setText(AnnotatedString(text));notice="Copied"}
     fun openExternal(invoice:String){runCatching {context.startActivity(Intent(Intent.ACTION_VIEW,Uri.parse("lightning:"+invoice.removePrefix("lightning:"))))}.onFailure {notice="No Lightning wallet is available. Copy the invoice to your wallet."}}
@@ -112,17 +138,24 @@ private class NativeWalletSession(private val model:MarketModel,private val owne
         if(state.message.isNotBlank())Text(state.message)
         if(notice.isNotBlank())Text(notice,style=MaterialTheme.typography.bodySmall)
         if(state.busy)LinearProgressIndicator(Modifier.fillMaxWidth())
-        if(!state.ready){Button(enabled=!state.busy,onClick={session.run {open()}}){Icon(Icons.Filled.AccountBalanceWallet,null);Spacer(Modifier.width(8.dp));Text("Enable or open wallet")};return@Column}
+        if(!state.ready){
+            OutlinedTextField(backupText,{backupText=it},label={Text("Encrypted wallet backup")},modifier=Modifier.fillMaxWidth(),minLines=2,enabled=!state.busy)
+            OutlinedTextField(backupPassword,{backupPassword=it},label={Text("Backup password")},visualTransformation=androidx.compose.ui.text.input.PasswordVisualTransformation(),enabled=!state.busy)
+            Text("Restore only into a new wallet for this profile. Existing funds are preserved.",style=MaterialTheme.typography.bodySmall)
+            OutlinedButton(enabled=!state.busy&&backupText.isNotBlank()&&backupPassword.isNotBlank(),onClick={val data=backupText;val password=backupPassword;session.run{restoreBackup(data,password);backupText="";backupPassword=""}}){Text("Restore encrypted backup")}
+            Button(enabled=!state.busy,onClick={session.run {open()}}){Icon(Icons.Filled.AccountBalanceWallet,null);Spacer(Modifier.width(8.dp));Text("Enable or open wallet")};return@Column}
         if(state.snapshot.optInt("warning_count")>0)Text("Some mint updates are unavailable. Saved funds are preserved; refresh to check again.",style=MaterialTheme.typography.bodySmall)
         Text("Balances",style=MaterialTheme.typography.titleLarge)
         val balances=entries(state.snapshot,"balances")
         if(balances.isEmpty())Text("No funds yet.",style=MaterialTheme.typography.bodySmall)
         balances.forEach {balance->Column {Text(amountLabel(balance),style=MaterialTheme.typography.titleMedium);if(amountLabel(balance)!=exactAmountLabel(balance))Text(exactAmountLabel(balance),style=MaterialTheme.typography.bodySmall);Text(mintLabel(balance.getString("mint")),style=MaterialTheme.typography.bodySmall);if(balance.optBoolean("test_only")||isTestMint(balance.getString("mint")))Text("Test money · no bitcoin value",style=MaterialTheme.typography.bodySmall)}}
         Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){OutlinedButton(enabled=!state.busy,onClick={session.run{refresh(true)}}){Text("Refresh")};TextButton(onClick={mode="receive"}){Text("Receive")};TextButton(onClick={mode="send"}){Text("Send")};TextButton(onClick={mode="topup"}){Text("Add funds")}}
+        Row{TextButton(onClick={mode="lightning"}){Text("Pay Lightning")};TextButton(onClick={mode="backup"}){Text("Backup")}}
         if(mode=="receive"){
             Text("Receive Cashu",style=MaterialTheme.typography.titleMedium)
             OutlinedTextField(receiveText,{receiveText=it;session.clearPreview()},label={Text("Paste Cashu token")},modifier=Modifier.fillMaxWidth(),minLines=3,enabled=!state.busy)
-            Button(enabled=!state.busy&&receiveText.isNotBlank(),onClick={val token=receiveText.trim();session.run{preview(token)}}){Text("Review token")}
+            TextButton(onClick={scan=true}){Text("Scan token")}
+            Button(enabled=!state.busy&&receiveText.isNotBlank(),onClick={val token=receiveText.trim();session.reviewToken(token)}){Text("Review token")}
             state.preview?.let {preview->
                 Text(amountLabel(preview));if(amountLabel(preview)!=exactAmountLabel(preview))Text(exactAmountLabel(preview),style=MaterialTheme.typography.bodySmall);Text(preview.getString("mint"),style=MaterialTheme.typography.bodySmall)
                 Row {Checkbox(approveMint,{approveMint=it},enabled=!state.busy);Text("I trust this mint to hold these funds.",Modifier.padding(top=12.dp))}
@@ -135,9 +168,24 @@ private class NativeWalletSession(private val model:MarketModel,private val owne
             Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){TextButton(onClick={mint=DEFAULT_WALLET_MINT}){Text("Coinos")};TextButton(onClick={mint=TEST_WALLET_MINT}){Text("Testnut · test money")}}
             OutlinedTextField(amount,{amount=it.filter {c->c in '0'..'9'}.take(13)},label={Text(if(isTestMint(mint))"Amount in test sats" else "Amount in sats")},singleLine=true,modifier=Modifier.fillMaxWidth(),enabled=!state.busy)
             if(isTestMint(mint))Text("Test money · no bitcoin value",style=MaterialTheme.typography.bodySmall)
-            if(mode=="send")Button(enabled=!state.busy&&runCatching {positiveAmount(amount)}.isSuccess,onClick={confirmSend=true}){Text("Review transfer")}
+            if(mode=="send")Button(enabled=!state.busy&&!state.snapshot.optBoolean("review_required")&&runCatching {positiveAmount(amount)}.isSuccess,onClick={val target=mint.trim();val value=positiveAmount(amount);session.run{reviewSend(target,value,sendID)}}){Text("Review transfer")}
             else Button(enabled=!state.busy&&runCatching {positiveAmount(amount)}.isSuccess,onClick={val target=mint.trim();val value=positiveAmount(amount);session.run{topUp(target,value)}}){Text("Create Lightning invoice")}
         }
+        if(mode=="lightning"){
+            Text("Pay a Lightning invoice",style=MaterialTheme.typography.titleMedium)
+            OutlinedTextField(mint,{mint=it},label={Text("Pay from mint")},enabled=!state.busy)
+            OutlinedTextField(lightningText,{lightningText=it},label={Text("Paste Lightning invoice")},enabled=!state.busy,modifier=Modifier.fillMaxWidth())
+            TextButton(onClick={scan=true}){Text("Scan invoice")}
+            Button(enabled=!state.busy&&lightningText.isNotBlank()&&!state.snapshot.optBoolean("review_required"),onClick={val invoice=lightningText.trim();val target=mint.trim();session.run{reviewLightning(target,invoice)}}){Text("Review Lightning payment")}
+        }
+        if(mode=="backup"){
+            Text("Encrypted wallet backup",style=MaterialTheme.typography.titleMedium)
+            Text("Keep the backup and password safe and separate. It contains wallet recovery material.")
+            OutlinedTextField(backupPassword,{backupPassword=it},label={Text("Backup password")},visualTransformation=androidx.compose.ui.text.input.PasswordVisualTransformation(),enabled=!state.busy)
+            Button(enabled=!state.busy&&backupPassword.length>=12,onClick={val password=backupPassword;session.run{exportBackup(password)}}){Text("Create encrypted backup")}
+            if(state.backup.isNotBlank())Button(onClick={copy(state.backup)}){Text("Copy encrypted backup")}
+        }
+        if(state.snapshot.optBoolean("review_required"))Text("Refresh this restored wallet before spending or sharing saved tokens.")
         state.invoice?.let {invoice->
             Text("Lightning invoice",style=MaterialTheme.typography.titleMedium)
             Text(amountLabel(invoice));if(amountLabel(invoice)!=exactAmountLabel(invoice))Text(exactAmountLabel(invoice),style=MaterialTheme.typography.bodySmall);Text(mintLabel(invoice.getString("mint")),style=MaterialTheme.typography.bodySmall)
@@ -148,7 +196,7 @@ private class NativeWalletSession(private val model:MarketModel,private val owne
         }
         state.token?.let {token->
             Text("Cashu transfer",style=MaterialTheme.typography.titleMedium);Text(amountLabel(token));if(amountLabel(token)!=exactAmountLabel(token))Text(exactAmountLabel(token),style=MaterialTheme.typography.bodySmall);Text("Anyone with this token can redeem it. Keep it private.",style=MaterialTheme.typography.bodySmall)
-            Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){Button(onClick={copy(token.getString("token"))}){Text("Copy token")};OutlinedButton(onClick={context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT,token.getString("token")),"Share Cashu token"))}){Text("Share")}}
+            Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){Button(enabled=!state.snapshot.optBoolean("review_required"),onClick={copy(token.getString("token"))}){Text("Copy token")};OutlinedButton(enabled=!state.snapshot.optBoolean("review_required"),onClick={context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT,token.getString("token")),"Share Cashu token"))}){Text("Share")}}
             TextButton(enabled=!state.busy,onClick={confirmReclaim=token.getString("mint") to token.getString("operation_id")}){Text("Reclaim payment")}
         }
         Text("Activity",style=MaterialTheme.typography.titleLarge)
@@ -160,7 +208,10 @@ private class NativeWalletSession(private val model:MarketModel,private val owne
         }
     }
     confirmReclaim?.let { target->AlertDialog(onDismissRequest={confirmReclaim=null},title={Text("Reclaim payment?")},text={Text("Only ordinary unredeemed tokens can return to this wallet. Locked payments may require the recipient. A successful reclaim makes the old token stop working.")},confirmButton={TextButton(enabled=!state.busy,onClick={confirmReclaim=null;session.run{reclaim(target.first,target.second)}}){Text("Reclaim unredeemed funds")}},dismissButton={TextButton(onClick={confirmReclaim=null}){Text("Cancel")}}) }
-    if(confirmSend)AlertDialog(onDismissRequest={confirmSend=false},title={Text("Create Cashu token?")},text={Text("Send ${displayWalletAmount(amount,mint,profile)} ($amount ${if(isTestMint(mint))"test sats" else "sats"}) from ${mintLabel(mint)}. Mint fees may apply. Anyone you share the token with can redeem it.")},confirmButton={TextButton(onClick={confirmSend=false;val target=mint.trim();val value=positiveAmount(amount);session.run{send(target,value)}}){Text("Create token")}},dismissButton={TextButton(onClick={confirmSend=false}){Text("Cancel")}})
+    state.sendReview?.let {review->WalletFeeConfirmation(review,"Create token",{session.state.value=session.state.value.copy(sendReview=null)}){session.run{sendReviewed(review);sendID=java.util.UUID.randomUUID().toString()}}}
+    state.lightningReview?.let {review->WalletFeeConfirmation(review,"Pay Lightning",{session.state.value=session.state.value.copy(lightningReview=null)}){session.run{payLightning(review)}}}
+    if(scan)WalletQRScannerDialog(mode=="lightning",{if(mode=="lightning")lightningText=it else {receiveText=it;session.clearPreview()};scan=false},{scan=false})
+
 }
 
 @Composable private fun InvoiceQr(qr:JSONObject) {
@@ -170,4 +221,9 @@ private class NativeWalletSession(private val model:MarketModel,private val owne
         val count=modules.length();val step=size.minDimension/(count+8)
         for(y in 0 until count){val row=modules.optJSONArray(y)?:continue;for(x in 0 until count)if(row.optBoolean(x))drawRect(Color.Black,Offset((x+4)*step,(y+4)*step),Size(step,step))}
     }
+}
+
+@Composable internal fun WalletFeeConfirmation(review:JSONObject,action:String,dismiss:()->Unit,confirm:()->Unit){
+    val mint=review.getString("mint_url");val unit=if(isTestMint(mint))"test sats" else "sats"
+    AlertDialog(onDismissRequest=dismiss,title={Text("Confirm payment")},text={Column(verticalArrangement=Arrangement.spacedBy(8.dp)){Text(mintLabel(mint));Text("Amount: ${review.getLong("amount_sat")} $unit");Text("Maximum fee: ${review.getLong("fee_sat")} $unit");Text("Maximum total: ${review.getLong("max_total_sat")} $unit");if(isTestMint(mint))Text("Test money · no bitcoin value")}},confirmButton={TextButton(onClick=confirm){Text(action)}},dismissButton={TextButton(onClick=dismiss){Text("Cancel")}})
 }

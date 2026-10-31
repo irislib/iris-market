@@ -324,6 +324,17 @@ pub enum Command {
         quantity: u16,
         #[serde(default)]
         note: String,
+        #[serde(default)]
+        delivery_request: Option<crate::orders::DeliveryRequest>,
+    },
+    RequestDelivery {
+        source_order_id: String,
+        listing_id: String,
+        destination: crate::orders::DeliveryPlace,
+    },
+    SendOrderPaymentToken {
+        order_id: String,
+        token: String,
     },
     UpdateOrder {
         order_id: String,

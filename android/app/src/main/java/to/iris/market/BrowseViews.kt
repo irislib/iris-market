@@ -234,7 +234,8 @@ import org.json.JSONObject
             UserRow(person ?: PublicPerson.unnamed(listing.author))
         }
         Spacer(Modifier.height(22.dp));HorizontalDivider(color=Line);Spacer(Modifier.height(21.dp))
-        Text(listing.description,style=MaterialTheme.typography.bodyLarge)
+        ListingDescription(listing.description)
+        ReviewsView("30402:${listing.id}",model,product=true)
         Spacer(Modifier.height(24.dp))
         if(demo) Text("Sample listing · Preview stays on this device.",color=Muted,style=MaterialTheme.typography.bodySmall)
         else if(listing.mine) Text(if(listing.delivery == "queued") "Your listing · Waiting to send" else if(listing.delivery == "failed") "Your listing · Not sent" else "Your listing",color=Muted,style=MaterialTheme.typography.bodySmall)

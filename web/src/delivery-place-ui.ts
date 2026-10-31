@@ -5,13 +5,13 @@ import type {DeliveryPlace,Coordinates} from './orders.ts';
 import type {createMarketMap} from './map/index.ts';
 
 interface DeliveryPlaceInputOptions {
-  label:string;value?:DeliveryPlace;onChange?:(value:DeliveryPlace)=>void;
+  label:string;value?:DeliveryPlace;onChange?:(value:DeliveryPlace)=>void;onDraftChange?:(value:DeliveryPlace)=>void;
   createMap?:typeof createMarketMap;
   geolocation?:Pick<Geolocation,'getCurrentPosition'>;
   searchPlaces?:(query:string)=>Promise<{name:string;displayName?:string;context?:string;lat:number;lng:number}[]>;
 }
 /** Private, transient meeting point editor. Nothing is saved or sent by this control. */
-export function createDeliveryPlaceInput({label,value,onChange=()=>{},createMap,geolocation,searchPlaces}:DeliveryPlaceInputOptions) {
+export function createDeliveryPlaceInput({label,value,onChange=()=>{},onDraftChange=()=>{},createMap,geolocation,searchPlaces}:DeliveryPlaceInputOptions) {
   const root=element('section',undefined,'delivery-place-input');root.setAttribute('aria-label',label);
   const addressLabel=element('label'),input=element('input');input.type='text';input.maxLength=500;input.required=true;input.autocomplete='off';input.placeholder='Address or meeting point';input.value=value?.address??'';input.setAttribute('aria-label',`${label} address or meeting point`);addressLabel.append(element('span',label),input);
   const tools=element('div',undefined,'service-area-tools'),locate=element('button',undefined,'locate-button');locate.type='button';locate.title='Use my location';locate.setAttribute('aria-label',`Use my location for ${label.toLowerCase()}`);
@@ -25,13 +25,13 @@ export function createDeliveryPlaceInput({label,value,onChange=()=>{},createMap,
   let timer:ReturnType<typeof setTimeout>,map:Awaited<ReturnType<typeof createMarketMap>>|null=null,overlay:ReturnType<typeof createServiceAreaOverlay>|null=null,rawMap:any=null;
   const source=searchPlaces?null:createPlaceSearch();
   const read=():DeliveryPlace=>{const address=input.value.trim();if(!address||address.length>500){input.focus?.();throw new Error(`Enter the ${label.toLowerCase()} address or meeting point.`);}return {label:placeLabel.slice(0,120),address,...(point?{coordinates:[...point] as Coordinates}:{})};};
-  function changed(){clear.hidden=!point;overlay?.setCenters(point?{pickup:point}:{});if(input.value.trim())onChange(read());}
+  function changed(){clear.hidden=!point;overlay?.setCenters(point?{pickup:point}:{});onDraftChange({label:placeLabel.slice(0,120),address:input.value.trim(),...(point?{coordinates:[...point] as Coordinates}:{})});if(input.value.trim())onChange(read());}
   function cancelSearch(){searchTicket++;clearTimeout(timer);suggestions.replaceChildren();}
   function choose(next:Coordinates){if(destroyed||next.length!==2||!next.every(Number.isFinite)||Math.abs(next[0])>180||Math.abs(next[1])>90)return;point=[...next];locationTicket++;locate.removeAttribute('aria-busy');status.textContent='Map point selected. Add an address or meeting point.';changed();}
   input.oninput=()=>{
     if(destroyed)return;cancelSearch();locationTicket++;locate.removeAttribute('aria-busy');point=undefined;placeLabel=label;status.textContent='';changed();
     if(input.value.trim().length<2)return;
-    const ticket=searchTicket;timer=setTimeout(async()=>{try{const results=await(searchPlaces??source.search)(input.value);if(destroyed||ticket!==searchTicket)return;for(const place of results.slice(0,8)){const button=element('button',[place.name,place.context].filter(Boolean).join(' · '),'button secondary');button.type='button';button.onclick=()=>{if(destroyed||ticket!==searchTicket)return;input.value=(place.displayName||place.name).slice(0,500);placeLabel=place.name.slice(0,120);cancelSearch();choose([place.lng,place.lat]);status.textContent='Place selected. Add any entrance or meeting details.';rawMap?.jumpTo({center:[place.lng,place.lat],zoom:15});};suggestions.append(button);}}catch{if(!destroyed&&ticket===searchTicket)status.textContent='Place search unavailable. You can enter the address yourself.';}},250);
+    const ticket=searchTicket;timer=setTimeout(async()=>{try{const results=await(searchPlaces??source.search)(input.value);if(destroyed||ticket!==searchTicket)return;for(const place of results.slice(0,8)){const button=element('button',[place.name,place.context || (place.displayName!==place.name?place.displayName:undefined)].filter(Boolean).join(' · '),'button secondary');button.type='button';button.onclick=()=>{if(destroyed||ticket!==searchTicket)return;input.value=[place.name,place.context].filter(Boolean).join(', ').slice(0,500);placeLabel=place.name.slice(0,120);cancelSearch();choose([place.lng,place.lat]);status.textContent='Place selected. Add any entrance or meeting details.';rawMap?.jumpTo({center:[place.lng,place.lat],zoom:15});};suggestions.append(button);}}catch{if(!destroyed&&ticket===searchTicket)status.textContent='Place search unavailable. You can enter the address yourself.';}},250);
   };
   locate.onclick=()=>{if(destroyed)return;const api=geolocation??globalThis.navigator?.geolocation;if(!api){status.textContent='Location unavailable. Enter an address or choose a map point.';return;}const ticket=++locationTicket;locate.setAttribute('aria-busy','true');api.getCurrentPosition(position=>{if(destroyed||ticket!==locationTicket)return;choose([position.coords.longitude,position.coords.latitude]);rawMap?.jumpTo({center:point,zoom:15});},()=>{if(destroyed||ticket!==locationTicket)return;locate.removeAttribute('aria-busy');status.textContent='Could not get your location. Enter an address or choose a map point.';},{enableHighAccuracy:false,timeout:10000,maximumAge:60000});};
   clear.onclick=()=>{if(destroyed)return;locationTicket++;locate.removeAttribute('aria-busy');point=undefined;status.textContent='';changed();};
@@ -48,5 +48,5 @@ export function createDeliveryPlaceInput({label,value,onChange=()=>{},createMap,
     }catch{if(!destroyed)status.textContent='Map unavailable. Close and reopen Map to retry.';}finally{opening=false;}
   };
   clear.hidden=!point;
-  return {element:root,read,destroy(){if(destroyed)return;destroyed=true;cancelSearch();locationTicket++;mapTicket++;globalThis.window?.removeEventListener('market-themechange',themeChanged);systemDark?.removeEventListener('change',themeChanged);void source?.close().catch(()=>{});const previous=map;map=null;rawMap=null;overlay=null;if(previous)void previous.destroy().catch(()=>{});root.remove();}};
+  return {element:root,read,setValue(next:DeliveryPlace){if(destroyed)return;cancelSearch();locationTicket++;input.value=next.address;placeLabel=next.label||label;point=next.coordinates?[...next.coordinates]:undefined;clear.hidden=!point;overlay?.setCenters(point?{pickup:point}:{});if(point)rawMap?.jumpTo({center:point,zoom:15});},destroy(){if(destroyed)return;destroyed=true;cancelSearch();locationTicket++;mapTicket++;globalThis.window?.removeEventListener('market-themechange',themeChanged);systemDark?.removeEventListener('change',themeChanged);void source?.close().catch(()=>{});const previous=map;map=null;rawMap=null;overlay=null;if(previous)void previous.destroy().catch(()=>{});root.remove();}};
 }

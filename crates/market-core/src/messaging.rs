@@ -607,14 +607,13 @@ impl Messaging {
 
         let peer = PublicKey::parse(peer_id).map_err(|_| "Invalid conversation".to_string())?;
         let id = peer.to_hex();
-        if let Some(order_id) = context.as_ref().and_then(|c| c.order_id.as_ref()) {
-            if !self
+        if let Some(order_id) = context.as_ref().and_then(|c| c.order_id.as_ref())
+            && !self
                 .state
                 .orders
                 .context_participant(order_id, &self.owner.to_hex(), &id)
-            {
-                return Err("This order is not shared with this person".into());
-            }
+        {
+            return Err("This order is not shared with this person".into());
         }
         let text = text.trim().to_string();
         if text.is_empty() {
@@ -810,6 +809,7 @@ impl Messaging {
             this.send_control_jobs()?;
             this.retry_invitations()?;
             this.send_pending_contacts()?;
+            this.prepare_order_threads()?;
             this.send_order_jobs()?;
             let batch = this
                 .engine
@@ -938,11 +938,21 @@ impl Messaging {
         quantity: u16,
         note: &str,
     ) -> MessagingResult<String> {
+        self.request_order_with_delivery(listing, quantity, note, None)
+    }
+    pub fn request_order_with_delivery(
+        &mut self,
+        listing: &crate::model::Listing,
+        quantity: u16,
+        note: &str,
+        delivery: Option<crate::orders::DeliveryRequest>,
+    ) -> MessagingResult<String> {
         self.transaction(|this| {
-            let id = this.state.orders.request(
+            let id = this.state.orders.request_with_delivery(
                 listing,
                 quantity,
                 note,
+                delivery,
                 &this.owner.to_hex(),
                 &this.keys.public_key().to_hex(),
                 now(),
@@ -950,6 +960,89 @@ impl Messaging {
             this.prepare_order_threads()?;
             Ok(id)
         })
+    }
+    pub fn request_delivery(
+        &mut self,
+        source_id: &str,
+        listing: &crate::model::Listing,
+        destination: crate::orders::DeliveryPlace,
+    ) -> MessagingResult<String> {
+        self.transaction(|this| {
+            let id = this.state.orders.request_delivery(
+                source_id,
+                listing,
+                destination,
+                &this.owner.to_hex(),
+                &this.keys.public_key().to_hex(),
+                now(),
+            )?;
+            this.prepare_order_threads()?;
+            Ok(id)
+        })
+    }
+    /// Only explicit isolated Rust fixtures opt into a numeric loopback mint.
+    pub fn set_developer_mint(&mut self, mint: Option<&str>) -> MessagingResult<()> {
+        self.state.orders.set_developer_mint(mint)
+    }
+
+    /// Metadata validation is not redemption. Only a seller confirmation changes payment status.
+    pub fn send_order_payment_token(&mut self, id: &str, encoded: &str) -> MessagingResult<()> {
+        use std::str::FromStr;
+        let order = self.state.orders.get(id).ok_or("Order not found")?;
+        if order.buyer != self.owner.to_hex() {
+            return Err("Only the buyer can send this order payment".into());
+        }
+        let token = encoded.trim();
+        if token.is_empty() || token.len() > MAX_MESSAGE_BYTES {
+            return Err("Invalid payment token size".into());
+        }
+        let seller = order.seller.clone();
+        if self.state.conversations.get(&seller).is_some_and(|thread| {
+            thread.messages.iter().any(|message| {
+                message.mine
+                    && message.delivery != "failed"
+                    && message
+                        .context
+                        .as_ref()
+                        .is_some_and(|context| context.order_id.as_deref() == Some(id))
+                    && message.text == token
+            })
+        }) {
+            return Ok(());
+        }
+        let (seller, request) = self
+            .state
+            .orders
+            .buyer_payment_request(id, &self.owner.to_hex())?;
+        let parsed = cashu::Token::from_str(token).map_err(|_| "Invalid payment token")?;
+        if parsed.unit().unwrap_or_default() != cashu::CurrencyUnit::Sat {
+            return Err("Payment token unit does not match the order".into());
+        }
+        let mint = url::Url::parse(
+            &parsed
+                .mint_url()
+                .map_err(|_| "Invalid payment mint")?
+                .to_string(),
+        )
+        .map_err(|_| "Invalid payment mint")?;
+        let mint = mint.as_str().strip_suffix('/').unwrap_or(mint.as_str());
+        if mint != request.mint
+            || parsed
+                .value()
+                .map_err(|_| "Invalid payment amount")?
+                .to_u64()
+                .to_string()
+                != request.amount
+        {
+            return Err(
+                "Payment token mint and amount must match the current order request".into(),
+            );
+        }
+        self.send_with_context(
+            &seller,
+            token,
+            Some(crate::conversation_context::MessageContext::for_order(id)),
+        )
     }
 
     pub fn update_order(&mut self, id: &str, patch: serde_json::Value) -> MessagingResult<()> {
@@ -970,7 +1063,16 @@ impl Messaging {
     }
 
     fn prepare_order_threads(&mut self) -> MessagingResult<()> {
+        self.state.orders.prune(now());
         let orders = &self.state.orders;
+        self.engine
+            .retire_pending_local_sibling_events(|_, event| {
+                event
+                    .id
+                    .as_ref()
+                    .is_some_and(|id| !orders.can_publish(&id.to_hex()))
+            })
+            .map_err(protocol_error)?;
         self.state.outbox.retain(|_, queued| {
             queued
                 .inner_id
@@ -1018,11 +1120,75 @@ impl Messaging {
                 break;
             }
             let peer = PublicKey::from_hex(&job.recipient).map_err(protocol_error)?;
-            let result = self
-                .engine
-                .send_direct_unsigned_event(peer, &job.recipient, job.rumor, UnixSeconds(now()))
-                .map_err(protocol_error)?;
-            self.queue_effects(result.effects)?;
+            if job.action == "location" {
+                // Never leave superseded coordinates in the engine's unsent remote plaintext queue.
+                let snapshot = self.engine.session_manager_snapshot();
+                let Some(user) = snapshot
+                    .users
+                    .iter()
+                    .find(|user| user.owner_pubkey.to_bytes() == peer.to_bytes())
+                else {
+                    continue;
+                };
+                let Some(roster) = user.roster.as_ref() else {
+                    continue;
+                };
+                let targets = roster.devices();
+                if targets.is_empty()
+                    || !targets.iter().all(|target| {
+                        user.devices.iter().any(|device| {
+                            device.device_pubkey == target.device_pubkey
+                                && device.authorized
+                                && !device.is_stale
+                                && device.active_session.as_ref().is_some_and(|session| {
+                                    session.their_current_nostr_public_key.is_some()
+                                })
+                        })
+                    })
+                {
+                    continue;
+                }
+                let result = self
+                    .engine
+                    .send_direct_unsigned_event_to_peer_only(
+                        peer,
+                        &job.recipient,
+                        job.rumor.clone(),
+                        UnixSeconds(now()),
+                    )
+                    .map_err(protocol_error)?;
+                if result.event_ids.len() != targets.len() {
+                    return Err(
+                        "Location sharing waits for every authorized recipient ratchet".into(),
+                    );
+                }
+                self.queue_effects(result.effects)?;
+                let siblings = self
+                    .engine
+                    .send_local_sibling_unsigned_event(
+                        peer,
+                        &job.recipient,
+                        job.rumor,
+                        UnixSeconds(now()),
+                    )
+                    .map_err(protocol_error)?;
+                self.queue_effects(siblings.effects)?;
+                let id = job.id.clone();
+                self.engine
+                    .retire_pending_local_sibling_events(|_, event| {
+                        event
+                            .id
+                            .as_ref()
+                            .is_some_and(|event_id| event_id.to_hex() == id)
+                    })
+                    .map_err(protocol_error)?;
+            } else {
+                let result = self
+                    .engine
+                    .send_direct_unsigned_event(peer, &job.recipient, job.rumor, UnixSeconds(now()))
+                    .map_err(protocol_error)?;
+                self.queue_effects(result.effects)?;
+            }
             if let Some(pending) = self
                 .state
                 .orders
@@ -1468,6 +1634,7 @@ impl Messaging {
             ) else {
                 return Ok(());
             };
+            self.prepare_order_threads()?;
             if location {
                 return Ok(());
             }
@@ -1725,19 +1892,20 @@ fn message_millis(rumor: &UnsignedEvent) -> u64 {
         .iter()
         .filter(|tag| tag.as_slice().first().is_some_and(|key| key == "ms"))
         .collect::<Vec<_>>();
-    if values.len() == 1 && values[0].as_slice().len() == 2 {
-        if let Ok(ms) = values[0].as_slice()[1].parse::<u64>() {
-            // Preserve private subsecond precision; malformed/implausible tags fall back to the signed second.
-            let wall_ms = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis()
-                .min(u64::MAX as u128) as u64;
-            if ms <= wall_ms.saturating_add(300_000)
-                && ms.abs_diff(rumor.created_at.as_secs().saturating_mul(1000)) <= 300_000
-            {
-                return ms;
-            }
+    if values.len() == 1
+        && values[0].as_slice().len() == 2
+        && let Ok(ms) = values[0].as_slice()[1].parse::<u64>()
+    {
+        // Preserve private subsecond precision; malformed/implausible tags fall back to the signed second.
+        let wall_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            .min(u64::MAX as u128) as u64;
+        if ms <= wall_ms.saturating_add(300_000)
+            && ms.abs_diff(rumor.created_at.as_secs().saturating_mul(1000)) <= 300_000
+        {
+            return ms;
         }
     }
     rumor.created_at.as_secs().saturating_mul(1000)

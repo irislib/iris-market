@@ -237,7 +237,7 @@ fn orders_are_local_first_restorable_archivable_and_scoped() {
     assert_eq!(requested["order"]["sync"], "queued");
     assert_eq!(requested["order"]["items"][0]["quantity"], 2);
     assert!(requested.get("conversations").is_none());
-    assert_eq!(requested["live_location_supported"], false);
+    assert_eq!(requested["live_location_supported"], true);
     let id = requested["order"]["id"].as_str().unwrap();
     let restored = offline_command(&buyer, &buyer_key, "orders", &[], None);
     assert_eq!(restored["orders"][0]["id"], id);

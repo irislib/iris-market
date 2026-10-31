@@ -85,7 +85,9 @@ class AlphaContract(unittest.TestCase):
     def test_external_apple_sources_do_not_walk_intermediate_groups(self):
         source = self.root/'source'
         (source/'ios').mkdir(parents=True)
-        (source/'ios/project.yml').write_text('options:\n  createIntermediateGroups: true\nsources:\n  - path: Sources\n  - path: Bindings\ntargets:\n  IrisMarket:\n    settings:\n      base:\n        PRODUCT_BUNDLE_IDENTIFIER: to.iris.market\n  MarketNotificationService:\n    settings:\n      base:\n        PRODUCT_BUNDLE_IDENTIFIER: to.iris.market.NotificationService\n')
+        repository = Path(__file__).resolve().parents[1]
+        for filename in ('project.yml', 'Info.plist'):
+            (source/'ios'/filename).write_bytes((repository/'ios'/filename).read_bytes())
         stage = self.root/'generated'; stage.mkdir()
         (stage/'headers').mkdir()
         with patch.object(native, 'ROOT', source), patch.object(native, 'run') as run:
@@ -98,14 +100,19 @@ class AlphaContract(unittest.TestCase):
 
     def test_ios_stage_paths_and_profiles_are_target_scoped(self):
         source = self.root/'source'; (source/'ios').mkdir(parents=True)
-        (source/'ios/project.yml').write_text((Path(__file__).resolve().parents[1]/'ios/project.yml').read_text())
+        for filename in ('project.yml', 'Info.plist'):
+            (source/'ios'/filename).write_bytes((Path(__file__).resolve().parents[1]/'ios'/filename).read_bytes())
         stage = self.root/'stage'; stage.mkdir(); (stage/'headers').mkdir()
-        environment = {'MARKET_IOS_PROFILE_UUID':'fixture-main', 'MARKET_IOS_NSE_PROFILE_UUID':'fixture-nse'}
+        environment = {'MARKET_IOS_PUSH_ENABLED':'1', 'MARKET_IOS_PROFILE_UUID':'fixture-main', 'MARKET_IOS_NSE_PROFILE_UUID':'fixture-nse'}
         with patch.object(native,'ROOT',source), patch.object(native,'run'):
             native.apple_project(stage,'ios-arm64',environment)
         text = (stage/'project.yml').read_text()
         for relative in ('NotificationService','NotificationService/Info.plist','Market.entitlements','NotificationService/NotificationService.entitlements','Simulator.entitlements','Sources/NativePushShared.swift'):
             self.assertIn(str(source/'ios'/relative),text)
+        info = plistlib.loads((stage/'Info.plist').read_bytes())
+        self.assertEqual(info['MarketPushConfigured'], 'YES')
+        self.assertEqual(info['UIBackgroundModes'], ['remote-notification'])
+        self.assertIn('MarketNotificationKeychainGroup', info)
         header, targets = text.split('\ntargets:\n',1)
         self.assertNotIn('PROVISIONING_PROFILE_SPECIFIER',header)
         main = targets.split('  IrisMarket:',1)[1].split('  IrisMarketUITests:',1)[0]
@@ -117,15 +124,18 @@ class AlphaContract(unittest.TestCase):
         self.assertEqual((stage/'project.yml').stat().st_mode & 0o777,0o600)
 
     def test_ios_requires_extension_profile_and_exact_target(self):
-        self.assertIn('MARKET_IOS_NSE_PROFILE_UUID',release.REQUIRED_ENV['ios-arm64'])
+        self.assertNotIn('MARKET_IOS_NSE_PROFILE_UUID',release.REQUIRED_ENV['ios-arm64'])
         source = self.root/'source'; (source/'ios').mkdir(parents=True)
-        (source/'ios/project.yml').write_text('PRODUCT_BUNDLE_IDENTIFIER: to.iris.market\n')
+        for filename in ('project.yml', 'Info.plist'):
+            (source/'ios'/filename).write_bytes((Path(__file__).resolve().parents[1]/'ios'/filename).read_bytes())
         stage = self.root/'stage'; stage.mkdir(); (stage/'headers').mkdir()
         with patch.object(native,'ROOT',source), patch.object(native,'run') as run:
             with self.assertRaisesRegex(ValueError,'MARKET_IOS_NSE_PROFILE_UUID'):
-                native.apple_project(stage,'ios-arm64',{'MARKET_IOS_PROFILE_UUID':'fixture-main'})
+                native.apple_project(stage,'ios-arm64',{'MARKET_IOS_PUSH_ENABLED':'1','MARKET_IOS_PROFILE_UUID':'fixture-main'})
+            (stage/'Info.plist').unlink()
+            (source/'ios/project.yml').write_text('PRODUCT_BUNDLE_IDENTIFIER: to.iris.market\n      - sdk: libsqlite3.tbd\n')
             with self.assertRaisesRegex(ValueError,'Expected exactly one iOS signing target'):
-                native.apple_project(stage,'ios-arm64',{'MARKET_IOS_PROFILE_UUID':'fixture-main','MARKET_IOS_NSE_PROFILE_UUID':'fixture-nse'})
+                native.apple_project(stage,'ios-arm64',{'MARKET_IOS_PUSH_ENABLED':'1','MARKET_IOS_PROFILE_UUID':'fixture-main','MARKET_IOS_NSE_PROFILE_UUID':'fixture-nse'})
             run.assert_not_called()
 
     def test_ios_archive_uses_target_profiles_and_exports_both_bundles(self):
@@ -134,8 +144,8 @@ class AlphaContract(unittest.TestCase):
         stage=self.root/'stage';stage.mkdir();(stage/'export').mkdir();(stage/'export/fixture.ipa').write_bytes(b'fixture')
         output=self.root/'output';output.mkdir()
         args=SimpleNamespace(tag=TAG,build_number=12,platform='ios-arm64',output=output)
-        environment={'MARKET_APPLE_TEAM_ID':'fixture-team','MARKET_IOS_SIGNING_IDENTITY':'fixture-identity','MARKET_IOS_PROFILE_UUID':'fixture-main','MARKET_IOS_NSE_PROFILE_UUID':'fixture-nse'}
-        with patch.object(native,'ROOT',source),patch.object(native.sys,'platform','darwin'),patch.object(native,'ios_push_preflight'),patch.object(native,'bindings'),patch.object(native,'rust'),patch.object(native,'apple_headers'),patch.object(native,'apple_project'),patch.object(native.subprocess,'check_output',return_value=str(sdk)),patch.object(native,'run') as run:
+        environment={'MARKET_IOS_PUSH_ENABLED':'1','MARKET_APPLE_TEAM_ID':'fixture-team','MARKET_IOS_SIGNING_IDENTITY':'fixture-identity','MARKET_IOS_PROFILE_UUID':'fixture-main','MARKET_IOS_NSE_PROFILE_UUID':'fixture-nse'}
+        with patch.object(native,'ROOT',source),patch.object(native.sys,'platform','darwin'),patch.object(native,'ios_signing_preflight'),patch.object(native,'bindings'),patch.object(native,'rust'),patch.object(native,'apple_headers'),patch.object(native,'apple_project'),patch.object(native.subprocess,'check_output',return_value=str(sdk)),patch.object(native,'run') as run:
             native.build_ios(args,stage,self.root/'cache',environment)
         archive=next(call.args[0] for call in run.call_args_list if 'archive' in call.args[0])
         self.assertIn('MARKET_PUSH_CONFIGURED=YES', archive)
@@ -146,16 +156,78 @@ class AlphaContract(unittest.TestCase):
         self.assertEqual(environment['MARKET_APS_ENVIRONMENT'],'production')
 
     def test_ios_push_profiles_fail_closed_before_compilation(self):
-        with patch.object(native.sys, 'platform', 'darwin'), patch.object(native, 'bindings') as bindings, patch.object(native, 'ios_push_preflight', side_effect=ValueError('profile capability missing')):
+        with patch.object(native.sys, 'platform', 'darwin'), patch.object(native, 'bindings') as bindings, patch.object(native, 'ios_signing_preflight', side_effect=ValueError('profile capability missing')):
             with self.assertRaisesRegex(ValueError, 'profile capability missing'):
                 native.build_ios(SimpleNamespace(), self.root, self.root, {})
             bindings.assert_not_called()
+
+    def test_ios_nonpush_project_excludes_extension_and_push_capabilities(self):
+        source = self.root/'source'; (source/'ios').mkdir(parents=True)
+        repository = Path(__file__).resolve().parents[1]
+        for filename in ('project.yml', 'Info.plist'):
+            (source/'ios'/filename).write_bytes((repository/'ios'/filename).read_bytes())
+        stage = self.root/'stage'; stage.mkdir(); (stage/'headers').mkdir()
+        with patch.object(native,'ROOT',source), patch.object(native,'run'):
+            native.apple_project(stage,'ios-arm64',{'MARKET_IOS_PUSH_ENABLED':'0','MARKET_IOS_PROFILE_UUID':'fixture-main'})
+        text = (stage/'project.yml').read_text()
+        self.assertNotIn('MarketNotificationService', text)
+        self.assertIn('CODE_SIGN_ENTITLEMENTS: '+str(source/'ios/NonPush.entitlements'), text)
+        self.assertIn('PROVISIONING_PROFILE_SPECIFIER: "fixture-main"', text)
+        info = plistlib.loads((stage/'Info.plist').read_bytes())
+        self.assertEqual(info['MarketPushConfigured'], 'NO')
+        self.assertNotIn('UIBackgroundModes', info)
+        self.assertNotIn('MarketNotificationKeychainGroup', info)
+        entitlements = plistlib.loads((repository/'ios/NonPush.entitlements').read_bytes())
+        self.assertEqual(entitlements, {'keychain-access-groups':['$(AppIdentifierPrefix)$(CFBundleIdentifier)']})
+
+    def test_ios_nonpush_archive_exports_only_main_profile(self):
+        source=self.root/'source'; icon=source/'ios/Assets.xcassets/AppIcon.appiconset/Contents.json'; icon.parent.mkdir(parents=True); icon.write_text('{}')
+        sdk=self.root/'sdk'; (sdk/'usr/lib').mkdir(parents=True); (sdk/'usr/lib/libsqlite3.tbd').write_text('fixture')
+        stage=self.root/'stage'; stage.mkdir(); (stage/'export').mkdir(); (stage/'export/fixture.ipa').write_bytes(b'fixture')
+        output=self.root/'output'; output.mkdir()
+        args=SimpleNamespace(tag=TAG,build_number=13,platform='ios-arm64',output=output)
+        environment={'MARKET_IOS_PUSH_ENABLED':'0','MARKET_APPLE_TEAM_ID':'fixture-team','MARKET_IOS_SIGNING_IDENTITY':'fixture-identity','MARKET_IOS_PROFILE_UUID':'fixture-main'}
+        with patch.object(native,'ROOT',source), patch.object(native.sys,'platform','darwin'), patch.object(native,'ios_signing_preflight') as signing, patch.object(native,'bindings'), patch.object(native,'rust'), patch.object(native,'apple_headers'), patch.object(native,'apple_project'), patch.object(native.subprocess,'check_output',return_value=str(sdk)), patch.object(native,'run') as run:
+            native.build_ios(args,stage,self.root/'cache',environment)
+        signing.assert_called_once_with(environment)
+        archive=next(call.args[0] for call in run.call_args_list if 'archive' in call.args[0])
+        self.assertIn('MARKET_PUSH_CONFIGURED=NO', archive)
+        options=plistlib.loads((stage/'ExportOptions.plist').read_bytes())
+        self.assertEqual(options['provisioningProfiles'], {'to.iris.market':'fixture-main'})
+        self.assertTrue(options['testFlightInternalTestingOnly'])
+
+    def test_ios_mode_is_explicit_and_invalid_values_fail_closed(self):
+        self.assertFalse(release.ios_push_enabled({}))
+        self.assertFalse(release.ios_push_enabled({'MARKET_IOS_PUSH_ENABLED':'0'}))
+        self.assertTrue(release.ios_push_enabled({'MARKET_IOS_PUSH_ENABLED':'1'}))
+        for value in ('', 'YES', 'false', '2'):
+            with self.assertRaisesRegex(ValueError, '0 or 1'):
+                release.ios_push_enabled({'MARKET_IOS_PUSH_ENABLED':value})
+
+    def test_ios_nonpush_signing_still_requires_exact_distribution_and_keychain(self):
+        import datetime
+        home=self.root/'home'; directory=home/'Library/MobileDevice/Provisioning Profiles'; directory.mkdir(parents=True)
+        (directory/'main.mobileprovision').write_bytes(b'fixture')
+        environment={'MARKET_IOS_PUSH_ENABLED':'0','MARKET_APPLE_TEAM_ID':'TESTTEAM','MARKET_IOS_PROFILE_UUID':'main'}
+        entitlements={'application-identifier':'TESTTEAM.to.iris.market','com.apple.developer.team-identifier':'TESTTEAM','get-task-allow':False,'keychain-access-groups':['TESTTEAM.*']}
+        profile={'UUID':'main','TeamIdentifier':['TESTTEAM'],'ExpirationDate':datetime.datetime.now()+datetime.timedelta(days=1),'Entitlements':entitlements}
+        def decode(*args, **kwargs): return plistlib.dumps(profile)
+        with patch.object(native.Path,'home',return_value=home), patch.object(native.subprocess,'check_output',side_effect=decode):
+            native.ios_signing_preflight(environment)
+            for changed, message in (({'ExpirationDate':datetime.datetime.now()-datetime.timedelta(days=1)},'Expired'), ({'TeamIdentifier':['OTHERTEAM']},'team mismatch'), ({'ProvisionedDevices':['fixture']},'App Store'), ({'ProvisionsAllDevices':True},'App Store')):
+                with patch.dict(profile, changed):
+                    with self.assertRaisesRegex(ValueError,message): native.ios_signing_preflight(environment)
+            for changed, message in (({'application-identifier':'TESTTEAM.other.app'},'App Store'), ({'get-task-allow':True},'App Store'), ({'keychain-access-groups':['TESTTEAM.other.app']},'keychain-access-groups')):
+                with patch.dict(entitlements, changed):
+                    with self.assertRaisesRegex(ValueError,message): native.ios_signing_preflight(environment)
+            with self.assertRaisesRegex(ValueError,'matching distribution profile'):
+                native.ios_signing_preflight({**environment,'MARKET_IOS_PROFILE_UUID':'absent'})
 
     def test_ios_push_profile_entitlements_and_distribution(self):
         import datetime
         repository = Path(__file__).resolve().parents[1]
         home = self.root/'home'; directory = home/'Library/MobileDevice/Provisioning Profiles'; directory.mkdir(parents=True)
-        environment = {'MARKET_APPLE_TEAM_ID':'TESTTEAM', 'MARKET_IOS_PROFILE_UUID':'main', 'MARKET_IOS_NSE_PROFILE_UUID':'nse'}
+        environment = {'MARKET_IOS_PUSH_ENABLED':'1', 'MARKET_APPLE_TEAM_ID':'TESTTEAM', 'MARKET_IOS_PROFILE_UUID':'main', 'MARKET_IOS_NSE_PROFILE_UUID':'nse'}
         profiles = {}
         for name, bundle, filename in (('main','to.iris.market','Market.entitlements'), ('nse','to.iris.market.NotificationService','NotificationService/NotificationService.entitlements')):
             entitlements = plistlib.loads((repository/'ios'/filename).read_bytes())
@@ -168,15 +240,15 @@ class AlphaContract(unittest.TestCase):
             (directory/(name+'.mobileprovision')).write_bytes(b'fixture')
         def decode(command, **kwargs): return plistlib.dumps(profiles[Path(command[-1]).stem])
         with patch.object(native.Path,'home',return_value=home), patch.object(native.subprocess,'check_output',side_effect=decode):
-            native.ios_push_preflight(environment)
+            native.ios_signing_preflight(environment)
             profiles['nse']['Entitlements'].pop('com.apple.developer.usernotifications.filtering')
-            with self.assertRaisesRegex(ValueError,'usernotifications.filtering'): native.ios_push_preflight(environment)
+            with self.assertRaisesRegex(ValueError,'usernotifications.filtering'): native.ios_signing_preflight(environment)
             profiles['nse']['Entitlements']['com.apple.developer.usernotifications.filtering'] = True
             profiles['main']['Entitlements']['aps-environment'] = 'development'
-            with self.assertRaisesRegex(ValueError,'aps-environment'): native.ios_push_preflight(environment)
+            with self.assertRaisesRegex(ValueError,'aps-environment'): native.ios_signing_preflight(environment)
             profiles['main']['Entitlements']['aps-environment'] = 'production'
             profiles['main']['ProvisionedDevices'] = ['fixture']
-            with self.assertRaisesRegex(ValueError,'App Store'): native.ios_push_preflight(environment)
+            with self.assertRaisesRegex(ValueError,'App Store'): native.ios_signing_preflight(environment)
 
     def test_release_path_remaps_preserve_flags_and_paths_with_spaces(self):
         home = self.root/'private user'

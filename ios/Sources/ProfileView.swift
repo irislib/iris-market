@@ -27,7 +27,9 @@ struct ProfileView: View {
                     profileRow("Connections & profile", symbol: "point.3.connected.trianglepath.dotted") { connectionSettings = true }
                 }.background(MarketTheme.surface.opacity(0.75), in: RoundedRectangle(cornerRadius: 23))
                 #if os(iOS)
-                Toggle("Private notifications",isOn:Binding(get:{store.pushEnabled},set:{store.setPushEnabled($0)})).disabled(store.demo || store.snapshot.profileNameRequired == true || !NativePushStorage.configured)
+                if NativePushStorage.configured {
+                    Toggle("Private notifications",isOn:Binding(get:{store.pushEnabled},set:{store.setPushEnabled($0)})).disabled(store.demo || store.snapshot.profileNameRequired == true)
+                }
                 #endif
                 VStack(alignment: .leading, spacing: 14) {
                     Text("Message receipts").font(.system(size: 14, weight: .semibold))

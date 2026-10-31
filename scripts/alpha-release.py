@@ -41,7 +41,7 @@ def platforms_for_schema(schema):
 
 
 REQUIRED_ENV = {
-    'ios-arm64': ('MARKET_APPLE_TEAM_ID', 'MARKET_IOS_SIGNING_IDENTITY', 'MARKET_IOS_PROFILE_UUID', 'MARKET_IOS_NSE_PROFILE_UUID'),
+    'ios-arm64': ('MARKET_APPLE_TEAM_ID', 'MARKET_IOS_SIGNING_IDENTITY', 'MARKET_IOS_PROFILE_UUID'),
     'macos-arm64': ('MARKET_APPLE_TEAM_ID', 'MARKET_MACOS_SIGNING_IDENTITY'),
     'android-arm64': ('MARKET_ANDROID_KEYSTORE', 'MARKET_ANDROID_KEY_ALIAS', 'MARKET_ANDROID_STORE_PASSWORD', 'MARKET_ANDROID_KEY_PASSWORD'),
 }
@@ -50,6 +50,12 @@ REQUIRED_ENV = {
 def require(condition, message):
     if not condition:
         raise ValueError(message)
+
+
+def ios_push_enabled(environment):
+    value = environment.get('MARKET_IOS_PUSH_ENABLED', '0')
+    require(value in ('0', '1'), 'MARKET_IOS_PUSH_ENABLED must be 0 or 1')
+    return value == '1'
 
 
 def sha256(path):
@@ -125,6 +131,8 @@ def preflight(tag, commit, platform, inputs, build_number=None, unsigned_android
         require(isinstance(build_number, int) and 0 < build_number <= 2_100_000_000, 'Native builds require a positive monotonically increasing build number')
     require(not unsigned_android or platform == 'android-arm64', 'Unsigned output is only supported for Android signing handoff')
     missing = [name for name in (() if unsigned_android else REQUIRED_ENV.get(platform, ())) if not os.environ.get(name)]
+    if platform == 'ios-arm64' and ios_push_enabled(os.environ) and not os.environ.get('MARKET_IOS_NSE_PROFILE_UUID'):
+        missing.append('MARKET_IOS_NSE_PROFILE_UUID')
     require(not missing, 'Missing signing configuration names: ' + ', '.join(missing))
     require((ROOT/'Cargo.lock').is_file(), 'Cargo.lock is required')
     if platform == 'android-arm64':

@@ -69,7 +69,10 @@ final class MarketPushDelegate: NSObject, UIApplicationDelegate, UNUserNotificat
     static weak var store: MarketStore?
     static var token: String?
     static var pendingTap: String?
-    func application(_ application:UIApplication,didFinishLaunchingWithOptions options:[UIApplication.LaunchOptionsKey:Any]? = nil) -> Bool { UNUserNotificationCenter.current().delegate = self; return true }
+    func application(_ application:UIApplication,didFinishLaunchingWithOptions options:[UIApplication.LaunchOptionsKey:Any]? = nil) -> Bool {
+        if NativePushStorage.configured { UNUserNotificationCenter.current().delegate = self }
+        return true
+    }
     func application(_ application:UIApplication,didRegisterForRemoteNotificationsWithDeviceToken token:Data) {
         Self.token = token.map { String(format:"%02x",$0) }.joined(); Self.store?.syncPush()
     }
@@ -104,7 +107,7 @@ actor NativePushRuntime {
     private var worker: Task<Void, Never>?
     private var timer: Task<Void, Never>?
     func sync(owner:String,filtersJSON:String,enabled:Bool,token:String?,sequence:UInt64) {
-        guard !owner.isEmpty else { return }
+        guard NativePushStorage.configured, !owner.isEmpty else { return }
         let delivery = enabled ? Self.delivery(filtersJSON:filtersJSON,token:token) : nil
         state.enqueue(.init(owner:owner,enabled:enabled,delivery:delivery),sequence:sequence,now:ProcessInfo.processInfo.systemUptime)
         schedule()

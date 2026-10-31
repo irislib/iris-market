@@ -57,12 +57,6 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
-	<key>UIBackgroundModes</key>
-	<array>
-		<string>remote-notification</string>
-	</array>
-	<key>MarketNotificationKeychainGroup</key>
-	<string>$(AppIdentifierPrefix)to.iris.market.notifications</string>
 	<key>MarketPushConfigured</key>
 	<string>$(MARKET_PUSH_CONFIGURED)</string>
 <key>NSCameraUsageDescription</key><string>Scan a Cashu token or Lightning invoice when you choose Scan.</string>

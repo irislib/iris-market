@@ -102,18 +102,40 @@ def apple_project(stage, platform, environment):
     replacements = {'- path: Sources': '- path: '+str(ROOT/'ios/Sources'), '- path: Bindings': '- path: '+str(stage/'Bindings'), '- path: UITests': '- path: '+str(ROOT/'ios/UITests'), '- path: ../ios/Sources': '- path: '+str(ROOT/'ios/Sources'), '- path: ../ios/Bindings': '- path: '+str(stage/'Bindings'), 'INFOPLIST_FILE: Info.plist': 'INFOPLIST_FILE: '+str(source/'Info.plist'), 'Frameworks/IrisMarketCore.xcframework': str(stage/'IrisMarketCore.xcframework'), '$(PROJECT_DIR)/.build/headers': str(headers)}
     for old, new in replacements.items(): text = text.replace(old, new)
     if platform == 'ios-arm64':
+        push = release.ios_push_enabled(environment)
+        info = plistlib.loads((source/'Info.plist').read_bytes())
+        info['MarketPushConfigured'] = 'YES' if push else 'NO'
+        if push:
+            info['UIBackgroundModes'] = ['remote-notification']
+            info['MarketNotificationKeychainGroup'] = '$(AppIdentifierPrefix)to.iris.market.notifications'
+            text = text.replace('CODE_SIGN_ENTITLEMENTS: NonPush.entitlements', 'CODE_SIGN_ENTITLEMENTS: Market.entitlements')
+            dependency = '      - target: MarketNotificationService\n        embed: true\n'
+            marker = '      - sdk: libsqlite3.tbd\n'
+            release.require(marker in text, 'Expected iOS app framework dependencies')
+            text = text.replace(marker, marker+dependency, 1)
+        else:
+            info.pop('UIBackgroundModes', None)
+            info.pop('MarketNotificationKeychainGroup', None)
+            # Retain the push target in source, but keep it out of this release.
+            text, count = re.subn(r'^  MarketNotificationService:\n.*?(?=^  [A-Za-z0-9_]+:\n|\Z)', '', text, flags=re.MULTILINE | re.DOTALL)
+            release.require(count == 1, 'Expected exactly one iOS notification target')
+        info_path = stage/'Info.plist'
+        with info_path.open('xb') as stream: plistlib.dump(info, stream)
+        info_path.chmod(0o600)
+        text = text.replace('INFOPLIST_FILE: '+str(source/'Info.plist'), 'INFOPLIST_FILE: '+str(info_path))
         paths = {
             '- path: NotificationService': '- path: '+str(source/'NotificationService'),
             'INFOPLIST_FILE: NotificationService/Info.plist': 'INFOPLIST_FILE: '+str(source/'NotificationService/Info.plist'),
             'CODE_SIGN_ENTITLEMENTS: Market.entitlements': 'CODE_SIGN_ENTITLEMENTS: '+str(source/'Market.entitlements'),
+            'CODE_SIGN_ENTITLEMENTS: NonPush.entitlements': 'CODE_SIGN_ENTITLEMENTS: '+str(source/'NonPush.entitlements'),
             'CODE_SIGN_ENTITLEMENTS: NotificationService/NotificationService.entitlements': 'CODE_SIGN_ENTITLEMENTS: '+str(source/'NotificationService/NotificationService.entitlements'),
             'CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]": Simulator.entitlements': 'CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]": '+str(source/'Simulator.entitlements'),
         }
         for old, new in paths.items(): text = text.replace(old, new)
         # Xcode command-line profile overrides apply to every target. Scope each
         # distribution profile in its own target, including the embedded NSE.
-        profiles = (('IrisMarket', 'to.iris.market', 'MARKET_IOS_PROFILE_UUID'),
-                    ('MarketNotificationService', 'to.iris.market.NotificationService', 'MARKET_IOS_NSE_PROFILE_UUID'))
+        profiles = [('IrisMarket', 'to.iris.market', 'MARKET_IOS_PROFILE_UUID')]
+        if push: profiles.append(('MarketNotificationService', 'to.iris.market.NotificationService', 'MARKET_IOS_NSE_PROFILE_UUID'))
         for _, _, key in profiles: release.require(environment.get(key), 'Missing '+key)
         header, separator, targets = text.partition('\ntargets:\n')
         release.require(separator, 'Expected exactly one iOS signing target section')
@@ -137,8 +159,9 @@ def apple_project(stage, platform, environment):
     return headers
 
 
-def ios_push_preflight(environment):
-    """Fail before compilation unless both installed distribution profiles allow push."""
+def ios_signing_preflight(environment):
+    """Verify exact App Store signing and every entitlement for the selected mode."""
+    push = release.ios_push_enabled(environment)
     team = environment.get('MARKET_APPLE_TEAM_ID', '')
     release.require(team, 'Missing MARKET_APPLE_TEAM_ID')
     directories = (Path.home()/'Library/MobileDevice/Provisioning Profiles',
@@ -151,10 +174,9 @@ def ios_push_preflight(environment):
                 profiles.append(plistlib.loads(raw))
             except (subprocess.CalledProcessError, plistlib.InvalidFileException, ValueError):
                 continue
-    for key, bundle, filename in (
-        ('MARKET_IOS_PROFILE_UUID', 'to.iris.market', 'Market.entitlements'),
-        ('MARKET_IOS_NSE_PROFILE_UUID', 'to.iris.market.NotificationService', 'NotificationService/NotificationService.entitlements'),
-    ):
+    targets = [('MARKET_IOS_PROFILE_UUID', 'to.iris.market', 'Market.entitlements' if push else 'NonPush.entitlements')]
+    if push: targets.append(('MARKET_IOS_NSE_PROFILE_UUID', 'to.iris.market.NotificationService', 'NotificationService/NotificationService.entitlements'))
+    for key, bundle, filename in targets:
         selected = environment.get(key)
         matches = [p for p in profiles if selected and selected in (p.get('UUID'), p.get('Name'))]
         release.require(len(matches) == 1, 'Install exactly one matching distribution profile for '+key)
@@ -179,7 +201,7 @@ def ios_push_preflight(environment):
 def build_ios(args, stage, cache, environment):
     release.require(sys.platform == 'darwin', 'iOS release requires macOS/Xcode')
     release.require((ROOT/'ios/Assets.xcassets/AppIcon.appiconset/Contents.json').is_file(), 'iOS distribution needs a reviewed AppIcon asset catalog')
-    ios_push_preflight(environment)
+    ios_signing_preflight(environment)
     bindings(stage, cache, environment, 'swift')
     environment.update(IPHONEOS_DEPLOYMENT_TARGET='16.0', CFLAGS_aarch64_apple_ios='-miphoneos-version-min=16.0', MARKET_APS_ENVIRONMENT='production')
     environment['CFLAGS_aarch64_apple_ios'] += ' '+ ' '.join(shlex.quote('-ffile-prefix-map='+str(path)+'='+virtual) for path, virtual in private_path_remaps(environment))
@@ -194,8 +216,11 @@ def build_ios(args, stage, cache, environment):
     run(['xcodebuild', '-create-xcframework', '-library', cache/'aarch64-apple-ios/release/libiris_market_app.a', '-headers', headers, '-output', stage/'IrisMarketCore.xcframework'], environment)
     apple_project(stage, args.platform, environment)
     archive = stage/'IrisMarket.xcarchive'
-    run(['xcodebuild', '-project', stage/'IrisMarket.xcodeproj', '-scheme', 'IrisMarket', '-configuration', 'Release', '-destination', 'generic/platform=iOS', '-archivePath', archive, '-derivedDataPath', environment.get('MARKET_IOS_RELEASE_DERIVED_DATA', ROOT/'ios/.build/ReleaseDerivedData'), '-jobs', '2', 'CODE_SIGN_STYLE=Manual', 'CODE_SIGN_IDENTITY='+environment['MARKET_IOS_SIGNING_IDENTITY'], 'DEVELOPMENT_TEAM='+environment['MARKET_APPLE_TEAM_ID'], 'MARKETING_VERSION='+args.tag[1:].split('-')[0], 'CURRENT_PROJECT_VERSION='+str(args.build_number), 'MARKET_PUSH_CONFIGURED=YES', 'archive'], environment)
-    options = {'method': 'app-store-connect', 'destination': 'export', 'signingStyle': 'manual', 'teamID': environment['MARKET_APPLE_TEAM_ID'], 'signingCertificate': environment['MARKET_IOS_SIGNING_IDENTITY'], 'provisioningProfiles': {'to.iris.market': environment['MARKET_IOS_PROFILE_UUID'], 'to.iris.market.NotificationService': environment['MARKET_IOS_NSE_PROFILE_UUID']}, 'testFlightInternalTestingOnly': True, 'uploadSymbols': False, 'manageAppVersionAndBuildNumber': False}
+    push = release.ios_push_enabled(environment)
+    run(['xcodebuild', '-project', stage/'IrisMarket.xcodeproj', '-scheme', 'IrisMarket', '-configuration', 'Release', '-destination', 'generic/platform=iOS', '-archivePath', archive, '-derivedDataPath', environment.get('MARKET_IOS_RELEASE_DERIVED_DATA', ROOT/'ios/.build/ReleaseDerivedData'), '-jobs', '2', 'CODE_SIGN_STYLE=Manual', 'CODE_SIGN_IDENTITY='+environment['MARKET_IOS_SIGNING_IDENTITY'], 'DEVELOPMENT_TEAM='+environment['MARKET_APPLE_TEAM_ID'], 'MARKETING_VERSION='+args.tag[1:].split('-')[0], 'CURRENT_PROJECT_VERSION='+str(args.build_number), 'MARKET_PUSH_CONFIGURED='+('YES' if push else 'NO'), 'archive'], environment)
+    profiles = {'to.iris.market': environment['MARKET_IOS_PROFILE_UUID']}
+    if push: profiles['to.iris.market.NotificationService'] = environment['MARKET_IOS_NSE_PROFILE_UUID']
+    options = {'method': 'app-store-connect', 'destination': 'export', 'signingStyle': 'manual', 'teamID': environment['MARKET_APPLE_TEAM_ID'], 'signingCertificate': environment['MARKET_IOS_SIGNING_IDENTITY'], 'provisioningProfiles': profiles, 'testFlightInternalTestingOnly': True, 'uploadSymbols': False, 'manageAppVersionAndBuildNumber': False}
     export_options = stage/'ExportOptions.plist'
     with export_options.open('xb') as stream: plistlib.dump(options, stream)
     export_options.chmod(0o600)
@@ -288,6 +313,7 @@ def main():
     artifact = args.output/artifact_name(args)
     verify_release_paths(artifact, environment)
     receipt = {'platform':args.platform,'asset':artifact.name,'tag':args.tag,'sourceCommit':args.commit,'sha256':release.sha256(artifact),'readyForPublication':False,'signed':not args.unsigned_android,'buildNumber':args.build_number,'inputsSHA256':release.sha256(args.inputs),'sourcePathPolicy':'home=/build/home; cargo=/build/cargo; source=/source/iris-market'}
+    if args.platform == 'ios-arm64': receipt['iosPushEnabled'] = release.ios_push_enabled(environment)
     (args.output/(artifact.name+'.build.json')).write_text(json.dumps(receipt,indent=2)+'\n')
     print(json.dumps(receipt))
 

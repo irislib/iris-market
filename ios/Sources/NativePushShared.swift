@@ -27,7 +27,7 @@ struct NativePushCredentials: Codable {
     let deviceSecret: String
     let directory: String
     static let service = "to.iris.market.notification-preview"
-    private static var accessGroup: String? { Bundle.main.object(forInfoDictionaryKey: "MarketNotificationKeychainGroup") as? String }
+    private static var accessGroup: String? { NativePushStorage.configured ? Bundle.main.object(forInfoDictionaryKey: "MarketNotificationKeychainGroup") as? String : nil }
     private static var query: [String: Any]? {
         guard let accessGroup, !accessGroup.isEmpty, !accessGroup.contains("$(") else { return nil }
         return [kSecClass as String:kSecClassGenericPassword, kSecAttrService as String:service, kSecAttrAccount as String:"active-preview",kSecAttrAccessGroup as String:accessGroup]
@@ -54,7 +54,7 @@ enum NativePushStorage {
     static var configured: Bool { (Bundle.main.object(forInfoDictionaryKey:"MarketPushConfigured") as? String)?.lowercased() == "yes" }
     static let group = "group.to.iris.market"
     static func directory(owner: String) -> URL? {
-        guard owner.count == 64, owner.allSatisfy({ $0.isHexDigit }) else { return nil }
+        guard configured, owner.count == 64, owner.allSatisfy({ $0.isHexDigit }) else { return nil }
         return FileManager.default.containerURL(forSecurityApplicationGroupIdentifier:group)?.appendingPathComponent("accounts/\(owner)", isDirectory:true)
     }
     /// Call only after shutdown released the private writer. Never merge or replace stores.

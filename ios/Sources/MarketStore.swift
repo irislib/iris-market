@@ -750,7 +750,7 @@ final class MarketStore: ObservableObject {
     func syncPush() {
         guard !NativeTestStorage.enabled else { return }
         #if os(iOS)
-        guard !demo, ready, let app, !snapshot.publicKey.isEmpty else { return }
+        guard NativePushStorage.configured, !demo, ready, let app, !snapshot.publicKey.isEmpty else { return }
         let owner = snapshot.publicKey, generation = accountGeneration, intent = pushIntent
         queue.async { [weak self] in
             guard let filters = try? app.pushSnapshot() else { return }

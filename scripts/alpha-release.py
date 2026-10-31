@@ -58,6 +58,13 @@ def ios_push_enabled(environment):
     return value == '1'
 
 
+def ios_notification_filtering_enabled(environment):
+    value = environment.get('MARKET_IOS_NOTIFICATION_FILTERING_ENABLED', '0')
+    require(value in ('0', '1'), 'MARKET_IOS_NOTIFICATION_FILTERING_ENABLED must be 0 or 1')
+    require(value != '1' or ios_push_enabled(environment), 'Notification filtering requires iOS push')
+    return value == '1'
+
+
 def sha256(path):
     digest = hashlib.sha256()
     with Path(path).open('rb') as stream:
@@ -131,6 +138,7 @@ def preflight(tag, commit, platform, inputs, build_number=None, unsigned_android
         require(isinstance(build_number, int) and 0 < build_number <= 2_100_000_000, 'Native builds require a positive monotonically increasing build number')
     require(not unsigned_android or platform == 'android-arm64', 'Unsigned output is only supported for Android signing handoff')
     missing = [name for name in (() if unsigned_android else REQUIRED_ENV.get(platform, ())) if not os.environ.get(name)]
+    if platform == 'ios-arm64': ios_notification_filtering_enabled(os.environ)
     if platform == 'ios-arm64' and ios_push_enabled(os.environ) and not os.environ.get('MARKET_IOS_NSE_PROFILE_UUID'):
         missing.append('MARKET_IOS_NSE_PROFILE_UUID')
     require(not missing, 'Missing signing configuration names: ' + ', '.join(missing))

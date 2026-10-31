@@ -2,10 +2,10 @@ import Foundation
 import UserNotifications
 
 final class NotificationService: UNNotificationServiceExtension {
-    private let lock = NSLock()
-    private var handler: ((UNNotificationContent) -> Void)?
+    private let completion = NativeNotificationCompletion<UNNotificationContent>()
+    private var filtering: Bool { (Bundle.main.object(forInfoDictionaryKey: "MarketNotificationFilteringConfigured") as? String)?.lowercased() == "yes" }
     override func didReceive(_ request:UNNotificationRequest,withContentHandler handler:@escaping(UNNotificationContent)->Void) {
-        lock.lock(); self.handler = handler; lock.unlock()
+        completion.prepare(handler)
         guard let credentials = NativePushCredentials.read(),
               JSONSerialization.isValidJSONObject(request.content.userInfo),
               let data = try? JSONSerialization.data(withJSONObject:request.content.userInfo),data.count <= 65536,
@@ -14,15 +14,11 @@ final class NotificationService: UNNotificationServiceExtension {
               let raw = resolvePushPreview(dataDir:credentials.directory,ownerPublicKey:credentials.owner,deviceSecret:credentials.deviceSecret,payload:replay).data(using:.utf8),
               let resolution = try? JSONDecoder().decode(NativePushResolution.self,from:raw),resolution.show,
               NativePushCredentials.read()?.owner == credentials.owner,
-              NativePushReceipts.claim(resolution.notificationID) else { finish(UNNotificationContent()); return }
-        let content = (request.content.mutableCopy() as? UNMutableNotificationContent) ?? UNMutableNotificationContent()
-        content.title = resolution.title; content.body = resolution.body; content.sound = .default
-        content.threadIdentifier = resolution.threadID ?? resolution.peerID ?? "private"
-        content.userInfo["market_message_id"] = resolution.messageID
-        finish(content)
+              NativePushReceipts.claim(resolution.notificationID) else {
+            completion.finish(NativeNotificationDelivery.fallback(filtering: filtering, userInfo: request.content.userInfo)); return
+        }
+        completion.finish(NativeNotificationDelivery.preview(title: resolution.title, body: resolution.body,
+            thread: resolution.threadID ?? resolution.peerID ?? "private", messageID: resolution.messageID, userInfo: request.content.userInfo))
     }
-    override func serviceExtensionTimeWillExpire() { finish(UNNotificationContent()) }
-    private func finish(_ content:UNNotificationContent) {
-        lock.lock(); let handler = handler; self.handler = nil; lock.unlock(); handler?(content)
-    }
+    override func serviceExtensionTimeWillExpire() { completion.finish(NativeNotificationDelivery.fallback(filtering: filtering)) }
 }

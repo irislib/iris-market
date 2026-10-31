@@ -103,6 +103,7 @@ def apple_project(stage, platform, environment):
     for old, new in replacements.items(): text = text.replace(old, new)
     if platform == 'ios-arm64':
         push = release.ios_push_enabled(environment)
+        filtering = release.ios_notification_filtering_enabled(environment)
         info = plistlib.loads((source/'Info.plist').read_bytes())
         info['MarketPushConfigured'] = 'YES' if push else 'NO'
         if push:
@@ -113,6 +114,15 @@ def apple_project(stage, platform, environment):
             marker = '      - sdk: libsqlite3.tbd\n'
             release.require(marker in text, 'Expected iOS app framework dependencies')
             text = text.replace(marker, marker+dependency, 1)
+            nse_info = plistlib.loads((source/'NotificationService/Info.plist').read_bytes())
+            nse_info['MarketPushConfigured'] = 'YES'
+            nse_info['MarketNotificationFilteringConfigured'] = 'YES' if filtering else 'NO'
+            nse_info_path = stage/'NotificationService-Info.plist'
+            with nse_info_path.open('xb') as stream: plistlib.dump(nse_info, stream)
+            nse_info_path.chmod(0o600)
+            text = text.replace('INFOPLIST_FILE: NotificationService/Info.plist', 'INFOPLIST_FILE: '+str(nse_info_path))
+            if filtering:
+                text = text.replace('CODE_SIGN_ENTITLEMENTS: NotificationService/NotificationService.entitlements', 'CODE_SIGN_ENTITLEMENTS: NotificationService/Filtering.entitlements')
         else:
             info.pop('UIBackgroundModes', None)
             info.pop('MarketNotificationKeychainGroup', None)
@@ -129,6 +139,7 @@ def apple_project(stage, platform, environment):
             'CODE_SIGN_ENTITLEMENTS: Market.entitlements': 'CODE_SIGN_ENTITLEMENTS: '+str(source/'Market.entitlements'),
             'CODE_SIGN_ENTITLEMENTS: NonPush.entitlements': 'CODE_SIGN_ENTITLEMENTS: '+str(source/'NonPush.entitlements'),
             'CODE_SIGN_ENTITLEMENTS: NotificationService/NotificationService.entitlements': 'CODE_SIGN_ENTITLEMENTS: '+str(source/'NotificationService/NotificationService.entitlements'),
+            'CODE_SIGN_ENTITLEMENTS: NotificationService/Filtering.entitlements': 'CODE_SIGN_ENTITLEMENTS: '+str(source/'NotificationService/Filtering.entitlements'),
             'CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]": Simulator.entitlements': 'CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]": '+str(source/'Simulator.entitlements'),
         }
         for old, new in paths.items(): text = text.replace(old, new)
@@ -162,6 +173,7 @@ def apple_project(stage, platform, environment):
 def ios_signing_preflight(environment):
     """Verify exact App Store signing and every entitlement for the selected mode."""
     push = release.ios_push_enabled(environment)
+    filtering = release.ios_notification_filtering_enabled(environment)
     team = environment.get('MARKET_APPLE_TEAM_ID', '')
     release.require(team, 'Missing MARKET_APPLE_TEAM_ID')
     directories = (Path.home()/'Library/MobileDevice/Provisioning Profiles',
@@ -175,7 +187,7 @@ def ios_signing_preflight(environment):
             except (subprocess.CalledProcessError, plistlib.InvalidFileException, ValueError):
                 continue
     targets = [('MARKET_IOS_PROFILE_UUID', 'to.iris.market', 'Market.entitlements' if push else 'NonPush.entitlements')]
-    if push: targets.append(('MARKET_IOS_NSE_PROFILE_UUID', 'to.iris.market.NotificationService', 'NotificationService/NotificationService.entitlements'))
+    if push: targets.append(('MARKET_IOS_NSE_PROFILE_UUID', 'to.iris.market.NotificationService', 'NotificationService/Filtering.entitlements' if filtering else 'NotificationService/NotificationService.entitlements'))
     for key, bundle, filename in targets:
         selected = environment.get(key)
         matches = [p for p in profiles if selected and selected in (p.get('UUID'), p.get('Name'))]
@@ -313,7 +325,9 @@ def main():
     artifact = args.output/artifact_name(args)
     verify_release_paths(artifact, environment)
     receipt = {'platform':args.platform,'asset':artifact.name,'tag':args.tag,'sourceCommit':args.commit,'sha256':release.sha256(artifact),'readyForPublication':False,'signed':not args.unsigned_android,'buildNumber':args.build_number,'inputsSHA256':release.sha256(args.inputs),'sourcePathPolicy':'home=/build/home; cargo=/build/cargo; source=/source/iris-market'}
-    if args.platform == 'ios-arm64': receipt['iosPushEnabled'] = release.ios_push_enabled(environment)
+    if args.platform == 'ios-arm64':
+        receipt['iosPushEnabled'] = release.ios_push_enabled(environment)
+        receipt['iosNotificationFilteringEnabled'] = release.ios_notification_filtering_enabled(environment)
     (args.output/(artifact.name+'.build.json')).write_text(json.dumps(receipt,indent=2)+'\n')
     print(json.dumps(receipt))
 

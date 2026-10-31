@@ -14,6 +14,7 @@ settings:
     ENABLE_USER_SCRIPT_SANDBOXING: YES
     MARKET_APS_ENVIRONMENT: development
     MARKET_PUSH_CONFIGURED: NO
+    MARKET_NOTIFICATION_FILTERING_CONFIGURED: NO
   configs:
     Release:
       MARKET_APS_ENVIRONMENT: production
@@ -77,6 +78,7 @@ targets:
       - path: NotificationService
         excludes: ["*.plist", "*.entitlements"]
       - path: Sources/NativePushShared.swift
+      - path: Sources/NativeNotificationDelivery.swift
       - path: Bindings
         excludes: ["*.h", "*.modulemap"]
     settings:

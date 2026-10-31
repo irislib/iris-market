@@ -15,6 +15,14 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def package_permissions(root, executables):
+    """Make installed files readable and directories traversable for every user."""
+    root.chmod(0o755)
+    for path in root.rglob('*'):
+        relative = path.relative_to(root).as_posix()
+        path.chmod(0o755 if path.is_dir() or relative in executables else 0o644)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
@@ -68,6 +76,7 @@ def main():
         control = stage / 'DEBIAN/control'
         control.parent.mkdir()
         control.write_text(f'Package: iris-market\nVersion: {args.version}\nSection: net\nPriority: optional\nArchitecture: {args.arch}\nMaintainer: Iris Market contributors\nDepends: python3 (>= 3.10), python3-gi, gir1.2-gtk-3.0, gir1.2-webkit2-4.1 (>= 2.42)\nDescription: Iris Market WebKit desktop client\n Browse offers and requests using the bundled Iris Market web client.\n')
+        package_permissions(stage, {'usr/bin/iris-market-desktop'})
         for path in stage.rglob('*'):
             os.utime(path, (int(epoch), int(epoch)))
         os.utime(stage, (int(epoch), int(epoch)))
@@ -78,7 +87,7 @@ def main():
         shutil.copytree(app, portable)
         launcher = portable / 'iris-market'
         launcher.write_text('#!/bin/sh\nHERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\nexec /usr/bin/python3 "$HERE/iris_market.py" "$@"\n')
-        launcher.chmod(0o755)
+        package_permissions(portable, {'iris-market'})
         archive = args.output / f'{stem}.tar.gz'
         with archive.open('wb') as raw, gzip.GzipFile(filename='', mode='wb', fileobj=raw, mtime=int(epoch)) as compressed, tarfile.open(fileobj=compressed, mode='w') as tar:
             for path in [portable, *sorted(portable.rglob('*'))]:

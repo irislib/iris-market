@@ -11,7 +11,8 @@ const {WebSocketServer}=require('ws');
 const {matchFilters,verifyEvent}=require('nostr-tools');
 const events=new Map(),subscriptions=new Map();
 const server=new WebSocketServer({host:'127.0.0.1',port:0});
-server.on('connection',socket=>{
+const silentServer=new WebSocketServer({host:'127.0.0.1',port:0});
+function connectRelay(socket,acknowledge) {
   subscriptions.set(socket,new Map());
   socket.on('close',()=>subscriptions.delete(socket));
   socket.on('message',raw=>{
@@ -20,16 +21,18 @@ server.on('connection',socket=>{
       if(type==='REQ') {
         subscriptions.get(socket).set(id,filters);
         for(const event of events.values())if(matchFilters(filters,event))socket.send(JSON.stringify(['EVENT',id,event]));
-        socket.send(JSON.stringify(['EOSE',id]));
+        if(acknowledge)socket.send(JSON.stringify(['EOSE',id]));
       } else if(type==='CLOSE') subscriptions.get(socket).delete(id);
       else if(type==='EVENT'&&verifyEvent(id)) {
-        events.set(id.id,id);socket.send(JSON.stringify(['OK',id.id,true,'']));
+        events.set(id.id,id);if(acknowledge)socket.send(JSON.stringify(['OK',id.id,true,'']));
         for(const [target,subs] of subscriptions)for(const [sub,filter] of subs)if(matchFilters(filter,id))target.send(JSON.stringify(['EVENT',sub,id]));
       }
     } catch { /* Ignore malformed fixture traffic. */ }
   });
-});
-await new Promise(resolve=>server.once('listening',resolve));
+}
+server.on('connection',socket=>connectRelay(socket,true));
+silentServer.on('connection',socket=>connectRelay(socket,false));
+await Promise.all([server,silentServer].map(relay=>new Promise(resolve=>relay.once('listening',resolve))));
 const relay=`ws://127.0.0.1:${server.address().port}`;
 let row,seller,routing=false,child;
 const accepted=new Set();
@@ -54,16 +57,16 @@ try {
   await seller.publishEvent({kind:30402,created_at:Math.floor(Date.now()/1000),tags:[['d','fresh-native-test'],['title','Fresh native delivery'],['price','12','EUR'],['location','Synthetic test']],content:'Private localhost integration fixture.'});
   await waitFor(()=>[...events.values()].some(event=>event.kind===30402));
   child=spawn('cargo',['test','--locked','-p','iris-market-core','--test','js_interop','fresh_native_profile_orders_with_strict_js_peer','--','--ignored','--exact'],{
-    cwd:fileURLToPath(new URL('../../../',import.meta.url)),stdio:['ignore','inherit','inherit'],env:{...process.env,CARGO_BUILD_JOBS:'2',MARKET_NATIVE_RELAY:relay}
+    cwd:fileURLToPath(new URL('../../../',import.meta.url)),stdio:['ignore','inherit','inherit'],env:{...process.env,CARGO_BUILD_JOBS:'2',MARKET_NATIVE_RELAY:relay,MARKET_NATIVE_SILENT_RELAY:`ws://127.0.0.1:${silentServer.address().port}`}
   });
   const timer=setTimeout(()=>child.kill('SIGTERM'),90000);
   const code=await new Promise((resolve,reject)=>{child.on('error',reject);child.on('exit',resolve);});clearTimeout(timer);
   assert.equal(code,0,'Fresh native profile order exchange failed');
   assert.equal(accepted.size,1);
   assert([...events.values()].filter(event=>event.kind===37368).length>=2,'Native app did not publish its signed roster');
-  console.log('PASS: fresh native app -> strict JS accepted order, localhost only, no pre-seeded native authorization');
+  console.log('PASS: fresh native app -> strict JS accepted order, localhost only, accepting and silent relays, no pre-seeded native authorization');
 } finally {
   if(child&&child.exitCode===null)child.kill('SIGTERM');
-  await seller?.destroy();for(const socket of server.clients)socket.terminate();
-  await new Promise(resolve=>server.close(resolve));
+  await seller?.destroy();for(const relay of [server,silentServer])for(const socket of relay.clients)socket.terminate();
+  await Promise.all([server,silentServer].map(relay=>new Promise(resolve=>relay.close(resolve))));
 }

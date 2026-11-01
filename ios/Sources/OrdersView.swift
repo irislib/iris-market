@@ -35,7 +35,7 @@ struct OrdersView: View {
                 }
             }.padding(23)
         }.foregroundStyle(MarketTheme.ink)
-            .sheet(item: selection) { value in OrderDetailView(orderID: value.id).marketSheetScope() }
+            .marketPage(item: selection) { value in OrderDetailView(orderID: value.id).marketSheetScope() }
     }
 }
 
@@ -69,7 +69,7 @@ struct OrderReviewView: View {
     @State private var destination = MarketDeliveryPlace(label: "Destination")
     @State private var requestError: String?
     var body: some View {
-        NavigationStack {
+        MarketNavigationContainer {
             ScrollView {
                 VStack(alignment: .leading, spacing: 23) {
                     Text(listing.title).font(.system(size: 30, weight: .medium))
@@ -113,20 +113,20 @@ struct OrderDetailView: View {
     @State private var profile: OrderSelection?
     private var order: MarketOrder? { store.snapshot.orders.first { $0.id == orderID } }
     var body: some View {
-        NavigationStack {
+        MarketNavigationContainer {
             ScrollView {
                 if let order { detail(order) }
                 else { MarketEmptyState(symbol: "shippingbox.fill", title: "Order unavailable", description: "This order is not available for this profile.") }
             }.background(MarketTheme.paper).foregroundStyle(MarketTheme.ink).navigationTitle("Order").marketInlineTitle()
-                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
-                .sheet(isPresented: $arrangingDelivery) { if let order { OrderArrangeDeliveryView(order: order).marketSheetScope() } }
-                .sheet(isPresented: $showingChat) { if let order { let peer = order.seller == store.snapshot.publicKey ? order.buyer : order.seller; ConversationView(conversation: store.snapshot.conversations.first(where: { $0.id == peer }) ?? MarketConversation(id: peer, name: "Conversation", messages: []), context: .order(order.id), threadKey: "order:" + order.id).marketSheetScope() } }
-                .sheet(isPresented: $requestingPayment) { if let order { OrderPaymentRequestView(order: order).marketSheetScope() } }
+                .toolbar { ToolbarItem(placement: .confirmationAction) { MarketDoneButton { dismiss() } } }
+                .marketPage(isPresented: $arrangingDelivery) { if let order { OrderArrangeDeliveryView(order: order).marketSheetScope() } }
+                .marketPage(isPresented: $showingChat) { if let order { let peer = order.seller == store.snapshot.publicKey ? order.buyer : order.seller; ConversationView(conversation: store.snapshot.conversations.first(where: { $0.id == peer }) ?? MarketConversation(id: peer, name: "Conversation", messages: []), context: .order(order.id), threadKey: "order:" + order.id).marketSheetScope() } }
+                .marketPage(isPresented: $requestingPayment) { if let order { OrderPaymentRequestView(order: order).marketSheetScope() } }
                 .confirmationDialog("Confirm payment received?", isPresented: $confirmingPayment, titleVisibility: .visible) { Button("Confirm received") { if let order, let payment = order.payment { store.updateOrder(order.id, patch: ["payment": ["mint": payment.mint, "amount": payment.amount, "unit": payment.unit, "status": "received"]]) } }; Button("Cancel", role: .cancel) {} } message: { Text("Confirm after checking your wallet. This records your confirmation for the buyer.") }
-                .sheet(isPresented: $paying) { NativeOrderPaymentView(orderID: orderID).marketSheetScope() }
-                .sheet(item: $relatedOrder) { value in OrderDetailView(orderID: value.id).marketSheetScope() }
-                .sheet(isPresented: $editingRoute) { if let order { OrderRouteEditor(order: order).marketSheetScope() } }
-                .sheet(item: $profile) { value in AuthorProfileView(author: value.id).marketSheetScope() }
+                .marketPage(isPresented: $paying) { NativeOrderPaymentView(orderID: orderID).marketSheetScope() }
+                .marketPage(item: $relatedOrder) { value in OrderDetailView(orderID: value.id).marketSheetScope() }
+                .marketPage(isPresented: $editingRoute) { if let order { OrderRouteEditor(order: order).marketSheetScope() } }
+                .marketPage(item: $profile) { value in AuthorProfileView(author: value.id).marketSheetScope() }
                 .confirmationDialog("Cancel this order?", isPresented: $cancelling, titleVisibility: .visible) {
                     Button("Cancel order", role: .destructive) { store.updateOrder(orderID, patch: ["status": "cancelled"]) }
                     Button("Keep order", role: .cancel) { }

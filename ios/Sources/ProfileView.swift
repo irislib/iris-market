@@ -48,12 +48,12 @@ struct ProfileView: View {
                 }.padding(20).background(MarketTheme.surface, in: RoundedRectangle(cornerRadius: 23))
                 if store.demo { Label("Preview mode uses sample listings and stays offline.", systemImage: "eye").font(.system(size: 12)).foregroundStyle(MarketTheme.muted) }
             }.padding(23)
-        }.sheet(isPresented: $wallet) { WalletView().marketSheetScope() }
-            .sheet(isPresented: $transport) { CourierWorkspaceView().marketSheetScope() }
+        }.marketPage(isPresented: $wallet) { WalletView().marketSheetScope() }
+            .marketPage(isPresented: $transport) { CourierWorkspaceView().marketSheetScope() }
             .sheet(isPresented: $signIn) { if store.snapshot.profileNameRequired == true { ProfileNameEntryView() } else { AccountSignInView().marketSheetScope() } }
-            .sheet(isPresented: $aiSettings) { AISettingsView(settings: store.snapshot.settings).marketSheetScope() }
-            .sheet(isPresented: $publicProfile) { AuthorProfileView(author: store.snapshot.publicKey).marketSheetScope() }
-            .sheet(isPresented: $connectionSettings) { ConnectionSettingsView(settings: store.snapshot.settings).marketSheetScope() }
+            .marketPage(isPresented: $aiSettings) { AISettingsView(settings: store.snapshot.settings).marketSheetScope() }
+            .marketPage(isPresented: $publicProfile) { AuthorProfileView(author: store.snapshot.publicKey).marketSheetScope() }
+            .marketPage(isPresented: $connectionSettings) { ConnectionSettingsView(settings: store.snapshot.settings).marketSheetScope() }
     }
     private func profileRow(_ title: String, subtitle: String? = nil, symbol: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
@@ -89,7 +89,7 @@ struct AISettingsView: View {
         return !settings.ai.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
     var body: some View {
-        NavigationStack {
+        MarketNavigationContainer {
             Form {
                 Section {
                     Toggle("AI search", isOn: $settings.ai.enabled).accessibilityIdentifier("enableAI")
@@ -141,7 +141,7 @@ struct AISettingsView: View {
                     MarketInlineError()
                 }
             }.scrollContentBackground(.hidden).background(MarketTheme.paper).marketKeyboardDismissal().navigationTitle("AI search").marketInlineTitle()
-                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { save(); dismiss() } } }
+                .toolbar { ToolbarItem(placement: .confirmationAction) { MarketDoneButton { save(); dismiss() } } }
                 .onAppear {
                     owner = store.snapshot.publicKey; aiIntentEpoch = store.aiIntentEpoch; store.aiPreferencesEditing = true; store.refreshAIAvailability(); store.clearAITest()
                     presetID = NativeAIProvider.matching(settings.ai).id
@@ -193,7 +193,7 @@ struct ConnectionSettingsView: View {
     @State var settings: MarketSettings
     @State private var servers = ""
     var body: some View {
-        NavigationStack {
+        MarketNavigationContainer {
             Form {
                 Section("Your profile") {
                     LabeledContent("Identity", value: store.demo ? "Preview profile" : "Stored securely on this device")
@@ -224,7 +224,7 @@ struct ConnectionSettingsView: View {
                     }
                 }
             }.scrollContentBackground(.hidden).background(MarketTheme.paper).navigationTitle("Connections").marketInlineTitle()
-                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+                .toolbar { ToolbarItem(placement: .confirmationAction) { MarketDoneButton { dismiss() } } }
                 .onAppear { servers = settings.relays.joined(separator: "\n") }
         }
     }

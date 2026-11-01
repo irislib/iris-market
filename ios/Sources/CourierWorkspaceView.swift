@@ -28,7 +28,7 @@ struct CourierWorkspaceView: View {
         }.sorted { $0.createdAt > $1.createdAt }
     }
     var body: some View {
-        NavigationStack {
+        MarketNavigationContainer {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     Picker("Transport workspace", selection: $section) {
@@ -41,15 +41,19 @@ struct CourierWorkspaceView: View {
                     } else {
                         Picker("Service type", selection: $typeValue) { ForEach(NativeTransportType.allCases) { Text($0.label).tag($0.rawValue) } }.pickerStyle(.segmented).accessibilityIdentifier("transportType")
                         HStack {
-                            TextField("City or area", text: $area).submitLabel(.search).onSubmit { appliedArea = area.trimmingCharacters(in: .whitespacesAndNewlines) }
+                            TextField("City or area", text: $area).textFieldStyle(.plain).submitLabel(.search).onSubmit { appliedArea = area.trimmingCharacters(in: .whitespacesAndNewlines) }
                             Button("Apply") { appliedArea = area.trimmingCharacters(in: .whitespacesAndNewlines) }
                         }.padding(14).background(MarketTheme.surface, in: RoundedRectangle(cornerRadius: 15))
+                        PlaceSearchButton(value: MarketDeliveryPlace(label: area, address: area)) { place in
+                            area = place.label
+                            appliedArea = place.label
+                        }
                         if section == "service" {
                             Button { chooseServiceAreas = true } label: { Label(serviceAreas == nil ? "Choose service areas" : "Edit service areas", systemImage: "map.fill") }.disabled(store.demo).accessibilityIdentifier("chooseTransportServiceAreas")
                             Button { compose = true } label: { Label("Announce your service", systemImage: "plus.circle.fill") }.buttonStyle(PrimaryButton()).accessibilityIdentifier("announceTransport")
                             Text("Create a public listing with your service area, rates and availability. Exact routes stay in private orders.").font(.footnote).foregroundStyle(MarketTheme.muted)
                         } else { Text("Public requests · agree on the route and price privately before taking a job.").font(.footnote).foregroundStyle(MarketTheme.muted) }
-                        if listings.isEmpty { MarketEmptyState(symbol: "mappin.and.ellipse", title: section == "service" ? "No service listings" : "No matching requests", description: section == "service" ? "Tell people where and when you can help." : "Try another area or service type. Pull down to refresh.") }
+                        if listings.isEmpty { MarketEmptyState(symbol: "mappin.and.ellipse", title: section == "service" ? "No service listings" : "No matching requests", description: section == "service" ? "Tell people where and when you can help." : "Try another area or service type.") }
                         ForEach(listings) { listing in
                             Button { selected = listing } label: {
                                 VStack(alignment: .leading, spacing: 10) {
@@ -63,7 +67,7 @@ struct CourierWorkspaceView: View {
                     if store.demo { Text("Preview stays offline. Sample jobs are not real work.").font(.footnote).foregroundStyle(MarketTheme.muted) }
                 }.padding(23)
             }.background(MarketTheme.paper).foregroundStyle(MarketTheme.ink).navigationTitle("Transport").marketInlineTitle()
-                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+                .toolbar { ToolbarItem(placement: .confirmationAction) { MarketDoneButton { dismiss() } } }
                 .refreshable { store.command(["type": "refresh"]) }
                 .onAppear {
                     if previousFilter == nil { previousFilter = (store.snapshot.query, store.snapshot.side, store.snapshot.aiSearch) }
@@ -75,11 +79,11 @@ struct CourierWorkspaceView: View {
                 .onDisappear {
                     if let previousFilter { store.filter(query: previousFilter.query, side: previousFilter.side, aiSearch: previousFilter.ai) }
                 }
-                .sheet(item: $selected) { listing in ListingDetailView(listing: listing, onContact: { inbox = true }, onOrder: { section = "jobs" }).marketSheetScope() }
-                .sheet(item: $order) { value in OrderDetailView(orderID: value.id).marketSheetScope() }
-                .sheet(isPresented: $chooseServiceAreas) { ServiceAreaEditor(areas: $serviceAreas).marketSheetScope() }
-                .sheet(isPresented: $compose) { NewListingView(transport: type, area: area.trimmingCharacters(in: .whitespacesAndNewlines), serviceAreas: serviceAreas).marketListingEditorSheetScope() }
-                .sheet(isPresented: $inbox) { NavigationStack { InboxView().navigationTitle("Inbox").toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { inbox = false } } } }.marketSheetScope() }
+                .marketPage(item: $selected) { listing in ListingDetailView(listing: listing, onContact: { inbox = true }, onOrder: { section = "jobs" }).marketSheetScope() }
+                .marketPage(item: $order) { value in OrderDetailView(orderID: value.id).marketSheetScope() }
+                .marketPage(isPresented: $chooseServiceAreas) { ServiceAreaEditor(areas: $serviceAreas).marketSheetScope() }
+                .marketPage(isPresented: $compose) { NewListingView(transport: type, area: area.trimmingCharacters(in: .whitespacesAndNewlines), serviceAreas: serviceAreas).marketListingEditorSheetScope() }
+                .marketPage(isPresented: $inbox) { MarketNavigationContainer { InboxView().navigationTitle("Inbox").toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { inbox = false } } } }.marketSheetScope() }
         }
     }
     private func jobCard(_ job: MarketOrder) -> some View {

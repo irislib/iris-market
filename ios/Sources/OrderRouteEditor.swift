@@ -17,7 +17,7 @@ struct OrderRouteEditor: View {
         _eta = State(initialValue: order.shipment.eta.map { Date(timeIntervalSince1970: Double($0)) } ?? Date())
     }
     var body: some View {
-        NavigationStack {
+        MarketNavigationContainer {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     ForEach($stops) { $stop in
@@ -54,6 +54,10 @@ private struct StopEditor: View {
     let remove: () -> Void
     let moveUp: () -> Void
     @State private var showPosition = false
+    private var mapPlace: MarketDeliveryPlace {
+        let point: [Double]? = Double(stop.longitude).flatMap { longitude in Double(stop.latitude).map { [longitude, $0] } }
+        return MarketDeliveryPlace(label: stop.label.isEmpty ? "Meeting point" : stop.label, address: stop.address, coordinates: point)
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 15) {
             HStack {
@@ -63,6 +67,12 @@ private struct StopEditor: View {
             }
             TextField("Stop name", text: $stop.label)
             TextField("Address", text: $stop.address, axis: .vertical).lineLimit(1...3)
+            PlaceSearchButton(value: mapPlace) { place in
+                stop.address = place.address
+                if stop.label.isEmpty { stop.label = place.label }
+                if let point = place.coordinates { stop.longitude = String(point[0]); stop.latitude = String(point[1]); showPosition = true }
+            }
+
             DisclosureGroup("Map position", isExpanded: $showPosition) {
                 VStack(alignment: .leading, spacing: 12) {
                     TextField("Latitude", text: $stop.latitude).marketNoAutocapitalization().autocorrectionDisabled()

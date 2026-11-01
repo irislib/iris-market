@@ -49,6 +49,19 @@ def external_uri_allowed(uri):
     return bool(re.fullmatch(r'lightning:ln(?:bc|tb|bcrt)[0-9]*[munp]?1[023456789acdefghjklmnpqrstuvwxyz]{90,4096}', uri, re.IGNORECASE))
 
 
+def navigate_history(view, direction):
+    """Consume a desktop history gesture, including at either end of history."""
+    if direction == 'back':
+        if view.can_go_back():
+            view.go_back()
+        return True
+    if direction == 'forward':
+        if view.can_go_forward():
+            view.go_forward()
+        return True
+    return False
+
+
 class AssetHandler(http.server.BaseHTTPRequestHandler):
     def __init__(self, *args, directory, **kwargs):
         self.root = Path(directory).resolve()
@@ -118,7 +131,7 @@ def main():
     import gi
     gi.require_version('Gtk', '3.0')
     gi.require_version('WebKit2', '4.1')
-    from gi.repository import Gtk, WebKit2, GLib
+    from gi.repository import Gtk, WebKit2, GLib, Gdk
     GLib.set_prgname('iris-market')
     GLib.set_application_name('Iris Market')
     try:
@@ -148,6 +161,20 @@ def main():
     window.set_icon_name('iris-market')
     window.add(view)
     window.connect('destroy', Gtk.main_quit)
+
+    def history_key(_window, event):
+        modifiers = event.state & Gtk.accelerator_get_default_mod_mask()
+        if modifiers != Gdk.ModifierType.MOD1_MASK:
+            return False
+        direction = {Gdk.KEY_Left: 'back', Gdk.KEY_Right: 'forward'}.get(event.keyval)
+        return navigate_history(view, direction)
+
+    def history_button(_view, event):
+        return navigate_history(view, {8: 'back', 9: 'forward'}.get(event.button))
+
+    # Match browser/PWA navigation without adding a second toolbar to the app.
+    window.connect('key-press-event', history_key)
+    view.connect('button-press-event', history_button)
 
     def policy(_view, decision, kind):
         if kind not in (WebKit2.PolicyDecisionType.NAVIGATION_ACTION, WebKit2.PolicyDecisionType.NEW_WINDOW_ACTION):

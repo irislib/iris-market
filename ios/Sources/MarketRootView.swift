@@ -4,6 +4,9 @@ struct MarketRootView: View {
     @EnvironmentObject private var store: MarketStore
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("market.appearance") private var appearance = MarketAppearance.system.rawValue
+    #if os(macOS)
+    @StateObject private var desktopNavigation = MarketDesktopNavigation()
+    #endif
     @State private var tab = MarketTab.browse
     @State private var compose = false
     @State private var transport = false
@@ -12,14 +15,21 @@ struct MarketRootView: View {
     @State private var selected: MarketListing?
     @State private var photoFilter: Bool?
     enum MarketTab: String, CaseIterable {
-        case browse = "Explore", saved = "Saved", orders = "Orders", inbox = "Inbox", profile = "Profile", settings = "Settings"
-        var symbol: String { switch self { case .browse: return "square.grid.2x2.fill"; case .saved: return "heart.fill"; case .orders: return "shippingbox.fill"; case .inbox: return "bubble.left.and.bubble.right.fill"; case .profile: return "person.crop.circle.fill"; case .settings: return "gearshape.fill" } }
+        case browse = "Explore", saved = "Saved", orders = "Orders", inbox = "Inbox", profile = "Profile", settings = "Settings", wallet = "Wallet", transport = "Transport"
+        var symbol: String { switch self { case .browse: return "square.grid.2x2.fill"; case .saved: return "heart.fill"; case .orders: return "shippingbox.fill"; case .inbox: return "bubble.left.and.bubble.right.fill"; case .profile: return "person.crop.circle.fill"; case .settings: return "gearshape.fill"; case .wallet: return "wallet.pass.fill"; case .transport: return "arrow.triangle.swap" } }
     }
     private var hasProfile: Bool { store.ready && !store.demo && store.snapshot.profileNameRequired != true && !store.snapshot.publicKey.isEmpty }
     private var ownPerson: MarketPerson {
         store.snapshot.people[store.snapshot.publicKey] ?? MarketPerson(author: store.snapshot.publicKey, name: NativeProfileNames.name(seed: store.snapshot.publicKey), pictureUrl: nil, connection: MarketPerson.unnamed(store.snapshot.publicKey).connection)
     }
     var body: some View {
+        #if os(macOS)
+        desktopBody
+        #else
+        mobileBody
+        #endif
+    }
+    private var mobileBody: some View {
         VStack(spacing: 0) {
             HStack(spacing: 9) {
                 IrisMark().frame(width: 34, height: 34)
@@ -59,6 +69,8 @@ struct MarketRootView: View {
                 case .inbox: InboxView()
                 case .profile: AuthorProfileView(author: store.snapshot.publicKey, onClose: { tab = .browse })
                 case .settings: ProfileView()
+                case .wallet: WalletView()
+                case .transport: CourierWorkspaceView()
                 }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
             VStack(spacing: 0) {
@@ -97,8 +109,80 @@ struct MarketRootView: View {
             .onChange(of: store.activeSheetCount) { _ in openPushRoute() }
             .alert("Unable to complete action", isPresented: Binding(get: { store.alert != nil && store.activeSheetCount == 0 }, set: { if !$0 { store.alert = nil } })) { Button("OK", role: .cancel) { store.alert = nil } } message: { Text(store.alert ?? "") }
     }
+    #if os(macOS)
+    private var desktopBody: some View {
+        NavigationSplitView {
+            VStack(alignment: .leading, spacing: 22) {
+                HStack(spacing: 9) {
+                    IrisMark().frame(width: 28, height: 28)
+                    Text("iris market").font(.system(size: 21, weight: .semibold)).tracking(-0.7)
+                }.padding(.top, 16)
+                Button {
+                    desktopNavigation.reset()
+                    if store.snapshot.profileNameRequired == true && !store.demo { store.requestProfileSetup() }
+                    else { compose = true }
+                } label: {
+                    Label("Post a listing", systemImage: "plus").frame(maxWidth: .infinity).padding(.vertical, 12)
+                        .background(MarketTheme.action, in: RoundedRectangle(cornerRadius: 12)).foregroundStyle(MarketTheme.onAction)
+                }.accessibilityIdentifier("createListing")
+                VStack(spacing: 5) {
+                    ForEach([MarketTab.browse, .saved, .orders, .inbox, .wallet, .transport], id: \.self) { item in desktopTab(item) }
+                }
+                Spacer()
+                VStack(spacing: 5) {
+                    if hasProfile { desktopTab(.profile) }
+                    else if !store.demo { Button("Sign in") { store.requestProfileSetup() }.padding(12) }
+                    desktopTab(.settings)
+                }
+                if store.demo { Text("Preview").font(.caption).foregroundStyle(MarketTheme.muted) }
+            }.padding(16).background(MarketTheme.surface).navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 260)
+        } detail: {
+            NavigationStack {
+                Group {
+                    switch tab {
+                    case .browse: BrowseView(selected: $selected, photoFilter: $photoFilter)
+                    case .saved: SavedView(selected: $selected)
+                    case .orders: OrdersView()
+                    case .inbox: InboxView()
+                    case .profile: AuthorProfileView(author: store.snapshot.publicKey)
+                    case .settings: ProfileView()
+                    case .wallet: WalletView()
+                    case .transport: CourierWorkspaceView()
+                    }
+                }.frame(maxWidth: .infinity, maxHeight: .infinity).background(MarketTheme.paper)
+                    .navigationTitle(tab.rawValue)
+                    .marketPage(isPresented: $compose) { NewListingView().marketListingEditorSheetScope() }
+                    .marketPage(item: $selected) { listing in ListingDetailView(listing: listing, onContact: { desktopNavigation.reset(); tab = .inbox }, onOrder: { desktopNavigation.reset(); tab = .orders }) }
+            }.id(tab)
+        }.navigationSplitViewStyle(.balanced).environmentObject(desktopNavigation)
+            .sheet(isPresented: Binding(get: { store.profileSetupRequested }, set: { if !$0 { store.dismissProfileSetup() } })) { ProfileNameEntryView().environmentObject(store).marketSheetFrame() }
+            .alert("Unable to complete action", isPresented: Binding(get: { store.alert != nil }, set: { if !$0 { store.alert = nil } })) { Button("OK", role: .cancel) { store.alert = nil } } message: { Text(store.alert ?? "") }
+            .onChange(of: tab) { _ in selected = nil; compose = false }
+            .onAppear { openPushRoute() }
+            .onChange(of: store.pushRoute) { _ in openPushRoute() }
+    }
+    private func desktopTab(_ item: MarketTab) -> some View {
+        Button {
+            desktopNavigation.reset()
+            store.consumePushRoute()
+            guard tab != item else { return }
+            tab = item
+            if item == .saved { store.filter(query: "", side: "all") }
+            else if item == .browse { store.filter(query: "", side: "offer") }
+        } label: {
+            Label(item.rawValue, systemImage: item.symbol).font(.system(size: 14, weight: tab == item ? .semibold : .regular))
+                .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).padding(.vertical, 11)
+                .foregroundStyle(tab == item ? MarketTheme.ink : MarketTheme.muted)
+                .background(tab == item ? MarketTheme.mint : .clear, in: RoundedRectangle(cornerRadius: 10))
+                .contentShape(Rectangle())
+        }.accessibilityIdentifier("tab\(item.rawValue)").accessibilityAddTraits(tab == item ? .isSelected : [])
+    }
+    #endif
     private func openPushRoute() {
         guard scenePhase == .active, store.ready, !store.demo, store.snapshot.profileNameRequired != true, let route = store.pushRoute else { return }
+        #if os(macOS)
+        desktopNavigation.reset()
+        #endif
         compose = false; transport = false; wallet = false; aiSettings = false; selected = nil
         if let id = route.orderID {
             tab = .orders
@@ -118,7 +202,6 @@ struct BrowseView: View {
     @State private var aiSettings = false
     @State private var filtersPresented = false
     @Binding var photoFilter: Bool?
-    private let columns = [GridItem(.flexible(), spacing: 14), GridItem(.flexible(), spacing: 14)]
     private var curationActive: Bool { store.snapshot.aiSearch && store.snapshot.settings.ai.enabled && !store.snapshot.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     private var searching: Bool { store.localAIProgress != nil || store.snapshot.searchDiscovery?.loading == true || curationActive && store.busy }
     private var matchCount: Int { store.snapshot.listings.filter { $0.relevance?.show == true }.count }
@@ -140,7 +223,7 @@ struct BrowseView: View {
             VStack(alignment: .leading, spacing: 22) {
                 HStack(spacing: 10) {
                     Image(systemName: "magnifyingglass").font(.system(size: 17)).foregroundStyle(MarketTheme.muted)
-                    TextField("Search listings", text: $query, prompt: Text("Search listings").foregroundColor(MarketTheme.muted)).font(.system(size: 14)).submitLabel(.search).accessibilityIdentifier("marketSearch")
+                    TextField("Search listings", text: $query, prompt: Text("Search listings").foregroundColor(MarketTheme.muted)).textFieldStyle(.plain).font(.system(size: 14)).submitLabel(.search).accessibilityIdentifier("marketSearch")
                         .onSubmit { submitSearch() }
                     Group {
                         if store.busy || searching { ProgressView().controlSize(.small) }
@@ -206,7 +289,7 @@ struct BrowseView: View {
                 } else if visibleListings.isEmpty {
                     MarketEmptyState(symbol: query.isEmpty ? "square.grid.2x2" : "magnifyingglass", title: query.isEmpty ? "No listings" : (store.searchPaused ? "Search paused" : unfinishedSearch ? "No matches yet" : "No results"), description: query.isEmpty ? "Sell something or post what you want to buy." : unfinishedSearch ? "Continue searching or try another search." : "Try another search or post what you want to buy.")
                 } else {
-                    LazyVGrid(columns: columns, alignment: .leading, spacing: 21) {
+                    LazyVGrid(columns: marketListingColumns, alignment: .leading, spacing: 21) {
                         ForEach(visibleListings) { listing in ListingCard(listing: listing, open: { selected = listing }, save: { store.save(listing) }) }
                     }
                 }
@@ -222,7 +305,7 @@ struct BrowseView: View {
             .onChange(of: store.snapshot.query) { _ in showAllMatches = false }
             .onChange(of: store.snapshot.side) { _ in showAllMatches = false }
             .refreshable { store.command(["type": "refresh"]) }
-            .sheet(isPresented: $aiSettings) { AISettingsView(settings: store.snapshot.settings).marketSheetScope() }
+            .marketPage(isPresented: $aiSettings) { AISettingsView(settings: store.snapshot.settings).marketSheetScope() }
             .sheet(isPresented: $filtersPresented) {
                 ListingFiltersView(hasPhotos: Binding(get: { wantsPhotos }, set: { photoFilter = $0 }), canReset: photoFilter != nil, reset: { photoFilter = nil })
                     .modifier(MarketSheetScope())
@@ -321,7 +404,7 @@ struct SavedView: View {
                 Text("Saved listings").font(.system(size: 30, weight: .medium)).tracking(-1).foregroundStyle(MarketTheme.ink)
                 let saved = store.snapshot.savedListings ?? store.snapshot.listings.filter(\.saved)
                 if saved.isEmpty { MarketEmptyState(symbol: "heart", title: "No saved listings", description: "Save a listing to find it here.") }
-                else { LazyVGrid(columns: [GridItem(.flexible(), spacing: 14), GridItem(.flexible(), spacing: 14)], spacing: 22) { ForEach(saved) { listing in ListingCard(listing: listing, open: { selected = listing }, save: { store.save(listing) }) } } }
+                else { LazyVGrid(columns: marketListingColumns, spacing: 22) { ForEach(saved) { listing in ListingCard(listing: listing, open: { selected = listing }, save: { store.save(listing) }) } } }
             }.padding(23)
         }
     }

@@ -9,12 +9,12 @@ struct ServiceAreaEditor: View {
     @State private var failed = false
     @State private var retry = 0
     var body: some View {
-        NavigationStack {
+        MarketNavigationContainer {
             ZStack {
                 ServiceAreaContent(areas: $areas, retry: retry, onFailure: { failed = true })
                 if failed { MarketMapUnavailable { failed = false; retry += 1 } }
             }.navigationTitle("Service areas").marketInlineTitle()
-                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+                .toolbar { ToolbarItem(placement: .confirmationAction) { MarketDoneButton { dismiss() } } }
         }
     }
 }

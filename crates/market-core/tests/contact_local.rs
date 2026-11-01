@@ -310,7 +310,8 @@ fn verified_async_discovery_wakes_an_offline_queued_contact_message() {
     )
     .unwrap();
     let invitation = peer.public_contact_event().unwrap();
-    let mut local = Messaging::open(b.path(), Keys::generate()).unwrap();
+    let local_key = Keys::generate();
+    let mut local = Messaging::open(b.path(), local_key.clone()).unwrap();
     local.open_contact(&owner.public_key().to_hex()).unwrap();
     local
         .send(
@@ -319,8 +320,13 @@ fn verified_async_discovery_wakes_an_offline_queued_contact_message() {
         )
         .unwrap();
     assert!(local.pending_outbound().is_empty());
+    drop(local);
+    let mut local = Messaging::open(b.path(), local_key.clone()).unwrap();
+    assert_eq!(local.conversations()[0].messages[0].delivery, "pending");
     local.receive(&proof).unwrap();
     local.receive(&invitation).unwrap();
+    drop(local);
+    let mut local = Messaging::open(b.path(), local_key).unwrap();
     local.retry().unwrap();
     assert!(!local.pending_outbound().is_empty());
     for _ in 0..8 {

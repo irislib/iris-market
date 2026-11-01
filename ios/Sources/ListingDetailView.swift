@@ -12,7 +12,7 @@ struct ListingDetailView: View {
     @State private var orderRequested = false
     private var current: MarketListing { store.snapshot.listings.first(where: { $0.id == listing.id }) ?? listing }
     var body: some View {
-        NavigationStack {
+        MarketNavigationContainer {
             ScrollView {
                 VStack(alignment: .leading, spacing: 23) {
                     Group {
@@ -52,10 +52,10 @@ struct ListingDetailView: View {
                     }
                 }.padding(23)
             }.background(MarketTheme.paper)
-                .sheet(isPresented: $authorProfile) { AuthorProfileView(author: current.author).marketSheetScope() }.navigationTitle("Listing").marketInlineTitle()
-                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button { store.save(current) } label: { Image(systemName: current.saved ? "heart.fill" : "heart") }.accessibilityLabel("Save listing") } }
-                .sheet(isPresented: $invitation) { InvitationView().marketSheetScope() }
-                .sheet(isPresented: $reviewOrder, onDismiss: { if orderRequested { dismiss(); onOrder?() } }) { OrderReviewView(listing: current) { orderRequested = true }.marketSheetScope() }
+                .marketPage(isPresented: $authorProfile) { AuthorProfileView(author: current.author).marketSheetScope() }.navigationTitle("Listing").marketInlineTitle()
+                .toolbar { ToolbarItem(placement: .cancellationAction) { MarketDoneButton { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button { store.save(current) } label: { Image(systemName: current.saved ? "heart.fill" : "heart") }.accessibilityLabel("Save listing") } }
+                .marketPage(isPresented: $invitation) { InvitationView().marketSheetScope() }
+                .marketPage(isPresented: $reviewOrder, onDismiss: { if orderRequested { dismiss(); onOrder?() } }) { OrderReviewView(listing: current) { orderRequested = true }.marketSheetScope() }
         }
     }
 }
@@ -87,7 +87,7 @@ struct NewListingView: View {
     @FocusState private var entryFocused: Bool
     private let categories = ["Electronics", "Home", "Clothing", "Books", "Transport", "Services", "Garden", "Music", "Other"]
     var body: some View {
-        NavigationStack {
+        MarketNavigationContainer {
             Form {
                 Section {
                     Picker("Listing type", selection: $side) { Text("Selling").tag("offer"); Text("Buying").tag("request") }.pickerStyle(.segmented).accessibilityIdentifier("listingSide")
@@ -105,6 +105,7 @@ struct NewListingView: View {
                     HStack { TextField("Price or budget", text: $price, prompt: Text("Price or budget").foregroundColor(MarketTheme.muted)).labelsHidden().marketDecimalKeyboard().accessibilityIdentifier("listingPrice"); Picker("Currency", selection: $currency) { Text("EUR").tag("EUR"); Text("USD").tag("USD"); Text("GBP").tag("GBP"); Text("BTC").tag("BTC") }.labelsHidden().frame(width: 90) }
                     Picker("Expires in", selection: $expiry) { ForEach(NativeListingExpiry.presets, id: \.self) { Text($0.label).tag($0) } }.accessibilityIdentifier("listingExpiry")
                     TextField(transport == nil ? "Town, area, or remote" : "Pickup area", text: $location, prompt: Text(transport == nil ? "Town, area, or remote" : "Pickup area").foregroundColor(MarketTheme.muted)).labelsHidden().accessibilityIdentifier("listingLocation")
+                    PlaceSearchButton(value: MarketDeliveryPlace(label: location, address: location)) { place in location = place.label }
                     if transport != nil && category == "Transport" {
                         Button { chooseServiceAreas = true } label: { Label(serviceAreas == nil ? "Choose pickup and destination areas" : "Edit service areas", systemImage: "map.fill") }.disabled(store.demo).accessibilityIdentifier("transportServiceAreas")
                         Text("Search a place, drop a pin, and choose your range. Boundaries become public only when you publish.").font(.footnote).foregroundStyle(MarketTheme.muted).fixedSize(horizontal: false, vertical: true)
@@ -125,17 +126,17 @@ struct NewListingView: View {
                 }
             }.formStyle(.grouped).scrollContentBackground(.hidden).background(MarketTheme.paper).marketKeyboardDismissal().navigationTitle("New listing").marketInlineTitle()
                 .toolbar {
-                    ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                    ToolbarItem(placement: .cancellationAction) { MarketDoneButton(label: "Cancel") { dismiss() } }
                     #if !os(macOS)
                     ToolbarItemGroup(placement: .keyboard) { Spacer(); Button("Done") { entryFocused = false }.accessibilityIdentifier("dismissKeyboard") }
                     #endif
                 }
-            .sheet(isPresented: $chooseServiceAreas) { ServiceAreaEditor(areas: $serviceAreas).marketSheetScope() }
-            .sheet(isPresented: $reviewPublish) { publicationReview.marketListingEditorSheetScope() }
+            .marketPage(isPresented: $chooseServiceAreas) { ServiceAreaEditor(areas: $serviceAreas).marketSheetScope() }
+            .marketPage(isPresented: $reviewPublish) { publicationReview.marketListingEditorSheetScope() }
         }
     }
     private var publicationReview: some View {
-        NavigationStack {
+        MarketNavigationContainer {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     Text(title).font(.title2.weight(.semibold))
@@ -175,7 +176,7 @@ extension View {
     /// Apply editor dimensions at the sheet boundary, without the default narrow sheet frame.
     @ViewBuilder func marketListingEditorSheetScope() -> some View {
         #if os(macOS)
-        frame(width: 680, height: 720).modifier(MarketSheetScope())
+        frame(maxWidth: 800, maxHeight: .infinity).frame(maxWidth: .infinity)
         #else
         marketSheetScope()
         #endif

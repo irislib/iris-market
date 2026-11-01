@@ -31,3 +31,15 @@ test('map opens lazily, choosing its center is explicit, and destroy closes the 
  assert.equal(creates,0);const details=all(ui.element).find(n=>n.tag==='details');details.open=true;await details.ontoggle();assert.equal(creates,1);assert.equal(ui.read().coordinates,undefined);
  find(ui,'Use map center').onclick();assert.deepEqual(ui.read().coordinates,[24,60]);ui.destroy();assert.equal(closed,1);
 });
+test('place selected while the native map loads is centered and retained, and an older suggestion cannot replace it',async()=>{
+ const drafts=[],jumps=[],listeners=new Map(),canvas=new Element('canvas');let attach;
+ const raw={on(name,fn){listeners.set(name,fn);},off(name){listeners.delete(name);},getCanvas:()=>canvas,getCenter:()=>({lng:0,lat:0}),jumpTo(value){jumps.push(value);}};
+ const ui=createDeliveryPlaceInput({label:'Meeting point',onDraftChange:value=>drafts.push(value),searchPlaces:async query=>[{name:query,context:'Finland',lat:query==='Helsinki'?60.17:61.5,lng:query==='Helsinki'?24.94:23.76}],createMap:(_container,options)=>new Promise(resolve=>{attach=()=>{const overlay=options.createOverlay(raw);resolve({resize(){},setDark:async()=>{},destroy:async()=>overlay.destroy()});};})});
+ const loading=ui.showMap();assert.equal(all(ui.element).find(n=>n.tag==='details').open,true);
+ const input=find(ui,'Meeting point address or meeting point');input.value='Helsinki';input.oninput();await tick();const old=find(ui,'Helsinki · Finland');old.onclick();
+ assert.deepEqual(drafts.at(-1),{label:'Helsinki',address:'Helsinki, Finland',coordinates:[24.94,60.17]});
+ attach();await loading;assert.deepEqual(jumps.at(-1),{center:[24.94,60.17],zoom:15});
+ input.value='Tampere';input.oninput();await tick();find(ui,'Tampere · Finland').onclick();old.onclick();
+ assert.deepEqual(ui.read(),{label:'Tampere',address:'Tampere, Finland',coordinates:[23.76,61.5]});assert.deepEqual(jumps.at(-1),{center:[23.76,61.5],zoom:15});
+ ui.setValue(ui.read());assert.deepEqual(ui.read().coordinates,[23.76,61.5]);ui.destroy();
+});

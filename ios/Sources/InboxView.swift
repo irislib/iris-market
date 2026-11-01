@@ -62,8 +62,8 @@ struct InboxView: View {
                 }
             }.padding(23)
         }.foregroundStyle(MarketTheme.ink)
-            .sheet(isPresented: $showInvitation) { InvitationView().marketSheetScope() }
-            .sheet(item: $selected) { thread in ConversationView(conversation: thread.conversation, context: thread.context, threadKey: thread.key).id(store.snapshot.publicKey + "|" + thread.id).marketSheetScope() }
+            .marketPage(isPresented: $showInvitation) { InvitationView().marketSheetScope() }
+            .marketPage(item: $selected) { thread in ConversationView(conversation: thread.conversation, context: thread.context, threadKey: thread.key).id(store.snapshot.publicKey + "|" + thread.id).marketSheetScope() }
             .onAppear { openPushConversation() }
             .onChange(of: store.pushRoute) { _ in openPushConversation() }
             .onChange(of: store.snapshot.revision) { _ in openPushConversation() }
@@ -87,7 +87,7 @@ struct InvitationView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var input = ""
     var body: some View {
-        NavigationStack {
+        MarketNavigationContainer {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
                     Text("Exchange a private invitation with the person you want to talk to.").font(.system(size: 15)).lineSpacing(4).foregroundStyle(MarketTheme.muted)
@@ -110,7 +110,7 @@ struct InvitationView: View {
                     if store.demo { Text("Invitations are unavailable in preview mode.").font(.system(size: 12)).foregroundStyle(MarketTheme.muted) }
                 }.padding(25)
             }.background(MarketTheme.paper).navigationTitle("Private invitation").marketInlineTitle()
-                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+                .toolbar { ToolbarItem(placement: .confirmationAction) { MarketDoneButton { dismiss() } } }
         }
     }
 }
@@ -149,7 +149,7 @@ struct ConversationView: View {
     private var visibleMessages: [MarketMessage] { threadKey == "*" ? current.messages : current.messages.filter { $0.threadKey == threadKey } }
     private var incomingIDs: [String] { visibleMessages.filter { !$0.mine && viewportIncoming.contains($0.id) }.map(\.id) }
     var body: some View {
-        NavigationStack {
+        MarketNavigationContainer {
             VStack(spacing: 0) {
                 if let id = context?.orderId {
                     Button { orderID = id } label: { Text(inboxContextTitle(context, snapshot: store.snapshot)).font(.system(size: 14, weight: .medium)).lineLimit(2).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.vertical, 12) }
@@ -201,9 +201,9 @@ struct ConversationView: View {
             }.background(MarketTheme.paper).navigationTitle("").marketInlineTitle()
                 .toolbar {
                     ToolbarItem(placement: .principal) { UserRow(person: store.snapshot.people[current.id] ?? .unnamed(current.id), size: 30) }
-                    ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
+                    ToolbarItem(placement: .cancellationAction) { MarketDoneButton { dismiss() } }
                 }
-                .sheet(isPresented: Binding(get: { orderID != nil }, set: { if !$0 { orderID = nil } })) { if let orderID { OrderDetailView(orderID: orderID).marketSheetScope() } }
+                .marketPage(isPresented: Binding(get: { orderID != nil }, set: { if !$0 { orderID = nil } })) { if let orderID { OrderDetailView(orderID: orderID).marketSheetScope() } }
                 .onAppear { displayedAccount = store.snapshot.publicKey; appeared = true; foreground = scenePhase == .active; updateVisibleReadState() }
                 .onDisappear { appeared = false; foreground = false; clearActiveContext() }
                 .onChange(of: store.activeSheetID) { _ in updateVisibleReadState() }

@@ -2,15 +2,35 @@ import SwiftUI
 
 struct PrivateDeliveryPlaceField: View {
     @Binding var place: MarketDeliveryPlace
-    @State private var choosing = false
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(place.label).font(.headline)
             TextField("Address or meeting point", text: Binding(get: { place.address }, set: { place.address = String($0.prefix(500)); place.coordinates = nil }), axis: .vertical).lineLimit(2...4).textFieldStyle(.roundedBorder)
                 .accessibilityIdentifier("deliveryPlaceAddress." + place.label.lowercased())
-            Button { choosing = true } label: { Label(place.coordinates == nil ? "Choose on map" : "Edit map point", systemImage: "mappin.and.ellipse") }
+            PlaceSearchButton(value: place) { place = $0 }
             if place.coordinates != nil { Text("Map point selected").font(.caption).foregroundStyle(MarketTheme.muted) }
-        }.sheet(isPresented: $choosing) { PrivatePlaceMapEditor(place: Binding(get: { place }, set: { if let value = $0 { place = value } })).marketSheetScope() }
+        }
+    }
+}
+
+
+/// A searchable place draft. Manual text stays editable; only an explicit map selection is applied.
+struct PlaceSearchButton: View {
+    var value: MarketDeliveryPlace?
+    let onSelect: (MarketDeliveryPlace) -> Void
+    @State private var choosing = false
+    @State private var draft: MarketDeliveryPlace?
+    var body: some View {
+        Button {
+            draft = value ?? MarketDeliveryPlace(label: "Meeting point")
+            choosing = true
+        } label: {
+            Label("Search places", systemImage: "magnifyingglass")
+        }
+        .accessibilityHint("Search for a town, address, or meeting point, then choose it on the map.")
+        .marketPage(isPresented: $choosing, onDismiss: {
+            if let draft, !draft.address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, MarketShipment.validCoordinates(draft.coordinates) { onSelect(draft) }
+        }) { PrivatePlaceMapEditor(place: $draft).marketSheetScope() }
     }
 }
 
@@ -24,12 +44,12 @@ struct PrivatePlaceMapEditor: View {
     @State private var failed = false
     @State private var retry = 0
     var body: some View {
-        NavigationStack {
+        MarketNavigationContainer {
             ZStack {
                 PrivatePlaceMapContent(place: $place, retry: retry, onFailure: { failed = true })
                 if failed { MarketMapUnavailable { failed = false; retry += 1 } }
             }.navigationTitle("Choose a place").marketInlineTitle()
-                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+                .toolbar { ToolbarItem(placement: .confirmationAction) { MarketDoneButton { dismiss() } } }
         }
     }
 }

@@ -66,3 +66,34 @@ test('malformed or signature-mutated relay data never reaches private subscripti
   const transport = createPrivateTransport(() => [server.url]); t.after(() => transport.close());
   assert.deepEqual((await transport.query([{ kinds: [0] }])).events.map(item => item.id), [signed.id]);
 });
+
+test('dispatch returns before connection or ACK; first matching ACK is observed despite a silent relay',async t=>{
+  const fast=await relay(t,(socket,frame)=>{if(frame[0]==='EVENT')socket.send(JSON.stringify(['OK',frame[1].id,true,'']));});
+  const silent=await relay(t,()=>{});
+  const transport=createPrivateTransport(()=>[fast.url,silent.url]);t.after(()=>transport.close());
+  let acknowledged=false;const signed=event('background ACK');
+  const receipt=await transport.dispatch(signed,{timeoutMs:2000,onAccepted:()=>{acknowledged=true;}});
+  assert.equal(receipt.remoteAccepted,false);assert.equal(receipt.pending,true);
+  await waitFor(()=>acknowledged);
+  assert.equal((await transport.publish(signed)).remoteAccepted,true);
+  // Security-specific publication still resolves at first OK, not all relays.
+  const accepted=await Promise.race([transport.publish(event('first ACK'),{timeoutMs:2000}),new Promise((_,reject)=>setTimeout(()=>reject(Error('Waited for silent relay')),500))]);
+  assert.equal(accepted.remoteAccepted,true);
+});
+
+test('more than three silent publications dispatch without a reply-gated concurrency slot',async t=>{
+  const silent=await relay(t,()=>{}),transport=createPrivateTransport(()=>[silent.url]);t.after(()=>transport.close());
+  let accepted=0;
+  const receipts=await Promise.race([Promise.all(Array.from({length:5},(_,index)=>transport.dispatch(event(`silent ${index}`),{timeoutMs:3000,onAccepted:()=>accepted++}))),new Promise((_,reject)=>setTimeout(()=>reject(Error('Dispatch waited for a response')),200))]);
+  assert(receipts.every(receipt=>receipt.pending&&!receipt.remoteAccepted));
+  const end=Date.now()+2000;while(silent.frames.filter(item=>item.frame[0]==='EVENT').length<5){assert(Date.now()<end);await new Promise(resolve=>setTimeout(resolve,10));}
+  assert.equal(accepted,0);
+});
+
+test('queued publication callbacks do not consume inbox subscription slots',async t=>{
+  const server=await relay(t,()=>{}),transport=createPrivateTransport(()=>[server.url]);t.after(()=>transport.close());
+  await Promise.all(Array.from({length:130},(_,index)=>transport.dispatch(event(`queued slot ${index}`))));
+  const subscription=transport.subscribe([{kinds:[1060],'#p':[owner]}],{onEvent(){}});
+  await waitFor(()=>server.frames.some(item=>item.frame[0]==='REQ'));
+  subscription.close();
+});

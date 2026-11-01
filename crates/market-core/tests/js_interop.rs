@@ -141,11 +141,18 @@ fn fresh_native_profile_orders_with_strict_js_peer() {
     let url = url::Url::parse(&relay).unwrap();
     assert_eq!(url.scheme(), "ws");
     assert_eq!(url.host_str(), Some("127.0.0.1"));
+    let mut relays = vec![relay];
+    if let Ok(silent) = env::var("MARKET_NATIVE_SILENT_RELAY") {
+        let url = url::Url::parse(&silent).unwrap();
+        assert_eq!(url.scheme(), "ws");
+        assert_eq!(url.host_str(), Some("127.0.0.1"));
+        relays.push(silent);
+    }
     let directory = tempfile::tempdir().unwrap();
     Store::open(&directory.path().join("market.sqlite"))
         .unwrap()
         .save_settings(&Settings {
-            relays: vec![relay],
+            relays,
             ..Default::default()
         })
         .unwrap();
@@ -153,6 +160,11 @@ fn fresh_native_profile_orders_with_strict_js_peer() {
         Market::open_fresh(directory.path(), &iris_market_core::generate_secret_key()).unwrap();
     let snapshot = || serde_json::from_str::<Value>(&market.snapshot().unwrap()).unwrap();
     assert_eq!(snapshot()["messaging_ready"], true);
+    // Fresh profiles browse as guests until the explicit local setup action.
+    market
+        .command(r#"{"type":"update_profile","name":"Synthetic buyer"}"#)
+        .unwrap();
+    assert_eq!(snapshot()["profile_name_required"], false);
     let end = Instant::now() + Duration::from_secs(30);
     while snapshot()["listings"].as_array().unwrap().is_empty() {
         assert!(
@@ -181,4 +193,92 @@ fn fresh_native_profile_orders_with_strict_js_peer() {
         std::thread::sleep(Duration::from_millis(50));
     }
     market.shutdown();
+}
+
+/// Explicit opt-in diagnostic: public discovery reads only; never start Market's sender.
+#[test]
+#[ignore = "requires an explicitly supplied public contact fixture; read-only relay access"]
+fn public_contact_discovery_read_only() {
+    use nostr_pubsub::NostrEventSubscriber;
+    use nostr_pubsub_relay::RelayEventBus;
+    use std::{
+        sync::{Arc, Mutex},
+        time::Duration,
+    };
+    let input: Input = serde_json::from_slice(
+        &fs::read(env::var("MARKET_PUBLIC_CONTACT_INPUT").expect("public contact fixture path"))
+            .unwrap(),
+    )
+    .unwrap();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let mut messaging = Messaging::open(directory.path(), Keys::generate()).unwrap();
+    let owner = input.authorization.pubkey.to_hex();
+    messaging.open_contact(&owner).unwrap();
+    runtime.block_on(async {
+        let relays = iris_market_core::model::Settings::default().relays;
+        for prefix in ["private-authorization-", "private-device-invites-"] {
+            let scope = messaging
+                .subscriptions()
+                .into_iter()
+                .find(|scope| {
+                    scope.scope.starts_with(prefix)
+                        && if prefix == "private-authorization-" {
+                            scope.scope.ends_with(&owner)
+                        } else {
+                            scope.scope.ends_with(&input.invite.pubkey.to_hex())
+                        }
+                })
+                .expect("verified discovery scope");
+            let bus = RelayEventBus::new(relays.clone(), Duration::from_secs(4))
+                .await
+                .unwrap();
+            bus.client()
+                .wait_for_connection(Duration::from_secs(4))
+                .await;
+            let received = Arc::new(Mutex::new(Vec::new()));
+            let collector = received.clone();
+            let _subscription = bus
+                .subscribe(
+                    vec![scope.filter],
+                    Arc::new(move |event| {
+                        collector
+                            .lock()
+                            .unwrap()
+                            .push(event.event.as_event().clone());
+                    }),
+                )
+                .await
+                .unwrap();
+            let expected = if prefix == "private-authorization-" {
+                input.authorization.id
+            } else {
+                input.invite.id
+            };
+            let end = tokio::time::Instant::now() + Duration::from_secs(12);
+            loop {
+                let events = std::mem::take(&mut *received.lock().unwrap());
+                let mut found = false;
+                for event in events {
+                    if event.id == expected {
+                        messaging.receive(&event).unwrap();
+                        found = true;
+                    }
+                }
+                if found {
+                    break;
+                }
+                assert!(
+                    tokio::time::Instant::now() < end,
+                    "Native relay discovery did not return the known public record"
+                );
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            bus.client().shutdown().await;
+        }
+    });
 }

@@ -1,11 +1,11 @@
 import { matchFilters, verifyEvent } from 'nostr-tools';
 import type { Event, Filter, VerifiedEvent } from 'nostr-tools';
-export interface TransportOptions {signal?:AbortSignal;relays?:string[];deadline?:number;timeoutMs?:number;sources?:unknown[];cache?:string;localEcho?:boolean;requireAck?:boolean;queue?:boolean}
+export interface TransportOptions {signal?:AbortSignal;relays?:string[];deadline?:number;timeoutMs?:number;sources?:unknown[];cache?:string;localEcho?:boolean;requireAck?:boolean;queue?:boolean;onAccepted?:(receipt:PublishReceipt)=>void}
 export interface QueryResult {events:VerifiedEvent[];complete:boolean;sources?:{id:string;complete:boolean}[]}
-export interface PublishReceipt {remoteAccepted:boolean;sources?:{id:string;accepted:boolean}[]}
+export interface PublishReceipt {remoteAccepted:boolean;pending?:boolean;sources?:{id:string;accepted:boolean}[]}
 interface RelayState {id:string;complete:boolean;socket:WebSocket|null;timer:ReturnType<typeof setTimeout>|null;tries:number}
 interface Subscription {close():void;states?:RelayState[]}
-export interface PrivateTransport {subscribe(filters:Filter[],handlers:{onEvent:(event:VerifiedEvent)=>void},options?:TransportOptions):Subscription;query(filters:Filter[],options?:TransportOptions):Promise<QueryResult>;publish(raw:Event,options?:TransportOptions):Promise<PublishReceipt>;close():void}
+export interface PrivateTransport {subscribe(filters:Filter[],handlers:{onEvent:(event:VerifiedEvent)=>void},options?:TransportOptions):Subscription;query(filters:Filter[],options?:TransportOptions):Promise<QueryResult>;publish(raw:Event,options?:TransportOptions):Promise<PublishReceipt>;dispatch?(raw:Event,options?:TransportOptions):Promise<PublishReceipt>;close():void}
 
 const MAX_FRAME = 256 * 1024;
 const MAX_QUERY_EVENTS = 1024;
@@ -49,6 +49,7 @@ function validateFilters(filters) {
 /** Every discovery/inbox subscription has separate anonymous connections; publishing never reuses them. */
 export function createPrivateTransport(getRelays:()=>string[], { WebSocketImpl = globalThis.WebSocket } = {}):PrivateTransport {
   const active = new Set<()=>void>();
+  const receiving = new Set<()=>void>();
   let closed = false;
   const assertOpen = () => { if (closed) throw new Error('Messages are closed.'); };
   const sockets = (filters:Filter[], options:TransportOptions, handlers:{onEvent:(event:VerifiedEvent)=>void;onEose?:(states:RelayState[])=>void;onClose?:(states:RelayState[])=>void}, reconnect:boolean) => {
@@ -67,9 +68,9 @@ export function createPrivateTransport(getRelays:()=>string[], { WebSocketImpl =
         if (socket?.readyState === 1) { try { socket.send(JSON.stringify(['CLOSE', id])); } catch {} }
         try { socket?.close(); } catch {}
       }
-      active.delete(stop);
+      active.delete(stop);receiving.delete(stop);
     };
-    active.add(stop);
+    active.add(stop);receiving.add(stop);
     options.signal?.addEventListener('abort', stop, { once: true });
     const connect = state => {
       if (stopped || options.signal?.aborted) return stop();
@@ -104,9 +105,75 @@ export function createPrivateTransport(getRelays:()=>string[], { WebSocketImpl =
     for (const state of states) connect(state);
     return { close: stop, states };
   };
+  const accepted = new Map<string,PublishReceipt>();
+  const publications = new Map<string,{completion:Promise<PublishReceipt>;callbacks:Set<(receipt:PublishReceipt)=>void>}>();
+  const dispatchQueue:Array<{start:()=>void;cancel:()=>void}>=[];
+  let dispatchTimer:ReturnType<typeof setTimeout>|undefined;
+  const pump = () => {
+    dispatchTimer=undefined;
+    for(const item of dispatchQueue.splice(0,2))item.start();
+    if(dispatchQueue.length)dispatchTimer=setTimeout(pump,500);
+  };
+  function beginPublication(raw:Event,options:TransportOptions) {
+    assertOpen();
+    const event=verifiedPrivateEvent(raw);
+    if(!event)throw new Error('Cannot publish an invalid signed message.');
+    const cached=accepted.get(event.id);
+    if(cached)return {receipt:cached,completion:Promise.resolve(cached)};
+    const existing=publications.get(event.id);
+    if(existing){if(options.onAccepted)existing.callbacks.add(options.onAccepted);return {receipt:{remoteAccepted:false,pending:true},completion:existing.completion};}
+    const urls=privateRelayUrls(options.relays??getRelays());
+    // The durable caller retains overflow for its next fixed retry. Local
+    // publication bookkeeping never consumes an inbox subscription slot.
+    if(publications.size>=256)return {receipt:{remoteAccepted:false,pending:true},completion:Promise.resolve({remoteAccepted:false})};
+    const callbacks=new Set<(receipt:PublishReceipt)=>void>();if(options.onAccepted)callbacks.add(options.onAccepted);
+    const sources=urls.map(id=>({id,accepted:false}));
+    let resolve:(receipt:PublishReceipt)=>void,remaining=urls.length,complete=false,cancelled=false;
+    const completion=new Promise<PublishReceipt>(done=>{resolve=done;});
+    const stops:Array<()=>void>=[];
+    const finish=(index:number,value:boolean)=>{
+      sources[index].accepted=value;remaining--;
+      if(value&&!complete){
+        complete=true;const receipt={remoteAccepted:true,sources:structuredClone(sources)};
+        accepted.set(event.id,receipt);if(accepted.size>1024)accepted.delete(accepted.keys().next().value);
+        resolve(receipt);for(const callback of callbacks)try{callback(receipt);}catch{}
+      }
+      if(!remaining){
+        publications.delete(event.id);active.delete(abort);options.signal?.removeEventListener('abort',abort);
+        if(!complete){complete=true;resolve({remoteAccepted:false,sources:structuredClone(sources)});}
+      }
+    };
+    const abort=()=>{
+      if(cancelled)return;cancelled=true;
+      for(const stop of stops)stop();
+      remaining=0;publications.delete(event.id);active.delete(abort);options.signal?.removeEventListener('abort',abort);if(!complete){complete=true;resolve({remoteAccepted:false});}
+    };
+    publications.set(event.id,{completion,callbacks});active.add(abort);options.signal?.addEventListener('abort',abort,{once:true});
+    dispatchQueue.push({cancel:abort,start:()=>{
+      if(cancelled)return;
+      for(const [index,url] of urls.entries()){
+        if(cancelled)break;
+        let socket:WebSocket,timer:ReturnType<typeof setTimeout>,done=false;
+        const stop=(value=false)=>{if(done)return;done=true;clearTimeout(timer);try{socket?.close();}catch{}finish(index,value);};
+        stops.push(()=>stop());timer=setTimeout(()=>stop(),options.timeoutMs??6000);
+        try{
+          socket=new WebSocketImpl(url);
+          socket.addEventListener('open',()=>{if(!done)socket.send(JSON.stringify(['EVENT',event]));});
+          socket.addEventListener('message',incoming=>{
+            if(typeof incoming.data!=='string'||incoming.data.length>4096)return;
+            try{const frame=JSON.parse(incoming.data);if(frame[0]==='OK'&&frame[1]===event.id)stop(frame[2]===true);}catch{}
+          });
+          socket.addEventListener('close',()=>stop());socket.addEventListener('error',()=>stop());
+        }catch{stop();}
+      }
+    }});
+    if(options.signal?.aborted)abort();
+    if(!dispatchTimer)dispatchTimer=setTimeout(pump,0);
+    return {receipt:{remoteAccepted:false,pending:true},completion};
+  }
   return {
     subscribe(filters, handlers, options = {}) {
-      if (active.size > 128) throw new Error('Too many open message requests.');
+      if (receiving.size >= 128) throw new Error('Too many open message requests.');
       return sockets(validateFilters(filters), options, handlers, true);
     },
     query(filters, options:TransportOptions = {}) {
@@ -144,36 +211,8 @@ export function createPrivateTransport(getRelays:()=>string[], { WebSocketImpl =
         } catch (error) { finish(error); }
       });
     },
-    async publish(raw, options:TransportOptions = {}) {
-      assertOpen();
-      const event = verifiedPrivateEvent(raw);
-      if (!event) throw new Error('Cannot publish an invalid signed message.');
-      const urls = privateRelayUrls(options.relays ?? getRelays());
-      const accepted = await Promise.all(urls.map(url => new Promise<boolean>(resolve => {
-        let socket, timer, done = false;
-        const finish = value => {
-          if (done) return;
-          done = true; clearTimeout(timer); options.signal?.removeEventListener('abort', abort); active.delete(abort);
-          try { socket?.close(); } catch {}
-          resolve(value);
-        };
-        const abort = () => finish(false);
-        if (options.signal?.aborted) return finish(false);
-        active.add(abort); options.signal?.addEventListener('abort', abort, { once: true });
-        timer = setTimeout(() => finish(false), options.timeoutMs ?? 6000);
-        try {
-          socket = new WebSocketImpl(url);
-          socket.addEventListener('open', () => { if (!done) socket.send(JSON.stringify(['EVENT', event])); });
-          socket.addEventListener('message', incoming => {
-            if (typeof incoming.data !== 'string' || incoming.data.length > 4096) return;
-            try { const frame = JSON.parse(incoming.data); if (frame[0] === 'OK' && frame[1] === event.id) finish(frame[2] === true); } catch {}
-          });
-          socket.addEventListener('close', () => finish(false));
-          socket.addEventListener('error', () => finish(false));
-        } catch { finish(false); }
-      })));
-      return { remoteAccepted: accepted.some(Boolean), sources: urls.map((id, index) => ({ id, accepted: accepted[index] })) };
-    },
-    close() { closed = true; for (const stop of [...active]) stop(); },
+    async dispatch(raw,options:TransportOptions={}) {return beginPublication(raw,options).receipt;},
+    async publish(raw,options:TransportOptions={}) {return beginPublication(raw,options).completion;},
+    close() { closed = true;clearTimeout(dispatchTimer);for(const item of dispatchQueue.splice(0))item.cancel();for (const stop of [...active]) stop(); },
   };
 }

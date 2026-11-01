@@ -31,7 +31,7 @@ struct WalletView: View {
     private var amountValue: UInt64? { guard !amount.isEmpty, amount.allSatisfy(\.isNumber), let value = UInt64(amount), value > 0 else { return nil }; return value }
     private var mintOptions: [String] { Array(Set(["https://mint.coinos.io", "https://testnut.cashu.space"] + wallet.snapshot.balances.map(\.mint))).sorted() }
     var body: some View {
-        NavigationStack {
+        MarketNavigationContainer {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     if !wallet.opened {
@@ -68,7 +68,7 @@ struct WalletView: View {
             .background(MarketTheme.paper)
             .navigationTitle("Wallet").marketInlineTitle()
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) { MarketDoneButton { dismiss() } }
                 ToolbarItem(placement: .primaryAction) { if wallet.opened { Button { wallet.refresh() } label: { Label("Refresh", systemImage: "arrow.clockwise") }.disabled(wallet.busy) } }
             }
             .confirmationDialog("Create a Cashu token?", isPresented: $sendConfirmation, titleVisibility: .visible) {

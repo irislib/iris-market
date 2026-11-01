@@ -24,7 +24,7 @@ struct AuthorProfileView: View {
     init(author: String, onClose: (() -> Void)? = nil) { _author = State(initialValue: author); self.onClose = onClose }
     private var profile: PublicMarketProfile? { store.snapshot.profile?.person.author == author ? store.snapshot.profile : nil }
     var body: some View {
-        NavigationStack {
+        MarketNavigationContainer {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     if let profile {
@@ -66,7 +66,7 @@ struct AuthorProfileView: View {
                             let authorListings = feed?.listings ?? []
                             Text("Listings").font(.headline).accessibilityIdentifier("profileListings")
                             if authorListings.isEmpty && feed?.loading != true { Text("No listings to show yet.").font(.subheadline).foregroundStyle(MarketTheme.muted).padding(.vertical, 12) }
-                            LazyVGrid(columns: [GridItem(.flexible(), spacing: 14), GridItem(.flexible(), spacing: 14)], spacing: 22) {
+                            LazyVGrid(columns: marketListingColumns, spacing: 22) {
                                 ForEach(authorListings) { listing in
                                     ListingCard(listing: listing, open: { selectedListing = listing }, save: { store.save(listing) })
                                 }
@@ -84,9 +84,9 @@ struct AuthorProfileView: View {
             }.background(MarketTheme.paper).navigationTitle("Profile").marketInlineTitle()
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) { if !history.isEmpty { Button("Back") { switchAuthor(history.removeLast()) } } }
-                    ToolbarItem(placement: .confirmationAction) { Button("Done") { if let onClose { onClose() } else { dismiss() } } }
+                    ToolbarItem(placement: .confirmationAction) { MarketDoneButton { if let onClose { onClose() } else { dismiss() } } }
                 }
-                .sheet(item: $selectedListing) { listing in ListingDetailView(listing: listing).marketSheetScope() }
+                .marketPage(item: $selectedListing) { listing in ListingDetailView(listing: listing).marketSheetScope() }
                 .task(id: author) { store.command(["type": "load_profile", "author": author]) }
                 .onDisappear { cancelFollowers(); store.command(["type": "close_profile", "author": author]) }
         }

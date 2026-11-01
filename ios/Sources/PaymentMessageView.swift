@@ -23,7 +23,7 @@ struct PaymentMessageView: View {
             Button { wallet = true } label: { Label("Open in wallet", systemImage: "wallet.pass.fill") }.font(.system(size: 13, weight: .medium))
             Button { MarketPlatform.copyPaymentToClipboard(payment.token); copied = true } label: { Label(copied ? "Copied" : "Copy token", systemImage: "doc.on.doc") }.font(.system(size: 13, weight: .medium))
         }.frame(maxWidth: 260, alignment: .leading)
-            .sheet(isPresented: $wallet) { WalletView(incomingToken: payment.token).marketSheetScope() }
+            .marketPage(isPresented: $wallet) { WalletView(incomingToken: payment.token).marketSheetScope() }
             .task(id: copied) { if copied { try? await Task.sleep(nanoseconds: 2_500_000_000); if !Task.isCancelled { copied = false } } }
     }
 }

@@ -11,7 +11,7 @@ export function cleanNativePlace(value: unknown): DeliveryPlace {
   return {label:place.label,address:place.address,...(point?{coordinates:[...point as [number,number]] as [number,number]}:{})};
 }
 export function mountNativePlace({createPicker=createDeliveryPlaceInput}:{createPicker?:typeof createDeliveryPlaceInput}={}) {
-  let closed=false,serial=0,projection='';
+  let closed=false,serial=0,projection='',initialized=false;
   const pending=new Map<string,{success:PositionCallback;failure?:PositionErrorCallback;timer:ReturnType<typeof setTimeout>}>();
   const post=(value:Record<string,unknown>)=>{
     const host=window as any;
@@ -26,11 +26,11 @@ export function mountNativePlace({createPicker=createDeliveryPlaceInput}:{create
   for(const node of document.querySelectorAll<HTMLElement>('.map-storage,#map-status'))node.hidden=true;
   document.title='Meeting point';
   const api={
-    setValue(value:unknown){if(closed)return;try{const place=cleanNativePlace(value),key=JSON.stringify(place);if(key!==projection){projection=key;picker.setValue(place);}}catch{/* Keep valid entered draft. */}},
+    setValue(value:unknown){if(closed)return;try{const place=cleanNativePlace(value),key=JSON.stringify(place);if(key!==projection){projection=key;picker.setValue(place);if(!initialized){initialized=true;if(!place.coordinates)picker.searchAddress();}}}catch{/* Keep valid entered draft. */}},
     setDark(dark:boolean){document.documentElement.dataset.appearance=dark?'dark':'light';window.dispatchEvent(new Event('market-themechange'));},
     setLocation(id:string,point:unknown){if(closed)return;const entry=pending.get(id);if(!entry)return;try{const place=cleanNativePlace({label:'',address:'',coordinates:point});if(!place.coordinates){fail(id);return;}pending.delete(id);clearTimeout(entry.timer);entry.success({coords:{longitude:place.coordinates[0],latitude:place.coordinates[1]},timestamp:Date.now()} as GeolocationPosition);}catch{fail(id);}},
   };
   (window as any).marketPlace=api;
   window.addEventListener('pagehide',()=>{closed=true;for(const id of pending.keys())fail(id);picker.destroy();},{once:true});
-  post({type:'ready',mode:'place',version:1});return api;
+  post({type:'ready',mode:'place',version:1});void picker.showMap();return api;
 }

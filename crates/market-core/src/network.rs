@@ -33,6 +33,7 @@ pub fn validate_relays(relays: &[String]) -> Result<()> {
 }
 
 pub(crate) async fn run(state: Arc<Mutex<State>>, notify: Arc<Notify>, stopped: Arc<AtomicBool>) {
+    tokio::spawn(run_outbox(state.clone(), stopped.clone(), false));
     while !stopped.load(Ordering::Acquire) {
         let relays = { state.lock().unwrap().settings.relays.clone() };
         if relays.is_empty() {
@@ -52,9 +53,6 @@ pub(crate) async fn run(state: Arc<Mutex<State>>, notify: Arc<Notify>, stopped: 
                 continue;
             }
         };
-        bus.client()
-            .wait_for_connection(Duration::from_secs(5))
-            .await;
         let consumer = state.clone();
         let filter = Filter::new()
             .kind(Kind::Custom(listing::LISTING_KIND))
@@ -151,32 +149,6 @@ pub(crate) async fn run(state: Arc<Mutex<State>>, notify: Arc<Notify>, stopped: 
                 }
                 s.revision += 1;
             }
-            let pending = {
-                let s = state.lock().unwrap();
-                if s.profile_name_required {
-                    Vec::new()
-                } else {
-                    s.store.pending().unwrap_or_default()
-                }
-            };
-            let mut confirmed = 0;
-            for event in pending {
-                if stopped.load(Ordering::Acquire) {
-                    break;
-                }
-                // Only an actual relay OK confirms publication; enqueue acceptance does not.
-                if let Ok(Ok(output)) =
-                    tokio::time::timeout(Duration::from_secs(8), bus.client().send_event(&event))
-                        .await
-                    && !output.success.is_empty()
-                {
-                    let mut s = state.lock().unwrap();
-                    if s.store.acknowledge(&event.id.to_hex()).is_ok() {
-                        confirmed += 1;
-                        s.revision += 1;
-                    }
-                }
-            }
             let connected = bus
                 .client()
                 .relays()
@@ -185,9 +157,7 @@ pub(crate) async fn run(state: Arc<Mutex<State>>, notify: Arc<Notify>, stopped: 
                 .any(|r| r.is_connected());
             {
                 let mut s = state.lock().unwrap();
-                s.status = if confirmed > 0 {
-                    "Published"
-                } else if connected {
+                s.status = if connected {
                     "Connected"
                 } else {
                     "Offline · changes queued"
@@ -296,6 +266,7 @@ pub(crate) async fn run_private(
 ) {
     use nostr_pubsub::NostrEventSubscription;
     use std::collections::{HashMap, HashSet};
+    tokio::spawn(run_outbox(state.clone(), stopped.clone(), true));
     let mut connections: HashMap<String, (RelayEventBus, Box<dyn NostrEventSubscription>)> =
         HashMap::new();
     let mut previous_relays = Vec::new();
@@ -309,7 +280,7 @@ pub(crate) async fn run_private(
             tokio::select! { _=notify.notified()=>{}, _=tokio::time::sleep(Duration::from_secs(5))=>{} }
             continue;
         }
-        let (relays, scopes, pending) = {
+        let (relays, scopes) = {
             let mut s = state.lock().unwrap();
             let relays = s.settings.relays.clone();
             if let Some(m) = s.messaging.as_mut() {
@@ -317,7 +288,7 @@ pub(crate) async fn run_private(
                     // The protocol adapter preserves its journal on failure.
                     // Surface this below without including any private payload.
                 }
-                (relays, m.subscriptions(), m.pending_outbound())
+                (relays, m.subscriptions())
             } else {
                 return;
             }
@@ -351,9 +322,6 @@ pub(crate) async fn run_private(
                 else {
                     continue;
                 };
-                bus.client()
-                    .wait_for_connection(Duration::from_secs(4))
-                    .await;
                 let receiver = state.clone();
                 let wake = notify.clone();
                 let subscription = bus
@@ -383,57 +351,420 @@ pub(crate) async fn run_private(
                     }
                 }
             }
-            for event in pending.into_iter().take(16) {
-                if stopped.load(Ordering::Acquire) {
-                    break;
-                }
-                // Fresh anonymous send-only client per envelope, never any receiving/listing scope.
-                let Ok(sender) = RelayEventBus::new(relays.clone(), Duration::from_secs(4)).await
-                else {
-                    continue;
-                };
-                sender
-                    .client()
-                    .wait_for_connection(Duration::from_secs(4))
-                    .await;
-                // A roster update may have revoked a device while this client connected.
-                let still_allowed =
-                    state
-                        .lock()
-                        .unwrap()
-                        .messaging
-                        .as_ref()
-                        .is_some_and(|messaging| {
-                            messaging
-                                .pending_outbound()
-                                .iter()
-                                .any(|queued| queued.id == event.id)
-                        });
-                if !still_allowed {
-                    sender.client().shutdown().await;
-                    continue;
-                }
-                let result = tokio::time::timeout(
-                    Duration::from_secs(8),
-                    sender.client().send_event(&event),
-                )
-                .await;
-                sender.client().shutdown().await;
-                if let Ok(Ok(output)) = result
-                    && !output.success.is_empty()
-                {
-                    let mut s = state.lock().unwrap();
-                    if let Some(m) = s.messaging.as_mut()
-                        && m.acknowledge_published(&event.id.to_hex()).is_ok()
-                    {
-                        s.revision += 1;
-                    }
-                }
-            }
         }
         tokio::select! {_=notify.notified()=>{},_=tokio::time::sleep(Duration::from_secs(5))=>{}}
     }
     for (_, (bus, _sub)) in connections {
         bus.client().shutdown().await;
+    }
+}
+
+// Durable queues are drained independently of discovery and browsing. Dispatch
+// queues EVENT locally; relay OK notifications are background bookkeeping only.
+struct OutboundLease {
+    id: nostr::EventId,
+    sender: RelayEventBus,
+    responses: tokio::sync::broadcast::Receiver<nostr_sdk::RelayPoolNotification>,
+    expires: tokio::time::Instant,
+}
+
+async fn run_outbox(state: Arc<Mutex<State>>, stopped: Arc<AtomicBool>, private: bool) {
+    use std::collections::{HashMap, HashSet, VecDeque};
+    let mut leases: VecDeque<OutboundLease> = VecDeque::new();
+    let mut retry_at = HashMap::new();
+    let mut previous_relays = Vec::new();
+    while !stopped.load(Ordering::Acquire) {
+        let (relays, mut pending) = {
+            let mut s = state.lock().unwrap();
+            let relays = s.settings.relays.clone();
+            let pending = if s.profile_name_required {
+                Vec::new()
+            } else if private {
+                s.messaging
+                    .as_mut()
+                    .map(|m| {
+                        let _ = m.retry();
+                        m.pending_outbound()
+                    })
+                    .unwrap_or_default()
+            } else {
+                s.store.pending().unwrap_or_default()
+            };
+            (relays, pending)
+        };
+        let queued = pending.iter().map(|event| event.id).collect::<HashSet<_>>();
+        retry_at.retain(|id, _| queued.contains(id));
+        // Poll responses only; dispatch never awaits a response or connection.
+        let mut retained = VecDeque::new();
+        while let Some(mut lease) = leases.pop_front() {
+            let accepted = poll_acceptance(&mut lease.responses, lease.id);
+            if accepted {
+                let mut s = state.lock().unwrap();
+                let acknowledged = if private {
+                    s.messaging
+                        .as_mut()
+                        .is_some_and(|m| m.acknowledge_published(&lease.id.to_hex()).is_ok())
+                } else {
+                    s.store.acknowledge(&lease.id.to_hex()).is_ok()
+                };
+                if acknowledged {
+                    s.revision += 1;
+                }
+            }
+            if accepted
+                || !queued.contains(&lease.id)
+                || relays != previous_relays
+                || lease.expires <= tokio::time::Instant::now()
+            {
+                lease.sender.client().shutdown().await;
+            } else {
+                retained.push_back(lease);
+            }
+        }
+        leases = retained;
+        previous_relays = relays.clone();
+        let active = leases.iter().map(|lease| lease.id).collect::<HashSet<_>>();
+        // New work precedes retries; silent relays cannot starve the tail.
+        pending.sort_by_key(|event| retry_at.get(&event.id).copied());
+        let mut dispatched = 0;
+        for event in pending {
+            if relays.is_empty() || dispatched == 2 || stopped.load(Ordering::Acquire) {
+                break;
+            }
+            if active.contains(&event.id)
+                || retry_at
+                    .get(&event.id)
+                    .is_some_and(|at| *at > tokio::time::Instant::now())
+            {
+                continue;
+            }
+            let id = event.id;
+            retry_at.insert(id, tokio::time::Instant::now() + Duration::from_secs(10));
+            // Two attempts per 500ms and fixed 8s leases bound connection use
+            // independently of responses. The cap is an extra resource guard,
+            // never a gate: new work evicts the oldest lease, retaining its journal.
+            if leases.len() == 64 {
+                if let Some(oldest) = leases.pop_front() {
+                    oldest.sender.client().shutdown().await;
+                }
+            }
+            if let Ok(sender) = RelayEventBus::new(relays.clone(), Duration::from_secs(4)).await {
+                let responses = sender.client().notifications();
+                let allowed = {
+                    let s = state.lock().unwrap();
+                    !s.profile_name_required
+                        && if private {
+                            s.messaging.as_ref().is_some_and(|m| {
+                                m.pending_outbound().iter().any(|event| event.id == id)
+                            })
+                        } else {
+                            true
+                        }
+                };
+                if allowed && enqueue_outbound(&sender, &event).await {
+                    leases.push_back(OutboundLease {
+                        id,
+                        sender,
+                        responses,
+                        expires: tokio::time::Instant::now() + Duration::from_secs(8),
+                    });
+                } else {
+                    sender.client().shutdown().await;
+                }
+            }
+            dispatched += 1;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    for lease in leases {
+        lease.sender.client().shutdown().await;
+    }
+}
+
+fn poll_acceptance(
+    responses: &mut tokio::sync::broadcast::Receiver<nostr_sdk::RelayPoolNotification>,
+    id: nostr::EventId,
+) -> bool {
+    loop {
+        match responses.try_recv() {
+            Ok(nostr_sdk::RelayPoolNotification::Message {
+                message:
+                    nostr::RelayMessage::Ok {
+                        event_id,
+                        status: true,
+                        ..
+                    },
+                ..
+            }) if event_id == id => return true,
+            Err(
+                tokio::sync::broadcast::error::TryRecvError::Empty
+                | tokio::sync::broadcast::error::TryRecvError::Closed,
+            ) => return false,
+            _ => {}
+        }
+    }
+}
+
+async fn enqueue_outbound(sender: &RelayEventBus, event: &nostr::Event) -> bool {
+    sender
+        .client()
+        .send_msg_to(
+            sender.relays().iter().map(String::as_str),
+            nostr::ClientMessage::Event(std::borrow::Cow::Borrowed(event)),
+        )
+        .await
+        .is_ok_and(|output| !output.success.is_empty())
+}
+
+#[cfg(test)]
+async fn observe_acceptance(
+    responses: &mut tokio::sync::broadcast::Receiver<nostr_sdk::RelayPoolNotification>,
+    id: nostr::EventId,
+    lifetime: Duration,
+) -> bool {
+    tokio::time::timeout(lifetime, async {
+        loop {
+            match responses.recv().await {
+                Ok(nostr_sdk::RelayPoolNotification::Message {
+                    message:
+                        nostr::RelayMessage::Ok {
+                            event_id,
+                            status: true,
+                            ..
+                        },
+                    ..
+                }) if event_id == id => return true,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return false,
+                _ => {}
+            }
+        }
+    })
+    .await
+    .unwrap_or(false)
+}
+#[cfg(test)]
+mod private_publish_tests {
+    use super::*;
+    use futures_util::{SinkExt, StreamExt};
+    use nostr::{EventBuilder, Keys};
+    use serde_json::{Value, json};
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::{accept_async, tungstenite::Message};
+
+    type RelayAcceptance = Arc<Mutex<Option<bool>>>;
+
+    async fn relay(accept: Option<bool>) -> (String, tokio::task::JoinHandle<()>, RelayAcceptance) {
+        let acceptance = Arc::new(Mutex::new(accept));
+        let mode = acceptance.clone();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = accept_async(stream).await.unwrap();
+            while let Some(Ok(message)) = socket.next().await {
+                match message {
+                    Message::Text(text) => {
+                        let frame: Value = serde_json::from_str(&text).unwrap();
+                        if frame[0] == "EVENT" {
+                            let accepted = *mode.lock().unwrap();
+                            if let Some(accepted) = accepted {
+                                let _ = socket
+                                    .send(Message::Text(
+                                        json!(["OK", frame[1]["id"], accepted, ""])
+                                            .to_string()
+                                            .into(),
+                                    ))
+                                    .await;
+                            }
+                        }
+                    }
+                    Message::Ping(bytes) => {
+                        let _ = socket.send(Message::Pong(bytes)).await;
+                    }
+                    _ => {}
+                }
+            }
+        });
+        (url, task, acceptance)
+    }
+
+    async fn publish_with(accept: Option<bool>) -> bool {
+        let (first, first_task, _) = relay(accept).await;
+        let (silent, silent_task, _) = relay(None).await;
+        let sender = RelayEventBus::new([first, silent], Duration::from_secs(1))
+            .await
+            .unwrap();
+        let event = EventBuilder::new(Kind::Custom(1059), "synthetic ciphertext")
+            .sign_with_keys(&Keys::generate())
+            .unwrap();
+        let mut responses = sender.client().notifications();
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(100),
+                enqueue_outbound(&sender, &event)
+            )
+            .await
+            .unwrap()
+        );
+        let accepted =
+            observe_acceptance(&mut responses, event.id, Duration::from_millis(300)).await;
+        sender.client().shutdown().await;
+        first_task.abort();
+        silent_task.abort();
+        accepted
+    }
+
+    #[test]
+    fn seventeenth_envelope_dispatches_without_any_relay_response_and_shutdown_closes_clients() {
+        use crate::{Market, model::Settings, store::Store};
+        use std::sync::atomic::AtomicUsize;
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let listener = runtime.block_on(TcpListener::bind("127.0.0.1:0")).unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let received = Arc::new(Mutex::new(std::collections::HashSet::new()));
+        let seen = received.clone();
+        let live = Arc::new(AtomicUsize::new(0));
+        let connections = live.clone();
+        let server = runtime.spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let seen = seen.clone();
+                let connections = connections.clone();
+                tokio::spawn(async move {
+                    let Ok(mut socket) = accept_async(stream).await else {
+                        return;
+                    };
+                    connections.fetch_add(1, Ordering::AcqRel);
+                    while let Some(Ok(message)) = socket.next().await {
+                        if let Message::Text(text) = message {
+                            let frame: Value = serde_json::from_str(&text).unwrap();
+                            if frame[0] == "EVENT" {
+                                seen.lock()
+                                    .unwrap()
+                                    .insert(frame[1]["id"].as_str().unwrap().to_string());
+                            }
+                            // Deliberately no OK, EOSE, AUTH, or other response.
+                        }
+                    }
+                    connections.fetch_sub(1, Ordering::AcqRel);
+                });
+            }
+        });
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(&directory.path().join("market.sqlite")).unwrap();
+        store
+            .save_settings(&Settings {
+                relays: vec![url],
+                ..Default::default()
+            })
+            .unwrap();
+        let keys = Keys::generate();
+        let expected = (0..17)
+            .map(|index| {
+                let event = EventBuilder::new(Kind::TextNote, format!("synthetic backlog {index}"))
+                    .sign_with_keys(&keys)
+                    .unwrap();
+                store.queue_event(&event).unwrap();
+                event.id.to_hex()
+            })
+            .collect::<std::collections::HashSet<_>>();
+        let market =
+            Market::open(directory.path(), &keys.secret_key().to_secret_hex(), false).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(7);
+        while !expected.is_subset(&received.lock().unwrap()) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "A later envelope waited for a relay reply/timeout"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(
+            store.pending().unwrap().len(),
+            17,
+            "Local dispatch is not relay acceptance"
+        );
+        market.shutdown();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while live.load(Ordering::Acquire) != 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "Stopped outbox leaked relay clients"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn outbound_dispatch_never_waits_for_connection_or_reply() {
+        // TCP endpoint intentionally never completes a WebSocket handshake.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let sender = RelayEventBus::new(
+            [format!("ws://{}", listener.local_addr().unwrap())],
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+        for index in 0..3 {
+            let event = EventBuilder::new(Kind::Custom(1059), format!("synthetic queued {index}"))
+                .sign_with_keys(&Keys::generate())
+                .unwrap();
+            assert!(
+                tokio::time::timeout(
+                    Duration::from_millis(100),
+                    enqueue_outbound(&sender, &event)
+                )
+                .await
+                .unwrap()
+            );
+        }
+        sender.client().shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn private_publish_accepts_one_relay_without_waiting_for_silent_relay() {
+        assert!(publish_with(Some(true)).await);
+    }
+
+    #[tokio::test]
+    async fn private_publish_retries_the_same_event_after_silence() {
+        let (url, task, mode) = relay(None).await;
+        let sender = RelayEventBus::new([url], Duration::from_secs(1))
+            .await
+            .unwrap();
+        let event = EventBuilder::new(Kind::Custom(1059), "synthetic retry ciphertext")
+            .sign_with_keys(&Keys::generate())
+            .unwrap();
+        let mut responses = sender.client().notifications();
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(100),
+                enqueue_outbound(&sender, &event)
+            )
+            .await
+            .unwrap()
+        );
+        assert!(!observe_acceptance(&mut responses, event.id, Duration::from_millis(150)).await);
+        *mode.lock().unwrap() = Some(true);
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(100),
+                enqueue_outbound(&sender, &event)
+            )
+            .await
+            .unwrap()
+        );
+        assert!(observe_acceptance(&mut responses, event.id, Duration::from_millis(300)).await);
+        sender.client().shutdown().await;
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn private_publish_does_not_acknowledge_rejection_or_silence() {
+        assert!(!publish_with(Some(false)).await);
+        assert!(!publish_with(None).await);
     }
 }

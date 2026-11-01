@@ -27,6 +27,8 @@ interface MessagingOptions {developerMint?:string;getRelays?:()=>string[];onChan
 interface SignerLoginOptions {password?:string;bunkerLink?:string;signal?:AbortSignal;onConnectionLink?:(url:string)=>void;onAuthUrl?:(url:string)=>void;onCommitting?:()=>void}
 type PublicationContext=NostrPublishContext&{recipientDeviceOwnerPubkey?:string};
 
+class PendingRelayAcceptance extends Error {}
+
 const HEX = /^[a-f0-9]{64}$/;
 const DEVICE_PREFIX = 'v1/device-manager/';
 const now = () => Math.floor(Date.now() / 1000);
@@ -147,6 +149,13 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
     const id=orderQueueEntry(key,value);
     return id&&orders&&!orders.canPublish(id)?vault.del(key):vault.put(key,value);
   }};
+  async function hasQueuedRecipientEnvelope(innerId:string,peer:string) {
+    for(const key of await vault.list('v1/runtime-outbox/')){
+      const entry=await vault.get<{innerEventId?:string;context?:PublicationContext}>(key);
+      if(entry?.innerEventId===innerId&&(entry.context?.recipientDeviceOwnerPubkey??entry.context?.recipientOwnerPubkey)===peer)return true;
+    }
+    return false;
+  }
   async function pruneOrderQueues(){
     const attempt=generation,book=orders;if(!book)return;
     for(const prefix of ['v1/message-queue/','v1/discovery-queue/','v1/runtime-outbox/'])for(const key of await vault.list(prefix)){
@@ -174,9 +183,13 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
         if (_innerId && orders && !orders.canPublish(_innerId)) return event;
         if ([1059, 1060].includes(event.kind) && (!authorizationChecked || !runtime?.getState().isCurrentDeviceRegistered || !hasMetadataPrivacyVersion(event))) throw new Error('This device is not authorized to send.');
         if (!canPublishToDevice(event, context, runtime?.getKnownAppKeysSnapshots() ?? [])) throw new Error('The receiving device was removed.');
-        const receipt = await transport.publish(event, { signal: controller.signal });
+        const options={signal:controller.signal,onAccepted:()=>{if(attempt===generation)void outbox.retry().catch(report);}};
+        const receipt = await (transport.dispatch ? transport.dispatch(event,options) : transport.publish(event,options));
         check(attempt);
-        if (!receipt.remoteAccepted) throw new Error('No message server accepted this message.');
+        if (!receipt.remoteAccepted) {
+          if(receipt.pending)throw new PendingRelayAcceptance();
+          throw new Error('No message server accepted this message.');
+        }
         return event;
       },
       onPublished: async ({ innerEventId, context: rawContext }) => {
@@ -187,7 +200,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
           const message = messages.find(item => item.id === innerEventId && item.mine);
           if (message && (context?.recipientDeviceOwnerPubkey ?? context?.recipientOwnerPubkey)===peer) await saveMessage(peer, { ...message, delivery: 'sent' });
         }
-      }, onError: report,
+      }, onError:failure=>{if(!(failure.error instanceof PendingRelayAcceptance))report();},
     });
     const publicationContext = (event:UnsignedEvent, context:PublicationContext):PublicationContext => {
       if (event.kind !== 1060) return context;
@@ -235,7 +248,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
       nostrSign: signing,
       nostrEnqueue: (event, id, context) => outbox.enqueue(event, id, publicationContext(event, context)),
       nostrPublish: (event, id, context) => outbox.publish(event, id, publicationContext(event, context)),
-      onPublishError: report, appKeysFetchTimeoutMs: 6000, appKeysFastTimeoutMs: 1500,
+      onPublishError:failure=>{if(!(failure.error instanceof PendingRelayAcceptance))report();}, appKeysFetchTimeoutMs: 6000, appKeysFastTimeoutMs: 1500,
     });
     runtime.onStateChange(() => { if (attempt === generation) notify(); });
     runtime.onDurableSessionEvent([14,7,15], async (rumor, from, meta) => {
@@ -303,18 +316,22 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
     return stored.map(event=>({event:structuredClone(event),delivery:'queued',accepted:[]}));
   }
   async function queuePublic(event) { return (await queuePublicEvents([event]))[0]; }
+  async function acceptPublic(event:VerifiedEvent,attempt:number) {
+    check(attempt);if(!publicQueue.has(event.id))return;
+    if (event.kind===0 && (!account.profileEvent || event.created_at>=account.profileEvent.created_at)) {account.profileEvent=event;account.displayName=JSON.parse(event.content).display_name||JSON.parse(event.content).name;await vault.put('market/account',account);}
+    await vault.del(`market/public/${event.id}`);check(attempt);publicQueue.delete(event.id);notify();
+  }
   async function syncPublic() {
     if (syncing || status !== 'ready') return syncing;
     const attempt = generation, attempted = new Set();
     syncing = (async () => {
       for (const event of publicQueue.values()) {
         check(attempt); attempted.add(event.id);
+        const options={signal:controller.signal,onAccepted:()=>{void acceptPublic(event,attempt).catch(()=>{});}};
         let receipt;
-        try { receipt = await transport.publish(event,{signal:controller.signal}); } catch { check(attempt); continue; }
+        try { receipt = await (transport.dispatch ? transport.dispatch(event,options) : transport.publish(event,options)); } catch { check(attempt); continue; }
         check(attempt);
-        if (!receipt.remoteAccepted) continue;
-        if (event.kind===0 && (!account.profileEvent || event.created_at>=account.profileEvent.created_at)) {account.profileEvent=event;account.displayName=JSON.parse(event.content).display_name||JSON.parse(event.content).name;await vault.put('market/account',account);}
-        await vault.del(`market/public/${event.id}`);check(attempt);publicQueue.delete(event.id);notify();
+        if (receipt.remoteAccepted)await acceptPublic(event,attempt);
       }
     })().catch(()=>{}).finally(()=>{if(attempt===generation){syncing=undefined;notify();if([...publicQueue.keys()].some(id=>!attempted.has(id)))queueMicrotask(()=>void syncPublic());}});
     return syncing;
@@ -551,7 +568,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
       lastChatMs=Math.max(Date.now(),lastChatMs+1,...(conversations.get(pubkey)??[]).filter(message=>message.mine).map(message=>messageMilliseconds(message)+1));
       const rumor = await runtime.sendMessage(pubkey, text, {tags:[...contextTags(context),['ms',String(lastChatMs)]]});
       const diagnostics = await runtime.queuedMessageDiagnostics(rumor.id);
-      await saveMessage(pubkey, { id: rumor.id, text, context,orderId:context?.order_id,mine: true, createdAt: rumor.created_at,...(rumorMilliseconds(rumor)!==undefined?{createdAtMs:rumorMilliseconds(rumor)}:{}), delivery: diagnostics.some(entry=>entry.ownerPubkey===pubkey) ? 'queued' : 'sent' });
+      await saveMessage(pubkey, { id: rumor.id, text, context,orderId:context?.order_id,mine: true, createdAt: rumor.created_at,...(rumorMilliseconds(rumor)!==undefined?{createdAtMs:rumorMilliseconds(rumor)}:{}), delivery: diagnostics.some(entry=>entry.ownerPubkey===pubkey)||await hasQueuedRecipientEnvelope(rumor.id,pubkey) ? 'queued' : 'sent' });
       return rumor.id;
     },
     async react(peer:string,messageId:string,emoji:string){

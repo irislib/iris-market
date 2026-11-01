@@ -264,3 +264,30 @@ test('an offline restored account waits for live signed authorization and resume
   await bus.factory().publish(proof);
   await waitFor(() => app.state().canSend); assert.equal(app.state().status, 'ready');
 });
+
+test('private durable outbox dispatches beyond library concurrency while ACKs remain pending',{timeout:10000},async t=>{
+  const bus=memoryRelay(),baseFactory=bus.factory,pending=new Map(),accepted=new Set();let hold=false;
+  bus.factory=()=>{
+    const transport=baseFactory();
+    return {...transport,async dispatch(event,options={}){
+      if(accepted.has(event.id))return {remoteAccepted:true};
+      if(hold&&event.kind===1060){
+        const item=pending.get(event.id)??{event,callbacks:new Set()};if(options.onAccepted)item.callbacks.add(options.onAccepted);pending.set(event.id,item);
+        return {remoteAccepted:false,pending:true};
+      }
+      return transport.publish(event);
+    }};
+  };
+  const alice=client(bus),bob=client(bus);t.after(()=>alice.app.destroy());t.after(()=>bob.app.destroy());
+  await alice.app.createAccount();await bob.app.createAccount();await waitFor(()=>alice.app.state().canSend&&bob.app.state().canSend);
+  const peer=bob.app.state().ownerPubkey;await alice.app.open(peer);await alice.app.send(peer,'Warm up verified session');
+  await waitFor(()=>bob.app.state().conversations.some(thread=>thread.messages.some(message=>message.text==='Warm up verified session')));
+  hold=true;
+  for(let index=0;index<6;index++)await alice.app.send(peer,`Pending ACK ${index}`);
+  await waitFor(async()=>pending.size>=6&&(await alice.vault.list('v1/runtime-outbox/')).length>=6);
+  const messages=alice.app.state().conversations.flatMap(thread=>thread.messages).filter(message=>message.text.startsWith('Pending ACK '));
+  assert.equal(messages.length,6);assert(messages.every(message=>message.delivery==='queued'));assert.equal(alice.app.state().error,'');
+  for(const [id,item] of pending){accepted.add(id);for(const callback of item.callbacks)callback({remoteAccepted:true});}
+  await waitFor(async()=>(await alice.vault.list('v1/runtime-outbox/')).length===0);
+  assert(alice.app.state().conversations.flatMap(thread=>thread.messages).filter(message=>message.text.startsWith('Pending ACK ')).every(message=>message.delivery==='sent'));
+});

@@ -4,6 +4,7 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
+from unittest.mock import Mock
 
 SPEC = importlib.util.spec_from_file_location('iris_market', Path(__file__).resolve().parents[1] / 'iris_market.py')
 APP = importlib.util.module_from_spec(SPEC)
@@ -87,6 +88,21 @@ class DesktopTest(unittest.TestCase):
         self.assertEqual(APP.profile_paths({'HOME':'/test'}), (Path('/test/.local/share/iris-market'), Path('/test/.cache/iris-market')))
         self.assertEqual(APP.profile_paths({'HOME':'/test','XDG_DATA_HOME':'/data','XDG_CACHE_HOME':'/cache'}), (Path('/data/iris-market'), Path('/cache/iris-market')))
         self.assertEqual(APP.ORIGIN, 'http://127.0.0.1:45876')
+
+    def test_history_gestures_navigate_only_available_entries(self):
+        view = Mock()
+        view.can_go_back.return_value = True
+        view.can_go_forward.return_value = False
+        self.assertTrue(APP.navigate_history(view, 'back'))
+        view.go_back.assert_called_once_with()
+        self.assertTrue(APP.navigate_history(view, 'forward'))
+        view.go_forward.assert_not_called()
+        view.can_go_forward.return_value = True
+        self.assertTrue(APP.navigate_history(view, 'forward'))
+        view.go_forward.assert_called_once_with()
+        view.reset_mock()
+        self.assertFalse(APP.navigate_history(view, None))
+        self.assertEqual(view.mock_calls, [])
 
 
 if __name__ == '__main__':

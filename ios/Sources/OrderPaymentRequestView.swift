@@ -8,7 +8,7 @@ struct OrderPaymentRequestView: View {
     @State private var mint = "https://mint.coinos.io"
     private var value: UInt64? { guard let value = UInt64(amount), value > 0, value <= 1_000_000_000_000 else { return nil }; return value }
     var body: some View {
-        NavigationStack {
+        MarketNavigationContainer {
             Form {
                 Section("Payment") {
                     Picker("Mint", selection: $mint) { Text("Coinos").tag("https://mint.coinos.io"); Text("Testnut · test money").tag("https://testnut.cashu.space") }

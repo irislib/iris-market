@@ -44,8 +44,15 @@ enum MarketTheme {
 
 struct PrimaryButton: ButtonStyle {
     var dark = true
+    private var maximumWidth: CGFloat {
+        #if os(macOS)
+        320
+        #else
+        .infinity
+        #endif
+    }
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.font(.system(size: 16, weight: .semibold)).frame(maxWidth: .infinity).padding(.vertical, 17)
+        configuration.label.font(.system(size: 16, weight: .semibold)).frame(maxWidth: maximumWidth).padding(.vertical, 17)
             .foregroundStyle(dark ? MarketTheme.onAction : MarketTheme.ink)
             .background(dark ? MarketTheme.action : MarketTheme.mint, in: RoundedRectangle(cornerRadius: 18))
             .opacity(configuration.isPressed ? 0.75 : 1)
@@ -102,7 +109,13 @@ struct MarketSheetScope: ViewModifier {
     }
 }
 extension View {
-    func marketSheetScope() -> some View { marketSheetFrame().modifier(MarketSheetScope()) }
+    @ViewBuilder func marketSheetScope() -> some View {
+        #if os(macOS)
+        self
+        #else
+        marketSheetFrame().modifier(MarketSheetScope())
+        #endif
+    }
 }
 struct MarketInlineError: View {
     @EnvironmentObject private var store: MarketStore

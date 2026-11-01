@@ -15,7 +15,7 @@ struct NativeOrderPaymentView: View {
         return NativeMoney.display(sats: amount, currency: store.snapshot.settings.currency, testOnly: NativeWalletUnits.isTest(mint), rate: rate?.amount, rateCurrency: rate?.currency, stale: rate?.stale ?? false)
     }
     var body: some View {
-        NavigationStack {
+        MarketNavigationContainer {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     if let order, let payment = order.payment, payment.status == "requested", payment.unit == "sat", let amount = UInt64(payment.amount), amount > 0 {
@@ -49,7 +49,7 @@ struct NativeOrderPaymentView: View {
                     if let notice = wallet.notice { Text(notice).foregroundStyle(MarketTheme.green) }
                 }.padding(24).frame(maxWidth: 560, alignment: .leading).frame(maxWidth: .infinity)
             }.background(MarketTheme.paper).navigationTitle("Pay order").marketInlineTitle()
-                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
+                .toolbar { ToolbarItem(placement: .cancellationAction) { MarketDoneButton { dismiss() } } }
         }
         .onDisappear { wallet.clear() }
         .onChange(of: order?.payment?.mint) { _ in wallet.clear() }

@@ -12,7 +12,7 @@ struct OrderArrangeDeliveryView: View {
         store.snapshot.listings.filter { $0.side == "offer" && $0.status == "active" && $0.author != order.seller && $0.author != store.snapshot.publicKey && ($0.expiresAt == nil || $0.expiresAt! > Int64(Date().timeIntervalSince1970)) && NativeTransportType.parcel.includes($0.tags ?? []) }
     }
     var body: some View {
-        NavigationStack {
+        MarketNavigationContainer {
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
                     if let pickup = order.shipment.stops.first { Text("Pickup").font(.headline); Text(pickup.address); if let point = pickup.coordinates { ShipmentMapView(shipment: MarketShipment(stops: [MarketShipmentStop(id: "pickup", label: pickup.label, address: pickup.address, coordinates: point, status: "pending")])).frame(height: 180).clipShape(RoundedRectangle(cornerRadius: 16)) } }

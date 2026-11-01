@@ -58,6 +58,7 @@ var marketListingColumns: [GridItem] {
 /// Boolean destinations live outside NavigationPath. Explicitly dismiss them when
 /// switching workspace sections so SwiftUI cannot retain an orphaned destination.
 @MainActor final class MarketDesktopNavigation: ObservableObject {
+    @Published private(set) var generation = UUID()
     private var destinations: [UUID: () -> Void] = [:]
     func track(_ id: UUID, dismiss: @escaping () -> Void) { destinations[id] = dismiss }
     func forget(_ id: UUID) { destinations.removeValue(forKey: id) }
@@ -65,6 +66,9 @@ var marketListingColumns: [GridItem] {
         let actions = Array(destinations.values)
         destinations.removeAll()
         for action in actions { action() }
+        // macOS can retain a deeper destination in the split-view controller
+        // when several Boolean destinations close in the same transaction.
+        generation = UUID()
     }
 }
 private struct MarketPagePresentation<Destination: View>: ViewModifier {

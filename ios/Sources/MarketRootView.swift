@@ -6,6 +6,7 @@ struct MarketRootView: View {
     @AppStorage("market.appearance") private var appearance = MarketAppearance.system.rawValue
     #if os(macOS)
     @StateObject private var desktopNavigation = MarketDesktopNavigation()
+    @State private var desktopDidAppear = false
     #endif
     @State private var tab = MarketTab.browse
     @State private var compose = false
@@ -154,11 +155,15 @@ struct MarketRootView: View {
                     .marketPage(isPresented: $compose) { NewListingView().marketListingEditorSheetScope() }
                     .marketPage(item: $selected) { listing in ListingDetailView(listing: listing, onContact: { desktopNavigation.reset(); tab = .inbox }, onOrder: { desktopNavigation.reset(); tab = .orders }) }
             }.id(tab)
-        }.navigationSplitViewStyle(.balanced).environmentObject(desktopNavigation)
+        }.id(desktopNavigation.generation).navigationSplitViewStyle(.balanced).environmentObject(desktopNavigation)
             .sheet(isPresented: Binding(get: { store.profileSetupRequested }, set: { if !$0 { store.dismissProfileSetup() } })) { ProfileNameEntryView().environmentObject(store).marketSheetFrame() }
             .alert("Unable to complete action", isPresented: Binding(get: { store.alert != nil }, set: { if !$0 { store.alert = nil } })) { Button("OK", role: .cancel) { store.alert = nil } } message: { Text(store.alert ?? "") }
             .onChange(of: tab) { _ in selected = nil; compose = false }
-            .onAppear { openPushRoute() }
+            .onAppear {
+                guard !desktopDidAppear else { return }
+                desktopDidAppear = true
+                openPushRoute()
+            }
             .onChange(of: store.pushRoute) { _ in openPushRoute() }
     }
     private func desktopTab(_ item: MarketTab) -> some View {

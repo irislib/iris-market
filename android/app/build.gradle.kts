@@ -11,8 +11,8 @@ android {
         applicationId = "to.iris.market"
         minSdk = 29
         targetSdk = 36
-        versionCode = providers.environmentVariable("MARKET_ANDROID_VERSION_CODE").orNull?.toInt() ?: 15
-        versionName = providers.environmentVariable("MARKET_RELEASE_VERSION").orNull ?: "0.1.4-alpha.4"
+        versionCode = providers.environmentVariable("MARKET_ANDROID_VERSION_CODE").orNull?.toInt() ?: 16
+        versionName = providers.environmentVariable("MARKET_RELEASE_VERSION").orNull ?: "0.1.4-alpha.5"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk { abiFilters += "arm64-v8a" }
     }

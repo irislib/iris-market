@@ -15,6 +15,8 @@ struct MarketRootView: View {
     @State private var aiSettings = false
     @State private var selected: MarketListing?
     @State private var photoFilter: Bool?
+    @State private var browseQuery = ""
+    @State private var browseSide = "offer"
     enum MarketTab: String, CaseIterable {
         case browse = "Explore", saved = "Saved", orders = "Orders", inbox = "Inbox", profile = "Profile", settings = "Settings", wallet = "Wallet", transport = "Transport"
         var symbol: String { switch self { case .browse: return "square.grid.2x2.fill"; case .saved: return "heart.fill"; case .orders: return "shippingbox.fill"; case .inbox: return "bubble.left.and.bubble.right.fill"; case .profile: return "person.crop.circle.fill"; case .settings: return "gearshape.fill"; case .wallet: return "wallet.pass.fill"; case .transport: return "arrow.triangle.swap" } }
@@ -64,7 +66,7 @@ struct MarketRootView: View {
             }.padding(.horizontal, 23).padding(.top, 10).padding(.bottom, 16)
             Group {
                 switch tab {
-                case .browse: BrowseView(selected: $selected, photoFilter: $photoFilter)
+                case .browse: BrowseView(selected: $selected, query: $browseQuery, side: $browseSide, photoFilter: $photoFilter)
                 case .saved: SavedView(selected: $selected)
                 case .orders: OrdersView()
                 case .inbox: InboxView()
@@ -83,7 +85,7 @@ struct MarketRootView: View {
                                 store.consumePushRoute()
                                 tab = item
                                 if item == .saved { store.filter(query: "", side: "all") }
-                                else if item == .browse { store.filter(query: "", side: "offer") }
+                                else if item == .browse { resetBrowse() }
                             }
                         } label: {
                             VStack(spacing: 5) {
@@ -141,7 +143,7 @@ struct MarketRootView: View {
             NavigationStack {
                 Group {
                     switch tab {
-                    case .browse: BrowseView(selected: $selected, photoFilter: $photoFilter)
+                    case .browse: BrowseView(selected: $selected, query: $browseQuery, side: $browseSide, photoFilter: $photoFilter)
                     case .saved: SavedView(selected: $selected)
                     case .orders: OrdersView()
                     case .inbox: InboxView()
@@ -173,7 +175,7 @@ struct MarketRootView: View {
             guard tab != item else { return }
             tab = item
             if item == .saved { store.filter(query: "", side: "all") }
-            else if item == .browse { store.filter(query: "", side: "offer") }
+            else if item == .browse { resetBrowse() }
         } label: {
             Label(item.rawValue, systemImage: item.symbol).font(.system(size: 14, weight: tab == item ? .semibold : .regular))
                 .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).padding(.vertical, 11)
@@ -183,6 +185,11 @@ struct MarketRootView: View {
         }.accessibilityIdentifier("tab\(item.rawValue)").accessibilityAddTraits(tab == item ? .isSelected : [])
     }
     #endif
+    private func resetBrowse() {
+        browseQuery = ""
+        browseSide = "offer"
+        store.filter(query: "", side: "offer")
+    }
     private func openPushRoute() {
         guard scenePhase == .active, store.ready, !store.demo, store.snapshot.profileNameRequired != true, let route = store.pushRoute else { return }
         #if os(macOS)
@@ -200,8 +207,8 @@ struct MarketRootView: View {
 struct BrowseView: View {
     @EnvironmentObject private var store: MarketStore
     @Binding var selected: MarketListing?
-    @State private var query = ""
-    @State private var side = "offer"
+    @Binding var query: String
+    @Binding var side: String
     @State private var showAllMatches = false
     @State private var showMap = false
     @State private var aiSettings = false

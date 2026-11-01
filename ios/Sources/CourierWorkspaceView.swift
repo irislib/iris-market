@@ -77,7 +77,11 @@ struct CourierWorkspaceView: View {
                     if value != "jobs" { store.filter(query: "", side: value == "service" ? "offer" : "request") }
                 }
                 .onDisappear {
+                    #if !os(macOS)
+                    // A phone sheet returns to the feed underneath it. Desktop
+                    // sidebar navigation applies its destination's filter instead.
                     if let previousFilter { store.filter(query: previousFilter.query, side: previousFilter.side, aiSearch: previousFilter.ai) }
+                    #endif
                 }
                 .marketPage(item: $selected) { listing in ListingDetailView(listing: listing, onContact: { inbox = true }, onOrder: { section = "jobs" }).marketSheetScope() }
                 .marketPage(item: $order) { value in OrderDetailView(orderID: value.id).marketSheetScope() }

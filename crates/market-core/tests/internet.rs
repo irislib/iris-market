@@ -109,6 +109,7 @@ fn two_profiles_publish_discover_and_exchange_private_enquiries_over_internet_tr
         location: "Test neighbourhood".into(),
         category: "Other".into(),
         tags: Vec::new(),
+        escrow: None,
         service_areas: None,
         image_url: None,
         expires_at: None,

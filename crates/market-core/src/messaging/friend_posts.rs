@@ -261,7 +261,11 @@ impl Messaging {
             .iter()
             .filter(|(_, item)| item.expires_at > now())
         {
-            let coordinate = format!("{}:{}", self.owner.to_hex(), item.listing_identifier);
+            let coordinate = listing::coordinate(
+                self.owner,
+                &item.listing_identifier,
+                item.request.draft.escrow,
+            );
             let posted = store.has_listing(&coordinate)?;
             let status = if posted {
                 "accepted"
@@ -287,7 +291,11 @@ impl Messaging {
             .requests
             .get(id)
             .context("Unknown friend post")?;
-        let coordinate = format!("{}:{}", self.owner.to_hex(), item.listing_identifier);
+        let coordinate = listing::coordinate(
+            self.owner,
+            &item.listing_identifier,
+            item.request.draft.escrow,
+        );
         ensure!(
             !store.has_listing(&coordinate)?,
             "Already accepted. Close the public listing instead"
@@ -312,7 +320,11 @@ impl Messaging {
     ) -> Result<()> {
         let inbox = &self.state.friend_posts;
         let item = inbox.requests.get(id).context("Unknown friend post")?;
-        let coordinate = format!("{}:{}", self.owner.to_hex(), item.listing_identifier);
+        let coordinate = listing::coordinate(
+            self.owner,
+            &item.listing_identifier,
+            item.request.draft.escrow,
+        );
         // The public insert and outbox entry commit together. A retry after a
         // crash sees the same coordinate, even if it has since been closed.
         if store.has_listing(&coordinate)? {

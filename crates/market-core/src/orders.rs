@@ -945,6 +945,13 @@ impl OrderBook {
         now: u64,
     ) -> Result<String> {
         require(
+            !matches!(
+                listing.escrow,
+                Some(crate::escrow::Offer::BitcoinFiat { .. })
+            ),
+            "Use a private escrow proposal for bitcoin offers",
+        )?;
+        require(
             listing.side == "offer"
                 && listing.status != "sold"
                 && listing.expires_at.is_none_or(|at| at > now),

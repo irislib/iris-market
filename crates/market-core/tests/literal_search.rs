@@ -34,6 +34,7 @@ fn draft(title: &str, description: &str, side: &str, tags: &[&str]) -> Draft {
         location: "Helsinki".into(),
         category: "transport".into(),
         tags: tags.iter().map(|value| (*value).into()).collect(),
+        escrow: None,
         service_areas: None,
         image_url: None,
         expires_at: None,

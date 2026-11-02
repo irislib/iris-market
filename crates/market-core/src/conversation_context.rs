@@ -28,7 +28,7 @@ impl MessageContext {
         if let Some(reference) = &self.listing {
             let mut fields = reference.splitn(3, ':');
             if reference.len() > 512
-                || fields.next() != Some("30402")
+                || !matches!(fields.next(), Some("30402" | "38383"))
                 || fields
                     .next()
                     .is_none_or(|key| PublicKey::from_hex(key).is_err())

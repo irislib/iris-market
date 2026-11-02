@@ -440,6 +440,7 @@ mod tests {
             location: String::new(),
             category: "Other".into(),
             tags: vec![],
+            escrow: None,
             service_areas: None,
             image_url: None,
             expires_at: None,

@@ -68,6 +68,8 @@ pub struct Draft {
     pub title: String,
     pub description: String,
     pub side: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub escrow: Option<crate::escrow::Offer>,
     #[serde(default)]
     pub price: String,
     #[serde(default = "eur")]
@@ -113,6 +115,8 @@ pub struct Listing {
     pub title: String,
     pub description: String,
     pub side: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub escrow: Option<crate::escrow::Offer>,
     pub price: String,
     pub currency: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -250,6 +254,8 @@ pub struct Message {
     pub reactions: Vec<crate::messaging::Reaction>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub order_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub escrow: Option<crate::escrow::AgreementMessage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cashu: Option<crate::messaging::CashuPayment>,
 }
@@ -421,6 +427,21 @@ pub enum Command {
     },
     DeclineFriendPost {
         id: String,
+    },
+    ProposeEscrow {
+        listing_id: String,
+        terms: crate::escrow::Terms,
+    },
+    AcceptEscrow {
+        peer_id: String,
+        proposal_id: nostr::EventId,
+    },
+    RateEscrowProvider {
+        peer_id: String,
+        proposal_id: nostr::EventId,
+        rating: u8,
+        #[serde(default)]
+        body: String,
     },
     RequestOrder {
         listing_id: String,

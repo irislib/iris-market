@@ -1,7 +1,7 @@
 //! A bounded public author feed, independent of Browse filters and private inboxes.
 use crate::{State, image_proxy, listing, model::Listing, store::Store};
 use anyhow::Result;
-use nostr::{Event, Filter, JsonUtil, Kind, PublicKey};
+use nostr::{Event, Filter, JsonUtil, PublicKey};
 use nostr_pubsub::{EventBus, NostrEventSubscriber, QueryOptions};
 use nostr_pubsub_relay::RelayEventBus;
 use serde::Serialize;
@@ -137,7 +137,7 @@ pub(crate) fn start(
 fn ingest(state: &Arc<Mutex<State>>, control: &Arc<Control>, author: PublicKey, event: &Event) {
     if control.cancelled.load(Ordering::Acquire)
         || event.pubkey != author
-        || event.kind != Kind::Custom(listing::LISTING_KIND)
+        || !listing::kinds().contains(&event.kind)
     {
         return;
     }
@@ -215,15 +215,12 @@ async fn run(
         _ = control.wake.notified() => { bus.client().shutdown().await; return; },
         _ = bus.client().wait_for_connection(Duration::from_secs(3)) => {}
     }
-    let filter = Filter::new()
-        .author(author)
-        .kind(Kind::Custom(listing::LISTING_KIND))
-        .limit(limit);
+    let filter = Filter::new().author(author).limit(limit);
     let target = state.clone();
     let token = control.clone();
     let subscription = bus
         .subscribe(
-            vec![filter.clone()],
+            listing::filters(filter.clone()),
             Arc::new(move |received| ingest(&target, &token, author, received.event.as_event())),
         )
         .await;
@@ -239,7 +236,7 @@ async fn run(
     // events are visible immediately; EOSE never gates opening the profile.
     tokio::select! {
         _=control.wake.notified()=>{},
-        report=tokio::time::timeout(Duration::from_secs(6),bus.query(vec![filter],QueryOptions{limit:Some(limit)}))=>{
+        report=tokio::time::timeout(Duration::from_secs(6),bus.query(listing::filters(filter),QueryOptions{limit:Some(limit)}))=>{
             match report {
                 Ok(Ok(report))=>{let count=report.events.len();for received in report.events {ingest(&state,&control,author,received.event.as_event());}finish(&state,&control,Some(count));},
                 _=>finish(&state,&control,None),
@@ -291,6 +288,7 @@ mod tests {
             location: String::new(),
             category: "Other".into(),
             tags: Vec::new(),
+            escrow: None,
             service_areas: None,
             image_url: None,
             expires_at: None,

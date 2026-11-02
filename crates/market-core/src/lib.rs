@@ -1,5 +1,6 @@
 pub mod ai;
 pub mod conversation_context;
+pub mod escrow;
 pub mod geo;
 pub mod identity;
 pub mod image_proxy;
@@ -300,6 +301,7 @@ impl State {
                                     delivery: m.delivery,
                                     reactions: m.reactions,
                                     order_id: m.order_id,
+                                    escrow: m.escrow,
                                     cashu: m.cashu,
                                 })
                                 .collect(),
@@ -868,7 +870,7 @@ impl Market {
                     bail!("Only your own listings can be closed");
                 }
                 let l = listing::parse(&previous, listing::now())?;
-                let identifier = id.split_once(':').context("Invalid listing")?.1;
+                let identifier = previous.tags.identifier().context("Invalid listing")?;
                 let event = listing::build(
                     s.owner_keys
                         .as_ref()
@@ -1041,6 +1043,52 @@ impl Market {
                     .as_mut()
                     .context("Private messaging unavailable")?
                     .decline_friend_post(store, &id)?;
+            }
+            Command::ProposeEscrow { listing_id, terms } => {
+                let event = s.store.event(&listing_id)?;
+                s.messaging
+                    .as_mut()
+                    .context("Private messaging unavailable")?
+                    .propose_escrow(&event, terms)
+                    .map_err(anyhow::Error::msg)?;
+                self.notify.notify_waiters();
+            }
+            Command::AcceptEscrow {
+                peer_id,
+                proposal_id,
+            } => {
+                let proposal = s
+                    .messaging
+                    .as_ref()
+                    .context("Private messaging unavailable")?
+                    .escrow_proposal(&peer_id, proposal_id)
+                    .map_err(anyhow::Error::msg)?;
+                let event = s.store.event(&proposal.listing_id)?;
+                s.messaging
+                    .as_mut()
+                    .context("Private messaging unavailable")?
+                    .accept_escrow(&peer_id, proposal_id, &event)
+                    .map_err(anyhow::Error::msg)?;
+                self.notify.notify_waiters();
+            }
+            Command::RateEscrowProvider {
+                peer_id,
+                proposal_id,
+                rating,
+                body,
+            } => {
+                let provider = s
+                    .messaging
+                    .as_ref()
+                    .context("Private messaging unavailable")?
+                    .agreed_escrow(&peer_id, proposal_id)
+                    .map_err(anyhow::Error::msg)?
+                    .terms
+                    .provider
+                    .profile;
+                drop(s);
+                self.publish_review(provider.to_hex(), rating, body)?;
+                return Ok(());
             }
             Command::RequestOrder {
                 listing_id,
@@ -1664,6 +1712,7 @@ fn seed_preview(state: &mut State) -> Result<()> {
             location: (*location).into(),
             category: (*category).into(),
             tags: Vec::new(),
+            escrow: None,
             service_areas: None,
             image_url: None,
             expires_at: None,

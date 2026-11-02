@@ -21,6 +21,7 @@ fn draft() -> Draft {
         location: "Helsinki".into(),
         category: "Photography".into(),
         tags: Vec::new(),
+        escrow: None,
         service_areas: None,
         image_url: None,
         expires_at: None,

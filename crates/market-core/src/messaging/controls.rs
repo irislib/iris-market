@@ -665,6 +665,7 @@ mod tests {
             created_at_ms: now() * 1000,
             delivery: if mine { "pending" } else { "received" }.into(),
             order_id: None,
+            escrow: None,
             cashu: None,
             reactions: Vec::new(),
         }

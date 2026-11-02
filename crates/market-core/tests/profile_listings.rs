@@ -47,6 +47,7 @@ fn author_subscription_streams_signed_winners_before_eose_and_closes_on_navigati
         location: "Test".into(),
         category: "Other".into(),
         tags: Vec::new(),
+        escrow: None,
         service_areas: None,
         image_url: None,
         expires_at: None,

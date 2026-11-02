@@ -121,9 +121,12 @@ fn guest_activation(name: &str) {
                 assert!(
                     filter["kinds"].as_array().is_some_and(|kinds| kinds
                         .iter()
-                        .all(|kind| matches!(kind.as_u64(), Some(0 | 3 | 5 | 30402)))),
+                        .all(|kind| matches!(kind.as_u64(), Some(0 | 3 | 5 | 30402 | 38383)))),
                     "Only public listing/profile discovery is expected for this guest fixture: {filter}"
                 );
+                if filter["kinds"] == serde_json::json!([38383]) {
+                    assert_eq!(filter["#y"], serde_json::json!(["iris-market"]));
+                }
                 assert!(filter.get("#p").is_none());
             }
         }

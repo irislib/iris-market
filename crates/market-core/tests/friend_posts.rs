@@ -31,12 +31,21 @@ fn policy(sender: &Keys, sides: &[&str]) -> Value {
 
 #[test]
 fn only_reviewed_copy_crosses_from_private_request_to_public_outbox() {
-    for side in ["offer", "request"] {
+    for (side, bitcoin) in [("offer", false), ("request", false), ("request", true)] {
         let (origin_dir, helper_dir) = (tempdir().unwrap(), tempdir().unwrap());
         let (origin, helper) = (Keys::generate(), Keys::generate());
         let author = origin.public_key().to_hex();
         let app = offline(origin_dir.path(), &origin);
-        app.command(&request(&helper, side).to_string()).unwrap();
+        let mut post = request(&helper, side);
+        if bitcoin {
+            let draft = &mut post["request"]["draft"];
+            draft["title"] = json!("Bitcoin");
+            draft["price"] = json!("25.00");
+            draft["currency"] = json!("EUR");
+            draft["expires_at"] = json!(listing::now() + 3600);
+            draft["escrow"] = json!({"trade":"bitcoin_fiat","sats":30000,"method":"bank_transfer"});
+        }
+        app.command(&post.to_string()).unwrap();
         drop(app);
         let helper_app = offline(helper_dir.path(), &helper);
         helper_app

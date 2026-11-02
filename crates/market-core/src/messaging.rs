@@ -6,6 +6,7 @@
 //! listings or for receiving. Only acknowledge an outbound event after a relay OK.
 
 mod controls;
+mod escrow;
 pub mod friend_posts;
 pub mod mobile_push;
 pub use controls::Reaction;
@@ -66,6 +67,8 @@ pub struct Message {
     pub reactions: Vec<Reaction>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub order_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub escrow: Option<crate::escrow::AgreementMessage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cashu: Option<CashuPayment>,
 }
@@ -605,6 +608,16 @@ impl Messaging {
         text: &str,
         context: Option<crate::conversation_context::MessageContext>,
     ) -> MessagingResult<()> {
+        self.send_private(peer_id, text, context, None)
+    }
+
+    fn send_private(
+        &mut self,
+        peer_id: &str,
+        text: &str,
+        context: Option<crate::conversation_context::MessageContext>,
+        escrow: Option<crate::escrow::AgreementMessage>,
+    ) -> MessagingResult<()> {
         self.require_authorization()?;
         if let Some(value) = &context {
             value.validate().map_err(str::to_string)?;
@@ -638,11 +651,12 @@ impl Messaging {
             let now = millis / 1000;
             let mut rumor = UnsignedEvent::from_json(serde_json::json!({"pubkey":this.keys.public_key(),"kind":14,"created_at":now,"content":text,"tags":[["p",id],["ms",millis.to_string()]]}).to_string()).map_err(protocol_error)?;
             if let Some(value) = &context { rumor.tags.push(value.tag()?); }
+            if let Some(value) = &escrow { rumor.tags.push(value.tag().map_err(|e|e.to_string())?); }
             rumor.ensure_id();
             if !this.contact_recipient_ready(peer) {
                 let message_id = rumor.id.as_ref().ok_or("Private message identity is unavailable")?.to_hex();
                 this.state.pending_contact_messages.insert(message_id.clone(), PendingContactMessage { peer_id: id.clone(), rumor, expires_at: None });
-                return this.append(&id, Message { id:message_id, order_id:context.as_ref().and_then(|value|value.order_id.clone()), context, text, mine:true, created_at:now, created_at_ms:millis, delivery:"pending".into(), cashu:None, reactions:Vec::new() });
+                return this.append(&id, Message { id:message_id, order_id:context.as_ref().and_then(|value|value.order_id.clone()), context, text, mine:true, created_at:now, created_at_ms:millis, delivery:"pending".into(), escrow, cashu:None, reactions:Vec::new() });
             }
             let result = this.engine.send_direct_unsigned_event(peer, &id, rumor, UnixSeconds(now)).map_err(protocol_error)?;
             this.queue_effects(result.effects)?;
@@ -657,6 +671,7 @@ impl Messaging {
                     created_at: now,
                     created_at_ms: millis,
                     delivery: "pending".into(),
+                    escrow,
                     cashu: None,
                 reactions: Vec::new(),
                 },
@@ -1109,6 +1124,7 @@ impl Messaging {
                         created_at_ms,
                         delivery: "pending".into(),
                         order_id: Some(job.order_id),
+                        escrow: None,
                         cashu: None,
                         reactions: Vec::new(),
                     },
@@ -1661,6 +1677,7 @@ impl Messaging {
             context.as_ref().and_then(|c| c.order_id.clone())
         };
         let created_at_ms = message_millis(&inner);
+        let escrow = crate::escrow::AgreementMessage::from_rumor(&inner);
         let stored = Message {
             id,
             context,
@@ -1672,6 +1689,7 @@ impl Messaging {
             created_at_ms,
             delivery: if mine { "sent" } else { "received" }.into(),
             order_id,
+            escrow,
             cashu: None,
             reactions: Vec::new(),
         };
@@ -1939,6 +1957,7 @@ mod chronology_tests {
             created_at_ms: 0,
             delivery: "received".into(),
             order_id: None,
+            escrow: None,
             cashu: None,
             reactions: Vec::new(),
         }

@@ -416,7 +416,8 @@ impl Store {
         max_bytes: usize,
     ) -> Result<Vec<Event>> {
         let mut statement = self.db.prepare(
-            "SELECT raw FROM events WHERE created_at>=?1 AND created_at<=?2 ORDER BY created_at,event_id LIMIT ?3",
+            // NIP-77 repairs the kind-30402 feed. NIP-69 has its own platform-filtered subscription.
+            "SELECT raw FROM events WHERE coordinate NOT LIKE '38383:%' AND created_at>=?1 AND created_at<=?2 ORDER BY created_at,event_id LIMIT ?3",
         )?;
         let rows = statement.query_map(
             params![since, until, max_records.saturating_add(1)],

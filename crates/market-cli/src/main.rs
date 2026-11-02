@@ -1,4 +1,5 @@
 mod args;
+mod escrow;
 mod updates;
 
 use anyhow::{Context, Result, bail};
@@ -12,7 +13,7 @@ use std::{
 fn tools() -> Value {
     json!([
      {"name":"market_search","description":"Search this user's verified public marketplace listings. This does not publish or contact anyone.","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"side":{"type":"string","enum":["all","offer","request"]}},"additionalProperties":false},"annotations":{"readOnlyHint":true}},
-     {"name":"market_publish","description":"Publish an offer or request publicly and enable private enquiries. Confirm the exact listing with the user before calling.","inputSchema":{"type":"object","properties":{"draft":{"type":"object","properties":{"title":{"type":"string"},"description":{"type":"string"},"side":{"type":"string","enum":["offer","request"]},"price":{"type":"string"},"currency":{"type":"string"},"location":{"type":"string"},"category":{"type":"string"},"image_url":{"type":["string","null"]}},"required":["title","description","side"]}},"required":["draft"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"openWorldHint":true}},
+     {"name":"market_publish","description":"Publish an offer or request publicly and enable private enquiries. Confirm the exact listing with the user before calling.","inputSchema":{"type":"object","properties":{"draft":{"type":"object","properties":{"title":{"type":"string"},"description":{"type":"string"},"side":{"type":"string","enum":["offer","request"]},"price":{"type":"string"},"currency":{"type":"string"},"location":{"type":"string"},"category":{"type":"string"},"image_url":{"type":["string","null"]},"escrow":{"oneOf":[{"type":"object","properties":{"trade":{"const":"goods"}},"required":["trade"],"additionalProperties":false},{"type":"object","properties":{"trade":{"const":"bitcoin_fiat"},"sats":{"type":"integer","minimum":1,"maximum":1_000_000_000_000u64},"method":{"enum":["cash","bank_transfer"]}},"required":["trade","sats","method"],"additionalProperties":false}]},"expires_at":{"type":"integer"}},"required":["title","description","side"]}},"required":["draft"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"openWorldHint":true}},
      {"name":"market_save","description":"Toggle a local bookmark for a listing.","inputSchema":{"type":"object","properties":{"id":{"type":"string"}},"required":["id"],"additionalProperties":false}},
      {"name":"market_contact","description":"Start a private ratcheted conversation with the verified listing author. Requires user authorisation to contact that person.","inputSchema":{"type":"object","properties":{"author":{"type":"string"},"listing_id":{"type":"string"}},"required":["author","listing_id"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"openWorldHint":true}},
      {"name":"market_send_message","description":"Send a private message in an existing conversation. Obtain user authorisation before contacting someone.","inputSchema":{"type":"object","properties":{"peer_id":{"type":"string"},"text":{"type":"string"}},"required":["peer_id","text"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"openWorldHint":true}},
@@ -433,6 +434,7 @@ fn run(invocation: Invocation) -> Result<()> {
             println!("{}", tools());
             return Ok(());
         }
+        Invocation::Escrow(command) => return escrow::run(command),
         Invocation::Update(command) => return updates::run(command),
         Invocation::Profile { dir, mode, wait } => (dir, mode, wait),
     };

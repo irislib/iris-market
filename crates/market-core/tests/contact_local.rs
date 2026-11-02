@@ -81,6 +81,7 @@ fn listing_contact_checks_the_verified_cached_author_before_opening() {
         location: "Test area".into(),
         category: "Home".into(),
         tags: vec![],
+        escrow: None,
         service_areas: None,
         image_url: None,
         expires_at: None,

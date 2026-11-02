@@ -12,6 +12,9 @@ pub const HELP: &str = "Iris Market
   iris-market accept <profile> <invite-file|-> [--wait 5]
   iris-market send <profile> <peer-id> <text|-> [--wait 5]
   iris-market friend-posts <profile> [--wait 0]   Inspect your private posting policy and requests
+  iris-market escrow provider-key <compressed-cashu-pubkey>
+  iris-market escrow request <profile> <peer-id> <proposal-message-id>
+  iris-market escrow check <profile> <peer-id> <proposal-message-id>  (token on stdin)
   iris-market orders <profile> [--wait 0]
   iris-market order-request <profile> <listing-id> [request.json|-] [--wait 0]
   iris-market order-update <profile> <order-id> <patch.json|-> [--wait 0]
@@ -65,6 +68,7 @@ pub enum Invocation {
     Help,
     Tools,
     Update(crate::updates::Command),
+    Escrow(crate::escrow::Command),
     Profile { dir: PathBuf, mode: Mode, wait: u64 },
 }
 
@@ -76,7 +80,8 @@ fn public_key(value: &str) -> bool {
 }
 
 fn listing_author(value: &str) -> Result<String> {
-    let Some((author, identifier)) = value.split_once(':') else {
+    let coordinate = value.strip_prefix("38383:").unwrap_or(value);
+    let Some((author, identifier)) = coordinate.split_once(':') else {
         bail!("Use the complete listing ID returned by search");
     };
     if !public_key(author) || identifier.is_empty() || identifier.len() > 160 {
@@ -117,6 +122,9 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Invocation> {
         return Ok(Invocation::Help);
     }
     let command = args[0].as_str();
+    if command == "escrow" {
+        return Ok(Invocation::Escrow(crate::escrow::parse(&args[1..])?));
+    }
     if command == "update" {
         return Ok(Invocation::Update(crate::updates::parse(&args[1..])?));
     }

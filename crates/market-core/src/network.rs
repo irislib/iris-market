@@ -54,14 +54,12 @@ pub(crate) async fn run(state: Arc<Mutex<State>>, notify: Arc<Notify>, stopped: 
             }
         };
         let consumer = state.clone();
-        let filter = Filter::new()
-            .kind(Kind::Custom(listing::LISTING_KIND))
-            .limit(300);
+        let filter = Filter::new().limit(300);
         // Inclusive overlap joins bounded history with new live events.
         let live_since = Timestamp::now();
         let subscription = bus
             .subscribe(
-                vec![filter.clone().since(live_since)],
+                listing::filters(filter.clone().since(live_since)),
                 Arc::new(move |received| {
                     let mut s = consumer.lock().unwrap();
                     if let Ok(true) =
@@ -84,7 +82,7 @@ pub(crate) async fn run(state: Arc<Mutex<State>>, notify: Arc<Notify>, stopped: 
         };
         if let Ok(report) = bus
             .query(
-                vec![filter.until(live_since)],
+                listing::filters(filter.until(live_since)),
                 QueryOptions { limit: Some(300) },
             )
             .await
@@ -198,9 +196,7 @@ async fn backfill_buying(
                 return;
             }
         }
-        let mut filter = Filter::new()
-            .kind(Kind::Custom(listing::LISTING_KIND))
-            .limit(300);
+        let mut filter = Filter::new().limit(300);
         if page == 0 {
             filter = filter.hashtag(listing::REQUEST_TOPIC);
         }
@@ -209,7 +205,7 @@ async fn backfill_buying(
         }
         let Ok(Ok(report)) = tokio::time::timeout_at(
             deadline,
-            bus.query(vec![filter], QueryOptions { limit: Some(300) }),
+            bus.query(listing::filters(filter), QueryOptions { limit: Some(300) }),
         )
         .await
         else {

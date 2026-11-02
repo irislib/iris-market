@@ -17,6 +17,7 @@ fn event(keys: &Keys, id: &str, at: u64, sold: bool, expires: Option<u64>) -> Ev
             location: String::new(),
             category: "Other".into(),
             tags: vec![],
+            escrow: None,
             service_areas: None,
             image_url: None,
             expires_at: expires,

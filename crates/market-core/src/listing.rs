@@ -3,6 +3,32 @@ use anyhow::{Context, Result, bail};
 use nostr::{Event, EventBuilder, JsonUtil, Keys, Kind, Tag, Timestamp};
 
 pub const LISTING_KIND: u16 = 30402;
+pub const P2P_KIND: u16 = 38383;
+pub fn kinds() -> [Kind; 2] {
+    [Kind::Custom(LISTING_KIND), Kind::Custom(P2P_KIND)]
+}
+/// Keep coordinator-owned third-party orders out of the Iris private trade flow.
+pub(crate) fn filters(base: nostr::Filter) -> Vec<nostr::Filter> {
+    vec![
+        base.clone().kind(Kind::Custom(LISTING_KIND)),
+        base.kind(Kind::Custom(P2P_KIND)).custom_tag(
+            nostr::SingleLetterTag::lowercase(nostr::Alphabet::Y),
+            "iris-market",
+        ),
+    ]
+}
+pub(crate) fn coordinate(
+    author: nostr::PublicKey,
+    identifier: &str,
+    offer: Option<crate::escrow::Offer>,
+) -> String {
+    match offer {
+        Some(crate::escrow::Offer::BitcoinFiat { .. }) => {
+            format!("{P2P_KIND}:{author}:{identifier}")
+        }
+        _ => format!("{author}:{identifier}"),
+    }
+}
 pub const REQUEST_TOPIC: &str = "market:request";
 pub fn now() -> u64 {
     Timestamp::now().as_secs()
@@ -31,6 +57,9 @@ fn normalized_tag(value: &str) -> Option<String> {
 }
 
 pub fn validate(d: &Draft) -> Result<()> {
+    if let Some(offer) = &d.escrow {
+        offer.validate(d)?;
+    }
     if let Some(areas) = &d.service_areas {
         crate::service_area::validate(&areas.pickup)?;
         crate::service_area::validate(&areas.destination)?;
@@ -129,8 +158,12 @@ pub fn build(
     if let Some(areas) = &d.service_areas {
         tags.extend(crate::service_area::to_tags(areas)?);
     }
+    let kind = match d.escrow {
+        Some(offer) => offer.write_tags(&mut tags, d, closed)?,
+        None => LISTING_KIND,
+    };
     let tags: Result<Vec<Tag>, _> = tags.into_iter().map(Tag::parse).collect();
-    let event = EventBuilder::new(Kind::Custom(LISTING_KIND), d.description.clone())
+    let event = EventBuilder::new(Kind::Custom(kind), d.description.clone())
         .tags(tags?)
         .custom_created_at(Timestamp::from(created_at))
         .sign_with_keys(keys)?;
@@ -145,7 +178,7 @@ pub fn parse(event: &Event, at: u64) -> Result<Listing> {
         bail!("Listing is too large");
     }
     event.verify()?;
-    if event.kind != Kind::Custom(LISTING_KIND) {
+    if !kinds().contains(&event.kind) {
         bail!("Not a classified listing");
     }
     if event.created_at.as_secs() > at + 300 {
@@ -179,7 +212,9 @@ pub fn parse(event: &Event, at: u64) -> Result<Listing> {
         .filter(|topic| seen_topics.insert(topic.clone()))
         .take(24)
         .collect();
-    let draft = Draft {
+    let escrow = crate::escrow::Offer::from_event(event)?;
+    let mut draft = Draft {
+        escrow,
         title: field(event, "title")?.context("Listing has no title")?,
         description: event.content.clone(),
         side: field(event, "market")?.unwrap_or_else(|| {
@@ -225,14 +260,19 @@ pub fn parse(event: &Event, at: u64) -> Result<Listing> {
             .transpose()
             .context("Invalid expiry")?,
     };
+    let status = if event.kind.as_u16() == P2P_KIND {
+        crate::escrow::read_bitcoin_quote(event, &mut draft)?
+    } else {
+        field(event, "status")?.unwrap_or_else(|| "active".into())
+    };
     validate(&draft)?;
-    let status = field(event, "status")?.unwrap_or_else(|| "active".into());
     if !["active", "sold"].contains(&status.as_str()) {
         bail!("Unknown listing status");
     }
     Ok(Listing {
         search_text_cache: Default::default(),
-        id: format!("{}:{identifier}", event.pubkey.to_hex()),
+        id: coordinate(event.pubkey, &identifier, draft.escrow),
+        escrow: draft.escrow,
         author: event.pubkey.to_hex(),
         title: draft.title,
         description: draft.description,
@@ -274,6 +314,7 @@ pub fn parse(event: &Event, at: u64) -> Result<Listing> {
 
 pub fn draft_from(l: &Listing) -> Draft {
     Draft {
+        escrow: l.escrow,
         title: l.title.clone(),
         description: l.description.clone(),
         side: l.side.clone(),

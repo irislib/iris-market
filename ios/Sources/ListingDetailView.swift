@@ -45,7 +45,7 @@ struct ListingDetailView: View {
                                 if success { dismiss(); onContact?() }
                             }
                         } label: {
-                            if store.busy { ProgressView().tint(MarketTheme.onAction) } else { Label("Private enquiry", systemImage: "bubble.left.fill") }
+                            Label("Private enquiry", systemImage: "bubble.left.fill")
                         }.buttonStyle(PrimaryButton()).disabled(store.demo || store.busy || !store.snapshot.messagingReady).accessibilityIdentifier("privateEnquiry")
                         Text(store.demo ? "Private enquiries are unavailable in preview mode." : "Your conversation stays private.").font(.system(size: 12)).foregroundStyle(MarketTheme.muted).multilineTextAlignment(.center).frame(maxWidth: .infinity)
                         Button("Connect with an invitation instead") { invitation = true }.font(.system(size: 12)).frame(maxWidth: .infinity)
@@ -121,7 +121,7 @@ struct NewListingView: View {
                     else if !store.snapshot.canSign { Text("Sign in with your profile’s secret key to publish listings.").font(.system(size: 13)).foregroundStyle(MarketTheme.muted) }
                     else { Text("Your listing will be public, and people can contact you privately. Keep exact addresses and private contact details out of your listing.").font(.system(size: 13)).foregroundStyle(MarketTheme.muted).fixedSize(horizontal: false, vertical: true) }
                     MarketInlineError()
-                    Button { reviewPublish = true } label: { HStack { Spacer(); if store.busy { ProgressView() } else { Text("Review listing").fontWeight(.semibold) }; Spacer() }.padding(.vertical, 8) }
+                    Button { reviewPublish = true } label: { HStack { Spacer(); Text("Review listing").fontWeight(.semibold); Spacer() }.padding(.vertical, 8) }
                         .disabled(store.demo || store.busy || uploading || !store.snapshot.canSign || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || category == "Transport" && transport != nil && serviceAreas == nil).accessibilityIdentifier("publishListing")
                 }
             }.formStyle(.grouped).scrollContentBackground(.hidden).background(MarketTheme.paper).marketKeyboardDismissal().navigationTitle("New listing").marketInlineTitle()

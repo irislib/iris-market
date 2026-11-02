@@ -237,10 +237,8 @@ struct BrowseView: View {
                     Image(systemName: "magnifyingglass").font(.system(size: 17)).foregroundStyle(MarketTheme.muted)
                     TextField("Search listings", text: $query, prompt: Text("Search listings").foregroundColor(MarketTheme.muted)).textFieldStyle(.plain).font(.system(size: 14)).submitLabel(.search).accessibilityIdentifier("marketSearch")
                         .onSubmit { submitSearch() }
-                    Group {
-                        if store.busy || searching { ProgressView().controlSize(.small) }
-                        else { Image(systemName: "sparkles").foregroundStyle(store.aiSearchEnabled ? MarketTheme.green : MarketTheme.muted) }
-                    }.frame(width: 36, height: 40).contentShape(Rectangle())
+                    Image(systemName: "sparkles").foregroundStyle(store.aiSearchEnabled ? MarketTheme.green : MarketTheme.muted)
+                        .frame(width: 36, height: 40).contentShape(Rectangle())
                         .gesture(LongPressGesture(minimumDuration: 0.5).exclusively(before: TapGesture()).onEnded { value in
                             switch value {
                             case .first: aiSettings = true
@@ -295,11 +293,8 @@ struct BrowseView: View {
                 }.padding(.top, 2)
                 if showMap && !store.demo {
                     MarketMapView(listings: visibleListings, onSelect: { selected = $0 }).frame(height: 440).clipShape(RoundedRectangle(cornerRadius: 20))
-                } else if !store.ready { ProgressView("Loading listings…").frame(maxWidth: .infinity).padding(.vertical, 50) }
-                else if visibleListings.isEmpty && searching {
-                    ProgressView().frame(maxWidth: .infinity).padding(.vertical, 50)
                 } else if visibleListings.isEmpty {
-                    MarketEmptyState(symbol: query.isEmpty ? "square.grid.2x2" : "magnifyingglass", title: query.isEmpty ? "No listings" : (store.searchPaused ? "Search paused" : unfinishedSearch ? "No matches yet" : "No results"), description: query.isEmpty ? "Sell something or post what you want to buy." : unfinishedSearch ? "Continue searching or try another search." : "Try another search or post what you want to buy.")
+                    MarketEmptyState(symbol: query.isEmpty ? "square.grid.2x2" : "magnifyingglass", title: query.isEmpty ? "No listings yet" : (store.searchPaused ? "Search paused" : searching || unfinishedSearch ? "No matches yet" : "No results"), description: searching ? "New matches appear here as they arrive." : query.isEmpty ? "Sell something or post what you want to buy." : unfinishedSearch ? "Continue searching or try another search." : "Try another search or post what you want to buy.")
                 } else {
                     LazyVGrid(columns: marketListingColumns, alignment: .leading, spacing: 21) {
                         ForEach(visibleListings) { listing in ListingCard(listing: listing, open: { selected = listing }, save: { store.save(listing) }) }

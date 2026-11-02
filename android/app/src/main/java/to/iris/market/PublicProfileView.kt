@@ -70,7 +70,6 @@ import org.json.JSONObject
                 if(!state.demo && author!=state.publicKey) OutlinedButton(onClick={message(author)}) {
                     Icon(Icons.Filled.ChatBubble,null);Spacer(Modifier.width(8.dp));Text("Message")
                 }
-                if(profile?.loading==true) LinearProgressIndicator(Modifier.fillMaxWidth())
                 if(!profile?.about.isNullOrBlank()) Text(profile!!.about,style=MaterialTheme.typography.bodyMedium)
                 profile?.website?.let { url -> TextButton(onClick={runCatching{uri.openUri(url)}}) { Text(url,maxLines=2) } }
                 if(known.isNotEmpty()) KnownFollowersLine(known.take(3),maxOf(known.size,person.connection.knownFollowers),open={history=history+author;author=it},showFollowers={
@@ -96,10 +95,7 @@ import org.json.JSONObject
             }
             item(span={GridItemSpan(maxLineSpan)}) {
                 Column(Modifier.fillMaxWidth(),horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(10.dp)) {
-                    if(feed==null || feed.loading) {
-                        LinearProgressIndicator(Modifier.fillMaxWidth())
-                        Text("Loading listings…",color=Muted,style=MaterialTheme.typography.bodySmall)
-                    } else if(feed.error!=null) {
+                    if(feed?.error!=null) {
                         Text("Couldn’t load listings.",color=Muted,style=MaterialTheme.typography.bodySmall)
                         TextButton(onClick=retryListings) { Text("Retry") }
                     } else if(authorListings.isEmpty()) {
@@ -111,18 +107,17 @@ import org.json.JSONObject
                 }
             }
         } else {
-            if(selection==2 && profile?.followersLoading==true) item(span={GridItemSpan(maxLineSpan)}) { LinearProgressIndicator(Modifier.fillMaxWidth()) }
             if(selection==2 && profile?.followersError!=null) item(span={GridItemSpan(maxLineSpan)}) {
                 Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) { Text(profile.followersError,color=Muted,modifier=Modifier.weight(1f)); TextButton(onClick={model.command(JSONObject().put("type","load_profile_followers").put("author",author))}){Text("Retry")} }
             }
-            if(!state.demo && selection!=2 && (profile==null || profile.loading || profile.error!=null || !profile.graphLoaded)) item(span={GridItemSpan(maxLineSpan)}) {
+            if(!state.demo && selection!=2 && profile!=null && !profile.loading && (profile.error!=null || !profile.graphLoaded)) item(span={GridItemSpan(maxLineSpan)}) {
                 Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
-                    Text(if(profile==null || profile.loading) "Loading connections…" else if(state.demo && profile.error!=null) profile.error else "Some connections are unavailable.",color=Muted,style=MaterialTheme.typography.bodySmall,modifier=Modifier.weight(1f))
-                    if(profile!=null && !profile.loading && !state.demo) TextButton(onClick={model.command(JSONObject().put("type","load_profile").put("author",author))}) { Text("Retry") }
+                    Text("Some connections are unavailable.",color=Muted,style=MaterialTheme.typography.bodySmall,modifier=Modifier.weight(1f))
+                    TextButton(onClick={model.command(JSONObject().put("type","load_profile").put("author",author))}) { Text("Retry") }
                 }
             }
-            if(people.isEmpty() && profile!=null && !(if(selection==2) profile.followersLoading else profile.loading)) item(span={GridItemSpan(maxLineSpan)}) {
-                Text("No connections to show.",color=Muted,style=MaterialTheme.typography.bodyMedium)
+            if(people.isEmpty()) item(span={GridItemSpan(maxLineSpan)}) {
+                Text("No connections to show yet.",color=Muted,style=MaterialTheme.typography.bodyMedium)
             }
             items(people,key={it.author},span={GridItemSpan(maxLineSpan)}) { connection ->
                 Row(Modifier.fillMaxWidth().clickable{history=history+author;author=connection.author}.padding(vertical=5.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)) {

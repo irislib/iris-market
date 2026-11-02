@@ -78,6 +78,10 @@ pub(crate) struct State {
     profile_listings: Option<profile_listings::Feed>,
 }
 impl State {
+    fn can_discover_search(&self) -> bool {
+        // Preview has no network worker; an empty relay list is local-only.
+        !self.demo && !self.query.trim().is_empty() && !self.settings.relays.is_empty()
+    }
     fn reset_search_plan(&mut self) {
         self.search_terms.clear();
         self.search_plan_applied = false;
@@ -702,12 +706,12 @@ impl Market {
                 s.search_request = s.search_request.wrapping_add(1);
                 s.reset_search_plan();
                 let generation = s.search_request;
-                let has_query = !s.query.trim().is_empty() && !s.settings.relays.is_empty();
+                let has_query = s.can_discover_search();
                 s.search_discovery.restart(generation, has_query);
                 self.notify.notify_waiters();
             }
             Command::ContinueSearch => {
-                if !s.query.trim().is_empty() && !s.settings.relays.is_empty() {
+                if s.can_discover_search() {
                     s.search_discovery.more();
                     self.notify.notify_waiters();
                 }
@@ -830,7 +834,7 @@ impl Market {
             }
             Command::Refresh => {
                 if !s.demo {
-                    if !s.query.trim().is_empty() {
+                    if s.can_discover_search() {
                         s.search_discovery.more();
                     }
                     if s.side == "request" {
@@ -881,7 +885,7 @@ impl Market {
                 }
                 s.settings = settings;
                 let generation = s.search_request;
-                let has_query = !s.query.trim().is_empty() && !s.settings.relays.is_empty();
+                let has_query = s.can_discover_search();
                 s.search_discovery.restart(generation, has_query);
                 s.status = "Settings saved".into();
                 self.notify.notify_one();
@@ -1264,7 +1268,7 @@ impl Market {
         if search_plan::apply(&mut s, generation, terms).is_err() {
             search_plan::apply(&mut s, generation, Vec::new())?;
         }
-        if !s.search_terms.is_empty() {
+        if !s.search_terms.is_empty() && s.can_discover_search() {
             s.search_discovery.more();
         }
         s.revision += 1;

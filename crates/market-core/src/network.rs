@@ -443,10 +443,10 @@ async fn run_outbox(state: Arc<Mutex<State>>, stopped: Arc<AtomicBool>, private:
             // Two attempts per 500ms and fixed 8s leases bound connection use
             // independently of responses. The cap is an extra resource guard,
             // never a gate: new work evicts the oldest lease, retaining its journal.
-            if leases.len() == 64 {
-                if let Some(oldest) = leases.pop_front() {
-                    oldest.sender.client().shutdown().await;
-                }
+            if leases.len() == 64
+                && let Some(oldest) = leases.pop_front()
+            {
+                oldest.sender.client().shutdown().await;
             }
             if let Ok(sender) = RelayEventBus::new(relays.clone(), Duration::from_secs(4)).await {
                 let responses = sender.client().notifications();

@@ -57,7 +57,7 @@ struct WalletView: View {
                         activity
                         backupControls
                     }
-                    if wallet.busy { ProgressView("Working…").frame(maxWidth: .infinity) }
+                    if wallet.busy { Text("Working…").foregroundStyle(MarketTheme.muted).frame(maxWidth: .infinity) }
                     if let error = wallet.error { Text(error).font(.callout).foregroundStyle(.red).textSelection(.enabled).fixedSize(horizontal: false, vertical: true) }
                     if let notice = wallet.notice { Text(notice).font(.callout).foregroundStyle(MarketTheme.green).fixedSize(horizontal: false, vertical: true) }
                 }

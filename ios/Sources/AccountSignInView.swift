@@ -14,13 +14,13 @@ struct AccountSignInView: View {
                         Text("Open this link on a device signed in to Iris Chat.").foregroundStyle(MarketTheme.muted)
                         ShareLink(item: invitation) { Label("Share link", systemImage: "square.and.arrow.up") }.buttonStyle(PrimaryButton())
                         Button { MarketPlatform.copyToClipboard(invitation) } label: { Label("Copy link", systemImage: "doc.on.doc") }.frame(maxWidth: .infinity)
-                        ProgressView("Waiting for approval…").frame(maxWidth: .infinity)
+                        Text("Waiting for approval on your other device.").foregroundStyle(MarketTheme.muted).frame(maxWidth: .infinity)
                     } else {
                         Button { store.beginDeviceLink() } label: { Label("Link this device", systemImage: "link") }.buttonStyle(PrimaryButton()).disabled(store.busy || store.demo)
                         Text("Or sign in with your secret key").font(.subheadline).foregroundStyle(MarketTheme.muted)
                         SecureField("Secret key", text: $secret).marketNoAutocapitalization().autocorrectionDisabled().textContentType(.password).padding(16).background(MarketTheme.surface, in: RoundedRectangle(cornerRadius: 16)).accessibilityIdentifier("accountSecret")
                         Button { store.signIn(secret: secret.trimmingCharacters(in: .whitespacesAndNewlines)) { success in if success { secret = ""; dismiss() } } } label: {
-                            if store.busy { ProgressView() } else { Text("Sign in") }
+                            Text("Sign in")
                         }.buttonStyle(PrimaryButton(dark: false)).disabled(secret.isEmpty || store.busy || store.demo).accessibilityIdentifier("accountSignIn")
                     }
                     MarketInlineError()

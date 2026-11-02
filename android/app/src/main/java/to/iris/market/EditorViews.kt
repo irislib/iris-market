@@ -215,7 +215,6 @@ import org.json.JSONObject
                     TextButton(onClick=model::deleteLocalModel) { Icon(Icons.Filled.Delete,null);Spacer(Modifier.width(6.dp));Text("Delete") }
                 }
                 else -> {
-                    LinearProgressIndicator(Modifier.fillMaxWidth())
                     Row(verticalAlignment=Alignment.CenterVertically) {
                         Text(when(localModel.phase) {
                             LocalModelPhase.VERIFYING -> "Checking model"
@@ -253,7 +252,7 @@ import org.json.JSONObject
                 if(settingsJSON!=originalSettingsJSON||replaceKey) model.saveSettings(settings(),provider,key,replaceKey,expectedAIIntent=aiIntentEpoch,done=runTest) else runTest()
                 replaceKey=false
             },modifier=Modifier.testTag("aiSandboxTest")) { Text("Test") }
-            if(aiTest.busy) { CircularProgressIndicator(Modifier.size(20.dp));TextButton(onClick={model.clearAITest()},modifier=Modifier.testTag("aiSandboxStop")){Text("Stop")} }
+            if(aiTest.busy) { Text("Testing…",color=Muted);TextButton(onClick={model.clearAITest()},modifier=Modifier.testTag("aiSandboxStop")){Text("Stop")} }
         }
         aiTest.result?.let { result -> Text(result.summary(preset.label),style=MaterialTheme.typography.bodySmall,modifier=Modifier.testTag("aiSandboxResult"));result.error?.let {Text(it,color=Muted,style=MaterialTheme.typography.bodySmall)} }
         aiTest.error?.let { Text(it,color=Muted,style=MaterialTheme.typography.bodySmall,modifier=Modifier.testTag("aiSandboxError")) }

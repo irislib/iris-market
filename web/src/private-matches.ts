@@ -88,6 +88,12 @@ function incoming(b:Book,me:string,peer:string,w:Wire,at:number,created:number){
 }
 type Send=(peer:string,w:Wire,until:number)=>void
 function act(b:Book,me:string,a:MatchAction,at:number,send:Send,publicItem?:Listing){
+  if(a.op==='withdraw'||(a.op==='enable'&&!a.enabled)){
+    b.jobs=b.jobs.filter(job=>{
+      const wire=JSON.parse(job.rumor.tags.find(t=>t[0]===tag)![2]) as Wire
+      return a.op==='withdraw' ? wire.op!=='share'||wire.entry.id!==a.entry : wire.op==='withdraw'
+    })
+  }
   if(a.op==='enable'){
     if(!a.enabled){
       b.ignoreSharesThrough=at
@@ -145,13 +151,14 @@ export function matchCandidates(view:MatchView,id:string,items:Listing[],at=Math
   return rows.sort((a,b)=>b.score-a.score||(a.kind<b.kind?-1:a.kind>b.kind?1:a.id<b.id?-1:a.id>b.id?1:0)).slice(0,40)
 }
 export function createMatchBook(vault:Vault,owner:string,device:string,notify:()=>void,check:()=>void,now=()=>Math.floor(Date.now()/1000)){
+  const storageKey=KEY+'/'+owner
   let book=empty(),tail=Promise.resolve()
   const serial=<T>(f:()=>Promise<T>)=>{const next=tail.then(f);tail=next.then(()=>{},()=>{});return next}
   async function write(fn:(next:Book)=>void){
-    return serial(async()=>{check();const next=structuredClone(book);prune(next,now());fn(next);prune(next,now());await vault.put(KEY,next);check();book=next;notify()})
+    return serial(async()=>{check();const next=structuredClone(book);prune(next,now());fn(next);prune(next,now());await vault.put(storageKey,next);check();book=next;notify()})
   }
   return {
-    async load(){const stored=await vault.get<Book>(KEY);check();book=stored||empty();const before=JSON.stringify(book);prune(book,now());if(stored&&before!==JSON.stringify(book))await vault.put(KEY,book);check()},
+    async load(){const stored=await vault.get<Book>(storageKey);check();book=stored||empty();const before=JSON.stringify(book);prune(book,now());if(stored&&before!==JSON.stringify(book))await vault.put(storageKey,book);check()},
     view():MatchView|null{if(!book.enabled)return null;const b=structuredClone(book);prune(b,now());const {sent,received,pairs,interests,public_leads}=b;return {sent,received,pairs,interests,public_leads}},
     action:(action:MatchAction,listing?:Listing)=>write(b=>act(b,owner,action,now(),(peer,wire,expires_at)=>{
       requireMatch(b.jobs.length<256,'Private delivery queue is full.')

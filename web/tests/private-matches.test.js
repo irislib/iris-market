@@ -66,3 +66,21 @@ test('withdrawal survives restart and prevents a delayed share from resurfacing'
   await h.receive(share,alice,alice)
   assert.deepEqual(h.view().received,{})
 })
+
+test('an unsent summary is recalled on withdrawal and pending entries stay with the account',async()=>{
+  const saved=new Map()
+  const vault={get:async key=>structuredClone(saved.get(key)),put:async(key,value)=>saved.set(key,structuredClone(value))}
+  const open=async owner=>{
+    const book=createMatchBook(vault,owner,owner,()=>{},()=>{},()=>1000)
+    await book.load()
+    return book
+  }
+  const a=await open(alice)
+  await a.action({op:'enable',enabled:true})
+  await a.action({op:'share',side:'request',helper,summary:'Private bike request'})
+  assert.equal((await open(bob)).view(),null)
+  await a.action({op:'withdraw',entry:Object.keys(a.view().sent)[0]})
+  const restored=await open(alice)
+  assert.deepEqual(restored.view().sent,{})
+  assert.deepEqual(restored.jobs().map(j=>JSON.parse(j.rumor.tags.at(-1)[2]).op),['withdraw'])
+})

@@ -531,6 +531,38 @@ impl Messaging {
             self.require_authorization()?;
         }
         self.transaction(|m| {
+            // A locally queued summary can still be recalled before transport takes it.
+            if matches!(
+                action,
+                Action::Withdraw { .. } | Action::Enable { enabled: false }
+            ) {
+                m.state.pending_contact_messages.retain(|_, job| {
+                    let Some(tag) = job
+                        .rumor
+                        .tags
+                        .iter()
+                        .map(|tag| tag.as_slice())
+                        .find(|tag| tag[0] == TAG)
+                    else {
+                        return true;
+                    };
+                    let Some(wire) = tag
+                        .get(2)
+                        .and_then(|raw| serde_json::from_str::<Wire>(raw).ok())
+                    else {
+                        return true;
+                    };
+                    match (&action, wire) {
+                        (Action::Withdraw { entry }, Wire::Share { entry: queued }) => {
+                            *entry != queued.id
+                        }
+                        (Action::Enable { enabled: false }, wire) => {
+                            matches!(wire, Wire::Withdraw { .. })
+                        }
+                        _ => true,
+                    }
+                });
+            }
             let sends = m.state.matches.apply(m.owner, action, now(), public)?;
             if m.state.outbox.len() + m.state.pending_contact_messages.len() + sends.len()
                 > MAX_OUTBOX

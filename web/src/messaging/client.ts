@@ -1,4 +1,8 @@
 import {createMatchBook,isPrivateMatch,type MatchAction} from '../private-matches.ts';
+import {createMarketTrades, TRADE_TAG} from './market-trades.ts';
+import {schnorr} from '@noble/curves/secp256k1.js';
+import {bytesToHex,hexToBytes,concatBytes} from '@noble/hashes/utils.js';
+import {sha256} from '@noble/hashes/sha2.js';
 import {rumorMilliseconds,messageMilliseconds} from '../message-timestamp.ts';
 import {contextTags,messageContext,orderContext,validMessageContext,type MessageContext} from '../message-context.ts';
 import { invitationBase } from '../asset-url.ts';
@@ -21,7 +25,7 @@ import type { DeliveryPlace, DeliveryRequest, OrderListing, OrderPatch, OrderVie
 type AccountMode='local'|'extension'|'linked';
 interface AccountRecord {owner:string;mode:AccountMode;deviceSecret:number[];ownerSecret?:number[];proof?:VerifiedEvent;installed?:boolean;freshOwner?:boolean;displayName?:string;profileEvent?:VerifiedEvent}
 export interface ChatMessage {id:string;text:string;mine:boolean;createdAt:number;createdAtMs?:number;expiresAt?:number;delivery:'queued'|'sent'|'delivered'|'seen'|'received';reactions?:ReactionSummary[];_chat?:ChatControlMeta;orderId?:string;context?:MessageContext;system?:boolean}
-export interface MessagingState {receiptPreferences:ReceiptPreferences;status:string;error:string;password:boolean;ownerPubkey?:string;devicePubkey?:string;displayName?:string;pendingPublic:number;chatStatus:string;profileEvent?:VerifiedEvent;pendingListings:VerifiedEvent[];pendingReviews:VerifiedEvent[];orders:OrderView[];canSend:boolean;canSign:boolean;mode?:AccountMode;needsLogin:boolean;devices:{pubkey:string;current:boolean}[];conversations:{pubkey:string;messages:ChatMessage[]}[]}
+export interface MessagingState {tradeSteps:ReturnType<ReturnType<typeof createMarketTrades>["rows"]>;receiptPreferences:ReceiptPreferences;status:string;error:string;password:boolean;ownerPubkey?:string;devicePubkey?:string;displayName?:string;pendingPublic:number;chatStatus:string;profileEvent?:VerifiedEvent;pendingListings:VerifiedEvent[];pendingReviews:VerifiedEvent[];orders:OrderView[];canSend:boolean;canSign:boolean;mode?:AccountMode;needsLogin:boolean;devices:{pubkey:string;current:boolean}[];conversations:{pubkey:string;messages:ChatMessage[]}[]}
 type AccountSigner=(event:UnsignedEvent)=>Event|Promise<Event>;
 interface BrowserSigner {getPublicKey():Promise<string>;signEvent:AccountSigner}
 interface MessagingOptions {developerMint?:string;getRelays?:()=>string[];onChange?:(state:MessagingState)=>void;vault?:Vault;transportFactory?:()=>PrivateTransport;extension?:()=>BrowserSigner|undefined}
@@ -34,7 +38,7 @@ const HEX = /^[a-f0-9]{64}$/;
 const DEVICE_PREFIX = 'v1/device-manager/';
 const now = () => Math.floor(Date.now() / 1000);
 function publicAccountEvent(event:VerifiedEvent):boolean {
-  if([0,3,30402].includes(event.kind))return true;
+  if([0,3,30402,38383].includes(event.kind))return true;
   if(event.kind===30406){try{validateShippingOptionEvent(event);return true;}catch{return false;}}
   if(event.kind!==REVIEW_KIND)return false;
   try{parseReview(event);return true;}catch{return false;}
@@ -81,13 +85,15 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
   let matches:ReturnType<typeof createMatchBook>,syncingMatches:Promise<void>;
   let orders:ReturnType<typeof createOrderBook>, syncingOrders:Promise<void>;
   let controls:ReturnType<typeof createChatControls>,syncingControls:Promise<void>;
+  let tradeBook:ReturnType<typeof createMarketTrades>, syncingTrades:Promise<void>;
   let messageWrites = Promise.resolve(),lastChatMs=0;
   const state = ():MessagingState => ({ status, error, password: !!savedStatus?.password,
     ownerPubkey: account?.owner, devicePubkey: runtime?.getState().currentDevicePubkey ?? (account?.deviceSecret ? getPublicKey(Uint8Array.from(account.deviceSecret)) : undefined),
+    tradeSteps:tradeBook?.rows(false)??[],
     receiptPreferences:controls?.preferences()??{delivered:true,seen:true},
     displayName: profilePatch?.name ?? account?.displayName, pendingPublic: publicQueue.size + (profilePatch ? 1 : 0), chatStatus,
     profileEvent: account?.profileEvent ? structuredClone(account.profileEvent) : undefined,
-    pendingListings: [...publicQueue.values()].filter(event => event.kind === 30402).map(event => structuredClone(event)),
+    pendingListings: [...publicQueue.values()].filter(event => [30402,38383].includes(event.kind)).map(event => structuredClone(event)),
     pendingReviews: [...publicQueue.values()].filter(event => event.kind === REVIEW_KIND).map(event => structuredClone(event)),
     orders: orders?.state() ?? [],
     canSend: status === 'ready' && authorizationChecked && runtime?.getState().isCurrentDeviceRegistered === true,
@@ -265,8 +271,12 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
         for(const target of new Set(accepted.map(c=>c.target))){const message=conversations.get(peer)?.find(m=>m.id===target);if(message)await saveMessage(peer,message);}
         return;
       }
-      if(isPrivateMatch(rumor)){
-        await matches?.receive(rumor,meta?.senderOwnerPubkey,meta?.senderDevicePubkey??meta?.fromDeviceId);
+      if(isPrivateMatch(rumor)||rumor.tags.some(t=>t[0]===TRADE_TAG)){
+        const owner=meta?.senderOwnerPubkey,device=meta?.senderDevicePubkey??meta?.fromDeviceId;
+        if(owner && device && (owner===device || runtime.getKnownAppKeysSnapshots().some(s=>s.ownerPubkey===owner&&s.appKeys.getDevice(device)))) {
+          if(isPrivateMatch(rumor))await matches?.receive(rumor,owner,device);
+          else await tradeBook?.receive(rumor,owner,device);check(attempt);notify();
+        }
         return;
       }
       const projection = messageProjection(rumor, from, meta, account.owner);
@@ -392,13 +402,13 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
       } else await startRuntime();
       check(attempt);
       for(const pubkey of conversations.keys())void runtime?.setupUser(pubkey).catch(report);
-      void syncOrders();void syncControls();void syncMatches();
+      void syncOrders();void syncControls();void syncMatches();void syncTradeJobs();
     })().catch(()=>{if(attempt===generation&&status==='ready'){chatStatus='pending';notify();}}).finally(()=>{if(attempt===generation)activation=undefined;});
     return activation;
   }
   function scheduleBackground() {
     if(status!=='ready'||controller?.signal.aborted)return;
-    void activateChat();void syncPublic();void syncProfile();void syncOrders();void syncControls();void syncMatches();
+    void activateChat();void syncPublic();void syncProfile();void syncOrders();void syncControls();void syncMatches();void syncTradeJobs();
     if(!retryTimer){retryTimer=setTimeout(()=>{retryTimer=undefined;scheduleBackground();},15000);retryTimer.unref?.();}
   }
   async function sendReceipt(peer:string,ids:string[],type:'delivered'|'seen'){
@@ -407,6 +417,16 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
     if(!eligible.length)return;await controls.receipt(peer,eligible,type);
     for(const id of eligible){const message=conversations.get(peer)?.find(m=>m.id===id);if(message)await saveMessage(peer,message);}
     queueMicrotask(()=>void syncControls());
+  }
+  async function syncTradeJobs(){
+    if(syncingTrades || !tradeBook || !state().canSend)return;
+    const attempt=generation,book=tradeBook,activeRuntime=runtime;
+    syncingTrades=(async()=>{for(const job of book.jobs()){
+      check(attempt);
+      if(!job.expires||job.expires>now())await activeRuntime.sendEvent(job.peer,job.rumor);
+      check(attempt);await book.handed(job.rumor.id);
+    }})().catch(report).finally(()=>{if(attempt===generation)syncingTrades=undefined;});
+    return syncingTrades;
   }
   async function syncControls(){
     if(syncingControls||!controls||!state().canSend)return syncingControls;
@@ -460,6 +480,8 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
       signer=enrollmentSigner=draft=>finalizeEvent(draft,ownerSecret);
     }
     controller??=new AbortController();transport??=transportFactory();
+    tradeBook=createMarketTrades(vault,account.owner,getPublicKey(Uint8Array.from(account.deviceSecret)),()=>check(attempt));
+    await tradeBook.load();check(attempt);
     controls=createChatControls({vault,owner:account.owner,device:getPublicKey(Uint8Array.from(account.deviceSecret)),check:()=>check(attempt)});await controls.load();check(attempt);
     conversations.clear();
     for(const key of await vault.list('market/messages/'))conversations.set(key.slice('market/messages/'.length),await vault.get<ChatMessage[]>(key));
@@ -548,7 +570,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
       const closing = outbox?.close(); runtime?.close(); transport?.close();
       await closing; await messageWrites; await vault.flush();
       ownerSecret?.fill(0); runtime = outbox = transport = ownerSecret = undefined;
-      await matches?.flush();await orders?.flush();await controls?.flush();matches=undefined;syncingMatches=undefined;controls=undefined;syncingControls=undefined;orders=undefined;syncingOrders=undefined;
+      await orders?.flush();await controls?.flush();await matches?.flush();await tradeBook?.flush();matches=undefined;syncingMatches=undefined;tradeBook=undefined;syncingTrades=undefined;controls=undefined;syncingControls=undefined;orders=undefined;syncingOrders=undefined;
       authorizationChecked = false; conversations.clear();activation=syncing=syncingProfile=undefined;clearTimeout(retryTimer);retryTimer=undefined;controller=undefined;signer=enrollmentSigner=undefined;
       return openLocal();
     },
@@ -565,7 +587,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
       const channel = transportFactory();
       let remote;
       remote = new RemoteSigner({ runtime: channel, relays: getRelays(), bunkerLink, signal, onConnectionLink, onAuthUrl,
-        permissions: ['sign_event:0', 'sign_event:3', 'sign_event:30402', 'sign_event:30406', 'sign_event:7368', 'sign_event:24242'], timeoutMs: 15 * 60_000,
+        permissions: ['sign_event:0', 'sign_event:3', 'sign_event:30402', 'sign_event:38383', 'sign_event:30406', 'sign_event:7368', 'sign_event:24242'], timeoutMs: 15 * 60_000,
         onClose: () => {
           channel.close();
           if (postingRemote === remote) { postingRemote = postingTransport = undefined; signer = undefined; notify(); }
@@ -628,6 +650,17 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
       if (!receipt.remoteAccepted) throw new Error('Could not remove this device.');
       await runtime.applyVerifiedAppKeysEvent(signed); notify();
     },
+    tradeSteps(){requireReady();return tradeBook.rows(true);},
+    async sendTradeStep(peers:string[],step:Parameters<typeof tradeBook.send>[1],operationId:string){
+      requireChat();if(!state().canSend)throw Error('Approve this device before sending a trade update.');
+      await tradeBook.send(peers,step,operationId);notify();scheduleBackground();
+    },
+    escrowProvider(key:string){requireReady();
+      if(!ownerSecret||!account||getPublicKey(ownerSecret)!==account.owner)throw Error('Use your local profile signer to act as an escrow provider.');
+      if(!/^(02|03)[0-9a-f]{64}$/.test(key))throw Error('Invalid wallet key.');
+      const digest=sha256(concatBytes(new TextEncoder().encode('iris-market/escrow-provider/cashu-2of3-v1\0'),hexToBytes(key)));
+      return {key,profile:account.owner,signature:bytesToHex(schnorr.sign(digest,ownerSecret))};
+    },
     signEvent: signing,
     async publishSignedEvent(raw) {
       requireReady();
@@ -655,9 +688,9 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
     async lock() {
       generation++; clearTimeout(retryTimer);retryTimer=undefined;enrollmentRemote?.close();enrollmentRemote=undefined;activation=syncing=syncingProfile=undefined; postingRemote?.close(); postingTransport?.close(); postingRemote = postingTransport = undefined; controller?.abort(); const closing = outbox?.close(); runtime?.close(); transport?.close();
       await closing;
-      await messageWrites; await matches?.flush();await orders?.flush();await controls?.flush(); await vault.flush(); vault.lock();
+      await messageWrites; await orders?.flush();await controls?.flush();await matches?.flush();await tradeBook?.flush(); await vault.flush(); vault.lock();
       ownerSecret?.fill(0); account = runtime = transport = outbox = signer = ownerSecret = undefined;
-      conversations.clear();lastChatMs=0;matches=undefined;syncingMatches=undefined;controls=undefined;syncingControls=undefined;orders=undefined;syncingOrders=undefined;publicQueue.clear();profilePatch=undefined;enrollmentSigner=undefined;controller=undefined;authorizationChecked = false;status='locked';chatStatus='connecting';error='';notify();
+      conversations.clear();lastChatMs=0;matches=undefined;syncingMatches=undefined;tradeBook=undefined;syncingTrades=undefined;controls=undefined;syncingControls=undefined;orders=undefined;syncingOrders=undefined;publicQueue.clear();profilePatch=undefined;enrollmentSigner=undefined;controller=undefined;authorizationChecked = false;status='locked';chatStatus='connecting';error='';notify();
     },
     async destroy() { await this.lock(); },
   };

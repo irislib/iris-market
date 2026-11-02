@@ -1,6 +1,7 @@
 //! Optional native Cashu adapter. Account snapshots never contain wallet state.
 //! Platform callers own the independent 64-byte seed in secure storage, scoped
 //! by owner and device. This module never derives money keys from Nostr keys.
+mod escrow;
 use anyhow::{Context, Result, bail, ensure};
 use cashu::{CurrencyUnit, Token};
 use cashu_service::{CashuWalletSeedStore, CashuWalletService};
@@ -88,7 +89,8 @@ fn redact_activity(entry: cashu_service::CashuWalletActivityEntry) -> Activity {
             Kind::LightningPayment => "lightning_payment",
             Kind::TokenSend => "token_send",
             Kind::TokenReceive => "token_receive",
-            Kind::ChannelCollect => "channel_collect",
+            // Market imports signed payment proofs only when completing an escrow payout.
+            Kind::ChannelCollect => "escrow_received",
         }
         .into(),
         status: match entry.status {
@@ -110,6 +112,10 @@ fn redact_activity(entry: cashu_service::CashuWalletActivityEntry) -> Activity {
 
 pub struct Wallet {
     service: CashuWalletService,
+    database_path: PathBuf,
+    escrow_database: tokio::sync::OnceCell<Arc<cdk_sqlite::WalletSqliteDatabase>>,
+    // Serializes the core wallet and escrow CDK operations against the same database.
+    operation: tokio::sync::Mutex<()>,
     developer_mint: Option<String>,
     seed: Zeroizing<[u8; 64]>,
 }
@@ -265,11 +271,24 @@ impl Wallet {
                 .await?;
         Ok(Self {
             service,
-            developer_mint: None,
+            developer_mint: crate::escrow::local_test_mint(),
+            database_path: cashu_service::cashu_wallet_db_path(directory),
+            escrow_database: tokio::sync::OnceCell::new(),
+            operation: tokio::sync::Mutex::new(()),
             seed: backup_seed,
         })
     }
+    pub fn verify_seed(&self, encoded: &str) -> Result<()> {
+        // Compare fingerprints instead of secret bytes when a second native screen reuses this wallet.
+        let supplied = parse_seed(encoded)?;
+        ensure!(
+            Sha256::digest(&supplied[..]) == Sha256::digest(&self.seed[..]),
+            "Wallet recovery key does not match this wallet"
+        );
+        Ok(())
+    }
     pub async fn snapshot(&self, refresh: bool) -> Result<WalletSnapshot> {
+        let _guard = self.operation.lock().await;
         // A refresh is an explicit Wallet action. CDK retains and recovers its
         // own durable operations; no separate generic Market outbox is used.
         if refresh {
@@ -281,13 +300,19 @@ impl Wallet {
             0
         };
         let overview = self.service.load_wallet_overview(false).await?;
-        let activity = self
+        let mut activity: Vec<_> = self
             .service
             .load_wallet_activity()
             .await?
             .into_iter()
             .map(redact_activity)
             .collect();
+        activity.extend(self.escrow_funding_activity().await?);
+        activity.sort_by(|a, b| {
+            b.created_at
+                .cmp(&a.created_at)
+                .then_with(|| b.id.cmp(&a.id))
+        });
         Ok(WalletSnapshot {
             total_sats: overview
                 .entries
@@ -304,6 +329,7 @@ impl Wallet {
             balances: overview
                 .entries
                 .into_iter()
+                .filter(|entry| entry.unit == "sat")
                 .map(|entry| Balance {
                     test_only: test_mint(&entry.mint_url),
                     mint: entry.mint_url,
@@ -317,6 +343,7 @@ impl Wallet {
         })
     }
     pub async fn top_up(&self, mint: &str, amount: u64) -> Result<TopUp> {
+        let _guard = self.operation.lock().await;
         ensure!(amount > 0, "Enter an amount");
         let quote = self
             .service
@@ -334,6 +361,7 @@ impl Wallet {
         })
     }
     pub async fn receive(&self, encoded: &str, approved_mint: &str) -> Result<TokenPreview> {
+        let _guard = self.operation.lock().await;
         let preview = preview_token_with_mint(encoded, self.developer_mint.as_deref())?;
         ensure!(
             preview.mint == normalize_mint(approved_mint, self.developer_mint.as_deref())?,
@@ -351,6 +379,7 @@ impl Wallet {
         })
     }
     pub async fn send(&self, mint: &str, amount: u64) -> Result<SentToken> {
+        let _guard = self.operation.lock().await;
         ensure!(amount > 0, "Enter an amount");
         let payment = self
             .service
@@ -374,6 +403,7 @@ impl Wallet {
         amount: u64,
         request_id: &str,
     ) -> Result<cashu_service::CashuSendReview> {
+        let _guard = self.operation.lock().await;
         self.service
             .preview_payment_token_reviewed(
                 &normalize_mint(mint, self.developer_mint.as_deref())?,
@@ -389,6 +419,7 @@ impl Wallet {
         max_fee: u64,
         request_id: &str,
     ) -> Result<SentToken> {
+        let _guard = self.operation.lock().await;
         let payment = self
             .service
             .send_payment_token_reviewed(
@@ -412,6 +443,7 @@ impl Wallet {
         mint: &str,
         invoice: &str,
     ) -> Result<cashu_service::CashuLightningReview> {
+        let _guard = self.operation.lock().await;
         ensure!(
             !test_mint(mint) || self.developer_mint.as_deref() == Some(mint),
             "Test invoices must not be paid with real Lightning funds"
@@ -429,6 +461,7 @@ impl Wallet {
         quote_id: &str,
         max_fee: u64,
     ) -> Result<cashu_service::CashuLightningResult> {
+        let _guard = self.operation.lock().await;
         ensure!(
             !test_mint(mint) || self.developer_mint.as_deref() == Some(mint),
             "Test invoices cannot be paid as real Lightning payments"
@@ -442,12 +475,14 @@ impl Wallet {
             .await
     }
     pub async fn export_backup(&self, owner: &str, password: &str) -> Result<String> {
+        let _guard = self.operation.lock().await;
         let database = self.service.export_wallet_database().await?;
         encrypt_native_backup(owner, &self.seed, &database, password)
     }
     /// Pending bearer tokens remain recoverable after closing the share screen.
     /// This explicit private action is separate from the redacted history view.
     pub async fn pending_token(&self, operation_id: &str) -> Result<SentToken> {
+        let _guard = self.operation.lock().await;
         ensure!(
             !self
                 .service
@@ -481,6 +516,17 @@ impl Wallet {
         })
     }
     pub async fn reclaim(&self, mint: &str, operation_id: &str) -> Result<u64> {
+        let _guard = self.operation.lock().await;
+        // Only an ordinary token issued through the wallet's Activity can be reclaimed here.
+        // Escrow CDK send operations must go through the agreed settlement.
+        let entries = self.service.load_wallet_activity().await?;
+        ensure!(
+            entries
+                .iter()
+                .any(|entry| entry.operation_id.as_deref() == Some(operation_id)
+                    && entry.kind == cashu_service::CashuWalletActivityKind::TokenSend),
+            "This wallet token cannot be reclaimed"
+        );
         self.service
             .revoke_pending_payment(
                 &normalize_mint(mint, self.developer_mint.as_deref())?,

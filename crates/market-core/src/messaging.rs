@@ -10,6 +10,7 @@ mod escrow;
 pub mod friend_posts;
 pub mod mobile_push;
 pub mod private_matches;
+mod trade_steps;
 pub use controls::Reaction;
 
 use std::{
@@ -183,6 +184,8 @@ struct PrivateState {
     friend_posts: friend_posts::Inbox,
     #[serde(default)]
     matches: private_matches::Book,
+    #[serde(default)]
+    trade_steps: Vec<trade_steps::Record>,
     #[serde(default)]
     pending_invites: BTreeMap<String, Invite>,
     #[serde(default)]
@@ -1573,7 +1576,8 @@ impl Messaging {
         }
         let friend_request = friend_posts::is_request(&inner);
         let private_match = private_matches::is_match(&inner);
-        if friend_request || private_match || matches!(inner.kind.as_u16(), 7 | 15) {
+        let trade_step = trade_steps::is_trade(&inner);
+        if friend_request || private_match || trade_step || matches!(inner.kind.as_u16(), 7 | 15) {
             let device = message.sender_device.unwrap_or(message.sender);
             if device != message.sender
                 && !self
@@ -1595,6 +1599,10 @@ impl Messaging {
             }
             if private_match {
                 self.receive_match(message.sender, &inner);
+                return Ok(());
+            }
+            if trade_step {
+                self.receive_trade_step(message.sender, &inner);
                 return Ok(());
             }
             if friend_request {

@@ -39,6 +39,7 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     sourceSets.named("main") {
+        assets.srcDir("../../shared/escrow")
         jniLibs.srcDir(providers.environmentVariable("MARKET_ANDROID_JNI_DIR").orNull ?: layout.buildDirectory.dir("generated/jniLibs").get().asFile)
     }
     packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }

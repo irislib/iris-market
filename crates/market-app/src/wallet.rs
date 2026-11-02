@@ -1,7 +1,11 @@
 //! Feature-gated private wallet boundary; not part of MarketApp snapshots.
 use super::{MarketError, error};
 use iris_market_core::wallet::{self, Wallet};
-use std::{path::Path, sync::Arc};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::{Arc, LazyLock, Mutex, Weak},
+};
 
 #[uniffi::export]
 pub fn generate_wallet_seed() -> String {
@@ -55,9 +59,14 @@ pub fn restore_native_wallet_backup(
 #[derive(uniffi::Object)]
 pub struct MarketWallet {
     owner_public_key: String,
-    inner: Wallet,
+    inner: Arc<Wallet>,
     runtime: tokio::runtime::Runtime,
 }
+// Keep one service, runtime, and operation lock per native wallet. The service retains
+// its exclusive filesystem lock against other processes until the last handle closes.
+static OPEN_WALLETS: LazyLock<Mutex<HashMap<PathBuf, Weak<MarketWallet>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
 #[uniffi::export]
 impl MarketWallet {
     #[uniffi::constructor]
@@ -70,19 +79,45 @@ impl MarketWallet {
         let path =
             wallet::wallet_directory(Path::new(&base_dir), &owner_public_key, &device_public_key)
                 .map_err(error)?;
+        std::fs::create_dir_all(&path).map_err(error)?;
+        let path = path.canonicalize().map_err(error)?;
+        let mut wallets = OPEN_WALLETS
+            .lock()
+            .map_err(|_| error("Wallet registry is unavailable"))?;
+        wallets.retain(|_, wallet| wallet.strong_count() > 0);
+        if let Some(wallet) = wallets.get(&path).and_then(Weak::upgrade) {
+            wallet.inner.verify_seed(&seed).map_err(error)?;
+            return Ok(wallet);
+        }
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
+            .thread_stack_size(4 * 1024 * 1024)
             .enable_all()
             .build()
             .map_err(error)?;
         let inner = runtime
             .block_on(Wallet::open(&path, &seed))
             .map_err(error)?;
-        Ok(Arc::new(Self {
+        let wallet = Arc::new(Self {
             owner_public_key,
-            inner,
+            inner: Arc::new(inner),
             runtime,
-        }))
+        });
+        wallets.insert(path, Arc::downgrade(&wallet));
+        Ok(wallet)
+    }
+    /// Private wallet action. Never add the response or submitted payment data to app snapshots.
+    pub fn escrow(&self, request: String) -> Result<String, MarketError> {
+        // Native UI executors can have a 512 KiB stack. Poll CDK's swap on a wallet
+        // worker, including retries of a previously reserved funding operation.
+        let wallet = Arc::clone(&self.inner);
+        let operation = self
+            .runtime
+            .spawn(async move { wallet.escrow(&request).await });
+        self.runtime
+            .block_on(operation)
+            .map_err(error)?
+            .map_err(error)
     }
     pub fn snapshot(&self, refresh: bool) -> Result<String, MarketError> {
         let snapshot = self
@@ -189,4 +224,39 @@ impl MarketWallet {
 #[uniffi::export]
 pub fn lightning_invoice_qr(invoice: String) -> Result<String, MarketError> {
     serde_json::to_string(&wallet::lightning_invoice_qr(&invoice).map_err(error)?).map_err(error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn concurrent_native_handles_share_the_wallet_and_verify_its_seed() {
+        let owner = nostr::Keys::generate().public_key().to_hex();
+        let dir = std::env::temp_dir().join(format!("iris-market-wallet-handles-{owner}"));
+        let base = dir.to_str().unwrap();
+        let seed = wallet::generate_seed();
+        let open =
+            |seed: &str| MarketWallet::new(base.into(), owner.clone(), owner.clone(), seed.into());
+        let barrier = std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(|| {
+                barrier.wait();
+                open(&seed).unwrap()
+            });
+            barrier.wait();
+            let regular = open(&seed).unwrap();
+            let escrow = worker.join().unwrap();
+            assert!(Arc::ptr_eq(&regular, &escrow));
+            assert!(open(&wallet::generate_seed()).is_err());
+            let key = scope.spawn(move || {
+                escrow
+                    .escrow(serde_json::json!({"op":"key", "trade_id":"00".repeat(32)}).to_string())
+            });
+            regular.snapshot(true).unwrap();
+            assert!(key.join().unwrap().is_ok());
+        });
+        drop(open(&seed).unwrap()); // The last handle releases the service's filesystem lock.
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

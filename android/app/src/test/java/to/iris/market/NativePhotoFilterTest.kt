@@ -11,6 +11,8 @@ class NativePhotoFilterTest {
             assertTrue(NativePhotoFilter.includes(null,null,query,side,map))
             assertFalse(NativePhotoFilter.includes(null,true,query,side,map))
         }
+        assertTrue(NativePhotoFilter.includes(null,null,"","offer",false,bitcoin=true))
+        assertFalse(NativePhotoFilter.includes(null,true,"","offer",false,bitcoin=true))
         assertTrue(NativePhotoFilter.includes(null,false,"","offer",false))
         assertTrue(NativePhotoFilter.wantsPhotos(null," \n","offer",false))
     }

@@ -201,7 +201,12 @@ internal class NativeWalletSession(private val model:MarketModel,private val own
         }
         Text("Activity",style=MaterialTheme.typography.titleLarge)
         entries(state.snapshot,"activity").take(40).forEach {entry->
-            Column {Text("${entry.optString("kind").replace('_',' ')} · ${amountLabel(entry)}");Text("${mintLabel(entry.optString("mint"))} · ${entry.optString("status")}",style=MaterialTheme.typography.bodySmall)
+            val label = when (val kind = entry.optString("kind")) {
+                "escrow_funded" -> "Escrow funded"
+                "escrow_received" -> "Escrow funds received"
+                else -> kind.replace('_', ' ')
+            }
+            Column {Text("$label · ${amountLabel(entry)}");Text("${mintLabel(entry.optString("mint"))} · ${entry.optString("status")}",style=MaterialTheme.typography.bodySmall)
                 val operation=entry.optString("operation_id").takeUnless {it.isBlank()||it=="null"}
                 if(entry.optString("kind")=="token_send"&&entry.optString("status")=="pending"&&operation!=null)Row{TextButton(enabled=!state.busy,onClick={session.run{pending(operation)}}){Text("Show recoverable token")};TextButton(enabled=!state.busy,onClick={confirmReclaim=entry.getString("mint") to operation}){Text("Reclaim payment")}}
             };HorizontalDivider()

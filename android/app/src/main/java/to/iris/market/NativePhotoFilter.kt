@@ -4,6 +4,6 @@ package to.iris.market
 object NativePhotoFilter {
     fun wantsPhotos(choice: Boolean?, query: String, side: String, map: Boolean): Boolean =
         choice ?: (!map && query.isBlank() && side == "offer")
-    fun includes(imageURL: String?, choice: Boolean?, query: String, side: String, map: Boolean): Boolean =
-        !wantsPhotos(choice,query,side,map) || !imageURL.isNullOrEmpty()
+    fun includes(imageURL: String?, choice: Boolean?, query: String, side: String, map: Boolean, bitcoin: Boolean = false): Boolean =
+        (bitcoin && choice == null) || !wantsPhotos(choice,query,side,map) || !imageURL.isNullOrEmpty()
 }

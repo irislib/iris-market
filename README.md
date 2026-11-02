@@ -201,7 +201,16 @@ Descriptions support Markdown with safe DOM rendering. Raw HTML remains text; re
 
 ## Escrow offers and private agreements
 
-Rust core and CLI source support escrow on goods, services and fixed-price bitcoin/fiat trades. This is headless development functionality. Funding, settlement and dispute handling in the built-in wallets are pending. The published alpha binaries predate these operations.
+Escrow is an opt-in tool in the browser, Apple and Android source. Turn on **Settings → Escrow** to offer it on a listing or arrange it with another trader. Open a listing to start. The ongoing agreement lives in Inbox, where each person sees their next action. Turning the setting off hides new invitations. A trade you already joined stays accessible so you can recover or settle its payment.
+
+1. The taker selects a provider, mint and amount. For bitcoin/fiat, the listing fixes the sat amount, fiat price and payment method. Each participant joins from their own profile and approves the same listing revision and wallet keys. Providing escrow currently requires a local profile signer to certify the provider’s spending key.
+2. The goods buyer or bitcoin seller reviews the maximum fee and confirms funding in Iris Wallet. The recipient checks the locked amount with the mint before handing over goods or sending fiat. Participants confirm delivery or fiat receipt themselves.
+3. To release payment, the recipient prepares the payout, another authorized participant reviews and signs it, and the recipient collects fresh spendable sats in Iris Wallet. The funder can request a refund the same way. If the traders disagree, either can ask the provider to co-sign with one trader. Two signatures are required. The mint remains trusted and there is no automatic timeout refund.
+4. After settlement either trader can rate the provider. The public profile review includes the reviewer and stars. The agreement, mint, amount and wallet proofs stay out of the review.
+
+The app coordinates these steps with versioned `iris-market/escrow-trade` records inside private double-ratchet messages. NIP-69 covers discovery. Iris uses a Cashu NUT-11 two-of-three lock and NUT-03 swaps for payment. Wallets retain the funding or payout operation locally for retry after an interruption. A trade uses the wallet on the participating device. The published alpha binaries predate this interface. Isolated browser and macOS profiles funded and collected payouts in both directions, recovered an interrupted payment without a second debit, and completed a disputed refund with a provider. [NIP-69](https://github.com/nostr-protocol/nips/blob/master/69.md) · [Cashu spending conditions](https://github.com/cashubtc/nuts/blob/main/11.md) · [Cashu swaps](https://github.com/cashubtc/nuts/blob/main/03.md)
+
+### Publish with the CLI
 
 Use the existing CLI `publish` with either draft below. `offer` means the author is selling the item or bitcoin. `request` means the author wants to buy it. For bitcoin offers, supply a future Unix timestamp as `expires_at`.
 
@@ -215,7 +224,7 @@ Use the existing CLI `publish` with either draft below. `offer` means the author
 
 Goods and services use a signed NIP-99 classified with an optional `["iris-escrow","cashu-2of3-v1"]` tag. Bitcoin/fiat uses one signed NIP-69 event, kind 38383, with the same escrow marker. It carries a fixed sat amount, fiat price, cash-in-person or bank-transfer method, expiry, zero bond and zero premium. Its platform is `iris-market` and its layer is `cashu`. Closing it publishes a canceled revision. Rust and CLI discovery recognize Iris offers. Taking another platform’s order requires that platform’s trade protocol. [NIP-69](https://github.com/nostr-protocol/nips/blob/master/69.md)
 
-### Agree on escrow
+### Coordinate a private proposal with the CLI
 
 1. Open the listing author’s private conversation. Agree on the mint, the net sats, a provider and three distinct Cashu spending keys. Both traders use fresh keys for each proposal and verify their own key before agreeing. The provider uses `iris-market escrow provider-key <compressed-cashu-pubkey>` with its existing CLI profile secret to authorize its spending key. It gives the parties the resulting `provider` object privately.
 2. The taker submits `propose_escrow` through `iris-market command <profile> -` or `serve`. Include `listing_id` and `terms` with `mint`, `sats`, `buyer_key`, `seller_key` and `provider`. The buyer/seller keys are compressed hex. The private proposal pins the signed listing revision. On goods trades the buyer funds escrow. On bitcoin/fiat trades the bitcoin seller funds it.

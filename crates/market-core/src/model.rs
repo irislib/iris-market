@@ -110,6 +110,8 @@ pub struct Relevance {
 pub struct Listing {
     #[serde(skip)]
     pub search_text_cache: SearchTextCache,
+    #[serde(default)]
+    pub event_id: String,
     pub id: String,
     pub author: String,
     pub title: String,
@@ -317,6 +319,7 @@ pub struct Snapshot {
     pub revision: u64,
     pub listings: Vec<Listing>,
     pub saved_count: usize,
+    pub trade_steps: Vec<serde_json::Value>,
     pub saved_listings: Vec<Listing>,
     pub settings: Settings,
     pub conversations: Vec<Conversation>,
@@ -452,6 +455,11 @@ pub enum Command {
     },
     DeclineFriendPost {
         id: String,
+    },
+    SendTradeStep {
+        peers: std::collections::BTreeSet<nostr::PublicKey>,
+        operation_id: nostr::EventId,
+        step: serde_json::Value,
     },
     ProposeEscrow {
         listing_id: String,

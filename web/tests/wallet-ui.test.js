@@ -101,3 +101,15 @@ test('reclaim reviews fee and invalidation before spending and ignores a closed 
  const reclaim=field('wallet-history').all().find(el=>el.tag==='button'&&el.textContent==='Reclaim payment');await reclaim.onclick();assert.equal(reclaimed,0);assert.equal(field('wallet-reclaim').hidden,false);assert.match(field('wallet-reclaim-summary').textContent,/15 test sats.*1 test sats/);await field('wallet-reclaim-confirm').onclick();assert.equal(reclaimed,1);
  await reclaim.onclick();ui.hide();await field('wallet-reclaim-confirm').onclick();assert.equal(reclaimed,1);
 });
+
+test('Activity identifies escrow deposits, payouts and refunds and keeps bearer-token actions on ordinary payments',async t=>{
+ const {ui,field,state}=fixture(t,{overrides:{getToken:async()=>{throw Error('not called');},previewReclaimToken:async()=>{}}});
+ for(const [id,type,escrow] of [['one','send','funding'],['two','receive','payout'],['three','receive','refund'],['four','send']]){
+   state.history.push({id,type,escrow,mint:TEST_MINT,amount:'16',fee:'1',state:'complete',createdAt:1,canReclaim:true});
+ }
+ await ui.open();
+ const rows=field('wallet-history').children;
+ assert.deepEqual(rows.map(row=>row.all().find(el=>el.tag==='strong').textContent),['Escrow deposit','Escrow payout','Escrow refund','Sent']);
+ for(const row of rows.slice(0,3))assert.deepEqual(row.all().filter(el=>el.tag==='button'),[]);
+ assert.deepEqual(rows[3].all().filter(el=>el.tag==='button').map(el=>el.textContent),['Show token','Reclaim payment']);
+});

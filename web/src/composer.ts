@@ -1,3 +1,5 @@
+import {composerTradeTools} from './marketplace-tools.ts';
+import {BITCOIN_KIND,BITCOIN_TAGS,offerTags} from './escrow-offer.ts';
 import { createSurface } from './surface.ts';
 import { byId, element as domElement, formFields } from './dom.ts';
 import { LISTING_KIND, parseEvent } from './market.ts';
@@ -62,14 +64,17 @@ export function listingDraft(values, { identifier=crypto.randomUUID(), createdAt
     if(file.isImage)tags.push(['image',file.url]);
     tags.push(['imeta',`url ${file.url}`,`x ${file.sha256}`,`m ${file.mime}`,`size ${file.size}`,`alt ${file.name}`],['r',file.fileLink]);
   }
-  return {kind:LISTING_KIND,created_at:createdAt,tags,content};
+  return {...offerTags(tags,values.escrow),created_at:createdAt,content};
 }
 
 /** Keep the address and unrelated public metadata when a merchant edits a listing. */
 export function revisedListingDraft(values, previous, attachments=[]) {
-  const draft=listingDraft({...values,expiration:values.expiration??'keep'},{identifier:previous.identifier,createdAt:Math.max(Math.floor(Date.now()/1000),previous.createdAt+1),attachments,previousExpiration:previous.expiration});
+  // A revision keeps its addressable kind even if optional tools were turned off.
+  const offer=values.escrow ?? previous.escrow;
+  if((offer?.trade==='bitcoin_fiat')!==(previous.rawEvent?.kind===BITCOIN_KIND))throw Error('Create a new listing to change the trade type.');
+  const draft=listingDraft({...values,escrow:offer,expiration:values.expiration??'keep'},{identifier:previous.identifier,createdAt:Math.max(Math.floor(Date.now()/1000),previous.createdAt+1),attachments,previousExpiration:previous.expiration});
   draft.tags.find(tag=>tag[0]==='published_at')[1]=String(listingPublishedAt(previous)??previous.createdAt);
-  const replaced=new Set(['d','title','market','price','location','status','published_at','expiration']);
+  const replaced=new Set(['d','title','market','price','location','status','published_at','expiration','iris-escrow',...(previous.rawEvent?.kind===BITCOIN_KIND?BITCOIN_TAGS:[])]);
   for(const tag of previous.originalTags||[]){
     if(values.category==='transport'&&values.transportType&&tag[0]==='t'&&isTransportTag(tag[1]))continue;
     if(Object.hasOwn(values,'serviceAreas')&&(tag[0]==='service_area'||tag[0]==='g'&&['pickup','destination'].includes(tag[2])))continue;
@@ -78,6 +83,12 @@ export function revisedListingDraft(values, previous, attachments=[]) {
     if(!draft.tags.some(value=>JSON.stringify(value)===JSON.stringify(tag)))draft.tags.push([...tag]);
   }
   return draft;
+}
+
+export function closedBitcoinDraft(listing) {
+  if(listing.rawEvent?.kind!==BITCOIN_KIND||listing.escrow?.trade!=='bitcoin_fiat')throw Error('Choose a bitcoin offer.');
+  return {kind:BITCOIN_KIND,created_at:Math.max(Math.floor(Date.now()/1000),listing.createdAt+1),content:listing.description,
+    tags:listing.originalTags.map(t=>t[0]==='s'?['s','canceled']:[...t])};
 }
 
 /** A signed retry is the same publication, including its exact deadline. */
@@ -121,6 +132,7 @@ export function setupComposer({account,isPreview,onPublished,defaultCurrency=()=
   const form=dialog.querySelector('form'),submit=dialog.querySelector<HTMLButtonElement>('#post-submit'),error=dialog.querySelector('#post-error'),progress=dialog.querySelector('#post-progress'),fileInput=dialog.querySelector<HTMLInputElement>('#post-files'),fileList=dialog.querySelector('#post-file-list');
   const preview=dialog.querySelector<HTMLElement>('#post-preview'),previewContent=dialog.querySelector('#post-preview-content'),editButton=dialog.querySelector<HTMLButtonElement>('#post-edit'),publish=dialog.querySelector<HTMLButtonElement>('#post-publish');
   const sideButtons=[...dialog.querySelectorAll<HTMLButtonElement>('[data-post-side]')];
+  const tradeTools=composerTradeTools(form);
   let draftId=crypto.randomUUID(),editing=null,pendingEvent,pendingShipping,shippingTouched=false,busy=false,pendingOpen=false,currencyTouched=false,uploader,uploadController,filePosition;
   let reviewedValues:Record<string,unknown>|undefined,reviewOwner:string|undefined,localFiles:ReturnType<typeof createDraftFiles>|undefined;
   let areaTouched=false,areaPreview:ReturnType<typeof setupServiceAreaPicker>|undefined;
@@ -148,8 +160,8 @@ export function setupComposer({account,isPreview,onPublished,defaultCurrency=()=
   for(const button of sideButtons){button.onclick=()=>chooseSide(button);button.onkeydown=event=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;event.preventDefault();const next=event.key==='Home'?sideButtons[0]:event.key==='End'?sideButtons[1]:sideButtons.find(other=>other!==button);chooseSide(next);next.focus();};}
   function paintFiles(){fileList.replaceChildren(...selection.items().map((entry,index)=>{const row=document.createElement('li'),name=document.createElement('span'),remove=document.createElement('button');name.textContent=entry.file.name;remove.type='button';remove.className='text-button';remove.textContent='Remove';remove.disabled=busy;remove.setAttribute('aria-label',`Remove ${entry.file.name}`);remove.onclick=()=>{selection.remove(index);pendingEvent=null;pendingShipping=null;paintFiles()};row.append(name,remove);return row}));}
   function syncKeepOption(){const keep=formFields(form).expiration.querySelector<HTMLOptionElement>('option[value=keep]');keep.hidden=!editing;keep.disabled=controlState().keepDisabled;keep.textContent=editing?`Keep current (${relativeExpiry(editing.expiration)?.replace(/^Expires /,'')||'never'})`:'Keep current';}
-  const setBusy=value=>{busy=value;for(const field of form.elements)(field as HTMLInputElement).disabled=value;editButton.disabled=value;publish.disabled=value;paintFiles();if(!value){paintDelivery();syncAreaEditor();syncKeepOption();}publish.textContent=value?(editing?'Saving…':'Publishing…'):(editing?'Save changes':'Publish listing');};
-  function showEditor(){syncKeepOption();releasePreview();reviewedValues=undefined;reviewOwner=undefined;form.hidden=false;preview.hidden=true;dialog.classList.remove('showing-preview');dialog.querySelector('h2').textContent=editing?'Edit listing':'Post a listing';error.textContent='';progress.textContent='';syncAreaEditor();}
+  const setBusy=value=>{busy=value;for(const field of form.elements)(field as HTMLInputElement).disabled=value;editButton.disabled=value;publish.disabled=value;paintFiles();if(!value){paintDelivery();syncAreaEditor();syncKeepOption();tradeTools.sync(!!editing);}publish.textContent=value?(editing?'Saving…':'Publishing…'):(editing?'Save changes':'Publish listing');};
+  function showEditor(){tradeTools.sync(!!editing);syncKeepOption();releasePreview();reviewedValues=undefined;reviewOwner=undefined;form.hidden=false;preview.hidden=true;dialog.classList.remove('showing-preview');dialog.querySelector('h2').textContent=editing?'Edit listing':'Post a listing';error.textContent='';progress.textContent='';syncAreaEditor();}
   function drawPreview(){
     releasePreview();
     const draft=pendingEvent||(editing?revisedListingDraft(reviewedValues,editing):listingDraft(reviewedValues,{identifier:draftId}));
@@ -167,7 +179,8 @@ export function setupComposer({account,isPreview,onPublished,defaultCurrency=()=
   form.onsubmit=event=>{
     event.preventDefault();if(busy)return;
     const values:Record<string,unknown>=Object.fromEntries(new FormData(form));error.textContent='';progress.textContent='';
-    try{if(editing&&(values.transportType===undefined||values.transportType===initialTransportType)){if(values.transportType===initialTransportType)delete values.transportType;values.tags=[...String(values.tags||'').split(','),...preservedTransportTags];}else if(editing&&values.transportType==='')values.transportType='none';if(!editing||formFields(form).shippingEnabled.checked||removeExistingDelivery)values.shipping=validateDelivery(formFields(form).shippingEnabled.checked?{countries:[...selectedCountries],price:formFields(form).shippingPrice.value.trim()}:null);if(areaTouched)values.serviceAreas=areaPicker.validate();listingDraft(values,{identifier:draftId});reviewedValues=values;reviewOwner=account.state().ownerPubkey;drawPreview();const heading=dialog.querySelector('h2');heading.tabIndex=-1;heading.focus();heading.scrollIntoView({block:'start'});}
+    try{Object.assign(values,tradeTools.choices());
+      if(editing&&(values.transportType===undefined||values.transportType===initialTransportType)){if(values.transportType===initialTransportType)delete values.transportType;values.tags=[...String(values.tags||'').split(','),...preservedTransportTags];}else if(editing&&values.transportType==='')values.transportType='none';if(!editing||formFields(form).shippingEnabled.checked||removeExistingDelivery)values.shipping=validateDelivery(formFields(form).shippingEnabled.checked?{countries:[...selectedCountries],price:formFields(form).shippingPrice.value.trim()}:null);if(areaTouched)values.serviceAreas=areaPicker.validate();reviewedValues=values;reviewOwner=account.state().ownerPubkey;drawPreview();const heading=dialog.querySelector('h2');heading.tabIndex=-1;heading.focus();heading.scrollIntoView({block:'start'});}
     catch(cause){releasePreview();reviewedValues=undefined;error.textContent=cause.message;}
   };
   publish.onclick=async()=>{
@@ -188,8 +201,8 @@ export function setupComposer({account,isPreview,onPublished,defaultCurrency=()=
     } catch(cause){error.textContent=cause.name==='AbortError'?'Upload stopped. Your draft and selected files are still here.':cause.message||'Could not publish. Your draft is still here.';}
     finally{uploadController=null;setBusy(false);progress.textContent='';}
   };
-  function open(){pendingOpen=false;account.closeAccount();if(!reviewedValues&&!currencyTouched&&formFields(form).currency.value!==defaultCurrency()){formFields(form).currency.value=defaultCurrency();pendingEvent=null;pendingShipping=null;}error.textContent='';paintSide();if(reviewedValues)drawPreview();dialog.showModal();syncAreaEditor();}
-  function edit(listing){if(listing.author!==account.state().ownerPubkey)return;editing=listing;draftId=listing.identifier;pendingEvent=null;pendingShipping=null;selection.clear();paintFiles();const fields=formFields(form);for(const key of ['side','title','description','price','currency','location'])fields[key].value=listing[key]??'';fields.category.value=String(listing.category).toLowerCase();if(!fields.category.value)fields.category.value='other';fields.image.value=listing.imageUrl||'';initialTransportType=listing.category==='transport'?courierListingType(listing)||'':'';preservedTransportTags=(listing.tags||[]).filter(isTransportTag);fields.transportType.value=initialTransportType;fields.tags.value=(listing.tags||[]).filter(tag=>tag!==listing.category&&(listing.category!=='transport'||!isTransportTag(tag))).join(', ');fields.expiration.value='keep';fields.shippingEnabled.checked=false;fields.shippingPrice.value='';selectedCountries.clear();shippingTouched=false;removeExistingDelivery=false;removeDelivery.hidden=!listing.originalTags?.some(tag=>tag[0]==='shipping_option');paintDelivery();dialog.querySelector('#post-delivery-hint').textContent=listing.originalTags?.some(tag=>tag[0]==='shipping_option')?'Existing delivery options are kept unless you change these fields.':'Choose destinations and a fixed delivery cost.';areaPicker.setValue(listing.serviceAreas??null);areaTouched=false;areaEditor.open=!!listing.serviceAreas;currencyTouched=true;showEditor();open();}
+  function open(){tradeTools.sync(!!editing);pendingOpen=false;account.closeAccount();if(!reviewedValues&&!currencyTouched&&formFields(form).currency.value!==defaultCurrency()){formFields(form).currency.value=defaultCurrency();pendingEvent=null;pendingShipping=null;}error.textContent='';paintSide();if(reviewedValues)drawPreview();dialog.showModal();syncAreaEditor();}
+  function edit(listing){if(listing.author!==account.state().ownerPubkey)return;editing=listing;tradeTools.setEditingOffer(listing.escrow);draftId=listing.identifier;pendingEvent=null;pendingShipping=null;selection.clear();paintFiles();const fields=formFields(form);for(const key of ['side','title','description','price','currency','location'])fields[key].value=listing[key]??'';fields.category.value=String(listing.category).toLowerCase();if(!fields.category.value)fields.category.value='other';fields.image.value=listing.imageUrl||'';initialTransportType=listing.category==='transport'?courierListingType(listing)||'':'';preservedTransportTags=(listing.tags||[]).filter(isTransportTag);fields.transportType.value=initialTransportType;fields.tags.value=(listing.tags||[]).filter(tag=>tag!==listing.category&&(listing.category!=='transport'||!isTransportTag(tag))).join(', ');fields.expiration.value='keep';fields.shippingEnabled.checked=false;fields.shippingPrice.value='';selectedCountries.clear();shippingTouched=false;removeExistingDelivery=false;removeDelivery.hidden=!listing.originalTags?.some(tag=>tag[0]==='shipping_option');paintDelivery();dialog.querySelector('#post-delivery-hint').textContent=listing.originalTags?.some(tag=>tag[0]==='shipping_option')?'Existing delivery options are kept unless you change these fields.':'Choose destinations and a fixed delivery cost.';areaPicker.setValue(listing.serviceAreas??null);areaTouched=false;areaEditor.open=!!listing.serviceAreas;currencyTouched=true;showEditor();open();}
   function hasAreaDraft(){try{return !!areaPicker.validate();}catch{return true;}}
   function prefill(values){
     const fields=formFields(form);
@@ -205,5 +218,11 @@ export function setupComposer({account,isPreview,onPublished,defaultCurrency=()=
   }
   account.onReady(()=>{if(pendingOpen)open();});document.getElementById('post-button').onclick=open;
   window.addEventListener('pagehide',()=>{uploadController?.abort();releasePreview();void areaPicker.destroy();void uploader?.close()});
-  return {open,edit,prefill,hide:({preservePending=false}={})=>{if(!preservePending)pendingOpen=false;dialog.hide();}};
+  async function closeBitcoin(listing){
+    if(isPreview()||!account.state().canSign||listing.author!==account.state().ownerPubkey)throw Error('Sign in with the profile that posted this offer.');
+    const event=await account.messaging.signEvent(closedBitcoinDraft(listing));
+    const receipt=await account.messaging.publishSignedEvent(event);
+    onPublished(event,receipt);
+  }
+  return {open,edit,prefill,closeBitcoin,hide:({preservePending=false}={})=>{if(!preservePending)pendingOpen=false;dialog.hide();}};
 }

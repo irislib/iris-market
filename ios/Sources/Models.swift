@@ -35,10 +35,27 @@ struct MarketSnapshot: Decodable {
     var settings: MarketSettings = .init()
     var satsDisplayPrice: MarketDisplayPrice?
     var supportedCurrencies: [String]?
+    var tradeSteps: [EscrowInboxRow]?
     var conversations: [MarketConversation] = []
     var orders: [MarketOrder] = []
     var invite: String?
     static let empty = MarketSnapshot()
+}
+
+struct EscrowInboxRow: Decodable {
+    struct Step: Decodable {
+        struct Deal: Decodable { let title: String?, taker: String?, buyer: String?, seller: String?, provider: String?, listingId: String?; let sats: UInt64? }
+        let tradeId: String, action: String, deal: Deal?, outcome: String?
+        private enum CodingKeys: String, CodingKey { case tradeId, action, deal, outcome }
+        init(from decoder: Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            tradeId = try values.decode(String.self, forKey: .tradeId)
+            action = try values.decode(String.self, forKey: .action)
+            deal = try? values.decode(Deal.self, forKey: .deal)
+            outcome = try? values.decode(String.self, forKey: .outcome)
+        }
+    }
+    let mine: Bool, peer: String, step: Step
 }
 
 struct MarketListing: Decodable, Identifiable, Hashable {
@@ -46,6 +63,18 @@ struct MarketListing: Decodable, Identifiable, Hashable {
     let author: String
     let title: String
     let description: String
+    struct EscrowOffer: Decodable, Hashable {
+        let trade: String
+        let sats: UInt64?
+        let method: String?
+        var bitcoinTerms: String? {
+            guard trade == "bitcoin_fiat", let sats, let method else { return nil }
+            return "\(sats.formatted()) sats · " + (method == "cash" ? "Cash in person" : "Bank transfer")
+        }
+    }
+    var isBitcoinOffer: Bool { escrow?.trade == "bitcoin_fiat" }
+    var reviewAddress: String { isBitcoinOffer ? id : "30402:" + id }
+    var escrow: EscrowOffer? = nil
     let side: String
     let price: String
     let currency: String
@@ -73,6 +102,7 @@ struct MarketListing: Decodable, Identifiable, Hashable {
         return "\(id)|\(createdAt)|\(revision.finalize())"
     }
     var formattedPrice: String {
+        if isBitcoinOffer { return "\(price) \(currency)" }
         guard !price.isEmpty else { return side == "request" ? "Make an offer" : "Ask for price" }
         guard let amount = displayPrice?.amount ?? Double(price), amount.isFinite else { return "\(price) \(currency)" }
         if amount == 0 { return "Free" }

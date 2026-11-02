@@ -19,7 +19,17 @@ struct NativeWalletActivity: Decodable, Identifiable, Sendable {
     let fee: UInt64?
     let createdAt: UInt64
     let operationId: String?
-    var title: String { ["top_up": "Top up", "token_send": "Sent token", "token_receive": "Received token", "lightning_payment": "Lightning payment"][kind] ?? "Transfer" }
+    var title: String {
+        switch kind {
+        case "escrow_funded": return "Escrow funded"
+        case "escrow_received": return "Escrow funds received"
+        case "top_up": return "Top up"
+        case "token_send": return "Sent token"
+        case "token_receive": return "Received token"
+        case "lightning_payment": return "Lightning payment"
+        default: return "Transfer"
+        }
+    }
 }
 struct NativeWalletSnapshot: Decodable, Sendable {
     var balances: [NativeWalletBalance] = []

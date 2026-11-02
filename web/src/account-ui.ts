@@ -25,8 +25,8 @@ function dialog(markup:string, name:string, options:Parameters<typeof createSurf
   return node;
 }
 type AccountState = Partial<ReturnType<ReturnType<typeof createMessaging>['state']>> & {status:string;devices:Array<{pubkey:string;current:boolean}>;conversations:Array<{pubkey:string;messages:any[]}>};
-interface AccountOptions {getMatchListings?:()=>Parameters<typeof import("./private-matches.ts").matchCandidates>[2];listingTitle?:(coordinate:string)=>string|undefined;getRelays:()=>string[];isPreview:()=>boolean;onIdentity?:(key:string,status:string,previous:string,pending:any[])=>void;onProfile?:(key:string)=>void;onOrder?:(id:string)=>void;onToken?:(token:string)=>unknown;onUnread?:(count:number)=>void;accountPage?:HTMLElement;onAccountPage?:()=>void;onAccountClose?:()=>void;messagePage?:HTMLElement;onMessagePage?:(peer?:string)=>void;onMessageClose?:()=>void}
-export function setupAccount({getMatchListings=()=>[],listingTitle=()=>undefined,getRelays,isPreview,onIdentity=()=>{},onProfile=()=>{},onOrder=()=>{},onToken=()=>{},onUnread=()=>{},accountPage,onAccountPage=()=>{},onAccountClose=()=>{},messagePage,onMessagePage=()=>{},onMessageClose=()=>{}}:AccountOptions) {
+interface AccountOptions {getMatchListings?:()=>Parameters<typeof import("./private-matches.ts").matchCandidates>[2];renderEscrowTrades?:(host:HTMLElement,peer?:string,listing?:string)=>void;listingTitle?:(coordinate:string)=>string|undefined;getRelays:()=>string[];isPreview:()=>boolean;onIdentity?:(key:string,status:string,previous:string,pending:any[])=>void;onProfile?:(key:string)=>void;onOrder?:(id:string)=>void;onToken?:(token:string)=>unknown;onUnread?:(count:number)=>void;accountPage?:HTMLElement;onAccountPage?:()=>void;onAccountClose?:()=>void;messagePage?:HTMLElement;onMessagePage?:(peer?:string)=>void;onMessageClose?:()=>void}
+export function setupAccount({getMatchListings=()=>[],renderEscrowTrades=()=>{},listingTitle=()=>undefined,getRelays,isPreview,onIdentity=()=>{},onProfile=()=>{},onOrder=()=>{},onToken=()=>{},onUnread=()=>{},accountPage,onAccountPage=()=>{},onAccountClose=()=>{},messagePage,onMessagePage=()=>{},onMessageClose=()=>{}}:AccountOptions) {
   const pickerState=createChatPickerState();
   const unread=createUnreadTracker({kind:'messages',onUnread});
   const readyListeners=new Set<()=>void>(), stateListeners=new Set<(state:AccountState)=>void>();
@@ -97,6 +97,7 @@ export function setupAccount({getMatchListings=()=>[],listingTitle=()=>undefined
     const revision=++inboxRevision;
     syncUnread();
     if(!inbox.open)return;
+    inbox.querySelector('[data-escrow-trades]')?.remove();
     $('chat-threads').setAttribute('aria-pressed',String(threadMode));$('chat-people').setAttribute('aria-pressed',String(!threadMode));
     const rows=state.conversations.flatMap(c=>{
       const groups=threadMode?groupMessageThreads(c.messages):[{key:'*',context:undefined,messages:c.messages}];
@@ -114,6 +115,7 @@ export function setupAccount({getMatchListings=()=>[],listingTitle=()=>undefined
     $('chat-person').replaceChildren(...(selected?[createUserRow(selected,{size:36,onClick:()=>{inbox.hide();onProfile(selected)}})]:[]));
     if(selectedContext?.order_id){const id=selectedContext.order_id,order=state.orders?.find(o=>o.id===id);const button=el('button',order?.items.map(i=>i.title).join(', ')||'View order','text-button chat-context');button.type='button';button.onclick=()=>{inbox.hide();onOrder(id)};$('chat-person').append(button);}
     else if(selectedContext?.listing)$('chat-person').append(el('p',contextTitle(selectedContext),'small muted'));
+    if(!selectedContext?.order_id)renderEscrowTrades(selected?$('chat-person'):inbox,selected||undefined,selectedContext?.listing);
     const allMessages=state.conversations.find(c=>c.pubkey===selected)?.messages||[];
     const messages=selectedThreadKey!=='*'?allMessages.filter(m=>messageThreadKey(m)===selectedThreadKey):allMessages;
     const area=$('chat-messages'), nearBottom=area.scrollHeight-area.scrollTop-area.clientHeight<100;
@@ -191,9 +193,9 @@ export function setupAccount({getMatchListings=()=>[],listingTitle=()=>undefined
   $('chat-messages').addEventListener('scroll',scheduleSeen,{passive:true});window.addEventListener('resize',scheduleSeen);
   document.addEventListener('visibilitychange',refreshUnread);document.addEventListener('close',uncovered,true);window.addEventListener('focus',refreshUnread);
   $('account-button').onclick=()=>showAccount();$('inbox-tab').onclick=showInbox;
-  if(!isPreview())void messaging.restore().then(value=>{state=value;renderAccount();if(pendingInvite)showAccount();}).catch(error=>{fail(error);if(pendingInvite)showAccount();}); else renderAccount();
+  const restored=isPreview()?Promise.resolve(renderAccount()):messaging.restore().then(value=>{state=value;renderAccount();if(pendingInvite)showAccount();}).catch(error=>{fail(error);if(pendingInvite)showAccount();});
   window.addEventListener('pagehide',()=>{if(readFrame!==undefined)cancelAnimationFrame(readFrame);window.removeEventListener('resize',scheduleSeen);$('chat-messages').removeEventListener('scroll',scheduleSeen);receiptSettings.remove();document.removeEventListener('visibilitychange',refreshUnread);document.removeEventListener('close',uncovered,true);window.removeEventListener('focus',refreshUnread);controller?.abort();messaging.destroy();});
-  const api={ messaging, state:()=>state, showAccount, showInbox, openChat, composeMessage, hideInbox:()=>inbox.hide(), closeAccount:()=>account.hide(), hideAccount:()=>account.hide(), onReady:listener=>readyListeners.add(listener), onState:listener=>{stateListeners.add(listener);return()=>stateListeners.delete(listener)} };
+  const api={ messaging, restored, state:()=>state, showAccount, showInbox, openChat, composeMessage, hideInbox:()=>inbox.hide(), closeAccount:()=>account.hide(), hideAccount:()=>account.hide(), onReady:listener=>readyListeners.add(listener), onState:listener=>{stateListeners.add(listener);return()=>stateListeners.delete(listener)} };
   setupMarketplaceFlags(api);
   setupPrivateMatches(api,getMatchListings);
   return api;

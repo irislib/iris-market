@@ -36,7 +36,7 @@ export function createPublicListingCache({backend,validate,maxRecords=MAX_RECORD
   }
   function checked(input:NostrEvent){
     const event=wire(input)
-    if(event.kind!==30402||new TextEncoder().encode(JSON.stringify(event)).length>MAX_EVENT_BYTES)throw new Error('Invalid offline listing')
+    if(![30402,38383].includes(event.kind)||new TextEncoder().encode(JSON.stringify(event)).length>MAX_EVENT_BYTES)throw new Error('Invalid offline listing')
     return{event,key:validate(event)}
   }
   function initialize(){

@@ -6,7 +6,7 @@ export function validMessageContext(value:unknown):value is MessageContext {
   const c=value as Record<string,unknown>;
   if(Object.keys(c).some(key=>!['thread_id','order_id','listing'].includes(key))||typeof c.thread_id!=='string'||!UUID.test(c.thread_id))return false;
   if(c.order_id!==undefined&&(typeof c.order_id!=='string'||!new RegExp(`^[a-f0-9]{64}:${c.thread_id}$`).test(c.order_id)))return false;
-  if(c.listing!==undefined&&(typeof c.listing!=='string'||c.listing.length>512||!/^30402:[a-f0-9]{64}:[^\x00-\x1f\x7f]+$/.test(c.listing)))return false;
+  if(c.listing!==undefined&&(typeof c.listing!=='string'||c.listing.length>512||!/^(?:30402|38383):[a-f0-9]{64}:[^\x00-\x1f\x7f]+$/.test(c.listing)))return false;
   return true;
 }
 export function contextTags(context?:MessageContext):string[][] {
@@ -21,7 +21,7 @@ export function messageContext(tags:string[][]):MessageContext|undefined {
 }
 /** Listing cards use author:identifier; encrypted context carries a kind-qualified address. */
 export function listingContext(id:string,threadID=crypto.randomUUID()):MessageContext {
-  const context={thread_id:threadID,listing:id.startsWith('30402:')?id:`30402:${id}`};
+  const context={thread_id:threadID,listing:/^(30402|38383):/.test(id)?id:`30402:${id}`};
   if(!validMessageContext(context))throw new Error('Invalid listing conversation.');
   return context;
 }

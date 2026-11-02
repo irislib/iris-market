@@ -1,3 +1,4 @@
+import {BITCOIN_KIND,bitcoinFilter,readEscrowOffer} from './escrow-offer.ts';
 import {keywordSearches,matchesLiteralSearch,listingSearchText} from './lexical-search.ts'
 import { verifyEvent, type Event as NostrEvent } from 'nostr-tools/pure'
 import { locationFromTags, MAX_GEOHASH_QUERY_VALUES } from './map/geohash.ts'
@@ -35,7 +36,7 @@ function singleton(event: NostrEvent, name: string) {
 /** Verify and normalise a NIP-99 record. Sold/expired records are valid tombstones. */
 export function parseEvent(input: NostrEvent, { now = seconds() } = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) fail('Invalid listing event')
-  if (input.kind !== LISTING_KIND) fail('Not a classified listing')
+  if (input.kind !== LISTING_KIND && input.kind !== BITCOIN_KIND) fail('Not a classified listing')
   if (!Number.isSafeInteger(input.created_at) || input.created_at < 0 || input.created_at > now + 300) fail('Invalid listing timestamp')
   if (!hex(input.id, 64) || !hex(input.pubkey, 64) || !hex(input.sig, 128)) fail('Invalid listing signature fields')
   if (typeof input.content !== 'string' || !Array.isArray(input.tags) || input.tags.length > 2048) fail('Invalid listing fields')
@@ -49,20 +50,21 @@ export function parseEvent(input: NostrEvent, { now = seconds() } = {}) {
   if (bytes(JSON.stringify(event)) > MAX_EVENT_BYTES) fail('Listing is too large')
   if (!verifyEvent(event)) fail('Listing signature is invalid')
 
+  const quote=readEscrowOffer(event.kind,event.tags);
   const identifier = singleton(event, 'd')
   if (!identifier || bytes(identifier) > 160) fail('Invalid listing identifier')
   const title = singleton(event, 'title')
   if (typeof title !== 'string' || !title.trim() || length(title) > 160) fail('Invalid listing title')
   if (bytes(event.content) > 12000) fail('Description is too long')
-  const side = singleton(event, 'market') ?? (event.tags.some(tag=>tag[0]==='t'&&tag[1]==='market:request')?'request':'offer')
+  const side = quote.side ?? singleton(event, 'market') ?? (event.tags.some(tag=>tag[0]==='t'&&tag[1]==='market:request')?'request':'offer')
   if (side !== 'offer' && side !== 'request') fail('Invalid listing type')
   const location = singleton(event, 'location') ?? ''
   const geo = locationFromTags(event.tags)
   const tags = event.tags.filter(tag => tag[0] === 't' && typeof tag[1] === 'string' && !tag[1].startsWith('market:')).map(tag => tag[1])
   const category = tags[0] ?? 'Other'
   if (length(location) > 160 || length(category) > 60) fail('Location or category is too long')
-  const price = singleton(event, 'price') ?? ''
-  const currency = event.tags.find(tag => tag[0] === 'price')?.[2] ?? 'EUR'
+  const price = quote.price ?? singleton(event, 'price') ?? ''
+  const currency = quote.currency ?? event.tags.find(tag => tag[0] === 'price')?.[2] ?? 'EUR'
   if (!/^[a-zA-Z]{3,12}$/.test(currency)) fail('Invalid currency')
   if (price !== '' && (bytes(price) > 24 || !/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(price) || !Number.isFinite(Number(price)) || Number(price) < 0)) fail('Invalid price')
   const rawImage = event.tags.find(tag => tag[0] === 'image')?.[1]
@@ -80,13 +82,14 @@ export function parseEvent(input: NostrEvent, { now = seconds() } = {}) {
     expiration = Number(rawExpiration)
     if (!Number.isSafeInteger(expiration) || expiration < 0) fail('Invalid expiry')
   }
-  const status = singleton(event, 'status') ?? 'active'
+  if(quote.expiration!=null)expiration=Math.min(quote.expiration,expiration??Infinity);
+  const status = quote.status ?? singleton(event, 'status') ?? 'active'
   if (status !== 'active' && status !== 'sold') fail('Invalid listing status')
   const originalTags = Object.freeze(event.tags.map(tag => Object.freeze([...tag])))
   // Preserve the verification brand on this defensive, immutable wire copy.
   const rawEvent = Object.freeze({ ...event, tags: originalTags })
   return Object.freeze({
-    rawEvent, id: `${event.pubkey}:${identifier}`, eventId: event.id, author: event.pubkey,
+    rawEvent, escrow:quote.escrow, id: (event.kind===BITCOIN_KIND?"38383:":"")+`${event.pubkey}:${identifier}`, eventId: event.id, author: event.pubkey,
     identifier, title, description: event.content, price, currency, location,
     geohash: geo?.geohash ?? null, coordinates: geo?.coordinates ?? null, locationBounds: geo?.bounds ?? null,
     serviceAreas: parseServiceAreas(event.tags),
@@ -149,16 +152,20 @@ function feedAuthors(authors: readonly string[] | null) {
 
 function targetFilter(targetId?: string | null): MarketFilter | null {
   if (targetId === undefined || targetId === null) return null
+  const kind=typeof targetId==='string' && targetId.startsWith('38383:')?BITCOIN_KIND:LISTING_KIND;
+  if(kind===BITCOIN_KIND)targetId=targetId.slice(6);
   if (typeof targetId !== 'string' || targetId[64] !== ':' || !hex(targetId.slice(0, 64), 64)) fail('Invalid listing link')
   const identifier = targetId.slice(65)
   if (!identifier || bytes(identifier) > 160) fail('Invalid listing link')
-  return { kinds: [LISTING_KIND], authors: [targetId.slice(0, 64)], '#d': [identifier], limit: 1 }
+  const exact = {kinds:[kind],authors:[targetId.slice(0,64)],'#d':[identifier],limit:1}
+  return kind===BITCOIN_KIND ? bitcoinFilter(exact) : exact
 }
 
 export type MarketListing = ReturnType<typeof parseEvent>
 export interface MarketFilter {
   kinds: number[]
   authors?: readonly string[]
+  '#y'?: string[]
   '#d'?: string[]
   '#t'?: readonly string[]
   '#g'?: string[]
@@ -170,12 +177,13 @@ export interface MarketPagination { loading: boolean; exhausted: boolean; limite
 export interface MarketStatus { state: 'closed' | 'empty' | 'live' | 'connecting' | 'offline'; connected: number; total: number; message: string }
 interface RelayHistory { initialOldest: number | null; cursor: number | null; started: boolean; exhausted: boolean; limited: boolean; requests: number; pager?: HistoryCursor }
 interface HistoryPage { error?: string; limited?: boolean; count?: number; oldest?: number | null }
-interface HistoryOptions {search?:string; tags?:readonly string[];signal?:AbortSignal;pageSize?:number;maxRequests?:number;rounds?:number;timeoutMs?:number;budget?:{bytes:number;max:number};requestBudget?:{count:number;max:number};observe?:(event:NostrVerifiedEvent)=>void }
+interface HistoryOptions {bitcoin?:boolean;search?:string; tags?:readonly string[];signal?:AbortSignal;pageSize?:number;maxRequests?:number;rounds?:number;timeoutMs?:number;budget?:{bytes:number;max:number};requestBudget?:{count:number;max:number};observe?:(event:NostrVerifiedEvent)=>void }
 interface QueryTagPlan {search?:string;tags:readonly string[];history:Map<string,RelayHistory>;indexHistory:RelayHistory}
 export interface QueryCandidates {loading:boolean;added:number;hasMore:boolean;error:string;limited:boolean}
 interface RelayConnection {
   url: string; attempt: number; socket: WebSocket | null; failed: boolean; ready: boolean; subscription: string
   initialOldest?: number | null
+  bitcoinOldest?: number | null
   timer: ReturnType<typeof setTimeout> | null; retry: ReturnType<typeof setTimeout> | null
   frameStart: number; frames: number; geoSubscription?: string | null; geoSubscriptions?: Set<string>
 }
@@ -230,6 +238,7 @@ export class MarketRelayClient {
   onPagination: NonNullable<MarketRelayOptions['onPagination']>
   historyPageSize: number
   history: Map<string, RelayHistory>
+  bitcoinHistory = new Map<string, RelayHistory>()
   historyReaders: Set<(page: HistoryPage) => void>
   pagePromise: Promise<MarketPagination> | null
   pageLoading: boolean
@@ -326,7 +335,9 @@ export class MarketRelayClient {
         now:()=>this.now()*1000,
         onEvent:event=>{if(this.running)try{this.acceptListing(this.parseIncoming(event));}catch{/* Invalid or obsolete records stay hidden. */}},
       })
-      void this.recovery.recover({kinds:[LISTING_KIND],...(this.authors?{authors:[...this.authors]}:{}),...(this.tags.length?{'#t':[...this.tags]}:{})})
+      const filter = {kinds:[LISTING_KIND],...(this.authors?{authors:[...this.authors]}:{}),...(this.tags.length?{'#t':[...this.tags]}:{})}
+      void this.recovery.recover(filter)
+      void this.recovery.recover(bitcoinFilter(filter))
     }
     void this.restoreOffline(++this.cacheGeneration)
     if (this.hasQueries) for (const url of this.relays) this.connect(url)
@@ -483,8 +494,11 @@ export class MarketRelayClient {
     if(!this.running||!this.hasQueries||!this.indexQuery||this.indexReads.size>=2||this.indexRequests>=16||this.indexBytes>=MAX_HISTORY_BYTES)return
     const filters:Filter[]=extra.length?extra:[
       ...(this.hasInventoryQuery?[{kinds:[LISTING_KIND],limit:this.historyPageSize,...(this.authors?{authors:[...this.authors]}:{}),...(this.tags.length?{'#t':[...this.tags]}:{})}]:[]),
-      ...(this.targetFilter?[{kinds:[LISTING_KIND],authors:[...this.targetFilter.authors!],'#d':this.targetFilter['#d'],limit:1}]:[]),
+      ...(this.targetFilter?[{kinds:this.targetFilter.kinds,authors:[...this.targetFilter.authors!],'#d':this.targetFilter['#d'],...(this.targetFilter['#y']?{'#y':this.targetFilter['#y']}:{}),limit:1}]:[]),
     ]
+    for(const filter of [...filters]) {
+      if(filter.kinds?.length===1 && filter.kinds[0]===LISTING_KIND && !filter['#d'])filters.push(bitcoinFilter({...filter,kinds:[LISTING_KIND]}));
+    }
     const controller=new AbortController();this.indexReads.add(controller);this.indexRequests++
     void this.indexQuery(filters,{signal:controller.signal,deadline:Date.now()+6000,limit:Math.min(600,this.maxRecords)}).then(report=>{
       if(!this.running||controller.signal.aborted)return
@@ -603,6 +617,8 @@ export class MarketRelayClient {
         // Display partial inventory immediately, but only a completed initial
         // page establishes where older history may safely start.
         if (history && !history.started) history.initialOldest = connection.initialOldest ?? null
+        const bitcoin = this.bitcoinHistory.get(url)
+        if (bitcoin && !bitcoin.started) bitcoin.initialOldest = connection.bitcoinOldest ?? null
         connection.ready = true
         connection.attempt = 0
         clearTimeout(connection.timer)
@@ -613,11 +629,16 @@ export class MarketRelayClient {
       } else if (frame[0] === 'EVENT' && frame.length === 3) {
         try {
           const listing = this.parseIncoming(frame[2])
-          const history = this.history.get(url)
+          const bitcoin = listing.rawEvent.kind === BITCOIN_KIND
+          if (bitcoin && listing.id !== this.targetId && !this.bitcoinHistory.has(url)) {
+            this.bitcoinHistory.set(url, {initialOldest:null,cursor:null,started:false,exhausted:false,limited:false,requests:0})
+          }
+          const history = (bitcoin ? this.bitcoinHistory : this.history).get(url)
           // The exact shared-target query may return an ancient event alongside
           // recent inventory. It must not skip the intervening history.
-          if (!history.started && !connection.ready && listing.id !== this.targetId && this.matchesFeed(listing)) {
-            connection.initialOldest = Math.min(connection.initialOldest ?? listing.createdAt, listing.createdAt)
+          if (history && !history.started && !connection.ready && listing.id !== this.targetId && this.matchesFeed(listing)) {
+            const field = bitcoin ? 'bitcoinOldest' : 'initialOldest'
+            connection[field] = Math.min(connection[field] ?? listing.createdAt, listing.createdAt)
           }
           this.acceptListing(listing)
         } catch { /* Untrusted malformed records never enter the visible store. */ }
@@ -628,9 +649,9 @@ export class MarketRelayClient {
     this.emitStatus()
   }
 
-  acceptListing(listing: MarketListing) {
+  acceptListing(listing: MarketListing, publishedLocally=false) {
     // Preserve newer revisions of known coordinates even if their tags changed.
-    if (listing.id !== this.targetId && !this.matchesFeed(listing) && !this.records.has(listing.id)) return
+    if (!publishedLocally && listing.id !== this.targetId && !this.matchesFeed(listing) && !this.records.has(listing.id)) return
     if (this.seen.has(listing.eventId)) return
     this.seen.add(listing.eventId)
     if (this.seen.size > 4000) this.seen.delete(this.seen.values().next().value)
@@ -639,7 +660,7 @@ export class MarketRelayClient {
   }
 
   pagination(): MarketPagination {
-    const histories = [...this.history.values()]
+    const histories = [...this.history.values(), ...this.bitcoinHistory.values()]
     const exhausted = !this.hasInventoryQuery || (histories.length > 0 && histories.every(item => item.exhausted))
     const limited = this.records.size >= this.maxRecords || histories.some(item => item.limited)
     return {
@@ -671,8 +692,10 @@ export class MarketRelayClient {
     this.pageAdded = 0
     const before = this.records.size
     this.pagePromise = Promise.resolve().then(async () => {
-      const results = await Promise.all([...this.history].filter(([, item]) => !item.exhausted && !item.limited)
-        .map(([url, item]) => this.loadOlderFrom(url, item)))
+      const reads = (histories:Map<string,RelayHistory>, bitcoin:boolean) => [...histories]
+        .filter(([, item]) => !item.exhausted && !item.limited)
+        .map(([url, item]) => this.loadOlderFrom(url, item, {bitcoin}))
+      const results = await Promise.all([...reads(this.history,false),...reads(this.bitcoinHistory,true)])
       if (results.some(result => result.error)) this.pageError = 'Couldn’t load all older listings. Try again.'
       this.pageAdded = Math.max(0, this.records.size - before)
     }).finally(() => {
@@ -698,7 +721,7 @@ export class MarketRelayClient {
     if (!history.pager) {
       const tags = options.tags ?? this.tags
       history.pager = new HistoryCursor(url, {
-        kinds: [LISTING_KIND], until: history.cursor,
+        kinds: [options.bitcoin ? BITCOIN_KIND : LISTING_KIND], ...(options.bitcoin ? {'#y':['iris-market']} : {}), until: history.cursor,
         limit: Math.min(options.pageSize ?? this.historyPageSize, this.maxRecords),
         ...(this.authors !== null ? {authors: [...this.authors]} : {}),
         ...(tags.length ? {'#t': [...tags]} : {}),
@@ -755,7 +778,7 @@ export class MarketRelayClient {
       try { socket = new this.WebSocket(url) } catch { finish({ error: 'Connection failed.' }); return }
       socket.onopen = () => {
         if (ended || !this.running) { finish({ error: 'Loading stopped.' }); return }
-        const filter: MarketFilter = { kinds: [LISTING_KIND], until, limit }
+        const filter: MarketFilter = options.bitcoin ? bitcoinFilter({kinds:[],until,limit}) : {kinds:[LISTING_KIND],until,limit}
         if (this.authors !== null) filter.authors = this.authors
         const tags=options.tags??this.tags;if(options.search){filter.search=options.search;delete filter.until}else if(tags.length)filter['#t']=tags
         try { socket.send(JSON.stringify(['REQ', subscription, filter])) }
@@ -780,7 +803,7 @@ export class MarketRelayClient {
         try {
           const listing = this.parseIncoming(frame[2])
           const scoped=options.search?(!this.authorSet||this.authorSet.has(listing.author))&&matchesLiteralSearch(listingSearchText(listing),options.search):options.tags?(!this.authorSet||this.authorSet.has(listing.author))&&listing.tags.some(tag=>options.tags.includes(tag)):this.matchesFeed(listing)
-          if ((!options.search&&listing.createdAt > until) || !scoped) { invalid = true; return }
+          if (listing.rawEvent.kind !== (options.bitcoin ? BITCOIN_KIND : LISTING_KIND) || (!options.search&&listing.createdAt > until) || !scoped) { invalid = true; return }
           if (!accepted.has(listing.eventId) && accepted.size >= limit) { finish({ error: 'Older response exceeded its limit.' }); return }
           accepted.add(listing.eventId)
           oldest = Math.min(oldest ?? listing.createdAt, listing.createdAt)
@@ -797,6 +820,7 @@ export class MarketRelayClient {
   request(connection: RelayConnection) {
     connection.ready = false
     connection.initialOldest = null
+    connection.bitcoinOldest = null
     clearTimeout(connection.timer)
     try {
       const filters = []
@@ -807,6 +831,7 @@ export class MarketRelayClient {
         filters.push(inventory)
       }
       if (this.targetFilter) filters.push(this.targetFilter)
+      if (this.hasInventoryQuery) filters.push(bitcoinFilter(filters[0]))
       if (!filters.length) return
       connection.socket.send(JSON.stringify(['REQ', connection.subscription, ...filters]))
       connection.timer = setTimeout(() => {

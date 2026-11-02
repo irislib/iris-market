@@ -36,6 +36,9 @@ targets:
     type: application
     platform: iOS
     sources:
+      - path: ../shared/escrow
+        type: folder
+        buildPhase: resources
       - path: Assets.xcassets
       - path: Sources
       - path: Bindings

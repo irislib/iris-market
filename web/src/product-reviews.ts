@@ -19,7 +19,7 @@ const requireValue=(condition:unknown,message:string):void=>{if(!condition)throw
 
 /** Exact NIP-99 address, including the complete opaque identifier (which may contain colons). */
 export function productReviewTarget(address:string):string {
-  requireValue(typeof address==='string'&&/^30402:[a-f0-9]{64}:[^\u0000-\u001f\u007f]{1,512}$/u.test(address),'Invalid product address.');
+  requireValue(typeof address==='string'&&/^(?:30402|38383):[a-f0-9]{64}:[^\u0000-\u001f\u007f]{1,512}$/u.test(address),'Invalid product address.');
   return address;
 }
 function address(value:string|undefined):string|undefined {

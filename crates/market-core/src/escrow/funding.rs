@@ -37,7 +37,7 @@ impl Terms {
         self.check_at(encoded, &client, &self.mint).await
     }
 
-    async fn check_at(
+    pub(crate) async fn check_at(
         &self,
         encoded: &str,
         client: &reqwest::Client,
@@ -172,7 +172,9 @@ pub struct FundingCheck {
     pub input_fee_sats: u64,
     pub checked_at: u64,
 }
-async fn response<T: for<'a> Deserialize<'a>>(request: reqwest::RequestBuilder) -> Result<T> {
+pub(crate) async fn response<T: for<'a> Deserialize<'a>>(
+    request: reqwest::RequestBuilder,
+) -> Result<T> {
     let mut response = request.send().await?.error_for_status()?;
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await? {

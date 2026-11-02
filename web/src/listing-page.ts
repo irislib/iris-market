@@ -1,3 +1,4 @@
+import {fiatMethodLabel} from './escrow-offer.ts';
 import {element as node} from './dom.ts';
 import {imageUrl,createStaticImage} from './media.ts';
 import {art} from './art.ts';
@@ -8,13 +9,13 @@ import {relativeExpiry} from './expiry.ts';
 import {courierListingType} from './transport-type.ts';
 
 interface PublicListingEvent {id:string;pubkey:string;created_at:number;kind:number;tags:readonly (readonly string[])[];content:string;sig:string}
-interface ListingPresentation extends ListingDates {title:string;side:string;category:string;tags?:readonly string[];price:string;currency:string;location:string;imageUrl?:string;description:string;author?:string;id?:string;rawEvent?:PublicListingEvent}
+interface ListingPresentation extends ListingDates {escrow?:import('./escrow-offer.ts').EscrowOffer;title:string;side:string;category:string;tags?:readonly string[];price:string;currency:string;location:string;imageUrl?:string;description:string;author?:string;id?:string;rawEvent?:PublicListingEvent}
 interface ListingPageOptions {
   saved?:boolean;onSave?:(listing:ListingPresentation)=>void;onBuy?:(listing:ListingPresentation)=>void;onProfile?:(key:string)=>void;
   priceNode:(listing:ListingPresentation,className:string)=>HTMLElement;authorRow?:(listing:ListingPresentation)=>HTMLElement;
-  isPreview?:boolean;owner?:string;onEdit?:(listing:ListingPresentation)=>void;onToast?:(message:string)=>void;draftPreview?:boolean;localImage?:string;
+  isPreview?:boolean;owner?:string;onCloseBitcoin?:(listing:ListingPresentation)=>Promise<void>;onEdit?:(listing:ListingPresentation)=>void;onToast?:(message:string)=>void;draftPreview?:boolean;localImage?:string;
 }
-export function renderListingPage(listing:ListingPresentation,{saved=false,onSave=()=>{},onBuy=()=>{},onProfile=()=>{},priceNode,authorRow=()=>null,isPreview=false,owner=undefined,onEdit=undefined,onToast=()=>{},draftPreview=false,localImage=undefined}:ListingPageOptions) {
+export function renderListingPage(listing:ListingPresentation,{saved=false,onSave=()=>{},onBuy=()=>{},onProfile=()=>{},priceNode,authorRow=()=>null,isPreview=false,owner=undefined,onEdit=undefined,onCloseBitcoin=undefined,onToast=()=>{},draftPreview=false,localImage=undefined}:ListingPageOptions) {
   const wrap=node('article',undefined,'detail-layout');
   const media=node('div',undefined,'detail-media');
   const local=draftPreview&&typeof localImage==='string'&&localImage.startsWith('blob:')?localImage:null;
@@ -41,8 +42,11 @@ export function renderListingPage(listing:ListingPresentation,{saved=false,onSav
   const copy=node('div',undefined,'detail-copy');
   const transport=listing.category==='transport'?courierListingType(listing):null;
   const category=transport?({parcel:'Delivery',passenger:'Passenger ride',both:'Delivery and passenger rides'}[transport]):listing.category;
-  const context=draftPreview?`${listing.side==='request'?'Buying':'Selling'} · ${category}`:listing.side==='request'?`Buying${transport?` · ${category}`:''}`:category;
+  const bitcoin=listing.escrow?.trade==='bitcoin_fiat'?listing.escrow:undefined;
+  if(bitcoin && !local && !listing.imageUrl){wrap.classList.add('detail-quote-only');media.hidden=true;}
+  const context=bitcoin?(listing.side==='request'?'Buying bitcoin':'Selling bitcoin'):draftPreview?`${listing.side==='request'?'Buying':'Selling'} · ${category}`:listing.side==='request'?`Buying${transport?` · ${category}`:''}`:category;
   copy.append(node('div',context,'eyebrow'),node('h1',listing.title),priceNode(listing,'detail-price'),node('p',listing.location||'Anywhere','detail-place'));
+  if(bitcoin)copy.append(node('p',bitcoin.sats.toLocaleString()+' sats · '+fiatMethodLabel(bitcoin.method),'detail-quote'));
   if(!draftPreview&&!isPreview&&listing.author)copy.append(authorRow(listing));
   const added=listingPublishedAt(listing),dates=node('p',undefined,'listing-dates small muted');
   const date=(label:string,seconds:number,includeTime=false)=>{const value=new Date(seconds*1000),time=node('time',`${label} ${value.toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric',...(includeTime?{hour:'numeric',minute:'2-digit'}:{})})}`);time.dateTime=value.toISOString();time.title=value.toLocaleString();return time;};
@@ -52,8 +56,15 @@ export function renderListingPage(listing:ListingPresentation,{saved=false,onSav
   if(hasAdded||hasExpiry)copy.append(dates);
   if(draftPreview){copy.append(renderDescription(listing.description));wrap.append(media,copy);return wrap;}
   const actions=node('div',undefined,'detail-actions');
-  if(!isPreview&&listing.author!==owner){const buy=node('button',listing.side==='request'?'Respond':'Buy','button primary');buy.onclick=()=>onBuy(listing);actions.append(buy);}
+  if(!isPreview&&listing.author!==owner){const buy=node('button',bitcoin?(listing.side==='request'?'Message buyer':'Message seller'):listing.side==='request'?'Respond':'Buy','button primary');buy.onclick=()=>onBuy(listing);actions.append(buy);}
   if(!isPreview&&listing.author===owner&&onEdit){const edit=node('button','Edit listing','button primary');edit.onclick=()=>onEdit(listing);actions.append(edit);}
+  if(!isPreview && bitcoin && listing.author===owner && onCloseBitcoin){
+    const close=node('details',undefined,'account-option'),confirm=node('button','Close offer','button secondary'),problem=node('p','','error small');
+    confirm.type='button';problem.setAttribute('role','alert');
+    close.append(node('summary','Close offer'),node('p','People will no longer be able to take this quote.','small muted'),confirm,problem);
+    confirm.onclick=async()=>{confirm.disabled=true;try{await onCloseBitcoin(listing);}catch(error){problem.textContent=error.message;confirm.disabled=false;}};
+    actions.append(close);
+  }
   const save=node('button',saved?'♥ Saved':'♡ Save','button secondary');save.setAttribute('aria-pressed',String(saved));save.onclick=()=>onSave(listing);
   const share=node('button','Copy link','button secondary');share.onclick=async()=>{try{await navigator.clipboard.writeText(listingURL(listing.id,location.href));onToast('Link copied');}catch{onToast('Copy the address from your browser');}};
   actions.append(save,share);copy.append(actions,renderDescription(listing.description));

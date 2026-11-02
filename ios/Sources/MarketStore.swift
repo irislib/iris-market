@@ -200,7 +200,15 @@ final class MarketStore: ObservableObject {
                 var publicDirectory = baseFolder
                 var notificationDeviceSecret = secret
                 if NativeTestStorage.enabled {
+                    #if DEBUG
+                    if !demo, let relay = ProcessInfo.processInfo.environment["MARKET_ESCROW_TEST_RELAY"] {
+                        app = try MarketApp.localTestProfile(dataDir: baseFolder.path, secretKey: secret, relay: relay)
+                    } else {
+                        app = try MarketApp(dataDir: baseFolder.path, secretKey: secret, demo: true)
+                    }
+                    #else
                     app = try MarketApp(dataDir: baseFolder.path, secretKey: secret, demo: true)
+                    #endif
                 } else if !demo, let owner = try SecureStore.read("active.account") {
                     guard let bundle = try NativeAccountBundle.load(owner) else { throw SecureStore.StorageError.status(-25300) }
                     let folder = bundle.legacy ? baseFolder : baseFolder.appendingPathComponent("accounts/\(bundle.ownerPublicKey)", isDirectory: true)
@@ -272,6 +280,7 @@ final class MarketStore: ObservableObject {
         #endif
         refreshAIAvailability(); syncPush()
         guard timer == nil else { return }
+        refreshSnapshot()
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refreshSnapshot() }
         }
@@ -284,7 +293,8 @@ final class MarketStore: ObservableObject {
         }
         activePushPeerID = nil; activePushThreadID = nil
     }
-    private func refreshSnapshot() {
+    func refreshInbox() { refreshSnapshot(onOpen: true) }
+    private func refreshSnapshot(onOpen: Bool = false) {
         guard let app, !snapshotRefreshInFlight else { return }
         snapshotRefreshInFlight = true
         let generation = accountGeneration
@@ -293,7 +303,7 @@ final class MarketStore: ObservableObject {
                 let next = try MarketJSON.decoder().decode(MarketSnapshot.self, from: Data(try app.snapshot().utf8))
                 Task { @MainActor in
                     self?.snapshotRefreshInFlight = false
-                    if let self, self.accountGeneration == generation, self.timer != nil {
+                    if let self, self.accountGeneration == generation, (onOpen || self.timer != nil) {
                         if self.refreshProblem != nil { self.refreshProblem = nil }
                         self.acceptSnapshot(next); self.refreshAIAvailability(); self.continueLocalSearch()
                     }
@@ -955,5 +965,22 @@ extension MarketStore {
             device = owner
         } else { throw WalletCredentials.Failure.invalidIdentity }
         return try WalletCredentials.loadOrCreate(owner: owner, device: device, importedSeed: importedSeed)
+    }
+}
+
+extension MarketStore {
+    func escrowRead(_ method: String, value: String, owner: String, refresh: Bool = false) async throws -> String {
+        guard let app, !demo, snapshot.publicKey == owner else { throw CancellationError() }
+        let generation = accountGeneration
+        let result = try await Task.detached(priority: .userInitiated) {
+            switch method {
+            case "records": return try app.tradeSteps()
+            case "listing": return try app.tradeListing(id:value, refresh:refresh)
+            case "certificate": return try app.escrowProvider(key:value)
+            default: throw CancellationError()
+            }
+        }.value
+        guard generation == accountGeneration else { throw CancellationError() }
+        return result
     }
 }

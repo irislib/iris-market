@@ -9,7 +9,7 @@ interface ProductReviewOptions {
 }
 /** Read-only product recommendations. Seller/profile ratings have a separate projection. */
 export function setupProductReviews({listing,query,preview=false,onProfile=()=>{}}:ProductReviewOptions) {
-  const target=productReviewTarget(listing.id.startsWith('30402:')?listing.id:`30402:${listing.id}`);
+  const target=productReviewTarget(/^(?:30402|38383):/.test(listing.id)?listing.id:`30402:${listing.id}`);
   if(listing.author&&target.split(':')[1]!==listing.author)throw new Error('Product author does not match its address.');
   const panel=element('section',undefined,'profile-reviews product-reviews'),header=element('div',undefined,'review-header');
   header.append(element('h2','Product reviews'));

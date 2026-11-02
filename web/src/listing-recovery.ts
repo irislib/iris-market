@@ -1,3 +1,4 @@
+import {BITCOIN_KIND,readEscrowOffer} from './escrow-offer.ts';
 import {verifyEvent, type Event, type Filter} from 'nostr-tools';
 import type {PublicEventRuntime} from './nostr-runtime.ts';
 
@@ -20,7 +21,8 @@ export function createListingRecovery({runtime,readCache,readMemory=()=>[],onEve
     try {
       const event={id:input.id,pubkey:input.pubkey,kind:input.kind,created_at:input.created_at,
         content:input.content,tags:input.tags.map(tag=>[...tag]),sig:input.sig};
-      if(event.kind!==30402||new TextEncoder().encode(JSON.stringify(event)).length>65536||!verifyEvent(event))return null;
+      if(![30402,BITCOIN_KIND].includes(event.kind)||new TextEncoder().encode(JSON.stringify(event)).length>65536||!verifyEvent(event))return null;
+      if(event.kind===BITCOIN_KIND && readEscrowOffer(event.kind,event.tags).expiration<=Math.floor(now()/1000))return null;
       const expiry=event.tags.filter(tag=>tag[0]==='expiration');
       // The shared worker excludes expired records. Market's own authoritative
       // cache retains them; do not claim they entered the compared inventory.
@@ -87,8 +89,9 @@ export function createListingRecovery({runtime,readCache,readMemory=()=>[],onEve
     return seeding;
   }
   async function recover(filter:Filter) {
-    if(closed||active.size>=2||filter.search||filter.ids||filter.kinds?.some(kind=>kind!==30402))return;
-    const scoped={...filter,kinds:[30402],limit:1};
+    const bitcoin=filter.kinds?.length===1 && filter.kinds[0]===BITCOIN_KIND && filter['#y']?.length===1 && filter['#y'][0]==='iris-market';
+    if(closed||active.size>=2||filter.search||filter.ids||!bitcoin&&filter.kinds?.some(kind=>kind!==30402))return;
+    const scoped={...filter,kinds:bitcoin?[BITCOIN_KIND]:[30402],limit:1};
     const key=JSON.stringify(scoped),time=now();
     for(const [key,expires] of attempts)if(expires<=time)attempts.delete(key);
     if(attempts.has(key)||attempts.size>=64)return;

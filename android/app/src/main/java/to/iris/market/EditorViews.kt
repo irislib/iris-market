@@ -39,6 +39,11 @@ import org.json.JSONObject
 @Composable fun PostListing(state:MarketSnapshot,model:MarketModel,busy:Boolean,transportType:NativeTransportType?=null,initialArea:String="",initialServiceAreas:String?=null,done:()->Unit) {
     var expiry by remember { mutableStateOf(NativeListingExpiry.NEVER) }
     var expiryOpen by remember { mutableStateOf(false) }
+    val escrowEnabled=remember(state.settings){JSONObject(state.settings).optBoolean("escrow_ui")}
+    var offerEscrow by remember { mutableStateOf(false) }
+    var bitcoinTrade by remember { mutableStateOf(false) }
+    var bitcoinAmount by remember { mutableStateOf("") }
+    var fiatMethod by remember { mutableStateOf("bank_transfer") }
     var confirmPublish by remember { mutableStateOf(false) }
     var side by remember { mutableStateOf("offer") }
     var title by remember { mutableStateOf(transportType?.serviceTitle ?: "") };var description by remember { mutableStateOf("") }
@@ -102,7 +107,19 @@ import org.json.JSONObject
             Text("This is Preview. Switch to your live market to publish a listing.",Modifier.padding(14.dp),style=MaterialTheme.typography.bodySmall)
         } else Text("This listing will be public. Keep personal contact details and exact addresses out of the description.",color=Muted,style=MaterialTheme.typography.bodySmall)
         if(!state.demo && !state.canSign) Text("Sign in with your profile’s secret key to publish listings.",color=Muted,style=MaterialTheme.typography.bodySmall)
-        Button(enabled=!state.demo && state.canSign && !busy && !uploading && title.isNotBlank() && description.isNotBlank() && (category!="Transport" || transport==null || serviceAreas!=null),onClick={confirmPublish=true},modifier=Modifier.fillMaxWidth().height(54.dp),shape=RoundedCornerShape(16.dp)) {
+        if(escrowEnabled) {
+            ToolSwitch("Offer escrow","Agree on payment protection with the other person.",offerEscrow){offerEscrow=it}
+            if(offerEscrow) {
+                ToolSwitch("Bitcoin for fiat","Set a fixed bitcoin amount and a total fiat price.",bitcoinTrade){bitcoinTrade=it;if(it&&expiry==NativeListingExpiry.NEVER)expiry=NativeListingExpiry.WEEK}
+                if(bitcoinTrade) {
+                    MarketField(bitcoinAmount,{bitcoinAmount=it},"Bitcoin amount in sats",keyboard=KeyboardType.Number)
+                    Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                        listOf("bank_transfer" to "Bank transfer","cash" to "Cash in person").forEach { (value,label) -> FilterChip(selected=fiatMethod==value,onClick={fiatMethod=value},label={Text(label)}) }
+                    }
+                }
+            }
+        }
+        Button(enabled=(!(escrowEnabled&&offerEscrow&&bitcoinTrade)||((bitcoinAmount.toLongOrNull()?:0L)>0L&&currency!="BTC"&&expiry!=NativeListingExpiry.NEVER&&(price.toDoubleOrNull()?:0.0)>0.0)) && !state.demo && state.canSign && !busy && !uploading && title.isNotBlank() && description.isNotBlank() && (category!="Transport" || transport==null || serviceAreas!=null),onClick={confirmPublish=true},modifier=Modifier.fillMaxWidth().height(54.dp),shape=RoundedCornerShape(16.dp)) {
             Text(if(busy) "Publishing…" else "Review listing")
         }
     }
@@ -110,12 +127,13 @@ import org.json.JSONObject
     if(confirmPublish) AlertDialog(onDismissRequest={confirmPublish=false},title={Text("Publish your listing?")},
         text={Column(Modifier.fillMaxWidth().heightIn(max=400.dp).verticalScroll(rememberScrollState()).testTag("listingReview"),verticalArrangement=Arrangement.spacedBy(12.dp)) {
             Text(title.trim(),style=MaterialTheme.typography.titleLarge)
-            Text((if(side=="request") "Buying" else "Selling")+" · "+category,style=MaterialTheme.typography.labelLarge)
+            Text((if(side=="request") "Buying" else "Selling")+(if(escrowEnabled && offerEscrow && bitcoinTrade) " bitcoin" else " · "+category),style=MaterialTheme.typography.labelLarge)
             Text(if(price.isBlank()) (if(side=="request") "Budget by agreement" else "Price by agreement") else price.trim()+" "+currency.trim(),style=MaterialTheme.typography.titleMedium)
             if(location.isNotBlank())Text(location.trim(),style=MaterialTheme.typography.bodyMedium)
             if(category=="Transport")Text("Service · "+(transport?.label ?: "Other"),style=MaterialTheme.typography.bodyMedium)
             Text(if(expiry==NativeListingExpiry.NEVER) "No expiry" else "Expires "+expiry.label+" after publication",style=MaterialTheme.typography.bodySmall)
             HorizontalDivider()
+            if(escrowEnabled && offerEscrow) Text(if(bitcoinTrade)"Escrow · $bitcoinAmount sats · "+(if(fiatMethod=="cash") "Cash in person" else "Bank transfer") else "Escrow offered",style=MaterialTheme.typography.bodyMedium)
             Text(description.trim(),style=MaterialTheme.typography.bodyMedium)
             if(imageUrl.isNotBlank())Text("Photo included",style=MaterialTheme.typography.bodySmall)
             HorizontalDivider()
@@ -128,6 +146,11 @@ import org.json.JSONObject
                 .put("price",price.trim()).put("currency",currency.trim()).put("location",location.trim())
                 .put("category",category).put("tags",JSONArray(if(category == "Transport") transport?.tags ?: emptyList<String>() else emptyList<String>())).put("image_url",imageUrl.trim().ifBlank { null } ?: JSONObject.NULL)
             if(category=="Transport")serviceAreas?.let {draft.put("service_areas",JSONObject(it))}
+            if(escrowEnabled&&offerEscrow) {
+                val terms=JSONObject().put("trade",if(bitcoinTrade)"bitcoin_fiat" else "goods")
+                if(bitcoinTrade)terms.put("sats",bitcoinAmount.toLong()).put("method",fiatMethod)
+                draft.put("escrow",terms)
+            }
             model.publishListing(draft,expiry,done)
         }){Text("Publish")}})
 }
@@ -148,7 +171,6 @@ import org.json.JSONObject
     var provider by remember { mutableStateOf(ai.optString("provider","compatible")) }
     var endpoint by remember { mutableStateOf(ai.optString("base_url","https://api.openai.com/v1")) }
     var modelName by remember { mutableStateOf(ai.optString("model")) }
-    var escrow by remember { mutableStateOf(initial.optBoolean("escrow_ui")) }
     var currency by remember { mutableStateOf(initial.optString("currency", "EUR")) }
     var currencyMenu by remember { mutableStateOf(false) }
     var presetID by remember { mutableStateOf(NativePreferences.matching(provider, endpoint).id) }
@@ -161,7 +183,6 @@ import org.json.JSONObject
     var servers by remember { mutableStateOf((initial.optJSONArray("relays") ?: JSONArray()).let { a -> (0 until a.length()).joinToString("\n"){a.getString(it)} }) }
     val settings={ JSONObject(initial.toString()).put("ai",JSONObject().put("enabled",enabled).put("provider",provider)
         .put("base_url",if(provider=="litert") "" else endpoint.trim()).put("model",if(provider=="litert") LocalModelManifest.ID else modelName.trim()).put("interests",initial.optJSONObject("ai")?.optString("interests") ?: "").put("curate_feed",initial.optJSONObject("ai")?.optBoolean("curate_feed",true) ?: true))
-        .put("escrow_ui",escrow)
         .put("currency", currency)
         .put("relays",JSONArray(servers.lines().map{it.trim()}.filter{it.isNotEmpty()}))
         .put("image_proxy",JSONObject(imageProxy.toString()).put("enabled",proxyEnabled).put("url",proxyURL.trim())) }
@@ -177,8 +198,6 @@ import org.json.JSONObject
         Row(verticalAlignment=Alignment.CenterVertically) {
             Icon(Icons.Filled.Settings,null,tint=Forest);Spacer(Modifier.width(10.dp));Text("Settings",style=MaterialTheme.typography.titleLarge,fontWeight=FontWeight.SemiBold)
         }
-        Text("Optional marketplace tools", style=MaterialTheme.typography.titleMedium)
-        ToolSwitch("Escrow", "Agree on a third person to help settle a payment.", escrow) { escrow=it }
         HorizontalDivider()
         Row(verticalAlignment=Alignment.CenterVertically) {
             Text("AI search",modifier=Modifier.weight(1f),fontWeight=FontWeight.Medium)

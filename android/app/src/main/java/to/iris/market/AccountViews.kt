@@ -147,8 +147,9 @@ private fun inboxContextTitle(context:MessageContext?,state:MarketSnapshot):Stri
             }
             Spacer(Modifier.height(6.dp))
         }
-        if(state.conversations.isEmpty()) EmptyView("No conversations","Open a listing to send a private enquiry, or connect with an invitation.",Icons.Filled.Forum)
-        else LazyColumn(verticalArrangement=Arrangement.spacedBy(10.dp),contentPadding=PaddingValues(bottom=30.dp)) {
+        LazyColumn(verticalArrangement=Arrangement.spacedBy(10.dp),contentPadding=PaddingValues(bottom=30.dp)) {
+            if(state.escrowInvites.isNotEmpty())item { EscrowCardsView(state,model) }
+            if(state.conversations.isEmpty())item { EmptyView("No conversations","Open a listing to send a private enquiry, or connect with an invitation.",Icons.Filled.Forum) }
             items(threads,key={it.id}) { thread ->
                 val c=thread.conversation
                 Surface(color=White,shape=RoundedCornerShape(20.dp),modifier=Modifier.fillMaxWidth().clickable{selected=c.id;selectedThread=thread.key;selectedContext=thread.context}) {
@@ -169,6 +170,7 @@ private fun inboxContextTitle(context:MessageContext?,state:MarketSnapshot):Stri
         setActiveContext={peer,key->if(model.state.value.publicKey==accountID)model.setActivePushContext(peer,key)},
         markRead={ids,complete->model.markMessagesRead(ids,complete)})}
     val listState=rememberLazyListState()
+    val escrowState by model.state.collectAsStateWithLifecycle()
     var reactionTarget by remember {mutableStateOf<String?>(null)}
     var visibleIncoming by remember {mutableStateOf<List<String>>(emptyList())}
     val currentIncoming by rememberUpdatedState(c.messages.filterNot {it.mine}.map {it.id}.toSet())
@@ -197,6 +199,7 @@ private fun inboxContextTitle(context:MessageContext?,state:MarketSnapshot):Stri
         context?.orderId?.let { id -> TextButton(onClick={openOrder(id)}) { Text(contextTitle) } }
         if(context?.listing!=null)Text(contextTitle,color=Muted,style=MaterialTheme.typography.bodySmall,modifier=Modifier.padding(vertical=8.dp))
         LazyColumn(Modifier.weight(1f).fillMaxWidth(),state=listState,contentPadding=PaddingValues(vertical=18.dp),verticalArrangement=Arrangement.spacedBy(10.dp)) {
+            if(context?.orderId==null && escrowState.escrowInvites.isNotEmpty())item { EscrowCardsView(escrowState,model,c.id,context?.listing) }
             items(c.messages,key={it.id}) { m ->
                 Row(Modifier.fillMaxWidth(),horizontalArrangement=if(m.mine) Arrangement.End else Arrangement.Start) {
                     Surface(color=if(m.mine) Action else White,contentColor=if(m.mine) OnInk else Ink,

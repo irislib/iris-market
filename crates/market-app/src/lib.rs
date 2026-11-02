@@ -79,6 +79,30 @@ impl MarketApp {
     pub fn private_match_candidates(&self, entry: String) -> Result<String, MarketError> {
         self.inner.private_match_candidates(&entry).map_err(error)
     }
+    pub fn trade_steps(&self) -> Result<String, MarketError> {
+        self.inner.trade_steps().map_err(error)
+    }
+    pub fn trade_listing(&self, id: String, refresh: bool) -> Result<String, MarketError> {
+        self.inner.trade_listing(&id, refresh).map_err(error)
+    }
+    #[uniffi::constructor]
+    pub fn local_test_profile(
+        data_dir: String,
+        secret_key: String,
+        relay: String,
+    ) -> Result<Arc<Self>, MarketError> {
+        Ok(Arc::new(Self {
+            inner: iris_market_core::Market::open_local_test_profile(
+                Path::new(&data_dir),
+                &secret_key,
+                &relay,
+            )
+            .map_err(error)?,
+        }))
+    }
+    pub fn escrow_provider(&self, key: String) -> Result<String, MarketError> {
+        self.inner.escrow_provider(&key).map_err(error)
+    }
     pub fn snapshot(&self) -> Result<String, MarketError> {
         self.inner.snapshot().map_err(error)
     }
@@ -283,3 +307,10 @@ impl MarketDeviceLink {
     }
 }
 mod updater;
+
+#[uniffi::export]
+pub fn escrow_profile_key(value: String) -> Result<String, MarketError> {
+    PublicKey::parse(value.trim())
+        .map(|key| key.to_hex())
+        .map_err(error)
+}

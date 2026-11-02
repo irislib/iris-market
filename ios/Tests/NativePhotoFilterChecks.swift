@@ -8,6 +8,8 @@
         }
         precondition(NativePhotoFilter.includes(imageURL: nil, choice: false, query: "", side: "offer", map: false))
         precondition(NativePhotoFilter.wantsPhotos(choice: nil, query: "  \n", side: "offer", map: false))
-        print("Native photo filter: 10 home/search/map/manual checks passed")
+        precondition(NativePhotoFilter.includes(imageURL: nil, choice: nil, query: "", side: "offer", map: false, bitcoin: true))
+        precondition(!NativePhotoFilter.includes(imageURL: nil, choice: true, query: "", side: "offer", map: false, bitcoin: true))
+        print("Native photo filter: 12 home/search/map/manual checks passed")
     }
 }

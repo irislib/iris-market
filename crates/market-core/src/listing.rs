@@ -270,6 +270,7 @@ pub fn parse(event: &Event, at: u64) -> Result<Listing> {
         bail!("Unknown listing status");
     }
     Ok(Listing {
+        event_id: event.id.to_hex(),
         search_text_cache: Default::default(),
         id: coordinate(event.pubkey, &identifier, draft.escrow),
         escrow: draft.escrow,

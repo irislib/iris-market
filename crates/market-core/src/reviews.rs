@@ -49,7 +49,7 @@ fn key(s: &str) -> bool {
 fn address(s: &str) -> bool {
     let p: Vec<_> = s.splitn(3, ':').collect();
     p.len() == 3
-        && p[0] == "30402"
+        && matches!(p[0], "30402" | "38383")
         && key(p[1])
         && !p[2].is_empty()
         && p[2].len() <= 512
@@ -590,6 +590,27 @@ impl crate::Market {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn review_coordinates_distinguish_bitcoin_offers_from_classifieds() {
+        let maker = Keys::generate().public_key();
+        let btc = format!("38383:{maker}:order");
+        let goods = format!("30402:{maker}:order");
+        let reviewer = Keys::generate();
+        let event = EventBuilder::new(Kind::Custom(31555), "Good trade")
+            .tags([
+                Tag::parse(["d", btc.as_str()]).unwrap(),
+                Tag::parse(["a", btc.as_str()]).unwrap(),
+                Tag::parse(["rating", "1", "thumb"]).unwrap(),
+            ])
+            .custom_created_at(Timestamp::from(10))
+            .sign_with_keys(&reviewer)
+            .unwrap();
+        assert_eq!(
+            project(std::slice::from_ref(&event), &btc, true, 12).len(),
+            1
+        );
+        assert!(project(&[event], &goods, true, 12).is_empty());
+    }
     #[test]
     fn signed_profile_review_is_one_voice_per_author() {
         let a = Keys::generate();

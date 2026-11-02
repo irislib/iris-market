@@ -32,8 +32,10 @@ data class Listing(
     val price: String, val currency: String, val location: String, val category: String,
     val imageUrl: String?, val saved: Boolean, val mine: Boolean, val status: String,
     val delivery: String, val relevance: String?, val relevanceShow: Boolean?, val coordinates: List<Double>? = null,
-    val serviceAreas: String? = null, val priceDisplay: PriceDisplay? = null, val expiresAt: Long? = null, val tags: List<String> = emptyList(), val createdAt: Long = 0, val directMatch: Boolean = false, val relevanceScore: Double? = null, val relevanceUnavailable: Boolean = false
+    val serviceAreas: String? = null, val priceDisplay: PriceDisplay? = null, val expiresAt: Long? = null, val tags: List<String> = emptyList(), val createdAt: Long = 0, val directMatch: Boolean = false, val relevanceScore: Double? = null, val relevanceUnavailable: Boolean = false, val escrow: EscrowOffer? = null
 ) {
+    val isBitcoinOffer: Boolean get() = escrow?.trade == "bitcoin_fiat"
+    val reviewAddress: String get() = if(isBitcoinOffer) id else "30402:" + id
     val matchesSearch: Boolean get() = relevanceShow == true
     val localSearchRevision: String get() {
         val content = (listOf(title, description, side, price, currency, location, category) + tags).joinToString("\u0000")
@@ -41,6 +43,7 @@ data class Listing(
         return "$id|$createdAt|${digest.joinToString("") { "%02x".format(it) }}"
     }
     val displayPrice: String get() {
+        if(isBitcoinOffer) return "$price $currency"
         if (price.isBlank()) return "Let's talk"
         val amount = priceDisplay?.amount ?: price.toDoubleOrNull() ?: return "$price $currency"
         if (!amount.isFinite()) return "$price $currency"
@@ -66,9 +69,16 @@ data class Listing(
             l.optJSONObject("display_price")?.let { d -> PriceDisplay(d.optDouble("amount"),d.optString("currency"),d.optBoolean("approximate"),d.optBoolean("stale")) },
             if(l.has("expires_at")&&!l.isNull("expires_at")) l.getLong("expires_at") else null,
             l.optJSONArray("tags")?.let { a -> (0 until minOf(a.length(),64)).map { a.optString(it) } } ?: emptyList(), l.optLong("created_at"), l.optBoolean("direct_match"),
-            l.optJSONObject("relevance")?.optDouble("score")?.takeIf { it.isFinite() && it in 0.0..1.0 }, l.optJSONObject("relevance")?.optBoolean("unavailable") == true)
+            l.optJSONObject("relevance")?.optDouble("score")?.takeIf { it.isFinite() && it in 0.0..1.0 }, l.optJSONObject("relevance")?.optBoolean("unavailable") == true, l.optJSONObject("escrow")?.let { offer -> EscrowOffer(offer.optString("trade"),offer.optLong("sats").takeIf { it > 0 },offer.optString("method")) })
     }
 
+}
+data class EscrowOffer(val trade:String,val sats:Long?,val method:String) {
+    val bitcoinTerms: String? get() {
+        if(trade!="bitcoin_fiat" || sats==null)return null
+        val methodLabel=if(method=="cash") "Cash in person" else "Bank transfer"
+        return java.text.NumberFormat.getIntegerInstance().format(sats) + " sats · " + methodLabel
+    }
 }
 data class PriceDisplay(val amount: Double, val currency: String, val approximate: Boolean, val stale: Boolean)
 data class MessageContext(val threadId:String,val orderId:String?=null,val listing:String?=null) {
@@ -98,7 +108,7 @@ data class MarketSnapshot(
     val searchGeneration: Long = 0, val searchPlanPending: Boolean = false, val searchPlanTags: List<String> = emptyList(),
     val satsDisplayPrice: PriceDisplay? = null,
     val supportedCurrencies: List<String> = emptyList(),
-    val revision: Long = 0, val aiMessage: String? = null, val aiTestResult: NativeAITestResult? = null, val savedListings: List<Listing>? = null, val aiConfigured: Boolean = true, val profileNameRequired: Boolean = false
+    val revision: Long = 0, val aiMessage: String? = null, val aiTestResult: NativeAITestResult? = null, val savedListings: List<Listing>? = null, val escrowInvites: List<EscrowInboxCard> = emptyList(), val escrowRevision: Int = 0, val aiConfigured: Boolean = true, val profileNameRequired: Boolean = false
 ) {
     companion object {
         fun parse(raw: String): MarketSnapshot {
@@ -106,6 +116,7 @@ data class MarketSnapshot(
             val ls = o.optJSONArray("listings") ?: JSONArray()
             val cs = o.optJSONArray("conversations") ?: JSONArray()
             return MarketSnapshot(
+                escrowInvites = escrowCards(o), escrowRevision = o.optJSONArray("trade_steps")?.length() ?: 0,
                 publicKey = o.optString("public_key"), canSign = o.optBoolean("can_sign"), messagingReady = o.optBoolean("messaging_ready"), demo = o.optBoolean("demo"),
                 status = o.optString("status", "Ready"), error = o.optional("error"), revision = o.optLong("revision"), aiMessage = o.optional("ai_message"), aiTestResult=o.optJSONObject("ai_test_result")?.let {NativeAITestResult.parse(it)},
                 query = o.optString("query"), side = o.optString("side", "offer"),
@@ -527,6 +538,22 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
             submit(JSONObject().put("type","send_order_payment_token").put("order_id",orderID).put("token",token),
                 {if(continuation.isActive)continuation.resumeWith(if(generation==accountGeneration)Result.success(Unit)else Result.failure(kotlinx.coroutines.CancellationException()))},
                 {if(continuation.isActive)continuation.resumeWith(Result.failure(IllegalStateException("Payment is saved in your wallet. Retry sending it to this order.")))})
+        }
+    }
+    internal suspend fun escrowRead(method:String,value:String,owner:String,refresh:Boolean=false):String = withContext(Dispatchers.IO) {
+        val app=core ?: error("Open your profile first")
+        check(!preview && state.value.publicKey==owner)
+        when(method) {
+            "records"->app.tradeSteps()
+            "listing"->app.tradeListing(value,refresh)
+            "certificate"->app.escrowProvider(value)
+            else->error("Unknown trade action")
+        }
+    }
+    internal suspend fun escrowSend(request:JSONObject,owner:String) {
+        check(!preview && state.value.publicKey==owner)
+        kotlinx.coroutines.suspendCancellableCoroutine<Unit> { c ->
+            submit(request,{if(c.isActive)c.resumeWith(Result.success(Unit))},{error->if(c.isActive)c.resumeWith(Result.failure(IllegalStateException(error)))})
         }
     }
     fun publishListing(draft: JSONObject, expiry: NativeListingExpiry, onSuccess: () -> Unit) = submit(JSONObject().put("type","publish").put("draft",JSONObject(draft.toString())), onSuccess, null, publishExpiry=expiry)

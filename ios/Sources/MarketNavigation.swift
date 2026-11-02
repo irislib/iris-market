@@ -48,8 +48,9 @@ struct MarketDoneButton: View {
 #if os(macOS)
 struct MarketPageBackButton: View {
     @Environment(\.dismiss) private var dismiss
+    var action: (() -> Void)? = nil
     var body: some View {
-        Button(action: { dismiss() }) {
+        Button(action: { if let action { action() } else { dismiss() } }) {
             HStack(spacing: 6) {
                 Image(systemName: "chevron.backward").font(.system(size: 18, weight: .semibold))
                 Text("Back").font(.system(size: 15, weight: .semibold))

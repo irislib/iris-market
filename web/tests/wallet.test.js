@@ -131,7 +131,7 @@ test('backup is encrypted and authenticated, bounded, never overwrites a wallet 
   const restored = make(app.service); await assert.rejects(restored.wallet.importEncryptedBackup(backup, 'incorrect passphrase'), /Check the file and passphrase/);
   await restored.wallet.importEncryptedBackup(backup, 'twelve words are not required'); assert.equal(restored.wallet.state().reviewRequired, true); assert.notEqual((await restored.vault.get('wallet')).seed, original.seed);
   await assert.rejects(restored.wallet.previewSend(1), /Refresh/); await restored.wallet.refresh(); assert.equal(restored.wallet.state().balance, '32');
-  const tampered = JSON.parse(backup); tampered.ciphertext = `A${tampered.ciphertext.slice(1)}`; await assert.rejects(decryptBackup(JSON.stringify(tampered), 'twelve words are not required'));
+  const tampered = JSON.parse(backup); tampered.ciphertext = (tampered.ciphertext.startsWith('A') ? 'B' : 'A') + tampered.ciphertext.slice(1); await assert.rejects(decryptBackup(JSON.stringify(tampered), 'twelve words are not required'));
   await assert.rejects(decryptBackup('x'.repeat(12 * 1024 * 1024), 'twelve words are not required'), /too large/);
 });
 

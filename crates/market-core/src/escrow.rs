@@ -1,5 +1,5 @@
 //! Public escrow advertisements and private, revision-bound Cashu agreements.
-mod funding;
+pub(crate) mod funding;
 use crate::{listing, model::Draft};
 use anyhow::{Context, Result, bail, ensure};
 use cashu::{Conditions, PublicKey, SigFlag, SpendingConditions};
@@ -9,6 +9,19 @@ use serde::{Deserialize, Serialize};
 
 pub const PROTOCOL: &str = "cashu-2of3-v1";
 const TAG: &str = "iris-escrow";
+/// A locally selected no-value mint in a development build. Relay input cannot enable it.
+pub(crate) fn local_test_mint() -> Option<String> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    let value = std::env::var("MARKET_ESCROW_TEST_MINT").ok()?;
+    let url = url::Url::parse(&value).ok()?;
+    (url.scheme() == "http"
+        && url.host_str() == Some("127.0.0.1")
+        && url.port().is_some()
+        && url.origin().ascii_serialization() == value)
+        .then_some(value)
+}
 const MAX_SATS: u64 = 1_000_000_000_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -213,7 +226,8 @@ impl Terms {
         let mint = url::Url::parse(&self.mint).context("Invalid escrow mint")?;
         ensure!(
             self.mint.len() <= 2048
-                && mint.scheme() == "https"
+                && (mint.scheme() == "https"
+                    || local_test_mint().as_deref() == Some(self.mint.as_str()))
                 && mint.host_str().is_some()
                 && mint.username().is_empty()
                 && mint.password().is_none()
@@ -335,7 +349,92 @@ impl AgreementMessage {
     }
 }
 
+async fn fetch_trade_listing(relays: Vec<String>, id: &str) -> Result<Vec<Event>> {
+    use nostr::{Filter, Kind};
+    use nostr_pubsub::{EventBus, QueryOptions};
+    use nostr_pubsub_relay::RelayEventBus;
+    use std::time::Duration;
+    let (kind, coordinate) = id
+        .strip_prefix("38383:")
+        .map_or((listing::LISTING_KIND, id), |value| {
+            (listing::P2P_KIND, value)
+        });
+    let (author, identifier) = coordinate.split_once(':').context("Invalid listing")?;
+    ensure!(
+        !identifier.is_empty() && identifier.len() <= 160,
+        "Invalid listing"
+    );
+    let filter = Filter::new()
+        .kind(Kind::Custom(kind))
+        .author(nostr::PublicKey::from_hex(author)?)
+        .identifier(identifier)
+        .limit(16);
+    let bus = RelayEventBus::new(relays, Duration::from_secs(3)).await?;
+    let report = tokio::time::timeout(
+        Duration::from_secs(5),
+        bus.query(vec![filter], QueryOptions { limit: Some(16) }),
+    )
+    .await;
+    bus.client().shutdown().await;
+    Ok(report
+        .context("The listing check timed out. Reconnect and retry.")??
+        .events
+        .into_iter()
+        .map(|entry| entry.event.as_event().clone())
+        .collect())
+}
+
 impl crate::Market {
+    /// Navigation uses the verified local copy. Consent and funding check the
+    /// public listing separately, without revealing a private trade or its participants.
+    pub fn trade_listing(&self, id: &str, refresh: bool) -> Result<String> {
+        let relays = {
+            let state = self.state.lock().unwrap();
+            if !refresh {
+                let event = state
+                    .store
+                    .event(id)
+                    .context("Open the listing and retry")?;
+                return Ok(serde_json::to_string(&listing::parse(
+                    &event,
+                    listing::now(),
+                )?)?);
+            }
+            ensure!(
+                !state.demo && !state.settings.relays.is_empty(),
+                "Connect to check the current listing"
+            );
+            state.settings.relays.clone()
+        };
+        let handle = self
+            .runtime
+            .lock()
+            .unwrap()
+            .as_ref()
+            .context("Market is closed")?
+            .handle()
+            .clone();
+        let events = handle.block_on(fetch_trade_listing(relays, id))?;
+        let mut state = self.state.lock().unwrap();
+        let at = listing::now();
+        let mut observed = false;
+        for event in events {
+            if listing::parse(&event, at).is_ok_and(|listing| listing.id == id) {
+                observed = true;
+                if state.store.ingest(&event, at, false)? {
+                    state.revision += 1;
+                }
+            }
+        }
+        ensure!(
+            observed,
+            "No relay could confirm this listing. Reconnect and retry."
+        );
+        Ok(serde_json::to_string(&listing::parse(
+            &state.store.event(id)?,
+            at,
+        )?)?)
+    }
     /// Resolve only the private agreement explicitly selected by the caller.
     pub fn escrow_terms(&self, peer: &str, proposal: EventId) -> Result<Terms> {
         let s = self.state.lock().unwrap();

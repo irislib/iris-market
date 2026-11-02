@@ -73,6 +73,7 @@ for (const [name, source, entry] of [['web', root, 'src/app.ts'], ['site', resol
   const dest = resolve(source, 'dist');
   await mkdir(dest, { recursive: true });
   const results = [await build({ absWorkingDir: root, entryPoints: [resolve(source, entry)], bundle: true, minify: true, format: 'esm', target: 'es2022', outdir: dest, entryNames: 'app', chunkNames: 'chunks/[name]-[hash]', splitting: true, legalComments: 'eof', metafile: true })];
+  await copyFile(resolve(root, '../shared/escrow/trade.css'),resolve(dest,'escrow.css'));
   for (const file of ['styles.css', 'icon.svg']) await copyFile(resolve(root, file), resolve(dest, file));
   await build({entryPoints:[resolve(root, 'src/theme-init.ts')],outfile:resolve(dest,'theme-init.js'),bundle:true,minify:true,target:'es2022'});
   let routeHash='';

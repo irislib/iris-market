@@ -143,21 +143,24 @@ struct MarketRootView: View {
         } detail: {
             NavigationStack {
                 Group {
-                    switch tab {
-                    case .browse: BrowseView(selected: $selected, query: $browseQuery, side: $browseSide, photoFilter: $photoFilter, desktopSearch: desktopSearchBar)
-                    case .saved: SavedView(selected: $selected)
-                    case .orders: OrdersView()
-                    case .inbox: InboxView()
-                    case .profile: AuthorProfileView(author: store.snapshot.publicKey)
-                    case .settings: ProfileView()
-                    case .wallet: WalletView()
-                    case .transport: CourierWorkspaceView()
+                    if let listing = selected {
+                        ListingDetailView(listing: listing, onContact: { desktopNavigation.reset(); tab = .inbox }, onOrder: { desktopNavigation.reset(); tab = .orders }, desktopSearch: desktopSearchBar, onDesktopBack: { selected = nil })
+                    } else {
+                        switch tab {
+                        case .browse: BrowseView(selected: $selected, query: $browseQuery, side: $browseSide, photoFilter: $photoFilter, desktopSearch: desktopSearchBar)
+                        case .saved: SavedView(selected: $selected)
+                        case .orders: OrdersView()
+                        case .inbox: InboxView()
+                        case .profile: AuthorProfileView(author: store.snapshot.publicKey)
+                        case .settings: ProfileView()
+                        case .wallet: WalletView()
+                        case .transport: CourierWorkspaceView()
+                        }
                     }
                 }.frame(maxWidth: .infinity, maxHeight: .infinity).background(MarketTheme.paper)
-                    .navigationTitle(tab == .browse && !store.snapshot.query.isEmpty ? "Search results" : tab.rawValue)
+                    .navigationTitle(selected != nil ? "Listing" : (tab == .browse && !store.snapshot.query.isEmpty ? "Search results" : tab.rawValue))
                     .marketPage(isPresented: $compose) { NewListingView().marketListingEditorSheetScope() }
                     .marketPage(isPresented: $aiSettings) { AISettingsView(settings: store.snapshot.settings).marketSheetScope() }
-                    .marketPage(item: $selected) { listing in ListingDetailView(listing: listing, onContact: { desktopNavigation.reset(); tab = .inbox }, onOrder: { desktopNavigation.reset(); tab = .orders }, desktopSearch: desktopSearchBar) }
             }.id(tab)
         }.id(desktopNavigation.generation).navigationSplitViewStyle(.balanced).environmentObject(desktopNavigation)
             .sheet(isPresented: Binding(get: { store.profileSetupRequested }, set: { if !$0 { store.dismissProfileSetup() } })) { ProfileNameEntryView().environmentObject(store).marketSheetFrame() }
@@ -294,9 +297,8 @@ struct BrowseView: View {
     private var wantsPhotos: Bool { NativePhotoFilter.wantsPhotos(choice: photoFilter, query: store.snapshot.query, side: store.snapshot.side, map: showMap) }
     var body: some View {
         let requireMatch = curationActive && !showAllMatches
-        let requirePhoto = wantsPhotos
         let visibleListings = store.snapshot.listings.filter { listing in
-            (!requireMatch || listing.matchesSearch) && NativePhotoFilter.includes(imageURL: listing.imageUrl, requirePhoto: requirePhoto)
+            (!requireMatch || listing.matchesSearch) && NativePhotoFilter.includes(imageURL: listing.imageUrl, choice: photoFilter, query: store.snapshot.query, side: store.snapshot.side, map: showMap, bitcoin: listing.isBitcoinOffer)
         }
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
@@ -490,6 +492,7 @@ struct ListingCard: View {
                 VStack(alignment: .leading, spacing: 5) {
                     Text(listing.title).font(.system(size: 14, weight: .medium)).foregroundStyle(MarketTheme.ink).lineLimit(2).multilineTextAlignment(.leading).frame(maxWidth: .infinity, alignment: .leading)
                     Text(listing.formattedPrice).font(.system(size: 18, weight: .semibold)).foregroundStyle(MarketTheme.ink)
+                    if let terms = listing.escrow?.bitcoinTerms { Text(terms).font(.caption).foregroundStyle(MarketTheme.muted) }
                     HStack(spacing: 3) { Image(systemName: "mappin").font(.system(size: 9)); Text(listing.location.isEmpty ? "Anywhere" : listing.location).lineLimit(1) }.font(.system(size: 10)).foregroundStyle(MarketTheme.muted)
                 }.padding(.horizontal, 2)
             }.buttonStyle(.plain)

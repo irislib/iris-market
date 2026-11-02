@@ -8,27 +8,36 @@ struct ListingDetailView: View {
     var onOrder: (() -> Void)? = nil
     #if os(macOS)
     var desktopSearch: DesktopMarketSearchBar? = nil
+    var onDesktopBack: (() -> Void)? = nil
     #endif
     @State private var expiryClockStart = Date()
     @State private var invitation = false
+    @State private var showEscrow = false
     @State private var authorProfile = false
     @State private var reviewOrder = false
     @State private var orderRequested = false
     private var current: MarketListing { store.snapshot.listings.first(where: { $0.id == listing.id }) ?? listing }
+    private func closeListing() {
+        #if os(macOS)
+        if let onDesktopBack { onDesktopBack(); return }
+        #endif
+        dismiss()
+    }
     var body: some View {
         MarketNavigationContainer {
             ScrollView {
                 VStack(alignment: .leading, spacing: 23) {
                     #if os(macOS)
-                    HStack(spacing: 12) { MarketPageBackButton(); desktopSearch }
+                    HStack(spacing: 12) { MarketPageBackButton(action: onDesktopBack); desktopSearch }
                     #endif
                     Group {
                         if let raw = current.imageUrl, let url = URL(string: raw) { AsyncImage(url: url) { phase in if let image = phase.image { image.resizable().scaledToFill() } else { ListingPlaceholder(category: current.category) } } }
                         else { ListingPlaceholder(category: current.category) }
                     }.frame(height: 285).clipped().clipShape(RoundedRectangle(cornerRadius: 28))
-                    HStack { Text(current.side == "request" ? "BUYING" : current.category.uppercased()).font(.system(size: 10, weight: .bold)).tracking(1.5).foregroundStyle(MarketTheme.green); Spacer(); Text(current.delivery == "queued" ? "Waiting to send" : current.delivery == "failed" ? "Not sent" : "").font(.caption).foregroundStyle(MarketTheme.muted) }
+                    HStack { Text(current.isBitcoinOffer ? (current.side == "request" ? "BUYING BITCOIN" : "SELLING BITCOIN") : (current.side == "request" ? "BUYING" : current.category.uppercased())).font(.system(size: 10, weight: .bold)).tracking(1.5).foregroundStyle(MarketTheme.green); Spacer(); Text(current.delivery == "queued" ? "Waiting to send" : current.delivery == "failed" ? "Not sent" : "").font(.caption).foregroundStyle(MarketTheme.muted) }
                     Text(current.title).font(.system(size: 32, weight: .medium)).tracking(-0.7).foregroundStyle(MarketTheme.ink)
                     HStack { Text(current.formattedPrice).font(.system(size: 28, weight: .semibold)); Spacer(); Label(current.location.isEmpty ? "Anywhere" : current.location, systemImage: "mappin.circle.fill").font(.system(size: 13)).foregroundStyle(MarketTheme.muted) }.foregroundStyle(MarketTheme.ink)
+                    if let terms = current.escrow?.bitcoinTerms { Text(terms).font(.subheadline).foregroundStyle(MarketTheme.muted) }
                     TimelineView(.periodic(from: expiryClockStart, by: 60)) { context in
                         Text(NativeListingExpiry.detail(deadline: current.expiresAt, now: Int64(context.date.timeIntervalSince1970))).font(.system(size: 13)).foregroundStyle(MarketTheme.muted).accessibilityIdentifier("listingExpiryDetail")
                     }
@@ -37,19 +46,23 @@ struct ListingDetailView: View {
                     }.accessibilityIdentifier("listingAuthor")
                     Rectangle().fill(MarketTheme.line).frame(height: 1)
                     Text((try? AttributedString(markdown: current.description, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(current.description)).font(.system(size: 16)).lineSpacing(6).foregroundStyle(MarketTheme.ink.opacity(0.90))
-                    ReviewsView(target: "30402:\(current.id)", product: true)
+                    ReviewsView(target: current.reviewAddress, product: true)
                     if let relevance = current.relevance { Label(relevance.reason, systemImage: "sparkles").font(.system(size: 13)).foregroundStyle(MarketTheme.green).padding(15).frame(maxWidth: .infinity, alignment: .leading).background(MarketTheme.mint.opacity(0.4), in: RoundedRectangle(cornerRadius: 16)) }
                     MarketInlineError()
+                    if store.snapshot.settings.escrowUi && current.escrow != nil && !current.mine && !store.demo {
+                        Button { showEscrow = true } label: { Label("Arrange escrow", systemImage:"lock.shield.fill") }
+                            .disabled(!store.snapshot.messagingReady)
+                    }
                     if current.mine {
-                        Button { store.command(["type": "close", "id": current.id]) { if $0 { dismiss() } } } label: { Text("Mark as unavailable") }.buttonStyle(PrimaryButton())
-                    } else if current.side == "offer" {
+                        Button { store.command(["type": "close", "id": current.id]) { if $0 { closeListing() } } } label: { Text("Mark as unavailable") }.buttonStyle(PrimaryButton())
+                    } else if current.side == "offer" && !current.isBitcoinOffer {
                         Button { reviewOrder = true } label: { Label(NativeTransportType.classify(current.tags ?? [])?.requestLabel ?? "Buy", systemImage: NativeTransportType.classify(current.tags ?? []) == nil ? "bag.fill" : "car.fill") }
                             .buttonStyle(PrimaryButton()).disabled(store.demo || store.busy || !store.snapshot.messagingReady).accessibilityIdentifier("buyListing")
                         if store.demo { Text("Ordering is unavailable in preview mode.").font(.system(size: 12)).foregroundStyle(MarketTheme.muted) }
                     } else {
                         Button {
                             store.command(["type": "contact", "author": current.author, "listing_id": current.id]) { success in
-                                if success { dismiss(); onContact?() }
+                                if success { closeListing(); onContact?() }
                             }
                         } label: {
                             Label("Private enquiry", systemImage: "bubble.left.fill")
@@ -62,10 +75,11 @@ struct ListingDetailView: View {
                 #if os(macOS)
                 .navigationBarBackButtonHidden(true)
                 #endif
+                .marketPage(isPresented: $showEscrow) { MarketplaceEscrowView(listingID:current.id).marketSheetScope() }
                 .marketPage(isPresented: $authorProfile) { AuthorProfileView(author: current.author).marketSheetScope() }.navigationTitle("Listing").marketInlineTitle()
-                .toolbar { ToolbarItem(placement: .cancellationAction) { MarketDoneButton { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button { store.save(current) } label: { Image(systemName: current.saved ? "heart.fill" : "heart") }.accessibilityLabel("Save listing") } }
+                .toolbar { ToolbarItem(placement: .cancellationAction) { MarketDoneButton { closeListing() } }; ToolbarItem(placement: .confirmationAction) { Button { store.save(current) } label: { Image(systemName: current.saved ? "heart.fill" : "heart") }.accessibilityLabel("Save listing") } }
                 .marketPage(isPresented: $invitation) { InvitationView().marketSheetScope() }
-                .marketPage(isPresented: $reviewOrder, onDismiss: { if orderRequested { dismiss(); onOrder?() } }) { OrderReviewView(listing: current) { orderRequested = true }.marketSheetScope() }
+                .marketPage(isPresented: $reviewOrder, onDismiss: { if orderRequested { closeListing(); onOrder?() } }) { OrderReviewView(listing: current) { orderRequested = true }.marketSheetScope() }
         }
     }
 }
@@ -87,6 +101,14 @@ struct NewListingView: View {
     @State private var serviceAreas: MarketServiceAreas?
     @State private var chooseServiceAreas = false
     @State private var reviewPublish = false
+    @State private var offerEscrow = false
+    @State private var bitcoinTrade = false
+    @State private var bitcoinAmount = ""
+    @State private var fiatMethod = "bank_transfer"
+    private var escrowEnabled: Bool { offerEscrow && store.snapshot.settings.escrowUi }
+    private var validBitcoin: Bool {
+        !escrowEnabled || !bitcoinTrade || ((UInt64(bitcoinAmount) ?? 0) > 0 && currency != "BTC" && expiry != .never && (Decimal(string: price) ?? 0) > 0)
+    }
     init(transport: NativeTransportType? = nil, area: String = "", serviceAreas: MarketServiceAreas? = nil) {
         _serviceAreas = State(initialValue: serviceAreas)
         _transport = State(initialValue: transport)
@@ -97,6 +119,14 @@ struct NewListingView: View {
     @FocusState private var entryFocused: Bool
     private let categories = ["Electronics", "Home", "Clothing", "Books", "Transport", "Services", "Garden", "Music", "Other"]
     var body: some View {
+        #if os(macOS)
+        // Keep both steps in the same desktop navigation destination.
+        if reviewPublish { publicationReview } else { editor }
+        #else
+        editor
+        #endif
+    }
+    private var editor: some View {
         MarketNavigationContainer {
             Form {
                 Section {
@@ -110,6 +140,19 @@ struct NewListingView: View {
                             ForEach(NativeTransportType.allCases) { Text($0.label).tag(Optional($0)) }
                         }.accessibilityIdentifier("listingTransportType")
                     }
+                }
+                if store.snapshot.settings.escrowUi {
+                    Section("Trade options") {
+                        Toggle("Offer escrow", isOn: $offerEscrow)
+                        if offerEscrow {
+                            Picker("Trade", selection: $bitcoinTrade) { Text("Goods or services").tag(false); Text("Bitcoin for fiat").tag(true) }
+                            if bitcoinTrade {
+                                TextField("Bitcoin amount in sats", text: $bitcoinAmount)
+                                Picker("Fiat payment method", selection: $fiatMethod) { Text("Bank transfer").tag("bank_transfer"); Text("Cash in person").tag("cash") }
+                                Text("Enter the total fiat price and an expiry below.").font(.footnote).foregroundStyle(.secondary)
+                            }
+                        }
+                    }.onChange(of: bitcoinTrade) { _, value in if value && expiry == .never { expiry = .week } }
                 }
                 Section("Details") {
                     HStack { TextField("Price or budget", text: $price, prompt: Text("Price or budget").foregroundColor(MarketTheme.muted)).labelsHidden().marketDecimalKeyboard().accessibilityIdentifier("listingPrice"); Picker("Currency", selection: $currency) { Text("EUR").tag("EUR"); Text("USD").tag("USD"); Text("GBP").tag("GBP"); Text("BTC").tag("BTC") }.labelsHidden().frame(width: 90) }
@@ -132,7 +175,7 @@ struct NewListingView: View {
                     else { Text("Your listing will be public, and people can contact you privately. Keep exact addresses and private contact details out of your listing.").font(.system(size: 13)).foregroundStyle(MarketTheme.muted).fixedSize(horizontal: false, vertical: true) }
                     MarketInlineError()
                     Button { reviewPublish = true } label: { HStack { Spacer(); Text("Review listing").fontWeight(.semibold); Spacer() }.padding(.vertical, 8) }
-                        .disabled(store.demo || store.busy || uploading || !store.snapshot.canSign || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || category == "Transport" && transport != nil && serviceAreas == nil).accessibilityIdentifier("publishListing")
+                        .disabled(!validBitcoin || store.demo || store.busy || uploading || !store.snapshot.canSign || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || category == "Transport" && transport != nil && serviceAreas == nil).accessibilityIdentifier("publishListing")
                 }
             }.formStyle(.grouped).scrollContentBackground(.hidden).background(MarketTheme.paper).marketKeyboardDismissal().navigationTitle("New listing").marketInlineTitle()
                 .toolbar {
@@ -142,7 +185,9 @@ struct NewListingView: View {
                     #endif
                 }
             .marketPage(isPresented: $chooseServiceAreas) { ServiceAreaEditor(areas: $serviceAreas).marketSheetScope() }
+            #if !os(macOS)
             .marketPage(isPresented: $reviewPublish) { publicationReview.marketListingEditorSheetScope() }
+            #endif
         }
     }
     private var publicationReview: some View {
@@ -150,9 +195,12 @@ struct NewListingView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     Text(title).font(.title2.weight(.semibold))
-                    reviewDetail("Listing", side == "offer" ? "Selling" : "Buying")
+                    reviewDetail("Listing", (side == "offer" ? "Selling" : "Buying") + (escrowEnabled && bitcoinTrade ? " bitcoin" : ""))
                     reviewDetail("Description", description.isEmpty ? "No description" : description)
-                    reviewDetail(side == "offer" ? "Price" : "Budget", price.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Negotiable" : price + " " + currency)
+                    reviewDetail(escrowEnabled && bitcoinTrade ? "Total fiat price" : (side == "offer" ? "Price" : "Budget"), price.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Negotiable" : price + " " + currency)
+                    if escrowEnabled {
+                        reviewDetail("Payment protection", bitcoinTrade ? "Escrow · " + bitcoinAmount + " sats · " + (fiatMethod == "cash" ? "Cash in person" : "Bank transfer") : "Escrow offered")
+                    }
                     reviewDetail("Category", category)
                     if category == "Transport" { reviewDetail("Service type", transport?.label ?? "Other transport") }
                     reviewDetail("Location", location.isEmpty ? "Not specified" : location)
@@ -162,7 +210,7 @@ struct NewListingView: View {
                     Text("Your listing will be public. Conversations stay private.").font(.callout).foregroundStyle(MarketTheme.muted)
                     MarketInlineError()
                     Button("Publish listing") { publish() }.buttonStyle(PrimaryButton())
-                        .disabled(store.demo || store.busy || uploading || !store.snapshot.canSign)
+                        .disabled(!validBitcoin || store.demo || store.busy || uploading || !store.snapshot.canSign)
                         .accessibilityIdentifier("confirmPublishListing")
                 }.padding(24).frame(maxWidth: 600, alignment: .leading).frame(maxWidth: .infinity)
             }.background(MarketTheme.paper).navigationTitle("Review listing").marketInlineTitle()
@@ -178,6 +226,11 @@ struct NewListingView: View {
     private func publish() {
         var draft: [String: Any] = ["title": title, "description": description, "side": side, "price": price, "currency": currency, "location": location, "category": category, "tags": category == "Transport" ? (transport?.tags ?? []) : [], "image_url": imageURL.isEmpty ? NSNull() : imageURL as Any]
         if category == "Transport", let serviceAreas, let data = try? JSONEncoder().encode(serviceAreas), let geometry = try? JSONSerialization.jsonObject(with: data) { draft["service_areas"] = geometry }
+        if escrowEnabled {
+            if bitcoinTrade, let sats = UInt64(bitcoinAmount) { draft["escrow"] = ["trade":"bitcoin_fiat", "sats":sats, "method":fiatMethod] as [String:Any] }
+            else if !bitcoinTrade { draft["escrow"] = ["trade":"goods"] }
+            else { return }
+        }
         store.command(["type": "publish", "draft": draft], publishExpiry: expiry) { if $0 { dismiss() } }
     }
 }

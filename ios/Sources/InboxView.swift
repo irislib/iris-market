@@ -43,6 +43,7 @@ struct InboxView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 23) {
                 HStack(alignment: .firstTextBaseline) { Text("Inbox").font(.system(size: 30, weight: .medium)).tracking(-1); Spacer(); Button { showInvitation = true } label: { Image(systemName: "square.and.pencil").font(.system(size: 20)) }.accessibilityLabel("Connect with an invitation") }
+                EscrowInboxCards()
                 Picker("Group conversations", selection: $grouping) { Text("Threads").tag("threads"); Text("People").tag("people") }.pickerStyle(.segmented)
                 if store.snapshot.conversations.isEmpty {
                     MarketEmptyState(symbol: "bubble.left.and.bubble.right", title: "No conversations", description: "Send a private enquiry from a listing or exchange an invitation.")
@@ -64,7 +65,7 @@ struct InboxView: View {
         }.foregroundStyle(MarketTheme.ink)
             .marketPage(isPresented: $showInvitation) { InvitationView().marketSheetScope() }
             .marketPage(item: $selected) { thread in ConversationView(conversation: thread.conversation, context: thread.context, threadKey: thread.key).id(store.snapshot.publicKey + "|" + thread.id).marketSheetScope() }
-            .onAppear { openPushConversation() }
+            .onAppear { store.refreshInbox(); openPushConversation() }
             .onChange(of: store.pushRoute) { _ in openPushConversation() }
             .onChange(of: store.snapshot.revision) { _ in openPushConversation() }
             .onChange(of: store.activeSheetCount) { _ in openPushConversation() }
@@ -159,6 +160,9 @@ struct ConversationView: View {
                     ScrollView {
                         LazyVStack(spacing: 13) {
                             Label("Private conversation", systemImage: "lock.fill").font(.system(size: 11)).foregroundStyle(MarketTheme.muted).padding(.vertical, 15)
+                            if context?.orderId == nil {
+                                EscrowInboxCards(peer: conversation.id, listing: context?.listing)
+                            }
                             ForEach(visibleMessages) { message in
                                 HStack {
                                     if message.mine { Spacer(minLength: 42) }

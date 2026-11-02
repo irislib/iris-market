@@ -531,4 +531,7 @@ Full logs and local fixture evidence stay in ignored `work/logs/`; generated nat
 2. Add signed native/CLI binary releases, universal links and a verified release manifest.
 3. Evaluate ranking and local AI on real marketplace examples, expand graph coverage and add saved matching watches.
 4. Integrate FIPS/nearby as backup transport, with separate physical-device tests for direct exchange, multi-hop forwarding and delayed forwarding.
-5. Add selective visibility and intermediary introductions with explicit, revocable permissions.
+5. Build on [asking for a friend](#asking-for-a-friend) with selective visibility and explicit, revocable permissions for introductions. Each chosen helper sets acceptance rules, signs buy or sell posts, and can vouch for sender-approved facts without publishing the sender’s `npub`.
+6. Keep direct trade the default. Choose a posting helper, courier, [escrow provider](#escrow-offers-and-private-agreements), or order coordinator independently for each order. One service may coordinate the order and provide escrow if chosen for both.
+7. Give each delivery its own contact identity, including direct courier bookings. Share the pickup reference, assigned stops and handoff instructions with the driver. Keep the customer’s usual `npub`, personal phone number and purchase price private.
+8. Let daters share their identities with an optional trusted matchmaker while staying pseudonymous to each other. Both opt in before an introduction, and each decides whether to share their `npub` or other personal details with the other person.

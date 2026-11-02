@@ -68,7 +68,8 @@ fn detached_preview_never_changes_live_ratchet_or_leaks_text() {
     a.receive(&event).unwrap();
     let message = a.conversations()[0].messages[0].clone();
     assert_eq!(message.text, "Private purchase question");
-    a.mark_messages_read(std::slice::from_ref(&message.id)).unwrap();
+    a.mark_messages_read(std::slice::from_ref(&message.id))
+        .unwrap();
     drop(a);
     let mut a = Messaging::open(ad.path(), ak.clone()).unwrap();
     assert!(!resolve(ad.path(), ak.public_key(), &ak, &payload).show);

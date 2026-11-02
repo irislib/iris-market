@@ -289,6 +289,7 @@ pub struct Conversation {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Snapshot {
+    pub private_matching: Option<serde_json::Value>,
     pub search_discovery: crate::search_discovery::Status,
     pub search_generation: u64,
     pub search_plan_tags: Vec<String>,
@@ -329,6 +330,9 @@ pub struct Snapshot {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Command {
+    PrivateMatch {
+        action: crate::messaging::private_matches::Action,
+    },
     SetFilter {
         query: String,
         side: String,

@@ -1,3 +1,4 @@
+import {setupPrivateMatches} from './private-match-ui.ts';
 import {setupMarketplaceFlags} from './marketplace-flags.ts';
 import {createChatPickerState,revealChatPicker} from './chat-picker-state.ts';
 import {visibleChatMessageIds} from './chat-visibility.ts';
@@ -24,8 +25,8 @@ function dialog(markup:string, name:string, options:Parameters<typeof createSurf
   return node;
 }
 type AccountState = Partial<ReturnType<ReturnType<typeof createMessaging>['state']>> & {status:string;devices:Array<{pubkey:string;current:boolean}>;conversations:Array<{pubkey:string;messages:any[]}>};
-interface AccountOptions {listingTitle?:(coordinate:string)=>string|undefined;getRelays:()=>string[];isPreview:()=>boolean;onIdentity?:(key:string,status:string,previous:string,pending:any[])=>void;onProfile?:(key:string)=>void;onOrder?:(id:string)=>void;onToken?:(token:string)=>unknown;onUnread?:(count:number)=>void;accountPage?:HTMLElement;onAccountPage?:()=>void;onAccountClose?:()=>void;messagePage?:HTMLElement;onMessagePage?:(peer?:string)=>void;onMessageClose?:()=>void}
-export function setupAccount({listingTitle=()=>undefined,getRelays,isPreview,onIdentity=()=>{},onProfile=()=>{},onOrder=()=>{},onToken=()=>{},onUnread=()=>{},accountPage,onAccountPage=()=>{},onAccountClose=()=>{},messagePage,onMessagePage=()=>{},onMessageClose=()=>{}}:AccountOptions) {
+interface AccountOptions {getMatchListings?:()=>Parameters<typeof import("./private-matches.ts").matchCandidates>[2];listingTitle?:(coordinate:string)=>string|undefined;getRelays:()=>string[];isPreview:()=>boolean;onIdentity?:(key:string,status:string,previous:string,pending:any[])=>void;onProfile?:(key:string)=>void;onOrder?:(id:string)=>void;onToken?:(token:string)=>unknown;onUnread?:(count:number)=>void;accountPage?:HTMLElement;onAccountPage?:()=>void;onAccountClose?:()=>void;messagePage?:HTMLElement;onMessagePage?:(peer?:string)=>void;onMessageClose?:()=>void}
+export function setupAccount({getMatchListings=()=>[],listingTitle=()=>undefined,getRelays,isPreview,onIdentity=()=>{},onProfile=()=>{},onOrder=()=>{},onToken=()=>{},onUnread=()=>{},accountPage,onAccountPage=()=>{},onAccountClose=()=>{},messagePage,onMessagePage=()=>{},onMessageClose=()=>{}}:AccountOptions) {
   const pickerState=createChatPickerState();
   const unread=createUnreadTracker({kind:'messages',onUnread});
   const readyListeners=new Set<()=>void>(), stateListeners=new Set<(state:AccountState)=>void>();
@@ -194,5 +195,6 @@ export function setupAccount({listingTitle=()=>undefined,getRelays,isPreview,onI
   window.addEventListener('pagehide',()=>{if(readFrame!==undefined)cancelAnimationFrame(readFrame);window.removeEventListener('resize',scheduleSeen);$('chat-messages').removeEventListener('scroll',scheduleSeen);receiptSettings.remove();document.removeEventListener('visibilitychange',refreshUnread);document.removeEventListener('close',uncovered,true);window.removeEventListener('focus',refreshUnread);controller?.abort();messaging.destroy();});
   const api={ messaging, state:()=>state, showAccount, showInbox, openChat, composeMessage, hideInbox:()=>inbox.hide(), closeAccount:()=>account.hide(), hideAccount:()=>account.hide(), onReady:listener=>readyListeners.add(listener), onState:listener=>{stateListeners.add(listener);return()=>stateListeners.delete(listener)} };
   setupMarketplaceFlags(api);
+  setupPrivateMatches(api,getMatchListings);
   return api;
 }

@@ -76,6 +76,9 @@ impl MarketApp {
             .map_err(error)?,
         }))
     }
+    pub fn private_match_candidates(&self, entry: String) -> Result<String, MarketError> {
+        self.inner.private_match_candidates(&entry).map_err(error)
+    }
     pub fn snapshot(&self) -> Result<String, MarketError> {
         self.inner.snapshot().map_err(error)
     }

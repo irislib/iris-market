@@ -91,6 +91,7 @@ data class MarketSnapshot(
     val invite: String? = null, val aiSearch: Boolean = false, val sort: String = "suggested",
     val orders: List<MarketOrder> = emptyList(), val liveLocationSupported: Boolean = false,
     val people: Map<String, PublicPerson> = emptyMap(), val profile: PublicProfile? = null, val graphContextLoaded: Boolean = false,
+    val privateMatching: String? = null,
     val profileListings: ProfileListings? = null,
     val localCuration: LocalCurationBatch? = null,
     val searchDiscovery: SearchDiscoveryStatus? = null,
@@ -109,6 +110,7 @@ data class MarketSnapshot(
                 status = o.optString("status", "Ready"), error = o.optional("error"), revision = o.optLong("revision"), aiMessage = o.optional("ai_message"), aiTestResult=o.optJSONObject("ai_test_result")?.let {NativeAITestResult.parse(it)},
                 query = o.optString("query"), side = o.optString("side", "offer"),
                 listings = (0 until ls.length()).map { Listing.parse(ls.getJSONObject(it)) }, savedCount = o.optInt("saved_count"),
+                privateMatching = o.optJSONObject("private_matching")?.toString(),
                 settings = (o.optJSONObject("settings") ?: JSONObject()).toString(),
                 supportedCurrencies = o.optJSONArray("supported_currencies")?.let { list -> (0 until list.length()).map { list.getString(it) } } ?: emptyList(),
                 satsDisplayPrice = o.optJSONObject("sats_display_price")?.let { d -> PriceDisplay(d.optDouble("amount"),d.optString("currency"),d.optBoolean("approximate"),d.optBoolean("stale")) },
@@ -494,6 +496,13 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
         val raw=withContext(Dispatchers.IO){app.uploadMedia(file.data,file.name,file.mime)}
         check(generation==accountGeneration)
         return ListingMediaUpload.parse(raw)
+    }
+    internal suspend fun privateMatchCandidates(entry:String): List<JSONObject> {
+        val generation = accountGeneration
+        val app = core ?: return emptyList()
+        val rows = withContext(Dispatchers.IO) { JSONArray(app.privateMatchCandidates(entry)) }
+        check(generation == accountGeneration)
+        return List(rows.length()) { rows.getJSONObject(it) }
     }
     internal suspend fun loadReviews(target:String,product:Boolean,refresh:Boolean):List<MarketReview> {
         val generation=accountGeneration;val app=core ?: return emptyList()

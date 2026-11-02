@@ -506,6 +506,7 @@ fn message_resolution(
     inner.verify_id().ok()?;
     if inner.kind != Kind::from(14)
         || friend_posts::is_request(&inner)
+        || private_matches::is_match(&inner)
         || message.sender == owner
         || (inner.pubkey != message.sender && Some(inner.pubkey) != message.sender_device)
         || inner.content.len() > MAX_MESSAGE_BYTES

@@ -306,6 +306,23 @@ final class MarketStore: ObservableObject {
             } }
         }
     }
+    func privateMatchCandidates(entry: String, completion: @escaping ([PrivateMatchCandidate]) -> Void) {
+        guard let app else { completion([]); return }
+        let generation = accountGeneration
+        queue.async { [weak self] in
+            let result = Result {
+                let json = try app.privateMatchCandidates(entry: entry)
+                return try MarketJSON.decoder().decode([PrivateMatchCandidate].self, from: Data(json.utf8))
+            }
+            DispatchQueue.main.async {
+                guard let self, self.accountGeneration == generation else { return }
+                switch result {
+                case .success(let candidates): completion(candidates)
+                case .failure(let error): self.alert = error.localizedDescription; completion([])
+                }
+            }
+        }
+    }
     func command(_ value: [String: Any], expectedAIIntent: Int? = nil, urgentPreference: Bool = false, publishExpiry: NativeListingExpiry? = nil, completion: ((Bool) -> Void)? = nil) {
         #if DEBUG
         if NativeMessageFixture.enabled && messageFixture.apply(value) {

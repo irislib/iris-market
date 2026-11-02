@@ -232,6 +232,7 @@ impl State {
         }
         let plan_pending = self.ai_search && !self.search_plan_applied && !self.search_plan_locked;
         Ok(Snapshot {
+            private_matching: self.messaging.as_ref().and_then(|m| m.matching_view()),
             search_discovery: self.search_discovery.status(),
             search_generation: self.search_request,
             search_plan_tags: if plan_pending && listings.len() > 24 {
@@ -591,6 +592,18 @@ impl Market {
         })
     }
     /// Keep origin-to-listing links and private posting rules out of ordinary snapshots.
+    pub fn private_match_candidates(&self, entry: &str) -> Result<String> {
+        let s = self.state.lock().unwrap();
+        let messaging = s
+            .messaging
+            .as_ref()
+            .context("Private messaging unavailable")?;
+        let items = s.store.listings(&s.owner.to_hex(), listing::now())?;
+        let results = messaging
+            .match_candidates(entry.parse()?, &items)
+            .map_err(anyhow::Error::msg)?;
+        Ok(serde_json::to_string(&results)?)
+    }
     pub fn friend_posts(&self) -> Result<serde_json::Value> {
         let s = self.state.lock().unwrap();
         s.messaging
@@ -1010,6 +1023,21 @@ impl Market {
                     .as_mut()
                     .context("Leave Preview to send messages")?
                     .send_with_context(&peer_id, &text, context)
+                    .map_err(anyhow::Error::msg)?;
+                self.notify.notify_waiters();
+            }
+            Command::PrivateMatch { action } => {
+                let item =
+                    if let messaging::private_matches::Action::SendPublic { listing, .. } = &action
+                    {
+                        Some(listing::parse(&s.store.event(listing)?, listing::now())?)
+                    } else {
+                        None
+                    };
+                s.messaging
+                    .as_mut()
+                    .context("Private messaging unavailable")?
+                    .matching_action(action, item.as_ref())
                     .map_err(anyhow::Error::msg)?;
                 self.notify.notify_waiters();
             }

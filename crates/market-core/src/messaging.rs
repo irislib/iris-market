@@ -9,6 +9,7 @@ mod controls;
 mod escrow;
 pub mod friend_posts;
 pub mod mobile_push;
+pub mod private_matches;
 pub use controls::Reaction;
 
 use std::{
@@ -180,6 +181,8 @@ struct PrivateState {
     orders: crate::orders::OrderBook,
     #[serde(default)]
     friend_posts: friend_posts::Inbox,
+    #[serde(default)]
+    matches: private_matches::Book,
     #[serde(default)]
     pending_invites: BTreeMap<String, Invite>,
     #[serde(default)]
@@ -817,6 +820,7 @@ impl Messaging {
             .has_due_pending_retry_work(iris_chat_protocol::NdrUnixSeconds(now()))
             && !self.state.orders.jobs.iter().any(|job| !job.handed)
             && self.state.pending_invites.is_empty()
+            && !self.state.matches.expired(now())
             && !self.has_control_work()
             && !self.state.pending_contact_messages.values().any(|queued| {
                 queued.expires_at.is_some_and(|deadline| deadline <= now())
@@ -827,6 +831,7 @@ impl Messaging {
             return Ok(());
         }
         self.transaction(|this| {
+            this.state.matches.prune(now());
             this.send_control_jobs()?;
             this.retry_invitations()?;
             this.send_pending_contacts()?;
@@ -1567,7 +1572,8 @@ impl Messaging {
             return Err("Private message author does not match the authenticated sender".into());
         }
         let friend_request = friend_posts::is_request(&inner);
-        if friend_request || matches!(inner.kind.as_u16(), 7 | 15) {
+        let private_match = private_matches::is_match(&inner);
+        if friend_request || private_match || matches!(inner.kind.as_u16(), 7 | 15) {
             let device = message.sender_device.unwrap_or(message.sender);
             if device != message.sender
                 && !self
@@ -1586,6 +1592,10 @@ impl Messaging {
                 {
                     return Err("Private control device is not authorized".into());
                 }
+            }
+            if private_match {
+                self.receive_match(message.sender, &inner);
+                return Ok(());
             }
             if friend_request {
                 self.receive_friend_post(message.sender, device, &inner);

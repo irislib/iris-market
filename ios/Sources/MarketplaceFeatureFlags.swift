@@ -12,6 +12,7 @@ struct MarketplaceFeatureFlags: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Label("Optional marketplace tools", systemImage: "slider.horizontal.3").font(.headline)
+            PrivateMatchingSettings()
             Toggle("Escrow", isOn: toggle(\.escrowUi))
             Text("Agree on a third person to help settle a payment.").font(.caption).foregroundStyle(.secondary)
         }.padding(20).background(MarketTheme.surface, in: RoundedRectangle(cornerRadius: 23))

@@ -248,6 +248,7 @@ private fun inboxContextTitle(context:MessageContext?,state:MarketSnapshot):Stri
         OutlinedButton(onClick={signIn=true},enabled=!state.demo) {Icon(Icons.Filled.Login,null);Spacer(Modifier.width(8.dp));Text("Sign in")}
         if(!state.demo&&!state.canSign) Text("Sign in with your profile key to publish listings.",color=Muted,style=MaterialTheme.typography.bodySmall)
         TextButton(onClick=openWallet,enabled=!state.demo&&!state.profileNameRequired) { Icon(Icons.Filled.AccountBalanceWallet,null);Spacer(Modifier.width(8.dp));Text("Wallet") }
+        key(state.publicKey) { PrivateMatchingSettings(state, model, busy) }
         val escrowEnabled=remember(state.settings){JSONObject(state.settings).optBoolean("escrow_ui")}
         Row(
             modifier=Modifier.fillMaxWidth().toggleable(value=escrowEnabled, enabled=!busy, role=Role.Switch) { enabled ->

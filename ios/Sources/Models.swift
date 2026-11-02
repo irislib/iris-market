@@ -5,6 +5,7 @@ struct SearchDiscoveryStatus: Decodable { let loading: Bool; let hasMore: Bool }
 struct MarketSnapshot: Decodable {
     var publicKey: String = ""
     var canSign = false
+    var privateMatching: PrivateMatchInbox?
     var messagingReady = false
     var liveLocationSupported = false
     var demo: Bool = false

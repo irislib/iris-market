@@ -122,7 +122,7 @@ pub enum Action {
         enabled: bool,
     },
     Share {
-        helper: PublicKey,
+        helper: String,
         side: Side,
         summary: String,
     },
@@ -211,6 +211,8 @@ impl Book {
                 side,
                 summary,
             } => {
+                let helper = PublicKey::parse(helper.trim())
+                    .map_err(|_| "Enter the helper’s npub or public key")?;
                 let entry = Entry {
                     id: Uuid::new_v4(),
                     side,

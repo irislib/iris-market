@@ -48,7 +48,7 @@ internal fun PrivateMatchingSettings(state:MarketSnapshot, model:MarketModel, bu
                 FilterChip(request,{request=true},{Text("Looking for")})
                 FilterChip(!request,{request=false},{Text("Offering")})
             }
-            OutlinedTextField(helper,{helper=it},label={Text("Helper’s public key (hex)")})
+            OutlinedTextField(helper,{helper=it},label={Text("Helper’s npub or public key")})
             OutlinedTextField(summary,{summary=it},label={Text("Summary your helper may share")})
             Button(enabled=!busy && summary.isNotBlank() && helper.isNotBlank(),onClick={
                 val action=JSONObject().put("op","share").put("helper",helper.trim()).put("summary",summary).put("side",if(request) "request" else "offer")

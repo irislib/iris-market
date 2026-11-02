@@ -40,7 +40,7 @@ struct PrivateMatchingSettings: View {
                             Picker("I’m", selection: $side) {
                                 Text("Looking for").tag("request"); Text("Offering").tag("offer")
                             }
-                            TextField("Helper’s public key (hex)", text: $helper)
+                            TextField("Helper’s npub or public key", text: $helper)
                             TextField("Summary your helper may share", text: $summary)
                             Button("Send to helper privately") {
                                 act(["op":"share", "helper":helper.trimmingCharacters(in:.whitespacesAndNewlines), "side":side, "summary":summary]) { if $0 { summary = "" } }

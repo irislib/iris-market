@@ -27,3 +27,35 @@ test('actual NDR same-second batch and identical messages retain monotonic milli
  await wait(()=>incoming().length===37);assert.equal(new Set(ids).size,37);assert.deepEqual(own().map(m=>m.id),ids);assert.deepEqual(incoming().map(m=>m.id),ids);assert(own().every((message,index)=>index===0||message.createdAtMs>own()[index-1].createdAtMs));
  await b.lock();await b.unlock();assert.deepEqual(incoming().map(m=>m.id),ids);assert(incoming().every(m=>typeof m.createdAtMs==='number'));
 });
+
+test('three profiles privately match pending entries through encrypted delivery after helper restart',async t=>{
+  const bus=relay();
+  const make=()=>createMessaging({vault:createVault({backend:memory()}),getRelays:()=>['wss://fixture.invalid'],transportFactory:bus.factory});
+  const [buyer,seller,helper]=[make(),make(),make()];
+  const profiles=[buyer,seller,helper];
+  t.after(async()=>{for(const profile of profiles)await profile.destroy();});
+  for(const profile of profiles)await profile.createAccount();
+  await wait(()=>profiles.every(p=>p.state().canSend));
+  for(const profile of profiles)await profile.privateMatch({op:'enable',enabled:true});
+  const helperId=helper.state().ownerPubkey,buyerId=buyer.state().ownerPubkey,sellerId=seller.state().ownerPubkey;
+  await buyer.privateMatch({op:'share',helper:helperId,side:'request',summary:'Seeking a cargo bike'});
+  await seller.privateMatch({op:'share',helper:helperId,side:'offer',summary:'Spare cargo bike'});
+  await wait(()=>Object.keys(helper.privateMatchView().received).length===2);
+  await helper.lock();await helper.unlock();await wait(()=>helper.state().canSend);
+  const entries=Object.keys(helper.privateMatchView().received);
+  await helper.privateMatch({op:'suggest',left:entries[0],right:entries[1]});
+  const [proposal]=Object.keys(helper.privateMatchView().pairs);
+  await wait(()=>profiles.slice(0,2).every(p=>p.privateMatchView().interests[proposal]));
+  await buyer.privateMatch({op:'vote',proposal,accept:true});
+  await wait(()=>helper.privateMatchView().pairs[proposal].votes.includes(true));
+  await assert.rejects(helper.privateMatch({op:'introduce',proposal}));
+  await seller.privateMatch({op:'vote',proposal,accept:true});
+  await wait(()=>helper.privateMatchView().pairs[proposal].votes.every(v=>v===true));
+  await helper.privateMatch({op:'introduce',proposal});
+  await wait(()=>buyer.privateMatchView().interests[proposal]?.contact===sellerId&&seller.privateMatchView().interests[proposal]?.contact===buyerId);
+  assert(bus.frames.every(e=>![14,30402,38383].includes(e.kind)));
+  const encrypted=bus.frames.filter(e=>[1059,1060].includes(e.kind));
+  assert(encrypted.length>0);
+  assert(!JSON.stringify(bus.frames).includes('cargo bike'));
+  assert(encrypted.every(e=>!e.tags.some(([tag,key])=>tag==='p'&&[buyerId,sellerId,helperId].includes(key))));
+});

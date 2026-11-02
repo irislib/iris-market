@@ -152,7 +152,7 @@ struct NewListingView: View {
                                 Text("Enter the total fiat price and an expiry below.").font(.footnote).foregroundStyle(.secondary)
                             }
                         }
-                    }.onChange(of: bitcoinTrade) { _, value in if value && expiry == .never { expiry = .week } }
+                    }.onChange(of: bitcoinTrade) { value in if value && expiry == .never { expiry = .week } }
                 }
                 Section("Details") {
                     HStack { TextField("Price or budget", text: $price, prompt: Text("Price or budget").foregroundColor(MarketTheme.muted)).labelsHidden().marketDecimalKeyboard().accessibilityIdentifier("listingPrice"); Picker("Currency", selection: $currency) { Text("EUR").tag("EUR"); Text("USD").tag("USD"); Text("GBP").tag("GBP"); Text("BTC").tag("BTC") }.labelsHidden().frame(width: 90) }

@@ -100,6 +100,7 @@ def apple_project(stage, platform, environment):
     # and loops on absolute paths; group layout has no effect on build inputs.
     text = text.replace('createIntermediateGroups: true', 'createIntermediateGroups: false')
     replacements = {'- path: Sources': '- path: '+str(ROOT/'ios/Sources'), '- path: Bindings': '- path: '+str(stage/'Bindings'), '- path: UITests': '- path: '+str(ROOT/'ios/UITests'), '- path: ../ios/Sources': '- path: '+str(ROOT/'ios/Sources'), '- path: ../ios/Bindings': '- path: '+str(stage/'Bindings'), 'INFOPLIST_FILE: Info.plist': 'INFOPLIST_FILE: '+str(source/'Info.plist'), 'Frameworks/IrisMarketCore.xcframework': str(stage/'IrisMarketCore.xcframework'), '$(PROJECT_DIR)/.build/headers': str(headers)}
+    replacements['- path: ../shared/escrow'] = '- path: '+str(ROOT/'shared/escrow')
     for old, new in replacements.items(): text = text.replace(old, new)
     if platform == 'ios-arm64':
         push = release.ios_push_enabled(environment)

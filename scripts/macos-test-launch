@@ -7,8 +7,8 @@ TASK_STORAGE="${MARKET_MACOS_TEST_STORAGE:-${TMPDIR%/}/iris-market-ui-macos}"
 # The DEBUG-only native harness validates the private temporary directory. It
 # never falls back to Keychain if validation fails. --demo disables publication.
 case "${1:-}" in
-  --background) launch=(-g) ;;
-  '') launch=() ;;
+  --background) set -- -g ;;
+  '') set -- ;;
   *) echo 'Usage: scripts/macos-test-launch [--background]' >&2; exit 2 ;;
 esac
-open -n "${launch[@]}" "$TASK_APP" --args --demo --ui-test-mode --test-storage "$TASK_STORAGE"
+open -n "$@" "$TASK_APP" --args --demo --ui-test-mode --test-storage "$TASK_STORAGE"

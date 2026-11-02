@@ -20,7 +20,9 @@ struct PrivateMatchCandidate: Decodable, Identifiable {
 struct PrivateMatchingSettings: View {
     @EnvironmentObject private var store: MarketStore
     @State private var open = false
-    @State private var helper = "", summary = "", side = "request"
+    @State private var helper = ""
+    @State private var summary = ""
+    @State private var side = "request"
     @State private var selection = ""
     @State private var candidates: [PrivateMatchCandidate] = []
     private func act(_ action: [String: Any], done: ((Bool) -> Void)? = nil) {

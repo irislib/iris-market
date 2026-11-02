@@ -79,6 +79,14 @@ class UpdateClient:
             raise ValueError('The downloaded update is missing')
         return path.as_uri()
 
+    def open_download(self, handler, context):
+        from gi.repository import Gio
+        package = Gio.File.new_for_uri(self.download_uri())
+        if handler is None:
+            Gio.AppInfo.launch_default_for_uri(package.get_parent().get_uri(), context)
+        else:
+            handler.launch([package], context)
+
     def close(self):
         if self.process is not None:
             self.process.terminate()
@@ -207,7 +215,7 @@ def main():
     import gi
     gi.require_version('Gtk', '3.0')
     gi.require_version('WebKit2', '4.1')
-    from gi.repository import Gtk, WebKit2, GLib, Gdk
+    from gi.repository import Gtk, WebKit2, GLib, Gdk, Gio
     GLib.set_prgname('iris-market')
     GLib.set_application_name('Iris Market')
     try:
@@ -247,9 +255,13 @@ def main():
 
     def update_emit():
         if updates is not None:
-            state = {**update_state, 'version': updates.version, 'automatic': updates.preferences['automatic']}
+            state = {**update_state, 'version': updates.version, 'automatic': updates.preferences['automatic'],
+                     'hasInstaller': deb_handler() is not None}
             view.run_javascript('window.dispatchEvent(new CustomEvent("market-update", {detail:' + json.dumps(state) + '}));', None, None, None)
         return False
+
+    def deb_handler():
+        return Gio.AppInfo.get_default_for_type('application/vnd.debian.binary-package', False)
 
     def update_action(_manager, message):
         start_update(message.get_js_value().to_string())
@@ -274,10 +286,11 @@ def main():
             return
         if action == 'open':
             try:
-                Gtk.show_uri_on_window(window, updates.download_uri(), 0)
-            except (OSError, ValueError) as error:
-                update_state['error'] = str(error)
-                update_emit()
+                updates.open_download(deb_handler(), window.get_display().get_app_launch_context())
+                update_state['error'] = None
+            except (OSError, ValueError, GLib.Error):
+                update_state['error'] = 'Could not open the download. Find the package in Downloads → Iris Market Updates.'
+            update_emit()
             return
         if action not in ('check', 'download'):
             return

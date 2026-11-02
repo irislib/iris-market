@@ -19,7 +19,9 @@
     select('check').disabled = preview || state.busy;
     select('download').hidden = state.busy || !result?.available || !!result?.path;
     select('open').hidden = state.busy || !result?.path;
-    select('status').textContent = state.busy ? (state.downloading ? 'Downloading update…' : 'Checking for updates…') : result?.path ? 'Update ready to install' : result?.available ? `Version ${result.latest_version} is available` : result ? 'You’re up to date' : '';
+    select('open').textContent = state.hasInstaller ? 'Open installer' : 'Show download';
+    const ready = state.hasInstaller ? 'Update ready to install' : 'The verified package is in Downloads → Iris Market Updates. Install it with your package manager.';
+    select('status').textContent = state.busy ? (state.downloading ? 'Downloading update…' : 'Checking for updates…') : result?.path ? ready : result?.available ? `Version ${result.latest_version} is available` : result ? 'You’re up to date' : '';
     select('error').textContent = state.error || '';
   });
   send('state');

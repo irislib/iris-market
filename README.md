@@ -43,7 +43,9 @@ The browser feed below uses real public listings. Native alpha builds share the 
 - `scripts`: repeatable builds and focused UI checks.
 - `crates/market-app/CONTRACT.md`: native command/state contract.
 
-The product remains general. Specialised task details can extend a common listing rather than requiring separate category-specific apps. Public discovery and private conversations remain separate; future private matching will need explicit disclosure and delegation permissions.
+The product remains general. Specialised task details can extend a common listing rather than requiring separate category-specific apps. Public discovery and private conversations remain separate.
+
+**Private matching (release candidate).** Turn on **Find a match privately** in Settings to share a short offer or request with a helper you choose. The helper keeps pending entries in their encrypted local inbox for up to seven days. They can compare an entry with public listings and with private entries that other people have shared with them. For a private match, each person sees the other’s shareable summary and chooses whether to exchange contact details. For a public listing, the helper sends the listing to the person who asked. You can withdraw a pending entry. A helper who is offline receives the withdrawal when encrypted delivery resumes.
 
 ## Build
 

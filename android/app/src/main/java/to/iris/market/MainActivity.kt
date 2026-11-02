@@ -113,7 +113,7 @@ fun MarketAppView(model: MarketModel, appearance: Appearance, changeAppearance: 
         containerColor = Cream,
         bottomBar = {
             NavigationBar(containerColor = Cream, tonalElevation = 0.dp, modifier = Modifier.background(Cream)) {
-                listOf("Browse" to Icons.Filled.Storefront, "Saved" to Icons.Filled.Favorite,
+                listOf("Home" to Icons.Filled.Storefront, "Saved" to Icons.Filled.Favorite,
                     "Inbox" to Icons.Filled.ChatBubble, "Orders" to Icons.Filled.ReceiptLong).forEachIndexed { index, (label, icon) ->
                     NavigationBarItem(selected = tab == index, onClick = {
                         if (tab != index) {

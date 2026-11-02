@@ -1,5 +1,18 @@
 import Foundation
 
+/// SwiftUI can install a replacement Home before the old instance disappears.
+/// Only the current view may end its review session.
+struct NativeBrowseVisibility {
+    private var owner: UUID?
+    var isVisible: Bool { owner != nil }
+    mutating func update(_ visible: Bool, owner id: UUID) -> Bool {
+        if visible { owner = id; return true }
+        guard owner == id else { return false }
+        owner = nil
+        return true
+    }
+}
+
 /// A submitted search may review late arrivals once, up to ten 24-item batches.
 /// Stopping clears authority; snapshot changes alone cannot restart a search.
 struct NativeSearchContinuation {

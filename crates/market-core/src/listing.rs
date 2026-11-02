@@ -231,6 +231,7 @@ pub fn parse(event: &Event, at: u64) -> Result<Listing> {
         bail!("Unknown listing status");
     }
     Ok(Listing {
+        search_text_cache: Default::default(),
         id: format!("{}:{identifier}", event.pubkey.to_hex()),
         author: event.pubkey.to_hex(),
         title: draft.title,
@@ -251,6 +252,7 @@ pub fn parse(event: &Event, at: u64) -> Result<Listing> {
         mine: false,
         delivery: "published".into(),
         relevance: None,
+        direct_match: false,
         coordinates: {
             let mut hashes: Vec<_> = event
                 .tags

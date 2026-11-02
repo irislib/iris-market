@@ -99,6 +99,19 @@ impl State {
             .as_ref()
             .is_some_and(|current| Arc::ptr_eq(current, cancel))
     }
+    fn home_curation(&self) -> bool {
+        self.settings.ai.enabled && self.settings.ai.curate_feed && self.query.trim().is_empty()
+    }
+    fn curation_prompt(&self) -> Option<String> {
+        if !self.settings.ai.enabled {
+            return None;
+        }
+        if self.ai_search && !self.query.trim().is_empty() {
+            return Some(self.query.clone());
+        }
+        self.home_curation()
+            .then(|| self.settings.ai.home_feed_prompt())
+    }
     fn snapshot(&mut self) -> Result<Snapshot> {
         self.profiles.refresh_public_cache();
         if let Some(profile) = self.profile.as_mut() {
@@ -131,6 +144,16 @@ impl State {
                         &query,
                     ))
         });
+        for listing in &mut listings {
+            listing.direct_match = self.ai_search
+                && listing.search_text_cache.direct(listing, &self.query, || {
+                    std::iter::once(&listing.title)
+                        .chain(std::iter::once(&listing.description))
+                        .chain(std::iter::once(&listing.category))
+                        .chain(listing.tags.iter())
+                        .any(|text| literal_search::matches_single_term_search(text, &self.query))
+                });
+        }
         if self.sort == "suggested" {
             ranking::rank(
                 &mut listings,
@@ -138,6 +161,7 @@ impl State {
                 &interests,
                 &self.query,
                 listing::now(),
+                self.ai_search || self.home_curation(),
             );
         }
         let mut people: std::collections::BTreeMap<_, _> = listings
@@ -205,13 +229,16 @@ impl State {
                 );
             }
         }
+        let plan_pending = self.ai_search && !self.search_plan_applied && !self.search_plan_locked;
         Ok(Snapshot {
             search_discovery: self.search_discovery.status(),
             search_generation: self.search_request,
-            search_plan_tags: search_plan::catalog(&listings),
-            search_plan_pending: self.ai_search
-                && !self.search_plan_applied
-                && !self.search_plan_locked,
+            search_plan_tags: if plan_pending && listings.len() > 24 {
+                search_plan::catalog(&listings)
+            } else {
+                Vec::new()
+            },
+            search_plan_pending: plan_pending,
             exchange_rates: self.rates.snapshot(listing::now()),
             sats_display_price: self.rates.convert(
                 "1",
@@ -424,6 +451,10 @@ impl Market {
             "market.sqlite"
         }))?;
         let settings = store.settings()?;
+        // Decisions belong to an in-memory query or home preference context.
+        // No context survives reopening the app, so old decisions cannot leak
+        // from a previous search into the home feed.
+        store.clear_relevance()?;
         let rates = store.exchange_rates().unwrap_or_default();
         let ai_configured = store.ai_configured()?;
         let local_profile = store.profile_metadata(&owner.to_hex())?;
@@ -566,8 +597,17 @@ impl Market {
             bail!("Request is too large");
         }
         let command: Command = serde_json::from_str(request).context("Invalid request")?;
+        // Stale asynchronous results still fail their caller's generation check,
+        // but must not become an error on the replacement screen.
+        let background_review = matches!(
+            command,
+            Command::ApplySearchPlan { .. } | Command::ApplyLocalCuration { .. }
+        );
         let outcome = self.apply(command);
         if let Err(error) = outcome {
+            if background_review {
+                return Err(error);
+            }
             let mut state = self.state.lock().unwrap();
             state.error = Some(error.to_string());
             state.revision += 1;
@@ -688,7 +728,7 @@ impl Market {
                 }
                 // Search mode cannot bypass the durable provider opt-in. Native
                 // clients separately gate platform model availability.
-                let ai_search = ai_search && s.settings.ai.enabled;
+                let ai_search = ai_search && s.settings.ai.enabled && !query.trim().is_empty();
                 if s.query != query || s.ai_search != ai_search || s.side != side {
                     s.cancel_remote_ai();
                     s.local_curation = None;
@@ -870,6 +910,9 @@ impl Market {
                         .map_err(anyhow::Error::msg)?;
                 }
                 let changed_relays = s.settings.relays != settings.relays;
+                if s.settings.ai != settings.ai {
+                    s.store.clear_relevance()?;
+                }
                 s.store.save_settings(&settings)?;
                 s.cancel_remote_ai();
                 s.ai_message = None;
@@ -1325,8 +1368,8 @@ impl Market {
             if !check && !s.settings.ai.enabled {
                 bail!("Enable AI in settings first");
             }
-            if !check && (!s.ai_search || s.query.trim().is_empty()) {
-                bail!("Type what you are looking for in the search field");
+            if !check && s.curation_prompt().is_none() {
+                bail!("Enable home-feed filtering or enter an AI search");
             }
             let listings = if check {
                 Vec::new()
@@ -1348,7 +1391,8 @@ impl Market {
                 })
                 .collect::<Result<Vec<_>>>()?;
             let mut ai = s.settings.ai.clone();
-            ai.interests = s.query.clone();
+            ai.interests = s.curation_prompt().unwrap_or_default();
+            ai.curate_feed = s.home_curation();
             if check {
                 ai.enabled = true;
             }

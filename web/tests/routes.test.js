@@ -1,9 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {npubEncode,naddrEncode} from 'nostr-tools/nip19';
-import {parseMarketRoute,listingURL,profileURL,pageURL,listingAddress} from '../src/routes.ts';
+import {parseMarketRoute,listingURL,profileURL,pageURL,listingAddress,searchURL} from '../src/routes.ts';
 import {routeBase} from '../src/route-base.ts';
 const key='12'.repeat(32),npub=npubEncode(key),id=key+':oak-desk';
+test('submitted searches have shareable result routes without retaining listing context',()=>{
+ const href=searchURL('wood & tools',listingURL(id,'https://market.iris.to/'));
+ assert.equal(href,'https://market.iris.to/search?q=wood+%26+tools');
+ assert.deepEqual(parseMarketRoute(href),{type:'search',query:'wood & tools'});
+ assert.deepEqual(parseMarketRoute(searchURL('  ',href)),{type:'home'});
+ const hosted=searchURL('desk','https://example.com/tree/path/index.html');
+ assert.deepEqual(parseMarketRoute(hosted),{type:'search',query:'desk'});
+});
 test('public listing addresses are stable author and d-tag routes',()=>{
  const url=listingURL(id,'https://market.iris.to/?profile=other#private');
  assert.equal(url,`https://market.iris.to/${npub}/oak-desk`);

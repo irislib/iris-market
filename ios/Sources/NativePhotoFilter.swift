@@ -6,6 +6,9 @@ enum NativePhotoFilter {
         choice ?? (!map && query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && side == "offer")
     }
     static func includes(imageURL: String?, choice: Bool?, query: String, side: String, map: Bool) -> Bool {
-        !wantsPhotos(choice: choice, query: query, side: side, map: map) || !(imageURL ?? "").isEmpty
+        includes(imageURL: imageURL, requirePhoto: wantsPhotos(choice: choice, query: query, side: side, map: map))
+    }
+    static func includes(imageURL: String?, requirePhoto: Bool) -> Bool {
+        !requirePhoto || !(imageURL ?? "").isEmpty
     }
 }

@@ -32,10 +32,11 @@ data class Listing(
     val price: String, val currency: String, val location: String, val category: String,
     val imageUrl: String?, val saved: Boolean, val mine: Boolean, val status: String,
     val delivery: String, val relevance: String?, val relevanceShow: Boolean?, val coordinates: List<Double>? = null,
-    val serviceAreas: String? = null, val priceDisplay: PriceDisplay? = null, val expiresAt: Long? = null, val tags: List<String> = emptyList(), val createdAt: Long = 0
+    val serviceAreas: String? = null, val priceDisplay: PriceDisplay? = null, val expiresAt: Long? = null, val tags: List<String> = emptyList(), val createdAt: Long = 0, val directMatch: Boolean = false, val relevanceScore: Double? = null, val relevanceUnavailable: Boolean = false
 ) {
+    val matchesSearch: Boolean get() = relevanceShow == true
     val localSearchRevision: String get() {
-        val content = listOf(title, description, side, price, currency, location, category).joinToString("\u0000")
+        val content = (listOf(title, description, side, price, currency, location, category) + tags).joinToString("\u0000")
         val digest = java.security.MessageDigest.getInstance("SHA-256").digest(content.toByteArray(Charsets.UTF_8))
         return "$id|$createdAt|${digest.joinToString("") { "%02x".format(it) }}"
     }
@@ -64,7 +65,8 @@ data class Listing(
             l.optJSONObject("service_areas")?.toString()?.takeIf { it.toByteArray(Charsets.UTF_8).size <= 32832 },
             l.optJSONObject("display_price")?.let { d -> PriceDisplay(d.optDouble("amount"),d.optString("currency"),d.optBoolean("approximate"),d.optBoolean("stale")) },
             if(l.has("expires_at")&&!l.isNull("expires_at")) l.getLong("expires_at") else null,
-            l.optJSONArray("tags")?.let { a -> (0 until minOf(a.length(),64)).map { a.optString(it) } } ?: emptyList(), l.optLong("created_at"))
+            l.optJSONArray("tags")?.let { a -> (0 until minOf(a.length(),64)).map { a.optString(it) } } ?: emptyList(), l.optLong("created_at"), l.optBoolean("direct_match"),
+            l.optJSONObject("relevance")?.optDouble("score")?.takeIf { it.isFinite() && it in 0.0..1.0 }, l.optJSONObject("relevance")?.optBoolean("unavailable") == true)
     }
 
 }
@@ -131,7 +133,7 @@ data class MarketSnapshot(
                     require(candidates.length() <= 24)
                     LocalCurationBatch(batch.getString("id"), batch.getString("interests"),
                         (0 until candidates.length()).map { index -> val candidate = candidates.getJSONObject(index)
-                            LocalCurationCandidate(candidate.getString("event_id"), Listing.parse(candidate.getJSONObject("listing"))) })
+                            LocalCurationCandidate(candidate.getString("event_id"), Listing.parse(candidate.getJSONObject("listing"))) }, batch.optBoolean("home_feed"))
                 }
             )
         }
@@ -208,6 +210,25 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
     @Volatile private var remoteCurationRunning = false
     @Volatile private var remoteSnapshotLease: Pair<MarketApp, Long>? = null
     private val searchContinuation = NativeSearchContinuation()
+    private var browseVisible = false
+    private var homeStartedContext: String? = null
+    fun homeFilterActive(): Boolean {
+        val ai=JSONObject(state.value.settings).optJSONObject("ai") ?: return false
+        return state.value.query.isBlank() && ai.optBoolean("enabled") && ai.optBoolean("curate_feed") &&
+            NativeAIReadiness.isOn(true,ai.optString("provider"),ai.optString("model"),ai.optString("base_url"),NativeAIReadiness.localReady(localModelState.value.phase),state.value.demo)
+    }
+    fun setBrowseVisible(value: Boolean) {
+        browseVisible=value
+        if(value){homeStartedContext=null;viewModelScope.launch {continueLocalSearch()}}
+        else if(homeFilterActive())cancelLocalAI()
+    }
+    fun saveHomeFilter(enabled: Boolean,prompt: String) {
+        val settings=JSONObject(state.value.settings);val ai=settings.getJSONObject("ai")
+        val text=prompt.trim().take(1000)
+        if(ai.optBoolean("curate_feed")==enabled&&ai.optString("interests")==text)return
+        ai.put("curate_feed",enabled).put("interests",text)
+        saveSettings(settings,ai.optString("provider"),"",false,done={})
+    }
     private val drafts=NativeMessageDrafts()
     private val mutableMessageDrafts=MutableStateFlow<Map<NativeMessageDrafts.Key,String>>(emptyMap())
     val messageDrafts=mutableMessageDrafts.asStateFlow()
@@ -243,7 +264,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
     fun deleteLocalModel() { if (!state.value.demo) localModel.delete() }
     fun continueSearch() {
         searchContinuation.start(searchContext())
-        command(JSONObject().put("type", "continue_search")) { if (state.value.aiSearch) ai("curate") }
+        command(JSONObject().put("type", "continue_search")) { if (state.value.aiSearch || homeFilterActive()) ai("curate") }
     }
     fun cancelSearch() {
         searchContinuation.stop()
@@ -346,7 +367,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
                 mutex.withLock {
                     if (installed && accountGeneration == initialGeneration && !state.value.aiConfigured && !aiPreferencesEditing) {
                         val settings = JSONObject(state.value.settings)
-                        settings.put("ai", JSONObject().put("enabled", true).put("provider", "litert").put("base_url", "").put("model", LocalModelManifest.ID).put("interests", "").put("curate_feed", false))
+                        settings.put("ai", JSONObject(ai.toString()).put("enabled", true).put("provider", "litert").put("base_url", "").put("model", LocalModelManifest.ID))
                         aiIntentGate.perform(initialAIIntent) {
                             val app = core ?: return@perform
                             if(!MarketSnapshot.parse(app.snapshot()).aiConfigured) {
@@ -447,7 +468,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
         }
     }
     fun closeDeviceLink() {linkJob?.cancel();linkJob=null;linking.value=null}
-    fun setActive(value: Boolean) { active = value; if (!value) { setActivePushContext(null,null);cancelLocalAI() } else { syncPush(); updates.checkIfDue() } }
+    fun setActive(value: Boolean) { active = value; if (!value) { setActivePushContext(null,null);cancelLocalAI() } else { homeStartedContext=null;syncPush(); updates.checkIfDue() } }
     private fun publishSnapshot(next: MarketSnapshot) {
         mutable.update { previous -> if(previous.publicKey==next.publicKey&&next.revision<previous.revision) previous else next }
         if (!state.value.profileNameRequired || state.value.demo) dismissProfileSetup()
@@ -661,22 +682,24 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
     private fun searchContext(): String {
         val snapshot = state.value
         val ai = JSONObject(snapshot.settings).optJSONObject("ai") ?: JSONObject()
-        return listOf(snapshot.publicKey, snapshot.query, snapshot.side, ai.optString("provider"), ai.optString("model"), ai.optString("base_url")).joinToString("\n")
+        return listOf(snapshot.publicKey, snapshot.query, snapshot.side, ai.optString("provider"), ai.optString("model"), ai.optString("base_url"),ai.optString("interests"),ai.optBoolean("curate_feed").toString()).joinToString("\n")
     }
     private fun continueDiscovery() {
         val snapshot = state.value
         val discovery = snapshot.searchDiscovery ?: return
         if (!active || working.value || mutableAITest.value.busy || localCurationJob?.isActive == true || snapshot.query.isBlank() || snapshot.error != null || discovery.loading || !discovery.hasMore) return
         val unresolved = snapshot.aiSearch && snapshot.listings.any { it.relevanceShow == null }
-        val matches = if (snapshot.aiSearch) snapshot.listings.count { it.relevanceShow == true } else snapshot.listings.size
+        val matches = if (snapshot.aiSearch) snapshot.listings.count { it.matchesSearch } else snapshot.listings.size
         if (!unresolved && matches < 24 && searchContinuation.claimHistory(searchContext())) command(JSONObject().put("type", "continue_search"))
     }
     private fun continueLocalSearch() {
         continueDiscovery()
         val snapshot = state.value
         val ai = JSONObject(snapshot.settings).optJSONObject("ai") ?: return
-        if (!active || working.value || mutableAITest.value.busy || localCurationJob?.isActive == true || !snapshot.aiSearch || !ai.optBoolean("enabled") || snapshot.query.isBlank() || snapshot.error != null) return
-        if (snapshot.listings.count { it.relevanceShow == true } >= 24) return
+        val home=homeFilterActive()
+        if(browseVisible&&home&&homeStartedContext!=searchContext()){homeStartedContext=searchContext();searchContinuation.start(searchContext())}
+        if (!active || working.value || mutableAITest.value.busy || localCurationJob?.isActive == true || !(home&&browseVisible||snapshot.aiSearch&&snapshot.query.isNotBlank()) || !ai.optBoolean("enabled") || snapshot.error != null) return
+        if (snapshot.listings.count { it.relevanceShow != null && it.matchesSearch } >= 24) return
         val candidates = snapshot.listings.filter { it.relevanceShow == null }.map { it.localSearchRevision }
         if (ai.optString("provider") == "litert") {
             if (searchContinuation.claim(searchContext(), candidates)) runLocalCuration(checkOnly = false)
@@ -781,7 +804,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
                         ensureActive()
                         check(accountGeneration == generation) { "Profile changed" }
                         val rows = JSONArray().put(JSONObject().put("event_id", decision.eventId)
-                            .put("show", decision.show).put("reason", decision.reason))
+                            .put("show", decision.show).put("reason", decision.reason).apply { decision.score?.let { put("score", it) } })
                         val request = JSONObject().put("type", "apply_local_curation").put("id", activeBatch.id)
                             .put("partial", true).put("decisions", rows)
                         publishSnapshot(MarketSnapshot.parse((core ?: error("Not ready")).command(request.toString())))

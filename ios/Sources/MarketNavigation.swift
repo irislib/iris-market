@@ -45,6 +45,20 @@ struct MarketDoneButton: View {
     }
 }
 
+#if os(macOS)
+struct MarketPageBackButton: View {
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        Button(action: { dismiss() }) {
+            HStack(spacing: 6) {
+                Image(systemName: "chevron.backward").font(.system(size: 18, weight: .semibold))
+                Text("Back").font(.system(size: 15, weight: .semibold))
+            }.frame(minWidth: 76, minHeight: 44).contentShape(Rectangle())
+        }.buttonStyle(.plain).accessibilityLabel("Back").accessibilityIdentifier("marketBack")
+    }
+}
+#endif
+
 /// Keep every listing collection at a comfortable reading width on desktop.
 var marketListingColumns: [GridItem] {
     #if os(macOS)

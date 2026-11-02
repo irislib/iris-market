@@ -1,0 +1,18 @@
+[
+  {"text":"City BICYCLE","query":"bicycle","match":true},
+  {"text":"Long description mentions a bicycle.","query":"bicycle","match":true},
+  {"text":"ＦＲＥＳＨ apples","query":"fresh","match":true},
+  {"text":"Fresh apples","query":"ＦＲＥＳＨ","match":true},
+  {"text":"Café","query":"Café","match":true},
+  {"text":"Fresh LEIPÄ","query":"leipä","match":true},
+  {"text":"USB-C charger","query":"usb-c","match":true},
+  {"text":"USB C charger","query":"usb_c","match":true},
+  {"text":"The book","query":"the","match":true},
+  {"text":"Carpet","query":"car","match":false},
+  {"text":"Motorbike","query":"bike","match":false},
+  {"text":"Bicycle","query":"a bicycle","match":false},
+  {"text":"Bicycle under 200","query":"bicycle under 200","match":false},
+  {"text":"Anything","query":"---","match":false},
+  {"text":"Anything","query":"","match":false},
+  {"text":"C USB charger","query":"usb-c","match":false}
+]

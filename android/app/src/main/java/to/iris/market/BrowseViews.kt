@@ -43,17 +43,19 @@ import org.json.JSONObject
     var showMap by remember { mutableStateOf(false) }
     var sortMenu by remember { mutableStateOf(false) }
     var filtersSheet by remember { mutableStateOf(false) }
+    DisposableEffect(Unit) { model.setBrowseVisible(true); onDispose { model.setBrowseVisible(false) } }
     val ai = remember(state.settings) { JSONObject(state.settings).optJSONObject("ai") }
     val localModel by model.localModelState.collectAsState()
     val localInference = ai?.optString("provider")=="litert" && localModel.phase in setOf(LocalModelPhase.VERIFYING, LocalModelPhase.LOADING, LocalModelPhase.REVIEWING)
     val localReady = NativeAIReadiness.localReady(localModel.phase)
     val aiSearch = NativeAIReadiness.isOn(ai?.optBoolean("enabled")==true,ai?.optString("provider") ?: "",ai?.optString("model") ?: "",ai?.optString("base_url") ?: "",localReady,state.demo)
-    val canCurate = ai?.optBoolean("enabled") == true && state.aiSearch && state.query.isNotBlank()
+    val homeFeed = model.homeFilterActive()
+    val canCurate = homeFeed || ai?.optBoolean("enabled") == true && state.aiSearch && state.query.isNotBlank()
     val searching = localInference || state.searchDiscovery?.loading == true || canCurate && busy
-    val matchCount = state.listings.count { it.relevanceShow == true }
+    val matchCount = state.listings.count { it.matchesSearch }
     val wantsPhotos = NativePhotoFilter.wantsPhotos(photoFilter,state.query,state.side,showMap)
     val visibleListings = state.listings.filter { listing ->
-        (!canCurate || showAll || listing.relevanceShow == true) && NativePhotoFilter.includes(listing.imageUrl,photoFilter,state.query,state.side,showMap)
+        (!canCurate || showAll || listing.matchesSearch) && NativePhotoFilter.includes(listing.imageUrl,photoFilter,state.query,state.side,showMap)
     }
     LazyVerticalGrid(columns = GridCells.Fixed(2), horizontalArrangement = Arrangement.spacedBy(14.dp),
         verticalArrangement = Arrangement.spacedBy(18.dp), contentPadding = PaddingValues(start=22.dp,end=22.dp,bottom=90.dp)) {
@@ -128,6 +130,9 @@ import org.json.JSONObject
                         TextButton(onClick = { showAll = !showAll }) { Text(if (showAll) "Show matches" else "Show all") }
                     }
                 }
+                if (canCurate && state.listings.any { it.relevanceUnavailable }) {
+                    Text("AI couldn’t review ${state.listings.count { it.relevanceUnavailable }} listings. You can find them in Show all.", style=MaterialTheme.typography.bodySmall,color=Muted)
+                }
                 if (state.error != null) Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
                     Text("Couldn’t complete that action.",color=MaterialTheme.colorScheme.error,style=MaterialTheme.typography.bodySmall,modifier=Modifier.weight(1f))
                     TextButton(onClick=settings) { Text("Settings") }
@@ -148,11 +153,20 @@ import org.json.JSONObject
         }
     }
     if(filtersSheet) ModalBottomSheet(onDismissRequest={filtersSheet=false}) {
+        var homeEnabled by remember { mutableStateOf(ai?.optBoolean("curate_feed",true) ?: true) }
+        var homePrompt by remember { mutableStateOf(ai?.optString("interests") ?: "") }
         Column(Modifier.fillMaxWidth().padding(horizontal=24.dp).padding(bottom=24.dp).testTag("listingFiltersSheet")) {
             Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
                 Text("Filters",style=MaterialTheme.typography.headlineSmall,modifier=Modifier.weight(1f))
-                TextButton(onClick={filtersSheet=false}) { Text("Done") }
+                TextButton(onClick={model.saveHomeFilter(homeEnabled,homePrompt);filtersSheet=false}) { Text("Done") }
             }
+            Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
+                Text("Home feed",modifier=Modifier.weight(1f))
+                Switch(checked=homeEnabled,onCheckedChange={homeEnabled=it},modifier=Modifier.testTag("homeFeedFilter"))
+            }
+            OutlinedTextField(value=homePrompt,onValueChange={homePrompt=it.take(1000)},label={Text("What would you like to see?")},
+                minLines=3,maxLines=6,modifier=Modifier.fillMaxWidth().testTag("homeFeedPrompt"))
+            Text("Uses your selected AI when enabled. Search keeps its own query.",style=MaterialTheme.typography.bodySmall,color=Muted,modifier=Modifier.padding(vertical=8.dp))
             Surface(color=MaterialTheme.colorScheme.surfaceContainerLow,shape=RoundedCornerShape(16.dp),modifier=Modifier.padding(vertical=16.dp)) {
                 Row(Modifier.fillMaxWidth().padding(horizontal=16.dp,vertical=8.dp),verticalAlignment=Alignment.CenterVertically) {
                     Text("Has photos",style=MaterialTheme.typography.bodyLarge,modifier=Modifier.weight(1f))

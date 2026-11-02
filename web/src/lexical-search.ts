@@ -7,6 +7,11 @@ export function matchesLiteralSearch(text:string,query:string):boolean {
  const words=literalKeywords(query),available=new Set(haystack.split(' '))
  return words.length>0&&words.every(word=>available.has(word))
 }
+/** Direct evidence for a single topic, never a shortcut for compound requests. */
+export function matchesSingleTermSearch(text:string,query:string):boolean {
+ const term=query.normalize('NFKC').trim()
+ return /^[\p{L}\p{N}_-]+$/u.test(term)&&/[\p{L}\p{N}]/u.test(term)&&` ${normalize(text)} `.includes(` ${normalize(term)} `)
+}
 export function listingSearchText(l:{title?:string;description?:string;category?:string;tags?:readonly string[];location?:string}):string{return [l.title,l.description,l.category,...(l.tags||[]),l.location].filter(Boolean).join(' ')}
 export function keywordSearches(query:string):string[]{
  const phrase=query.trim().slice(0,500);if(!phrase)return[]

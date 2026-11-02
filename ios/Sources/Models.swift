@@ -62,10 +62,13 @@ struct MarketListing: Decodable, Identifiable, Hashable {
     let serviceAreas: MarketServiceAreas?
     let displayPrice: MarketDisplayPrice?
     let relevance: Relevance?
-    struct Relevance: Decodable, Hashable { let show: Bool; let reason: String }
+    var directMatch: Bool? = nil
+    var matchesSearch: Bool { relevance?.show == true }
+    struct Relevance: Decodable, Hashable { let show: Bool; let reason: String; var score: Double? = nil; var unavailable: Bool? = nil }
     var localSearchRevision: String {
         var revision = Hasher()
         for value in [title, description, side, price, currency, location, category] { revision.combine(value) }
+        revision.combine(tags)
         return "\(id)|\(createdAt)|\(revision.finalize())"
     }
     var formattedPrice: String {
@@ -241,6 +244,7 @@ struct ProfileListingPage: Decodable {
 struct LocalCurationBatch: Decodable {
     let id: String
     let interests: String
+    let homeFeed: Bool?
     let candidates: [Candidate]
     struct Candidate: Decodable { let listing: MarketListing; let eventId: String }
 }

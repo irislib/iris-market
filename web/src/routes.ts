@@ -1,7 +1,7 @@
 import { decode, npubEncode, naddrEncode } from 'nostr-tools/nip19';
 import { routeBase } from './route-base.ts';
 
-export type MarketRoute = {type:'home'|'saved'|'post'|'wallet'|'settings'|'account'|'courier'|'missing'} | {type:'profile';pubkey:string} | {type:'listing';id:string} | {type:'messages';pubkey?:string} | {type:'orders';id?:string};
+export type MarketRoute = {type:'home'|'saved'|'post'|'wallet'|'settings'|'account'|'courier'|'missing'} | {type:'search';query:string} | {type:'profile';pubkey:string} | {type:'listing';id:string} | {type:'messages';pubkey?:string} | {type:'orders';id?:string};
 const keyPattern = /^[a-f0-9]{64}$/;
 export function validListingId(id: string): boolean { return typeof id === 'string' && keyPattern.test(id.slice(0,64)) && id[64] === ':' && new TextEncoder().encode(id.slice(65)).length > 0 && new TextEncoder().encode(id.slice(65)).length <= 160; }
 function publicKey(value: string): string | null {
@@ -15,6 +15,7 @@ export function parseMarketRoute(href: string): MarketRoute {
   const raw=queryPage?queryPage.split('/'):url.pathname.slice(base.pathname.length).split('/').filter(Boolean);
   let parts:string[];try{parts=raw.map(decodeURIComponent);}catch{return {type:'missing'};}
   if(!parts.length||parts[0]==='index.html')return {type:'home'};
+  if(parts.length===1&&parts[0]==='search'){const query=(url.searchParams.get('q')||'').trim().slice(0,300);return query?{type:'search',query}:{type:'home'};}
   if(parts.length===2&&parts[0]==='settings'&&parts[1]==='profile')return {type:'account'};
   if(parts.length===1&&['saved','post','wallet','settings','courier'].includes(parts[0]))return {type:parts[0] as 'saved'|'post'|'wallet'|'settings'|'courier'};
   if(parts[0]==='messages'&&parts.length<=2){const pubkey=parts[1]?publicKey(parts[1]):undefined;return parts[1]&&!pubkey?{type:'missing'}:{type:'messages',...(pubkey?{pubkey}:{})};}
@@ -29,6 +30,11 @@ export function pageURL(page: string, href = location.href): string {
   const base=routeBase(href);
   if(page) { if(base.pathname==='/')base.pathname+=page;else base.searchParams.set('page',page); }
   return base.href;
+}
+export function searchURL(query:string,href=location.href):string {
+  const value=query.trim().slice(0,300);const url=new URL(pageURL(value?'search':'',href));
+  if(value)url.searchParams.set('q',value);
+  return url.href;
 }
 export function profileURL(pubkey: string, href = location.href): string {
   if(!keyPattern.test(pubkey))throw new Error('Invalid profile');

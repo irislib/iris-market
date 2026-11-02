@@ -2,16 +2,15 @@
 //!
 //! Mirrors the web's word-boundary phrase match, then reordered keyword AND.
 //! This is spelling-based matching, without topic expansion, stemming or fuzzy
-//! guesses. Unicode lowercase and alphanumeric boundaries use only `std`.
-//! Unlike the web's NFKC pass, compatibility and canonical Unicode forms are not
-//! normalized here (for example, full-width Latin and decomposed accents).
+//! guesses. NFKC normalization, lowercase and alphanumeric boundaries match web.
 
 use std::collections::HashSet;
+use unicode_normalization::UnicodeNormalization;
 
-fn normalize(text: &str) -> String {
+pub(crate) fn normalize(text: &str) -> String {
     let mut result = String::new();
     let mut separator = false;
-    for character in text.to_lowercase().chars() {
+    for character in text.nfkc().collect::<String>().to_lowercase().chars() {
         if character.is_alphanumeric() {
             if separator && !result.is_empty() {
                 result.push(' ');
@@ -23,6 +22,16 @@ fn normalize(text: &str) -> String {
         }
     }
     result
+}
+
+pub fn matches_single_term_search(text: &str, query: &str) -> bool {
+    let term = query.nfkc().collect::<String>();
+    let term = term.trim();
+    term.chars().any(char::is_alphanumeric)
+        && term
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+        && format!(" {} ", normalize(text)).contains(&format!(" {} ", normalize(term)))
 }
 
 fn is_stop_word(word: &str) -> bool {
@@ -131,8 +140,8 @@ mod tests {
     }
 
     #[test]
-    fn unicode_normalization_gap_is_explicit() {
-        assert!(!matches("FRESH bread", "ＦＲＥＳＨ bread"));
-        assert!(!matches("Café", "Cafe\u{301}"));
+    fn unicode_normalization_matches_web() {
+        assert!(matches("FRESH bread", "ＦＲＥＳＨ bread"));
+        assert!(matches("Café", "Cafe\u{301}"));
     }
 }

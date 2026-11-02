@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+TASK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TASK_APP="${MARKET_MACOS_TEST_APP:-$TASK_ROOT/macos/.build/DerivedData/Build/Products/Debug/IrisMarket.app}"
+TASK_STORAGE="${MARKET_MACOS_TEST_STORAGE:-${TMPDIR%/}/iris-market-ui-macos}"
+[[ -d "$TASK_APP" ]] || { echo 'Build the Debug macOS app first with scripts/macos-build.' >&2; exit 1; }
+# The DEBUG-only native harness validates the private temporary directory. It
+# never falls back to Keychain if validation fails. --demo disables publication.
+case "${1:-}" in
+  --background) launch=(-g) ;;
+  '') launch=() ;;
+  *) echo 'Usage: scripts/macos-test-launch [--background]' >&2; exit 2 ;;
+esac
+open -n "${launch[@]}" "$TASK_APP" --args --demo --ui-test-mode --test-storage "$TASK_STORAGE"

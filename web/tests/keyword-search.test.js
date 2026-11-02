@@ -1,15 +1,24 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import {readFileSync} from 'node:fs'
 import {finalizeEvent} from 'nostr-tools/pure'
 import {MarketRelayClient} from '../src/market.ts'
 import {SeenTags} from '../src/seen-tags.ts'
 import {createSearchDiscovery} from '../src/search-discovery.ts'
-import {matchesLiteralSearch,keywordSearches,listingSearchText} from '../src/lexical-search.ts'
+import {matchesLiteralSearch,matchesSingleTermSearch,keywordSearches,listingSearchText} from '../src/lexical-search.ts'
 const now=1800000000,key=new Uint8Array(32).fill(8)
 const signed=(id,title,tags=[],content='')=>finalizeEvent({kind:30402,created_at:now-10,content,tags:[['d',id],['title',title],...tags.map(t=>['t',t])]},key)
 const fixtures=[signed('meat','Beef steaks',['meat']),signed('bread','Sourdough bread',['bread']),signed('food','Groceries',['food']),signed('pet','Dog dinner',['petfood']),signed('pan','Cooking pan',['cookware']),signed('literal','Products for human use',[],'Edible fresh produce'),signed('finnish','TUORE LEIPÄ',[],'Helsinki')]
 const tick=()=>new Promise(r=>setTimeout(r,0))
 const catalogue=()=>{const tags=new SeenTags();for(const event of fixtures)tags.observe(event,now);return tags}
+test('single-term guarantees use whole words without dropping constraints or stop words',()=>{
+ for(const [text,query] of [['City BICYCLE','bicycle'],['Fresh LEIPÄ','leipä'],['USB-C charger','usb-c'],['The book','the'],['ＦＲＥＳＨ apples','fresh']])assert.equal(matchesSingleTermSearch(text,query),true);
+ for(const [text,query] of [['Carpet','car'],['Motorbike','bike'],['Bicycle','a bicycle'],['Bicycle under 200','bicycle under 200'],['Anything','---'],['Anything',''],['C USB charger','usb-c']])assert.equal(matchesSingleTermSearch(text,query),false);
+});
+test('native and web share the same single-term matching cases',()=>{
+ const fixtures=JSON.parse(readFileSync(new URL('./fixtures/single-term-search.json',import.meta.url),'utf8'));
+ for(const fixture of fixtures)assert.equal(matchesSingleTermSearch(fixture.text,fixture.query),fixture.match,JSON.stringify(fixture));
+});
 function indexed(){
  const calls=[]
  const feed=new MarketRelayClient({relays:[],now:()=>now,tagCatalogue:catalogue(),indexSearch:true,indexQuery:async filters=>{const f=filters[0];calls.push(f);return{events:f.search?fixtures:f['#t']?fixtures.filter(e=>e.tags.some(t=>t[0]==='t'&&f['#t'].includes(t[1]))):[],complete:true}}}).start()

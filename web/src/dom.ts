@@ -4,6 +4,8 @@ interface IdTags {
   'your-location-filters': 'div';
   'your-location-settings': 'div';
   'has-photos': 'input';
+  'home-feed-enabled': 'input';
+  'home-feed-prompt': 'textarea';
   'hidden-count': 'p';
   'restore-hidden': 'button';
   'account-backup': 'button';

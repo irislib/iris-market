@@ -159,7 +159,7 @@ import org.json.JSONObject
     var providerMenu by remember { mutableStateOf(false) };var advanced by remember { mutableStateOf(false) }
     var servers by remember { mutableStateOf((initial.optJSONArray("relays") ?: JSONArray()).let { a -> (0 until a.length()).joinToString("\n"){a.getString(it)} }) }
     val settings={ JSONObject(initial.toString()).put("ai",JSONObject().put("enabled",enabled).put("provider",provider)
-        .put("base_url",if(provider=="litert") "" else endpoint.trim()).put("model",if(provider=="litert") LocalModelManifest.ID else modelName.trim()).put("interests", "").put("curate_feed",false))
+        .put("base_url",if(provider=="litert") "" else endpoint.trim()).put("model",if(provider=="litert") LocalModelManifest.ID else modelName.trim()).put("interests",initial.optJSONObject("ai")?.optString("interests") ?: "").put("curate_feed",initial.optJSONObject("ai")?.optBoolean("curate_feed",true) ?: true))
         .put("currency", currency)
         .put("relays",JSONArray(servers.lines().map{it.trim()}.filter{it.isNotEmpty()}))
         .put("image_proxy",JSONObject(imageProxy.toString()).put("enabled",proxyEnabled).put("url",proxyURL.trim())) }

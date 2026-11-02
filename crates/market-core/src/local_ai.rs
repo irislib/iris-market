@@ -17,6 +17,7 @@ pub struct Candidate {
 pub struct Batch {
     pub id: String,
     pub interests: String,
+    pub home_feed: bool,
     pub candidates: Vec<Candidate>,
 }
 #[derive(Debug, Deserialize)]
@@ -24,6 +25,10 @@ pub struct Decision {
     pub event_id: String,
     pub show: bool,
     pub reason: String,
+    #[serde(default)]
+    pub score: Option<f64>,
+    #[serde(default)]
+    pub unavailable: bool,
 }
 pub(crate) struct Pending {
     pub batch: Batch,
@@ -39,11 +44,9 @@ pub(crate) fn begin(state: &mut State) -> Result<()> {
         state.settings.ai.enabled && ai::is_local(&state.settings.ai),
         "Choose and enable an on-device model first"
     );
-    ensure!(
-        state.ai_search && !state.query.trim().is_empty(),
-        "Type what you are looking for in the search field"
-    );
-    let interests = state.query.clone();
+    let interests = state
+        .curation_prompt()
+        .context("Enable home-feed filtering or enter an AI search")?;
     let mut listings = state.snapshot()?.listings;
     crate::search_plan::prioritize(&mut listings, &state.search_terms);
     let candidates = listings
@@ -62,6 +65,7 @@ pub(crate) fn begin(state: &mut State) -> Result<()> {
         batch: Batch {
             id: uuid::Uuid::new_v4().to_string(),
             interests: interests.clone(),
+            home_feed: state.home_curation(),
             candidates,
         },
         settings: state.settings.ai.clone(),
@@ -107,7 +111,12 @@ pub(crate) fn apply(
     let mut accepted = Vec::new();
     for decision in decisions {
         ensure!(
-            decision.reason.len() <= 720 && seen.insert(decision.event_id.clone()),
+            decision.reason.len() <= 720
+                && (!decision.unavailable || (!decision.show && decision.score.is_none()))
+                && seen.insert(decision.event_id.clone())
+                && decision
+                    .score
+                    .is_none_or(|score| score.is_finite() && (0.0..=1.0).contains(&score)),
             "Invalid model response; listings remain visible"
         );
         let candidate = pending
@@ -129,8 +138,10 @@ pub(crate) fn apply(
                 candidate.listing.id.clone(),
                 candidate.event_id.clone(),
                 Relevance {
-                    show: decision.show,
+                    show: decision.show && decision.score.is_none_or(|value| value >= 0.5),
                     reason: decision.reason.chars().take(180).collect(),
+                    score: decision.score,
+                    unavailable: decision.unavailable,
                 },
             ));
         }

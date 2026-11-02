@@ -176,7 +176,6 @@ struct AISettingsView: View {
         autosave?.cancel()
         guard initialized, canSave, owner == store.snapshot.publicKey else { completion?(false); return }
         guard saved.needsSave(settings) else { completion?(true); return }
-        settings.ai.interests = ""; settings.ai.curateFeed = false
         let submitted = saved.submit(settings)
         var committedEpoch = aiIntentEpoch
         let scheduledEpoch = store.saveSettings(submitted.value, key: apiKey, replaceKey: submitted.replaceKey, expectedAIIntent: aiIntentEpoch) { success in

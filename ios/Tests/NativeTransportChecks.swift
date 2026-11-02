@@ -1,3 +1,5 @@
+import Foundation
+
 @main struct NativeTransportChecks {
     static func main() {
         precondition(NativeTransportType.classify(["car", "transport"]) == nil)
@@ -10,6 +12,15 @@
         precondition(NativeTransportType.both.includes(["delivery"]))
         precondition(!NativeTransportType.both.includes(["cars"]))
         for type in NativeTransportType.allCases { precondition(NativeTransportType.classify(type.tags) == type) }
+        var visibility = NativeBrowseVisibility()
+        let firstHome = UUID(), replacementHome = UUID()
+        precondition(!visibility.isVisible)
+        precondition(visibility.update(true, owner: firstHome))
+        precondition(visibility.update(true, owner: replacementHome))
+        precondition(!visibility.update(false, owner: firstHome))
+        precondition(visibility.isVisible, "An old view must not cancel the replacement Home")
+        precondition(visibility.update(false, owner: replacementHome))
+        precondition(!visibility.isVisible)
         var search = NativeSearchContinuation()
         precondition(!search.claim("a", candidates: ["first"]))
         search.start("a")

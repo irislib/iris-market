@@ -5,10 +5,144 @@ use crate::{
 use anyhow::{Context, Result};
 use nostr::{Event, JsonUtil};
 use rusqlite::{Connection, OptionalExtension, params};
-use std::path::Path;
+use std::{
+    cell::RefCell,
+    collections::{HashMap, VecDeque},
+    path::Path,
+    sync::Arc,
+};
+
+#[cfg(test)]
+mod snapshot_cpu_tests {
+    use super::*;
+    use crate::model::Draft;
+    use nostr::Keys;
+
+    #[test]
+    fn warm_thousand_listing_polls_do_not_repeat_signature_verification() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("market.sqlite");
+        let mut store = Store::open(&path).unwrap();
+        let keys = Keys::generate();
+        let at = listing::now();
+        let draft: Draft = serde_json::from_value(serde_json::json!({"title":"CPU fixture", "description":"Public synthetic listing", "side":"offer"})).unwrap();
+        for index in 0..1000 {
+            store
+                .ingest(
+                    &listing::build(&keys, &draft, &index.to_string(), at, false).unwrap(),
+                    at,
+                    false,
+                )
+                .unwrap();
+        }
+        let owner = keys.public_key().to_hex();
+        let first = store.listings(&owner, at).unwrap();
+        assert_eq!(first.len(), 1000);
+        assert_eq!(store.verified_listings.borrow().verifications, 1000);
+        for _ in 0..20 {
+            assert_eq!(store.listings(&owner, at).unwrap().len(), 1000);
+        }
+        assert_eq!(
+            store.verified_listings.borrow().verifications,
+            1000,
+            "Idle polls must reuse verified event projections"
+        );
+        store.toggle_saved(&first[0].id).unwrap();
+        assert!(
+            store
+                .listings(&owner, at)
+                .unwrap()
+                .iter()
+                .any(|l| l.id == first[0].id && l.saved)
+        );
+        let updated = Draft {
+            title: "Updated fixture".into(),
+            expires_at: Some(at + 10),
+            ..draft
+        };
+        store
+            .ingest(
+                &listing::build(&keys, &updated, "0", at + 1, false).unwrap(),
+                at + 1,
+                false,
+            )
+            .unwrap();
+        assert!(
+            store
+                .listings(&owner, at + 1)
+                .unwrap()
+                .iter()
+                .any(|l| l.title == "Updated fixture")
+        );
+        assert_eq!(store.verified_listings.borrow().verifications, 1001);
+        assert_eq!(
+            store.listings(&owner, at + 10).unwrap().len(),
+            999,
+            "Warm cache must still enforce expiry"
+        );
+        // Tamper the signature without changing the claimed event ID. Disk data
+        // must be reverified; an ID-only cache would incorrectly accept it.
+        let coordinate = &first[1].id;
+        let mut raw: serde_json::Value =
+            serde_json::from_str(&store.event(coordinate).unwrap().as_json()).unwrap();
+        raw["sig"] = serde_json::json!("0".repeat(128));
+        store
+            .db
+            .execute(
+                "UPDATE events SET raw=?1 WHERE coordinate=?2",
+                params![raw.to_string(), coordinate],
+            )
+            .unwrap();
+        assert!(store.listings(&owner, at + 1).is_err());
+    }
+}
+
+/// Cache only verified, immutable public event projections. Match the complete
+/// stored bytes (including signature), not just the claimed event ID. Mutable
+/// saved/outbox/relevance state and expiry are still read on every snapshot.
+#[derive(Default)]
+struct VerifiedListings {
+    entries: HashMap<Arc<str>, Listing>,
+    order: VecDeque<Arc<str>>,
+    bytes: usize,
+    #[cfg(test)]
+    verifications: usize,
+}
+impl VerifiedListings {
+    fn parse(&mut self, raw: &str, at: u64) -> Result<Listing> {
+        if let Some(listing) = self.entries.get(raw) {
+            anyhow::ensure!(
+                listing.created_at <= at.saturating_add(300),
+                "Listing timestamp is too far in the future"
+            );
+            return Ok(listing.clone());
+        }
+        #[cfg(test)]
+        {
+            self.verifications += 1;
+        }
+        let listing = listing::parse(&Event::from_json(raw)?, at)?;
+        let size = raw.len();
+        while self.entries.len() >= 5000 || self.bytes + size > 32 * 1024 * 1024 {
+            if let Some(old) = self.order.pop_front() {
+                if self.entries.remove(&old).is_some() {
+                    self.bytes -= old.len();
+                }
+            } else {
+                break;
+            }
+        }
+        self.bytes += size;
+        let key: Arc<str> = raw.into();
+        self.order.push_back(key.clone());
+        self.entries.insert(key, listing.clone());
+        Ok(listing)
+    }
+}
 
 pub struct Store {
     db: Connection,
+    verified_listings: RefCell<VerifiedListings>,
 }
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
@@ -19,7 +153,10 @@ impl Store {
             CREATE TABLE IF NOT EXISTS outbox (event_id TEXT PRIMARY KEY, raw TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS relevance (coordinate TEXT PRIMARY KEY, event_id TEXT NOT NULL, value TEXT NOT NULL);")?;
-        Ok(Self { db })
+        Ok(Self {
+            db,
+            verified_listings: RefCell::default(),
+        })
     }
     pub fn settings(&self) -> Result<Settings> {
         let raw: Option<String> = self
@@ -30,8 +167,13 @@ impl Store {
                 |r| r.get(0),
             )
             .optional()?;
-        raw.map(|v| serde_json::from_str(&v).context("Read settings"))
-            .unwrap_or_else(|| Ok(Settings::default()))
+        let mut settings: Settings = raw
+            .map(|v| serde_json::from_str(&v).context("Read settings"))
+            .unwrap_or_else(|| Ok(Settings::default()))?;
+        if settings.ai.interests.trim().is_empty() {
+            settings.ai.interests = crate::model::default_home_feed_prompt();
+        }
+        Ok(settings)
     }
     /// Existing explicit Off is a choice too; never infer intent from default values.
     pub fn ai_configured(&self) -> Result<bool> {
@@ -217,8 +359,7 @@ impl Store {
         let mut listings = Vec::new();
         for row in rows {
             let (raw, saved, queued, relevance) = row?;
-            let event = Event::from_json(raw)?;
-            let mut l = listing::parse(&event, at)?;
+            let mut l = self.verified_listings.borrow_mut().parse(&raw, at)?;
             if l.status != "active" || l.expires_at.is_some_and(|x| x <= at) {
                 continue;
             }

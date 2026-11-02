@@ -6,6 +6,10 @@ struct ListingDetailView: View {
     let listing: MarketListing
     var onContact: (() -> Void)? = nil
     var onOrder: (() -> Void)? = nil
+    #if os(macOS)
+    var desktopSearch: DesktopMarketSearchBar? = nil
+    #endif
+    @State private var expiryClockStart = Date()
     @State private var invitation = false
     @State private var authorProfile = false
     @State private var reviewOrder = false
@@ -15,6 +19,9 @@ struct ListingDetailView: View {
         MarketNavigationContainer {
             ScrollView {
                 VStack(alignment: .leading, spacing: 23) {
+                    #if os(macOS)
+                    HStack(spacing: 12) { MarketPageBackButton(); desktopSearch }
+                    #endif
                     Group {
                         if let raw = current.imageUrl, let url = URL(string: raw) { AsyncImage(url: url) { phase in if let image = phase.image { image.resizable().scaledToFill() } else { ListingPlaceholder(category: current.category) } } }
                         else { ListingPlaceholder(category: current.category) }
@@ -22,7 +29,7 @@ struct ListingDetailView: View {
                     HStack { Text(current.side == "request" ? "BUYING" : current.category.uppercased()).font(.system(size: 10, weight: .bold)).tracking(1.5).foregroundStyle(MarketTheme.green); Spacer(); Text(current.delivery == "queued" ? "Waiting to send" : current.delivery == "failed" ? "Not sent" : "").font(.caption).foregroundStyle(MarketTheme.muted) }
                     Text(current.title).font(.system(size: 32, weight: .medium)).tracking(-0.7).foregroundStyle(MarketTheme.ink)
                     HStack { Text(current.formattedPrice).font(.system(size: 28, weight: .semibold)); Spacer(); Label(current.location.isEmpty ? "Anywhere" : current.location, systemImage: "mappin.circle.fill").font(.system(size: 13)).foregroundStyle(MarketTheme.muted) }.foregroundStyle(MarketTheme.ink)
-                    TimelineView(.periodic(from: .now, by: 60)) { context in
+                    TimelineView(.periodic(from: expiryClockStart, by: 60)) { context in
                         Text(NativeListingExpiry.detail(deadline: current.expiresAt, now: Int64(context.date.timeIntervalSince1970))).font(.system(size: 13)).foregroundStyle(MarketTheme.muted).accessibilityIdentifier("listingExpiryDetail")
                     }
                     Button { authorProfile = true } label: {
@@ -52,6 +59,9 @@ struct ListingDetailView: View {
                     }
                 }.padding(23)
             }.background(MarketTheme.paper)
+                #if os(macOS)
+                .navigationBarBackButtonHidden(true)
+                #endif
                 .marketPage(isPresented: $authorProfile) { AuthorProfileView(author: current.author).marketSheetScope() }.navigationTitle("Listing").marketInlineTitle()
                 .toolbar { ToolbarItem(placement: .cancellationAction) { MarketDoneButton { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button { store.save(current) } label: { Image(systemName: current.saved ? "heart.fill" : "heart") }.accessibilityLabel("Save listing") } }
                 .marketPage(isPresented: $invitation) { InvitationView().marketSheetScope() }

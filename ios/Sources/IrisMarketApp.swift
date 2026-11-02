@@ -20,6 +20,8 @@ struct IrisMarketApp: App {
                     } else { store.stopPolling() }
                 }
                 #if os(macOS)
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in store.startPolling() }
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in store.stopPolling() }
                 .task { MarketUpdateModel.shared.checkIfDue(preview: store.demo) }
                 #endif
         }

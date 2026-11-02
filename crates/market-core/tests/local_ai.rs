@@ -32,6 +32,281 @@ fn begin(market: &Market) -> Value {
 }
 
 #[test]
+fn enabling_ai_on_empty_home_does_not_start_a_search_plan_or_leak_late_errors() {
+    let (_dir, market) = setup();
+    let old: Value = serde_json::from_str(&market.snapshot().unwrap()).unwrap();
+    for query in ["", "  "] {
+        let home = command(
+            &market,
+            json!({"type":"set_filter","query":query,"side":"offer","ai_search":true}),
+        );
+        assert_eq!(home["ai_search"], false);
+        assert_eq!(home["search_plan_pending"], false);
+        assert!(market.command(&json!({"type":"apply_search_plan","generation":old["search_generation"],"terms":[]}).to_string()).is_err());
+        let after: Value = serde_json::from_str(&market.snapshot().unwrap()).unwrap();
+        assert!(after["error"].is_null());
+        assert_eq!(after["revision"], home["revision"]);
+    }
+}
+
+#[test]
+fn home_feed_uses_private_preferences_without_turning_them_into_a_search() {
+    let (_dir, market) = setup();
+    let mut settings: Settings = serde_json::from_value(
+        command(
+            &market,
+            json!({"type":"set_filter","query":"","side":"all"}),
+        )["settings"]
+            .clone(),
+    )
+    .unwrap();
+    settings.ai.curate_feed = true;
+    settings.ai.interests = "Creative, uplifting offers".into();
+    let home = command(&market, json!({"type":"set_settings","settings":settings}));
+    assert_eq!(home["query"], "");
+    assert_eq!(home["ai_search"], false);
+    assert_eq!(home["search_plan_pending"], false);
+    let batch = begin(&market);
+    assert_eq!(batch["home_feed"], true);
+    assert_eq!(batch["interests"], "Creative, uplifting offers");
+    let event = &batch["candidates"][0]["event_id"];
+    command(
+        &market,
+        json!({"type":"apply_local_curation","id":batch["id"],"partial":true,
+        "decisions":[{"event_id":event,"show":true,"score":0.8,"reason":"Fits"}]}),
+    );
+    settings.ai.interests = "Practical gardening tools".into();
+    let changed = command(&market, json!({"type":"set_settings","settings":settings}));
+    assert!(
+        changed["listings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|l| l["relevance"].is_null())
+    );
+    assert!(
+        market
+            .command(
+                &json!({"type":"apply_local_curation","id":batch["id"],"partial":true,
+        "decisions":[{"event_id":event,"show":false,"reason":"Late"}]})
+                .to_string()
+            )
+            .is_err()
+    );
+    command(
+        &market,
+        json!({"type":"set_filter","query":"a camera","side":"all","ai_search":true}),
+    );
+    let search = begin(&market);
+    assert_eq!(search["home_feed"], false);
+    assert_eq!(search["interests"], "a camera");
+    settings.ai.curate_feed = false;
+    command(&market, json!({"type":"set_settings","settings":settings}));
+    command(
+        &market,
+        json!({"type":"set_filter","query":"","side":"all"}),
+    );
+    assert!(
+        market
+            .command("{\"type\":\"begin_local_curation\"}")
+            .is_err()
+    );
+}
+
+#[test]
+fn unavailable_review_does_not_abort_batch_or_invent_a_score() {
+    let (_dir, market) = setup();
+    let batch = begin(&market);
+    let first = &batch["candidates"][0];
+    let second = &batch["candidates"][1];
+    assert!(market.command(&json!({"type":"apply_local_curation", "id":batch["id"], "partial":true,
+        "decisions":[{"event_id":first["event_id"],"show":false,"score":0.1,"unavailable":true,"reason":"Unavailable"}]}).to_string()).is_err(),
+        "An unavailable review cannot masquerade as a model score");
+    let unavailable = command(
+        &market,
+        json!({"type":"apply_local_curation", "id":batch["id"], "partial":true,
+        "decisions":[{"event_id":first["event_id"], "show":false,"unavailable":true,"reason":"AI review unavailable"}]}),
+    );
+    let listing = unavailable["listings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|l| l["id"] == first["listing"]["id"])
+        .unwrap();
+    assert_eq!(listing["relevance"]["unavailable"], true);
+    assert!(listing["relevance"]["score"].is_null());
+    assert!(!unavailable["local_curation"].is_null());
+    let scored = command(
+        &market,
+        json!({"type":"apply_local_curation", "id":batch["id"], "partial":true,
+        "decisions":[{"event_id":second["event_id"], "show":true,"score":0.95,"reason":"Matches"}]}),
+    );
+    assert!(
+        scored["listings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|l| l["relevance"]["score"] == 0.95)
+    );
+    command(
+        &market,
+        json!({"type":"cancel_local_curation","id":batch["id"]}),
+    );
+    assert!(
+        begin(&market)["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c["event_id"] != first["event_id"])
+    );
+    command(
+        &market,
+        json!({"type":"set_filter","query":"new search","side":"all","ai_search":true}),
+    );
+    assert!(
+        begin(&market)["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["event_id"] == first["event_id"])
+    );
+    market.shutdown();
+}
+
+#[test]
+fn an_explicit_ai_rejection_is_not_overridden_by_a_numeric_score() {
+    let (_dir, market) = setup();
+    let batch = begin(&market);
+    let candidate = &batch["candidates"][0];
+    let state = command(
+        &market,
+        json!({"type":"apply_local_curation", "id":batch["id"], "partial":true,
+        "decisions":[{"event_id":candidate["event_id"], "show":false,"score":0.91,"reason":"Related topic, different item"}]}),
+    );
+    let listing = state["listings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|l| l["id"] == candidate["listing"]["id"])
+        .unwrap();
+    assert_eq!(listing["relevance"]["show"], false);
+    assert_eq!(listing["relevance"]["score"], 0.91);
+    market.shutdown();
+}
+
+#[test]
+fn single_term_candidates_preserve_model_rejection_and_revision_boundaries() {
+    let (_dir, market) = setup();
+    let seller = Keys::generate();
+    let now = listing::now();
+    let draft: Draft = serde_json::from_value(
+        json!({"title":"Guaranteed BICYCLE", "description":"", "side":"offer"}),
+    )
+    .unwrap();
+    let event = listing::build(&seller, &draft, "direct", now, false).unwrap();
+    market.ingest_event(&event).unwrap();
+    let state = command(
+        &market,
+        json!({"type":"set_filter","query":"bicycle","side":"offer","ai_search":true}),
+    );
+    let direct = state["listings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|l| l["title"] == draft.title)
+        .unwrap();
+    assert_eq!(direct["direct_match"], true);
+    assert!(
+        direct["relevance"].is_null(),
+        "Literal evidence must not invent a model result"
+    );
+    let batch = begin(&market);
+    assert!(
+        batch["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["event_id"] == event.id.to_hex()),
+        "Direct matches are still scored"
+    );
+    let decisions: Vec<_> = batch["candidates"].as_array().unwrap().iter().map(|c| json!({"event_id":c["event_id"],"show":false,"score":0.05,"reason":"Weak relevance"})).collect();
+    let reviewed = command(
+        &market,
+        json!({"type":"apply_local_curation","id":batch["id"],"decisions":decisions}),
+    );
+    let direct = reviewed["listings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|l| l["title"] == draft.title)
+        .unwrap();
+    assert_eq!(direct["direct_match"], true);
+    assert_eq!(direct["relevance"]["show"], false);
+    assert_eq!(direct["relevance"]["score"], 0.05);
+    let longer = command(
+        &market,
+        json!({"type":"set_filter","query":"bicycle under 200","side":"offer","ai_search":true}),
+    );
+    assert!(
+        longer["listings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|l| l["direct_match"] == false && l["relevance"].is_null())
+    );
+    let updated = Draft {
+        title: "Office desk".into(),
+        ..draft
+    };
+    market
+        .ingest_event(&listing::build(&seller, &updated, "direct", now + 1, false).unwrap())
+        .unwrap();
+    let state = command(
+        &market,
+        json!({"type":"set_filter","query":"bicycle","side":"offer","ai_search":true}),
+    );
+    let replaced = state["listings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|l| l["title"] == "Office desk")
+        .unwrap();
+    assert_eq!(replaced["direct_match"], false);
+    assert!(replaced["relevance"].is_null());
+    market.shutdown();
+}
+
+#[test]
+fn invalid_local_scores_do_not_write_any_decisions() {
+    let (_dir, market) = setup();
+    let batch = begin(&market);
+    let mut decisions: Vec<_> = batch["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| json!({"event_id":c["event_id"],"show":true,"score":0.8,"reason":"Matches"}))
+        .collect();
+    decisions.last_mut().unwrap()["score"] = json!(1.1);
+    assert!(
+        market
+            .command(
+                &json!({"type":"apply_local_curation","id":batch["id"],"decisions":decisions})
+                    .to_string()
+            )
+            .is_err()
+    );
+    let state: Value = serde_json::from_str(&market.snapshot().unwrap()).unwrap();
+    assert!(
+        state["listings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|l| l["relevance"].is_null())
+    );
+    market.shutdown();
+}
+
+#[test]
 fn query_plan_prioritizes_related_items_without_changing_query_or_relevance() {
     let (dir, market) = setup();
     let mut store = Store::open(&dir.path().join("preview.sqlite")).unwrap();
@@ -152,7 +427,7 @@ fn local_models_use_bounded_public_batches_and_keep_hidden_listings_accessible()
             .keys()
             .cloned()
             .collect::<Vec<_>>(),
-        ["candidates", "id", "interests"]
+        ["candidates", "home_feed", "id", "interests"]
     );
     let snapshot = command(&market, apply(&batch));
     assert!(snapshot["local_curation"].is_null());
@@ -488,8 +763,14 @@ fn bounded_batches_do_not_apply_to_replaced_signed_events_or_other_accounts() {
 }
 
 #[test]
-fn normal_feed_never_uses_legacy_interests_to_start_local_inference() {
+fn disabled_home_feed_never_uses_preferences_to_start_local_inference() {
     let (_dir, market) = setup();
+    let mut settings: Settings = serde_json::from_value(
+        serde_json::from_str::<Value>(&market.snapshot().unwrap()).unwrap()["settings"].clone(),
+    )
+    .unwrap();
+    settings.ai.curate_feed = false;
+    command(&market, json!({"type":"set_settings","settings":settings}));
     for filter in [
         json!({"type":"set_filter","query":"","side":"all","ai_search":false}),
         json!({"type":"set_filter","query":" ","side":"all","ai_search":true}),

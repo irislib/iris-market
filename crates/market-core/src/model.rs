@@ -1,4 +1,67 @@
 use serde::{Deserialize, Serialize};
+use std::{
+    collections::hash_map::DefaultHasher,
+    hash::{Hash, Hasher},
+    sync::{Arc, Mutex},
+};
+
+/// Query-local text evidence shared across clones of a verified listing. Scores
+/// from a model are never cached here. Changed text/query invalidates both slots.
+#[derive(Debug, Clone, Default)]
+pub struct SearchTextCache(Arc<Mutex<SearchTextEvidence>>);
+#[derive(Debug, Default)]
+struct SearchTextEvidence {
+    key: Option<(u64, String)>,
+    direct: Option<bool>,
+    lexical: Option<f64>,
+}
+impl SearchTextCache {
+    fn evidence(
+        &self,
+        listing: &Listing,
+        query: &str,
+    ) -> std::sync::MutexGuard<'_, SearchTextEvidence> {
+        let mut hash = DefaultHasher::new();
+        (
+            &listing.title,
+            &listing.description,
+            &listing.category,
+            &listing.tags,
+        )
+            .hash(&mut hash);
+        let key = (hash.finish(), query.to_owned());
+        let mut cache = self.0.lock().unwrap();
+        if cache.key.as_ref() != Some(&key) {
+            *cache = SearchTextEvidence {
+                key: Some(key),
+                ..Default::default()
+            };
+        }
+        cache
+    }
+    pub(crate) fn direct(
+        &self,
+        listing: &Listing,
+        query: &str,
+        compute: impl FnOnce() -> bool,
+    ) -> bool {
+        *self
+            .evidence(listing, query)
+            .direct
+            .get_or_insert_with(compute)
+    }
+    pub(crate) fn lexical(
+        &self,
+        listing: &Listing,
+        query: &str,
+        compute: impl FnOnce() -> f64,
+    ) -> f64 {
+        *self
+            .evidence(listing, query)
+            .lexical
+            .get_or_insert_with(compute)
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Draft {
@@ -34,10 +97,17 @@ fn eur() -> String {
 pub struct Relevance {
     pub show: bool,
     pub reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score: Option<f64>,
+    /// A failed review is not a negative decision and never has a score.
+    #[serde(default)]
+    pub unavailable: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Listing {
+    #[serde(skip)]
+    pub search_text_cache: SearchTextCache,
     pub id: String,
     pub author: String,
     pub title: String,
@@ -61,6 +131,9 @@ pub struct Listing {
     pub mine: bool,
     pub delivery: String,
     pub relevance: Option<Relevance>,
+    /// Query-local inclusion evidence; never a model score or signed event field.
+    #[serde(default)]
+    pub direct_match: bool,
     #[serde(default)]
     pub coordinates: Option<[f64; 2]>,
 }
@@ -75,6 +148,22 @@ pub struct AiSettings {
     pub interests: String,
     pub curate_feed: bool,
 }
+pub fn default_home_feed_prompt() -> String {
+    serde_json::from_str::<serde_json::Value>(include_str!("../../../shared/home-feed.json"))
+        .expect("valid bundled home-feed preferences")["prompt"]
+        .as_str()
+        .expect("bundled home-feed prompt")
+        .to_owned()
+}
+impl AiSettings {
+    pub fn home_feed_prompt(&self) -> String {
+        if self.interests.trim().is_empty() {
+            default_home_feed_prompt()
+        } else {
+            self.interests.trim().to_owned()
+        }
+    }
+}
 impl Default for AiSettings {
     fn default() -> Self {
         Self {
@@ -82,8 +171,8 @@ impl Default for AiSettings {
             provider: "compatible".into(),
             base_url: "https://api.openai.com/v1".into(),
             model: String::new(),
-            interests: String::new(),
-            curate_feed: false,
+            interests: default_home_feed_prompt(),
+            curate_feed: true,
         }
     }
 }

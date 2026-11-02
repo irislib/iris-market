@@ -50,6 +50,7 @@ hashtree-blossom = { version = "=0.2.83", default-features = false }
 reqwest.workspace = true
 url.workspace = true
 uuid.workspace = true
+unicode-normalization = "=0.1.26"
 
 [target.'cfg(not(target_os = "ios"))'.dependencies]
 hashtree-updater = { version = "=0.2.89", features = ["secure-nostr-blossom"] }

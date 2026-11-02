@@ -2,15 +2,20 @@ import { byId, element } from './dom.ts';
 import { FeedFilterClient } from './feed-filter/client.ts';
 import {BrowserFeedFilterClient} from './feed-filter/browser-client.ts';
 import {planBrowserTags} from './feed-filter/browser-tags.ts';
-import { searchCondition, listingSearchTexts } from './search-condition.ts';
+import { searchCondition, listingSearchText, listingSearchTexts } from './search-condition.ts';
+import {homeFeedConditions,homeFeedPreferences,type HomeFeedPreferences} from './home-feed.ts';
 const $=byId;
 const keyFor = listing => listing.eventId || listing.id;
 export const AI_MODE_STORAGE_KEY='market-ai-mode-v1',AI_MODEL_STORAGE_KEY='market-ai-model-v1';
 interface SearchListing {id:string;eventId?:string;title:string;description?:string;side?:string;category?:string;location?:string;tags?:string[];price?:string|number;currency?:string}
-interface AIOptions {getCandidates:()=>SearchListing[];onChange:()=>void;onTextSearch?:(query:string)=>void;fetchMoreCandidates?:()=>Promise<boolean>;client?:Pick<FeedFilterClient,'info'|'load'|'classify'|'dispose'>&{pin?:()=>()=>void};browserClient?:BrowserFeedFilterClient;hasWebGPU?:()=>boolean;autoPrepare?:boolean;storage?:Pick<Storage,'getItem'|'setItem'>;saveData?:()=>boolean}
+interface AIOptions {getCandidates:()=>SearchListing[];onChange:()=>void;onTextSearch?:(query:string)=>void;onSubmit?:(query:string)=>void;fetchMoreCandidates?:()=>Promise<boolean>;client?:Pick<FeedFilterClient,'info'|'load'|'classify'|'dispose'>&{pin?:()=>()=>void};browserClient?:BrowserFeedFilterClient;hasWebGPU?:()=>boolean;autoPrepare?:boolean;storage?:Pick<Storage,'getItem'|'setItem'>;saveData?:()=>boolean;homeFeed?:HomeFeedPreferences;isHomeVisible?:()=>boolean}
 interface SourceRequest {epoch:number;done:boolean;more?:boolean;error?:unknown}
-export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandidates, client = new FeedFilterClient(), browserClient=new BrowserFeedFilterClient(),hasWebGPU=()=>!!globalThis.navigator&&'gpu' in globalThis.navigator,autoPrepare=true,storage:providedStorage,saveData=()=>!!(globalThis.navigator as Navigator&{connection?:{saveData?:boolean}})?.connection?.saveData }:AIOptions) {
+export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetchMoreCandidates, client = new FeedFilterClient(), browserClient=new BrowserFeedFilterClient(),hasWebGPU=()=>!!globalThis.navigator&&'gpu' in globalThis.navigator,autoPrepare=true,storage:providedStorage,saveData=()=>!!(globalThis.navigator as Navigator&{connection?:{saveData?:boolean}})?.connection?.saveData,homeFeed,isHomeVisible=()=>true }:AIOptions) {
   let scores = new Map(), showAll = false, phase:'idle'|'loading'|'searching'='idle', generation = 0, submittedQuery='', paused=false, waitingCandidates=false;
+  let home=homeFeed?homeFeedPreferences(homeFeed):{enabled:false,prompt:''},homeContext='',homeStopped=false,homeScheduled=false,homeReviewLimit=240,homeWasVisible=isHomeVisible(),browserAvailable=false;
+  const homeRequested=()=>enabled()&&home.enabled&&!submittedQuery&&isHomeVisible();
+  const homeActive=()=>homeRequested()&&!!(runtime().info||homeContext||phase==='loading');
+  const curationActive=()=>!!submittedQuery||homeActive();
   let storage=providedStorage;try{storage??=globalThis.localStorage;}catch{}
   const readSetting=(key:string)=>{try{return storage?.getItem(key);}catch{return null;}};
   const writeSetting=(key:string,value:string)=>{try{storage?.setItem(key,value);}catch{}};
@@ -39,17 +44,18 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
   const threshold = () => ['qwen35','browser'].includes($('ai-model').value) ? .5 : Number($('ai-threshold').value);
   const needsCPU = () => $('ai-model').value === 'qwen35' && !hasWebGPU();
   const candidates=()=>getCandidates().slice(0,1000);
-  const matchCount=()=>candidates().filter(listing=>scores.has(keyFor(listing))&&scores.get(keyFor(listing))>=threshold()).length;
+  const matches=(listing:SearchListing)=>scores.has(keyFor(listing))&&scores.get(keyFor(listing))>=threshold();
+  const matchCount=()=>candidates().filter(matches).length;
   const refresh = () => {
     const candidates = getCandidates(), active = enabled(), busy=phase!=='idle';
-    const hidden = submittedQuery?candidates.filter(l => !scores.has(keyFor(l))||scores.get(keyFor(l))<threshold()).length:0;
-    const matches=candidates.length-hidden,matchLabel=`${matches} ${matches===1?'match':'matches'}`;
+    const hidden = curationActive()?candidates.filter(l => !matches(l)).length:0;
+    const count=candidates.length-hidden,matchLabel=`${count} ${count===1?'match':'matches'}`;
     $('ai-options').hidden = !active;
-    $('ai-summary').hidden = !active || (!submittedQuery && !busy);
-    const activity = `${matchLabel} · ${scores.size} checked`;
+    $('ai-summary').hidden = !active || (!curationActive() && !busy);
+    const activity = `${homeActive()?'For you · ':''}${matchLabel} · ${scores.size} checked`;
     $('ai-summary-text').textContent = showAll ? 'Showing all listings' : phase==='loading' ? `${$('ai-progress').textContent || 'Loading model…'} · ${activity}` : `${waitingCandidates&&busy?'Waiting for listings · ':paused&&!sourceError?'Search paused · ':''}${activity}`;
     $('ai-show-all').textContent = showAll ? 'Use AI matches' : 'Show all';
-    $('ai-show-all').hidden = !submittedQuery||(!hidden&&!showAll&&!$('ai-error').textContent);
+    $('ai-show-all').hidden = !curationActive()||(!hidden&&!showAll&&!$('ai-error').textContent);
     $('ai-stop').hidden = !busy;
     $('ai-model').disabled = busy;
     $('ai-threshold').disabled = ['qwen35','browser'].includes($('ai-model').value);
@@ -69,7 +75,14 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
     if(active)$('search').setAttribute('aria-describedby','ai-progress');else $('search').removeAttribute('aria-describedby');
     $('search').placeholder = active ? 'Describe what you’re looking for' : 'Search listings';
     wakeCandidates?.();
+    scheduleHome();
   };
+  function scheduleHome() {
+    if(homeScheduled||closed||!homeRequested()||homeStopped||showAll||phase!=='idle'||activeRun||testBusy||$('search').value.trim()||scores.size>=homeReviewLimit||matchCount()>=targetMatches||!candidates().some(l=>!scores.has(keyFor(l))))return;
+    if(!runtime().info&&(!autoPrepare||saveData()||$('ai-model').value==='browser'&&!browserAvailable))return;
+    homeScheduled=true;
+    queueMicrotask(()=>{homeScheduled=false;if(!closed&&homeRequested()&&!homeStopped&&phase==='idle'&&!activeRun&&!$('search').value.trim())void run({homeRun:true,automatic:true});});
+  }
   function prepareModel():Promise<unknown> {
     const selected=runtime(),model=$('ai-model').value;
     if(selected.info)return Promise.resolve(selected.info);
@@ -110,26 +123,30 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
     });
   }
   function stop({reset=false,unload=true}={}) {
+    homeStopped=!reset;
     sourceError=null;sourceErrorVisible=false;
     generation++;runController?.abort();runController=null;activeRun=null;sourceEpoch++;wakeCandidates?.();if(unload){prepareGeneration++;preparation=undefined;downloadFraction=undefined;client.dispose();browserClient.dispose();}phase='idle';waitingCandidates=false;paused=!reset;progress.hidden=true;$('ai-progress').textContent='';
-    if(reset){scores.clear();submittedQuery='';showAll=false;sourceExhausted=false;targetMatches=24;$('ai-error').textContent='';}
+    if(reset){scores.clear();submittedQuery='';homeContext='';homeReviewLimit=240;showAll=false;sourceExhausted=false;targetMatches=24;$('ai-error').textContent='';}
     refresh();onChange();
   }
-  function run({continuation=false}={}):Promise<void> {
+  function run({continuation=false,homeRun=false,automatic=false}={}):Promise<void> {
     if(testBusy)return Promise.resolve();
+    homeRun ||= homeRequested()&&!$('search').value.trim();
     const query=continuation?submittedQuery:$('search').value.trim();
+    if(!homeRun&&homeContext)stop({reset:true,unload:false});
+    if(!homeRun&&!continuation)onSubmit?.(query);
     // Repeated Submit must not restart a running pass or queue the same work.
     // A loading pass already adopts the latest input once preparation finishes.
     if(enabled()&&activeRun&&(phase==='loading'||activeRun.query===query))return activeRun.promise;
-    const promise=executeRun({continuation});
+    const promise=executeRun({continuation,homeRun,automatic});
     const active={query,promise};activeRun=active;
-    void promise.finally(()=>{if(activeRun===active)activeRun=null;}).catch(()=>{});
+    void promise.finally(()=>{if(activeRun===active){activeRun=null;scheduleHome();}}).catch(()=>{});
     return promise;
   }
-  async function executeRun({continuation=false}={}) {
+  async function executeRun({continuation=false,homeRun=false,automatic=false}={}) {
     if (!enabled()) { textSubmitted=true;onTextSearch?.($('search').value.trim()); onChange(); return; }
     if(phase==='loading'||continuation&&phase!=='idle')return;
-    if(continuation&&!submittedQuery)return;
+    if(continuation&&!submittedQuery&&!homeRun)return;
     if(needsCPU()){$('ai-model').value='deberta';stop();return;}
     const current = ++generation;
     runController?.abort();
@@ -137,15 +154,16 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
     const selected=runtime();
     const releaseModel='pin' in selected&&typeof selected.pin==='function'?selected.pin():()=>{};
     wakeCandidates?.();
-    const sameQuery=!!submittedQuery&&$('search').value.trim()===submittedQuery;
+    const sameQuery=homeRun?homeContext===home.prompt:!!submittedQuery&&$('search').value.trim()===submittedQuery&&!homeContext;
     const preserve=continuation||sameQuery,retrySource=preserve&&!!sourceError;
     sourceError=null;sourceErrorVisible=false;
     paused=false;waitingCandidates=false;
-    if(!preserve){sourceEpoch++;submittedQuery=$('search').value.trim();scores.clear();showAll=false;sourceExhausted=false;targetMatches=24;}
-    else if(!retrySource)targetMatches=matchCount()+24;
+    homeStopped=false;
+    if(!preserve){sourceEpoch++;submittedQuery=homeRun?'':$('search').value.trim();homeContext=homeRun?home.prompt:'';homeReviewLimit=240;scores.clear();showAll=false;sourceExhausted=false;targetMatches=24;}
+    else if(!retrySource&&!automatic){targetMatches=matchCount()+24;if(homeRun)homeReviewLimit=scores.size+240;}
     $('ai-error').textContent='';
     phase=selected.info?'searching':'loading';onChange();
-    if(selected.info&&!submittedQuery){phase='idle';refresh();releaseModel();if(runController===controller)runController=null;return;}
+    if(selected.info&&!submittedQuery&&!homeRun){phase='idle';refresh();releaseModel();if(runController===controller)runController=null;return;}
     try {
       if (!selected.info) {
         phase='loading';progress.removeAttribute('value');$('ai-progress').textContent='Loading model…';refresh();
@@ -153,16 +171,20 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
       }
       if (current !== generation) return;
       // Use the latest query, including edits made while the model was downloading.
-      const query=continuation?submittedQuery:$('search').value.trim();
+      const query=homeRun?'':continuation?submittedQuery:$('search').value.trim();
       if(activeRun)activeRun.query=query;
-      if(query!==submittedQuery){sourceEpoch++;submittedQuery=query;scores.clear();onChange();}
-      if(!query||!enabled())return;
-      const condition=searchCondition(query,$('ai-model').value);let sourceRequests=0,unpainted=0,painted=false,lastPaint=performance.now();
+      if(query!==submittedQuery){sourceEpoch++;submittedQuery=query;scores.clear();if(!homeRun)onSubmit?.(query);onChange();}
+      if(!enabled()||!query&&!homeRun||homeRun&&!homeActive())return;
+      const model=$('ai-model').value;
+      const conditions=homeRun?homeFeedConditions(home.prompt,model):[{condition:searchCondition(query,model),exclude:false}];
+      let sourceRequests=0,unpainted=0,painted=false,lastPaint=performance.now();
       phase='searching';refresh();
       while(matchCount()<targetMatches) {
         if (current !== generation) return;
+        if(homeRun&&(!homeActive()||scores.size>=homeReviewLimit))break;
         const item=candidates().find(listing=>!scores.has(keyFor(listing)));
         if(!item){
+          if(homeRun)break;
           if(sourceRequest?.done){
             const completed=sourceRequest;sourceRequest=null;
             if(completed.epoch===sourceEpoch){
@@ -181,13 +203,18 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
           if(current!==generation)return;
           continue;
         }
-        waitingCandidates=false;$('ai-progress').textContent = 'Searching…';refresh();
+        waitingCandidates=false;$('ai-progress').textContent = homeRun?'Choosing listings…':'Searching…';refresh();
         let score=0;
-        for(const text of listingSearchTexts(item,query,$('ai-model').value)){
-          const result=await selected.classify(condition,text,{eventId:item.eventId,signal:controller.signal});
-          if(current!==generation)return;
-          if(!Number.isFinite(result.score))throw new Error('The model returned an invalid decision');
-          score=Math.max(score,result.score);
+        for(const text of homeRun?[listingSearchText(item)]:listingSearchTexts(item,query,$('ai-model').value)){
+          let evidence=1;
+          for(const {condition,exclude} of conditions){
+            const result=await selected.classify(condition,text,{eventId:item.eventId,signal:controller.signal});
+            if(current!==generation)return;
+            if(!Number.isFinite(result.score))throw new Error('The model returned an invalid decision');
+            evidence=Math.min(evidence,exclude?1-result.score:result.score);
+            if(evidence<threshold())break;
+          }
+          score=Math.max(score,evidence);
           if(score>=threshold())break;
         }
         scores.set(keyFor(item),score);unpainted++;
@@ -199,7 +226,7 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
         }
       }
     } catch (error) {
-      if (current === generation) { paused=true;selected.dispose(); $('ai-error').textContent = `${error.message || 'Search failed'}. Show all listings or switch to Text to continue browsing.`; }
+      if (current === generation) { paused=true;homeStopped=true;selected.dispose(); $('ai-error').textContent = `${error.message || 'Search failed'}. Show all listings or switch to Text to continue browsing.`; }
     } finally { releaseModel();if(runController===controller)runController=null;if (current === generation) { phase='idle';waitingCandidates=false;$('ai-progress').textContent='';refresh();onChange(); } }
   }
   $('search-mode').onclick = () => {
@@ -208,7 +235,7 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
   };
   // Editing waits for Submit; clearing is an immediate cancellation/reset.
   $('search').addEventListener('input',()=>{
-    if(!$('search').value.trim()){stop({reset:true,unload:phase!=='idle'});onTextSearch?.('');onChange();}
+    if(!$('search').value.trim()){onSubmit?.('');stop({reset:true,unload:phase!=='idle'});onTextSearch?.('');onChange();}
     else refresh();
   });
   $('search').addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); run(); } });
@@ -222,7 +249,12 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
   $('ai-threshold').onchange = () => {cancelTest(); refresh(); onChange(); };
   $('ai-stop').onclick = () => stop();
   $('ai-unload').onclick = () => {cancelTest();preference='off';writeSetting(AI_MODE_STORAGE_KEY,preference);setEnabled(false);stop({reset:true});};
-  $('ai-show-all').onclick = () => { showAll = !showAll; refresh(); onChange(); };
+  $('ai-show-all').onclick = () => {
+    showAll=!showAll;
+    if(homeRequested()&&showAll&&phase!=='idle'){stop({unload:false});return;}
+    if(!showAll&&homeRequested())homeStopped=false;
+    refresh();onChange();
+  };
   window.addEventListener('pagehide', () => {cancelTest();testObserver?.disconnect();closed=true;generation++;runController?.abort();runController=null;activeRun=null;sourceEpoch++;prepareGeneration++;wakeCandidates?.();client.dispose();browserClient.dispose();});
   const testSnapshot=()=>JSON.stringify([$('ai-model').value,$('ai-threshold').value,$('ai-test-query').value,$('ai-test-title').value,$('ai-test-description').value]);
   function cancelTest(message=''){
@@ -272,6 +304,7 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
   testObserver?.observe($('preferences-dialog'),{attributes:true,attributeFilter:['hidden']});
   const ready=Promise.resolve().then(async()=>{
     const available=await browserClient.probe();if(closed)return;
+    browserAvailable=available==='available';
     if(available!=='unavailable'||preferredModel==='browser'||browserOption){
       const option=browserOption??element('option');option.textContent=available==='unavailable'?'Browser model · unavailable':'Browser model · on device';option.value='browser';if(!browserOption){$('ai-model').append(option);browserOption=option;}$('ai-model').closest?.('label')?.removeAttribute('hidden');
       if(preferredModel==='browser')$('ai-model').value='browser';
@@ -282,11 +315,13 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
     try{await prepareModel();if(!closed&&!testRequested&&preference!=='off'&&!textSubmitted){preference='on';writeSetting(AI_MODE_STORAGE_KEY,preference);setEnabled(true);refresh();onChange();}}
     catch{/* Background preparation is optional. Explicit Search can retry without blocking Browse. */}
   });
-  const pagination=()=>{const rows=candidates(),remaining=rows.filter(listing=>!scores.has(keyFor(listing))).length;return{hasMore:enabled()&&!!submittedQuery&&!showAll&&(remaining>0||!!fetchMoreCandidates&&!sourceExhausted),loading:phase!=='idle',paused,error:sourceErrorVisible?sourceError:$('ai-error').textContent,remaining,reviewed:scores.size,matches:matchCount(),target:targetMatches};};
+  const pagination=()=>{const rows=candidates(),remaining=rows.filter(listing=>!scores.has(keyFor(listing))).length;return{hasMore:enabled()&&curationActive()&&!showAll&&(remaining>0||!homeActive()&&!!fetchMoreCandidates&&!sourceExhausted),loading:phase!=='idle',paused,error:sourceErrorVisible?sourceError:$('ai-error').textContent,remaining,reviewed:scores.size,matches:matchCount(),target:targetMatches};};
   const scoreFor=(listing:SearchListing):number|undefined=>{
-    if(!enabled()||showAll||!submittedQuery||$('ai-error').textContent)return undefined;
+    if(!enabled()||showAll||!curationActive()||$('ai-error').textContent)return undefined;
     const score=scores.get(keyFor(listing));return Number.isFinite(score)?score:undefined;
   };
   const planTags=(query:string,tags:readonly string[],signal?:AbortSignal)=>{const epoch=generation;return planBrowserTags(query,tags,{info:enabled()&&$('ai-model').value==='browser'?browserClient.info:null,signal,isCurrent:()=>!closed&&generation===epoch&&enabled()&&$('ai-model').value==='browser'&&submittedQuery===query});};
-  return { ready,planTags,enabled, query:()=>submittedQuery, searching:()=>phase!=='idle', loadMore:()=>run({continuation:true}), pagination, scoreFor, isVisible: listing => !enabled() || showAll || !submittedQuery || scores.has(keyFor(listing))&&scores.get(keyFor(listing))>=threshold(), refresh, stop: () => stop({reset:true}) };
+  function viewChanged(){const visible=isHomeVisible();if(!visible&&homeContext&&!homeStopped)stop({unload:false});if(visible&&!homeWasVisible)homeStopped=false;homeWasVisible=visible;refresh();}
+  document.addEventListener?.('visibilitychange',viewChanged);
+  return { ready,planTags,enabled,homeActive,viewChanged,submit:(query:string)=>{$('search').value=query;return run();},homeFeed:()=>({...home}),setHomeFeed:(value:HomeFeedPreferences)=>{home=homeFeedPreferences(value);if(submittedQuery){refresh();onChange();}else stop({reset:true,unload:false});},query:()=>submittedQuery, searching:()=>phase!=='idle', loadMore:()=>run({continuation:true}), pagination, scoreFor, isVisible: listing => !enabled() || showAll || !curationActive() || matches(listing), refresh, stop: () => stop({reset:true}) };
 }

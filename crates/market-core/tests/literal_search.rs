@@ -6,6 +6,24 @@ use iris_market_core::{
 use nostr::Keys;
 use serde_json::{Value, json};
 
+#[test]
+fn native_and_web_share_single_term_matching_cases() {
+    let fixtures: Vec<Value> = serde_json::from_str(include_str!(
+        "../../../web/tests/fixtures/single-term-search.json"
+    ))
+    .unwrap();
+    for fixture in fixtures {
+        assert_eq!(
+            iris_market_core::literal_search::matches_single_term_search(
+                fixture["text"].as_str().unwrap(),
+                fixture["query"].as_str().unwrap()
+            ),
+            fixture["match"].as_bool().unwrap(),
+            "{fixture}"
+        );
+    }
+}
+
 fn draft(title: &str, description: &str, side: &str, tags: &[&str]) -> Draft {
     Draft {
         title: title.into(),
@@ -111,6 +129,31 @@ fn verified_listing_words_and_tags_match_without_changing_ai_or_side_state() {
     settings.ai.model = "apple-system".into();
     app.command(&json!({"type":"set_settings","settings":settings}).to_string())
         .unwrap();
+    for query in ["bicycle", "RED", "vintage", "transport"] {
+        let state = filter(&app, query, "offer", true);
+        let bike = state["listings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|l| l["title"] == "Bicycle")
+            .unwrap();
+        assert_eq!(bike["direct_match"], true, "{query}");
+        assert!(
+            bike["relevance"].is_null(),
+            "{query}: keep literal evidence separate from AI"
+        );
+    }
+    for query in ["Helsinki", "red bicycle", "car", "tea"] {
+        let state = filter(&app, query, "offer", true);
+        assert!(
+            state["listings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|l| l["direct_match"] == false),
+            "{query}"
+        );
+    }
     let ai = filter(&app, "nonliteral unmatched query", "offer", true);
     assert_eq!(ai["ai_search"], true);
     assert_eq!(ai["query"], "nonliteral unmatched query");

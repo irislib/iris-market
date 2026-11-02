@@ -5,7 +5,7 @@ import org.junit.Test
 
 class NativeProfileSetupGateTest {
     @Test fun guestWritesRequireAnExplicitNewAttemptAfterSetup() {
-        val writes = listOf("publish", "close", "contact", "create_invite", "accept_invite", "send_message", "request_order", "update_order")
+        val writes = listOf("publish", "close", "contact", "create_invite", "accept_invite", "private_match", "send_message", "request_order", "update_order")
         writes.forEach {
             assertTrue(NativeProfileSetupGate.requiresSetup(it, true, false))
             assertFalse(NativeProfileSetupGate.requiresSetup(it, false, false))

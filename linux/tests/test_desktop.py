@@ -1,14 +1,66 @@
 import http.client
+import io
+import json
 import importlib.util
 from pathlib import Path
 import tempfile
 import threading
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 SPEC = importlib.util.spec_from_file_location('iris_market', Path(__file__).resolve().parents[1] / 'iris_market.py')
 APP = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(APP)
+
+
+class UpdatesTest(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        (self.root / 'build-manifest.json').write_text(json.dumps({'version': '0.1.4-alpha.5'}))
+        self.client = APP.UpdateClient(self.root, self.root / 'state', self.root / 'downloads')
+
+    def tearDown(self):
+        self.client.close()
+        self.temporary.cleanup()
+
+    def test_preferences_survive_restart_and_disabled_checks_stay_off(self):
+        self.assertTrue(self.client.due(now=100000))
+        self.client.preferences.update(automatic=False, lastAttempt=100000)
+        self.client.save()
+        restored = APP.UpdateClient(self.root, self.root / 'state', self.root / 'downloads')
+        self.assertFalse(restored.due(now=200000))
+        restored.preferences['automatic'] = True
+        self.assertFalse(restored.due(now=100001))
+        self.assertTrue(restored.due(now=200000))
+
+    def test_check_and_download_use_the_same_rust_session(self):
+        process = Mock()
+        process.stdin = io.StringIO()
+        result = {'available': True, 'verified': True, 'latest_version': '0.1.4-alpha.6'}
+        process.stdout = io.StringIO(json.dumps({'ok': True, 'result': result}) + '\n' + json.dumps({'ok': True, 'result': result}) + '\n')
+        with patch.object(APP.subprocess, 'Popen', return_value=process) as launch:
+            self.client.request('check')
+            self.client.request('download')
+            self.assertEqual(launch.call_count, 1)
+        self.assertEqual(process.stdin.getvalue(), 'check\ndownload\n')
+
+    def test_refuses_unchecked_downloads_and_unverified_results(self):
+        with self.assertRaises(ValueError): self.client.request('download')
+        process = Mock(stdin=io.StringIO(), stdout=io.StringIO('{"ok":true,"result":{"verified":false}}\n'))
+        with patch.object(APP.subprocess, 'Popen', return_value=process), self.assertRaises(ValueError):
+            self.client.request('check')
+        self.assertIsNone(self.client.result)
+        process.terminate.assert_called_once()
+
+    def test_handoff_cannot_open_arbitrary_files(self):
+        self.client.result = {'path': str(self.root / 'build-manifest.json')}
+        with self.assertRaises(ValueError): self.client.download_uri()
+        self.client.downloads.mkdir()
+        artifact = self.client.downloads / 'update.deb'
+        artifact.write_bytes(b'package')
+        self.client.result = {'path': str(artifact)}
+        self.assertEqual(self.client.download_uri(), artifact.resolve().as_uri())
 
 
 class DesktopTest(unittest.TestCase):

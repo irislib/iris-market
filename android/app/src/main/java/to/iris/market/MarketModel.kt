@@ -180,6 +180,7 @@ class SecureRecord(application: Application, namespace: String = "market") {
 }
 
 class MarketModel(application: Application, private val preview: Boolean) : AndroidViewModel(application) {
+    val updates = NativeUpdates(application, viewModelScope, preview)
     private val secure = SecureRecord(application)
     @Volatile private var core: MarketApp? = null
     private val aiIntentGate = NativeAIIntentGate()
@@ -446,7 +447,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
         }
     }
     fun closeDeviceLink() {linkJob?.cancel();linkJob=null;linking.value=null}
-    fun setActive(value: Boolean) { active = value; if (!value) { setActivePushContext(null,null);cancelLocalAI() } else syncPush() }
+    fun setActive(value: Boolean) { active = value; if (!value) { setActivePushContext(null,null);cancelLocalAI() } else { syncPush(); updates.checkIfDue() } }
     private fun publishSnapshot(next: MarketSnapshot) {
         mutable.update { previous -> if(previous.publicKey==next.publicKey&&next.revision<previous.revision) previous else next }
         if (!state.value.profileNameRequired || state.value.demo) dismissProfileSetup()

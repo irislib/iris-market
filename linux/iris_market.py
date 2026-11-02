@@ -3,16 +3,92 @@
 import argparse
 import functools
 import http.server
+import json
 import os
 from pathlib import Path
 import re
 import shutil
+import subprocess
 import threading
+import time
 from urllib.parse import unquote, urlsplit
 
 PORT = 45876
 ORIGIN = f'http://127.0.0.1:{PORT}'
 ROUTES = re.compile(r'^/(?:invite|npub1[a-z0-9]+(?:/[^/]+)?|naddr1[a-z0-9]+|post|saved|messages(?:/[^/]+)?|orders(?:/[^/]+)?|wallet|courier|settings(?:/profile)?)?/?$')
+
+
+class UpdateClient:
+    """Own one Rust session so download uses the release the user checked."""
+    def __init__(self, root, data, downloads):
+        self.root, self.data, self.downloads = Path(root), Path(data), Path(downloads)
+        self.process = None
+        self.result = None
+        self.preferences = {'automatic': True, 'lastAttempt': 0}
+        try:
+            self.preferences.update(json.loads((self.data / 'preferences.json').read_text()))
+        except FileNotFoundError:
+            pass
+        self.version = json.loads((self.root / 'build-manifest.json').read_text())['version']
+
+    def save(self):
+        self.data.mkdir(parents=True, exist_ok=True)
+        temporary = self.data / 'preferences.tmp'
+        temporary.write_text(json.dumps(self.preferences))
+        temporary.replace(self.data / 'preferences.json')
+
+    def due(self, now=None):
+        return self.preferences['automatic'] and (time.time() if now is None else now) - self.preferences['lastAttempt'] >= 86400
+
+    def request(self, operation):
+        if operation not in ('check', 'download'):
+            raise ValueError('Unknown update operation')
+        if operation == 'check':
+            self.result = None
+            self.preferences['lastAttempt'] = time.time()
+            self.save()
+        elif not self.result or not self.result.get('available'):
+            raise ValueError('Check for updates before downloading')
+        if self.process is None:
+            self.process = subprocess.Popen([str(self.root / 'iris-market-updater'), 'update', 'serve', str(self.data),
+                '--app', '--current-version', self.version, '--output', str(self.downloads)],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        try:
+            self.process.stdin.write(operation + '\n')
+            self.process.stdin.flush()
+            line = self.process.stdout.readline(16385)
+            if not line.endswith('\n') or len(line) > 16384:
+                raise ValueError('Update helper stopped unexpectedly. Check again.')
+            response = json.loads(line)
+            if response.get('ok') is not True:
+                raise ValueError(response.get('error', 'Update failed. Try again.'))
+            result = response['result']
+            if result.get('verified') is not True:
+                raise ValueError('The update could not be verified')
+            self.result = result
+            return result
+        except (OSError, ValueError):
+            self.close()
+            raise
+
+    def download_uri(self):
+        if not self.result or not self.result.get('path'):
+            raise ValueError('Download an update first')
+        path = Path(self.result['path']).resolve()
+        if not path.is_relative_to(self.downloads.resolve()) or not path.is_file():
+            raise ValueError('The downloaded update is missing')
+        return path.as_uri()
+
+    def close(self):
+        if self.process is not None:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait()
+            self.process = None
+        self.result = None
 
 
 def configure_webkit_environment(environ=None):
@@ -162,6 +238,86 @@ def main():
     window.add(view)
     window.connect('destroy', Gtk.main_quit)
 
+    update_state = {'busy': False, 'error': None, 'result': None}
+    updates = None
+    try:
+        updates = UpdateClient(Path(__file__).resolve().parent, data / 'updates', Path(GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_DOWNLOAD) or str(Path.home() / 'Downloads')) / 'Iris Market Updates')
+    except (OSError, ValueError, KeyError):
+        pass  # Source-only launches may lack a packaged updater and version.
+
+    def update_emit():
+        if updates is not None:
+            state = {**update_state, 'version': updates.version, 'automatic': updates.preferences['automatic']}
+            view.run_javascript('window.dispatchEvent(new CustomEvent("market-update", {detail:' + json.dumps(state) + '}));', None, None, None)
+        return False
+
+    def update_action(_manager, message):
+        start_update(message.get_js_value().to_string())
+
+    def start_update(action):
+        if updates is None or not (view.get_uri() or '').startswith(ORIGIN + '/'):
+            return
+        if action == 'state':
+            update_emit()
+            return
+        if 'preview=1' in (view.get_uri() or ''):
+            return
+        if action in ('automatic:on', 'automatic:off'):
+            updates.preferences['automatic'] = action == 'automatic:on'
+            try:
+                updates.save()
+            except OSError:
+                update_state['error'] = 'Could not save update preferences.'
+            update_emit()
+            return
+        if update_state['busy']:
+            return
+        if action == 'open':
+            try:
+                Gtk.show_uri_on_window(window, updates.download_uri(), 0)
+            except (OSError, ValueError) as error:
+                update_state['error'] = str(error)
+                update_emit()
+            return
+        if action not in ('check', 'download'):
+            return
+        update_state.update(busy=True, downloading=action == 'download', error=None)
+        if action == 'check':
+            update_state['result'] = None
+        update_emit()
+
+        def work():
+            try:
+                result, error = updates.request(action), None
+            except (OSError, ValueError, KeyError) as failure:
+                result, error = None, str(failure)
+            def complete():
+                update_state.update(busy=False, result=result, error=error)
+                update_emit()
+                return False
+            GLib.idle_add(complete)
+        threading.Thread(target=work, daemon=True).start()
+
+    def updates_loaded(_view, event):
+        if updates is None or event != WebKit2.LoadEvent.FINISHED:
+            return
+        if not (view.get_uri() or '').startswith(ORIGIN + '/'):
+            return
+        script = (Path(__file__).resolve().parent / 'updates.js').read_text()
+        view.run_javascript(script, None, None, None)
+        if updates.due() and 'preview=1' not in (view.get_uri() or ''):
+            start_update('check')
+
+    if updates is not None:
+        content = view.get_user_content_manager()
+        content.register_script_message_handler('marketUpdates')
+        content.connect('script-message-received::marketUpdates', update_action)
+        view.connect('load-changed', updates_loaded)
+        def update_focus(_window, _event):
+            if updates.due(): start_update('check')
+            return False
+        window.connect('focus-in-event', update_focus)
+
     def history_key(_window, event):
         modifiers = event.state & Gtk.accelerator_get_default_mod_mask()
         if modifiers != Gdk.ModifierType.MOD1_MASK:
@@ -210,6 +366,8 @@ def main():
     try:
         Gtk.main()
     finally:
+        if updates is not None:
+            updates.close()
         server.shutdown()
         server.server_close()
     return 0

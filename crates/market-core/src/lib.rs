@@ -1588,3 +1588,5 @@ fn seed_preview(state: &mut State) -> Result<()> {
     }
     Ok(())
 }
+#[cfg(not(target_os = "ios"))]
+pub mod updater;

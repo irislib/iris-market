@@ -53,6 +53,23 @@ Rust is pinned by `rust-toolchain.toml`; dependency checksums and versions are i
 cargo build --locked -p iris-market
 ```
 
+### App updates
+
+Native source includes `hashtree-updater` 0.2.89 and an **App updates** section in Settings. macOS, Android and packaged Linux clients can check automatically once a day on launch/resume and check manually at any time. The preference persists locally. Checks run separately from marketplace operations and work without signing in; Preview remains offline. This addition is not included in the previously published alpha.5 binaries.
+
+Discovery verifies signed announcements for the established `releases/iris-market` Hashtree tree. Downloads verify content hashes and retain the exact release selected by the check. Saved signed announcements prevent older relay responses from replacing a previously observed root. An unavailable or inconclusive channel shows an error, never an “up to date” result. No account keys, private inboxes or listing indexes participate. Only compatible artifacts are offered, and download/install always requires a user action.
+
+On macOS, **Show download** reveals the verified ZIP; open it and replace the app in Applications. Android hands the verified APK to the system installer, which checks signing compatibility and asks for installation approval. Linux opens the verified `.deb` in the system installer; portable users can use that package when their distribution supports it. iOS uses **Open TestFlight** and does not compile the Hashtree updater. The browser continues to use its existing service-worker update lifecycle.
+
+The CLI exposes the same check and verified download without a marketplace profile or secret:
+
+```sh
+iris-market update check <update-directory>
+iris-market update download <update-directory> --output <download-directory>
+```
+
+Use `--app` to select the native app instead of the CLI archive. `--current-version` supplies an installed app's full release version, including its alpha suffix. Official CLI builds embed `MARKET_RELEASE_VERSION`; ordinary Cargo builds use the crate version. `update serve` accepts `check` and `download` lines over stdin and emits one JSON response per line, retaining the checked selection for the Linux shell. The Linux package bundles the same-source CLI as its updater, with its accepted checksum recorded in the package manifest. Source-only Linux launches without that helper do not offer native updates.
+
 ### Browser and download page
 
 Requires Node.js 22 or newer; the tested version is pinned in `.nvmrc` (26.12.0). `web/package-lock.json` pins the browser, build and deployment dependencies. The browser and download page build together:
@@ -327,7 +344,7 @@ cd ..
 python3 linux/iris_market.py --assets web/dist
 ```
 
-The release owner packages only the accepted source and reviewed web assets with `scripts/linux-package.py --tag v0.1.4-alpha.5 --version 0.1.4~alpha.5 --arch amd64 --output <new-output-directory>`. The `.deb` declares its system dependencies; the portable archive needs those same dependencies installed. A dirty-source preview package is never accepted as a release candidate.
+The release owner packages only the accepted source and reviewed web assets with `scripts/linux-package.py --tag v0.1.4-alpha.5 --version 0.1.4~alpha.5 --arch amd64 --updater <accepted-linux-cli> --updater-sha256 <accepted-cli-sha256> --output <new-output-directory>`. The `.deb` declares its system dependencies; the portable archive needs those same dependencies installed. A dirty-source preview package is never accepted as a release candidate.
 
 ## Protocol and privacy
 

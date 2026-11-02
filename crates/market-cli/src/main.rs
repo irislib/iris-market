@@ -1,4 +1,5 @@
 mod args;
+mod updates;
 
 use anyhow::{Context, Result, bail};
 use args::{Invocation, Mode};
@@ -432,6 +433,7 @@ fn run(invocation: Invocation) -> Result<()> {
             println!("{}", tools());
             return Ok(());
         }
+        Invocation::Update(command) => return updates::run(command),
         Invocation::Profile { dir, mode, wait } => (dir, mode, wait),
     };
     // Validate and bound input before opening a profile or connecting to relays.

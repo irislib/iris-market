@@ -279,3 +279,4 @@ impl MarketDeviceLink {
             .map_err(error)
     }
 }
+mod updater;

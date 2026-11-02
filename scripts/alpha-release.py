@@ -181,6 +181,7 @@ def build_cli(args):
     artifact = output / asset_name(args.tag, args.platform)
     require(not artifact.exists(), 'Never overwrite an existing release artifact')
     environment = verified_environment(args.inputs, receipt)
+    environment['MARKET_RELEASE_VERSION'] = args.tag[1:]
     if 'apple-darwin' in target:
         environment['MACOSX_DEPLOYMENT_TARGET'] = '14.0'
     cargo = environment.get('CARGO', 'cargo')

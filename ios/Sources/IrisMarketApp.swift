@@ -11,7 +11,17 @@ struct IrisMarketApp: App {
     var body: some Scene {
         WindowGroup("Iris Market") {
             MarketRootView().environmentObject(store).preferredColorScheme(MarketAppearance(rawValue: appearance)?.colorScheme).tint(MarketTheme.green).marketWindowFrame()
-                .onChange(of: phase) { value in if value == .active { store.startPolling() } else { store.stopPolling() } }
+                .onChange(of: phase) { value in
+                    if value == .active {
+                        store.startPolling()
+                        #if os(macOS)
+                        MarketUpdateModel.shared.checkIfDue(preview: store.demo)
+                        #endif
+                    } else { store.stopPolling() }
+                }
+                #if os(macOS)
+                .task { MarketUpdateModel.shared.checkIfDue(preview: store.demo) }
+                #endif
         }
         #if os(macOS)
         .defaultSize(width: 1000, height: 760)

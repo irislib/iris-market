@@ -15,6 +15,17 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def updater_digest(binary, architecture, expected):
+    data = binary.read_bytes()
+    machine = {'amd64': 62, 'arm64': 183}[architecture]
+    if len(data) < 20 or data[:6] != b'\x7fELF\x02\x01' or int.from_bytes(data[18:20], 'little') != machine:
+        raise ValueError('Updater must be an ELF executable for the package architecture')
+    digest = hashlib.sha256(data).hexdigest()
+    if digest != expected:
+        raise ValueError('Updater differs from the accepted CLI build checksum')
+    return digest
+
+
 def package_permissions(root, executables):
     """Make installed files readable and directories traversable for every user."""
     root.chmod(0o755)
@@ -29,9 +40,15 @@ def main():
     parser.add_argument('--version', required=True)
     parser.add_argument('--tag', help='Release tag used in canonical artifact filenames, e.g. v0.1.3-alpha.1')
     parser.add_argument('--arch', choices=['amd64', 'arm64'], default='amd64')
+    parser.add_argument('--updater', type=Path, required=True, help='Verified iris-market CLI built from the same accepted source')
+    parser.add_argument('--updater-sha256', required=True, help='SHA-256 from the accepted CLI build evidence')
     parser.add_argument('--source-commit', help='Full source commit for an exported source tree (recorded as unverified/dirty)')
     parser.add_argument('--source-epoch', type=int, help='Source commit timestamp, required for an exported source tree')
     args = parser.parse_args()
+    try:
+        updater_hash = updater_digest(args.updater, args.arch, args.updater_sha256)
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
     if not re.fullmatch(r'[0-9][0-9A-Za-z.+~]*', args.version):
         parser.error('Invalid Debian package version')
     if args.tag and not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?', args.tag):
@@ -62,9 +79,11 @@ def main():
         app = stage / 'usr/lib/iris-market'
         app.mkdir(parents=True)
         shutil.copy2(ROOT / 'linux/iris_market.py', app / 'iris_market.py')
+        shutil.copy2(ROOT / 'linux/updates.js', app / 'updates.js')
+        shutil.copy2(args.updater, app / 'iris-market-updater')
         shutil.copytree(assets, app / 'web')
         shutil.copy2(ROOT / 'LICENSE', app / 'LICENSE')
-        (app / 'build-manifest.json').write_text(json.dumps({'source_commit': commit, 'source_dirty': dirty, 'assets': asset_hashes}, sort_keys=True, indent=2) + '\n')
+        (app / 'build-manifest.json').write_text(json.dumps({'version': args.tag.removeprefix('v') if args.tag else args.version.replace('~', '-'), 'source_commit': commit, 'source_dirty': dirty, 'assets': asset_hashes, 'updater_sha256': updater_hash}, sort_keys=True, indent=2) + '\n')
         binaries = stage / 'usr/bin'
         binaries.mkdir(parents=True)
         (binaries / 'iris-market-desktop').write_text('#!/bin/sh\nexec /usr/bin/python3 /usr/lib/iris-market/iris_market.py "$@"\n')
@@ -76,7 +95,7 @@ def main():
         control = stage / 'DEBIAN/control'
         control.parent.mkdir()
         control.write_text(f'Package: iris-market\nVersion: {args.version}\nSection: net\nPriority: optional\nArchitecture: {args.arch}\nMaintainer: Iris Market contributors\nDepends: python3 (>= 3.10), python3-gi, gir1.2-gtk-3.0, gir1.2-webkit2-4.1 (>= 2.42)\nDescription: Iris Market WebKit desktop client\n Browse offers and requests using the bundled Iris Market web client.\n')
-        package_permissions(stage, {'usr/bin/iris-market-desktop'})
+        package_permissions(stage, {'usr/bin/iris-market-desktop', 'usr/lib/iris-market/iris-market-updater'})
         for path in stage.rglob('*'):
             os.utime(path, (int(epoch), int(epoch)))
         os.utime(stage, (int(epoch), int(epoch)))
@@ -87,7 +106,7 @@ def main():
         shutil.copytree(app, portable)
         launcher = portable / 'iris-market'
         launcher.write_text('#!/bin/sh\nHERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\nexec /usr/bin/python3 "$HERE/iris_market.py" "$@"\n')
-        package_permissions(portable, {'iris-market'})
+        package_permissions(portable, {'iris-market', 'iris-market-updater'})
         archive = args.output / f'{stem}.tar.gz'
         with archive.open('wb') as raw, gzip.GzipFile(filename='', mode='wb', fileobj=raw, mtime=int(epoch)) as compressed, tarfile.open(fileobj=compressed, mode='w') as tar:
             for path in [portable, *sorted(portable.rglob('*'))]:

@@ -51,6 +51,9 @@ reqwest.workspace = true
 url.workspace = true
 uuid.workspace = true
 
+[target.'cfg(not(target_os = "ios"))'.dependencies]
+hashtree-updater = { version = "=0.2.89", features = ["secure-nostr-blossom"] }
+
 [dev-dependencies]
 tempfile.workspace = true
 tokio-tungstenite = "=0.26.2"

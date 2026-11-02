@@ -23,6 +23,9 @@ pub const HELP: &str = "Iris Market
   iris-market serve <profile>   JSON actions over stdin/stdout
   iris-market mcp <profile>     MCP tools over stdin/stdout
   iris-market tools            Tool discovery without a profile
+  iris-market update check <update-directory> [--app] [--current-version VERSION]
+  iris-market update download <update-directory> --output DIRECTORY [--app] [--current-version VERSION]
+  iris-market update serve <update-directory> --output DIRECTORY [--app] [--current-version VERSION]
 
 Output is JSON. --wait accepts 0 through 60 seconds; 0 skips background waiting.
 Use - to read a draft, invitation, private message, or action from stdin.
@@ -59,6 +62,7 @@ pub enum Mode {
 pub enum Invocation {
     Help,
     Tools,
+    Update(crate::updates::Command),
     Profile { dir: PathBuf, mode: Mode, wait: u64 },
 }
 
@@ -111,6 +115,9 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Invocation> {
         return Ok(Invocation::Help);
     }
     let command = args[0].as_str();
+    if command == "update" {
+        return Ok(Invocation::Update(crate::updates::parse(&args[1..])?));
+    }
     if command == "help" {
         return Ok(Invocation::Help);
     }

@@ -280,6 +280,8 @@ private fun inboxContextTitle(context:MessageContext?,state:MarketSnapshot):Stri
             Icon(Icons.Filled.Settings,null,tint=Forest);Spacer(Modifier.width(12.dp));Text("Settings",Modifier.weight(1f));Icon(Icons.Filled.ChevronRight,null,tint=Muted)
         }
         HorizontalDivider(color=Line)
+        AppUpdatesView(model.updates, state.demo)
+        HorizontalDivider(color=Line)
         OutlinedButton(onClick=switchMode,modifier=Modifier.fillMaxWidth(),shape=RoundedCornerShape(15.dp)) { Text(if(state.demo) "Open live market" else "Open Preview") }
     }
 }

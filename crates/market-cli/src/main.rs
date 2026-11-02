@@ -348,7 +348,7 @@ fn result(mode: &Mode, before: &Value, state: &Value) -> Value {
         Mode::OrderUpdate { id, .. } | Mode::OrderArchive { id, .. } => {
             return selected_order_result(state, order(state, id));
         }
-        Mode::Serve | Mode::Mcp => {}
+        Mode::FriendPosts | Mode::Serve | Mode::Mcp => {}
     }
     output
 }
@@ -447,7 +447,10 @@ fn run(invocation: Invocation) -> Result<()> {
     };
     let app = iris_market_core::Market::open(&dir, &secret, demo)?;
     let deadline = Instant::now() + Duration::from_secs(wait);
-    if matches!(mode, Mode::Serve | Mode::Mcp) {
+    if mode == Mode::FriendPosts {
+        std::thread::sleep(Duration::from_secs(wait));
+        println!("{}", app.friend_posts()?);
+    } else if matches!(mode, Mode::Serve | Mode::Mcp) {
         let stdin = io::stdin();
         let mut stdin = stdin.lock();
         while let Some(line) = frame(&mut stdin)? {

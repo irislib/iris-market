@@ -258,3 +258,28 @@ fn orders_are_local_first_restorable_archivable_and_scoped() {
     assert!(!search.to_string().contains("Ring once"));
     assert!(search.get("orders").is_none());
 }
+
+#[test]
+fn friend_post_rules_are_only_returned_by_private_inspection() {
+    let fixture = Fixture::new();
+    let helper = offline_profile(&fixture, "helper");
+    let key = iris_market_core::generate_secret_key();
+    let policy = serde_json::json!({
+        "allowed_senders": [], "sides": ["offer"], "categories": ["Private test category"]
+    });
+    let command = serde_json::json!({"type":"set_friend_post_policy","policy":policy});
+    let state = offline_command(
+        &helper,
+        &key,
+        "command",
+        &["-", "--wait", "0"],
+        Some(&command.to_string()),
+    );
+    assert!(!state.to_string().contains("Private test category"));
+    let inbox = offline_command(&helper, &key, "friend-posts", &[], None);
+    assert_eq!(inbox["policy"], policy);
+    assert_eq!(inbox["requests"], serde_json::json!([]));
+    assert!(inbox.get("conversations").is_none());
+    let public = offline_command(&helper, &key, "search", &["--wait", "0"], None);
+    assert!(!public.to_string().contains("Private test category"));
+}

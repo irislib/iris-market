@@ -152,6 +152,51 @@ fn two_profiles_publish_discover_and_exchange_private_enquiries_over_internet_tr
             .as_array()
             .is_some_and(|m| m.iter().any(|v| v["text"] == "Is this still available?"))
     });
+    let origin = snapshot(&bob)["public_key"].clone();
+    alice
+        .command(
+            &json!({"type":"set_friend_post_policy","policy":{
+                "allowed_senders":[origin],"sides":["request"]
+            }})
+            .to_string(),
+        )
+        .unwrap();
+    bob.command(
+        &json!({"type":"request_friend_post","helper":peer,"request":{"draft":{
+            "title":"Wanted: a longtail bike","description":"For the school run","side":"request"
+        }}})
+        .to_string(),
+    )
+    .unwrap();
+    wait_until(|| {
+        !alice.friend_posts().unwrap()["requests"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    });
+    assert!(
+        !wire
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(_, v)| v.to_string().contains("longtail bike"))
+    );
+    let id = alice.friend_posts().unwrap()["requests"][0]["id"].clone();
+    alice
+        .command(&json!({"type":"accept_friend_post","id":id}).to_string())
+        .unwrap();
+    wait_until(|| {
+        snapshot(&bob)["listings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|listing| {
+                listing["title"] == "Wanted: a longtail bike"
+                    && listing["side"] == "request"
+                    && listing["author"] == peer
+                    && listing["description"] == "Posted for a friend.\n\nFor the school run"
+            })
+    });
     let records = wire.lock().unwrap().clone();
     // A private send-only connection never carries subscriptions (nor public listing traffic).
     for (connection, value) in &records {

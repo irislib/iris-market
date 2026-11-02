@@ -11,6 +11,7 @@ pub const HELP: &str = "Iris Market
   iris-market invite <profile>
   iris-market accept <profile> <invite-file|-> [--wait 5]
   iris-market send <profile> <peer-id> <text|-> [--wait 5]
+  iris-market friend-posts <profile> [--wait 0]   Inspect your private posting policy and requests
   iris-market orders <profile> [--wait 0]
   iris-market order-request <profile> <listing-id> [request.json|-] [--wait 0]
   iris-market order-update <profile> <order-id> <patch.json|-> [--wait 0]
@@ -49,6 +50,7 @@ pub enum Mode {
     Invite,
     Accept { source: String },
     Send { peer: String, text: String },
+    FriendPosts,
     Orders,
     OrderRequest { id: String, source: Option<String> },
     OrderUpdate { id: String, source: String },
@@ -141,6 +143,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Invocation> {
         "command",
         "serve",
         "mcp",
+        "friend-posts",
         "orders",
         "order-request",
         "order-update",
@@ -264,6 +267,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Invocation> {
                 text: positional[2].clone(),
             }
         }
+        "friend-posts" => Mode::FriendPosts,
         "orders" => Mode::Orders,
         "order-request" => {
             listing_author(&argument())?;
@@ -289,6 +293,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Invocation> {
     };
     let default_wait = match &mode {
         Mode::Preview | Mode::Snapshot | Mode::Invite | Mode::Serve | Mode::Mcp => 0,
+        Mode::FriendPosts => 0,
         Mode::Command { .. } => 2,
         Mode::Orders
         | Mode::OrderRequest { .. }

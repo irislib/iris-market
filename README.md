@@ -2,7 +2,7 @@
 
 A general marketplace for things, skills and opportunities. Native iOS, Android and macOS apps share a Rust core for selling, buying, saved listings and private enquiries. The browser app supports visual browsing, Nostr sign-in, listing publication, private chat, orders, parcel tracking and share links. Listings, profiles, posting, saved items, messages, orders, wallet and settings have their own routes; short confirmations remain dialogs. AI assistants can use the same native operations through the CLI or MCP.
 
-**Internet first.** Ordinary Nostr servers provide discovery and delivery in this prototype. Nearby Wi-Fi/Bluetooth and FIPS mesh exchange are planned backup carriers. They are not implemented or advertised as working in v0. Intermediary matching ("asking for a friend") is also deferred.
+**Internet first.** Ordinary Nostr servers provide discovery and delivery in this prototype. Nearby Wi-Fi/Bluetooth and FIPS mesh exchange are planned backup carriers. They are not implemented or advertised as working in v0. People can ask a chosen friend to post for them through the Rust core and source-built CLI. Automatic intermediary matching remains on the roadmap.
 
 ## Current prototype
 
@@ -288,6 +288,20 @@ Live CLI/MCP commands require `IRIS_MARKET_SECRET_KEY` from a secure local crede
 MCP provides `market_search`, `market_publish`, `market_save`, `market_contact` and `market_send_message`. Search returns public listing information only. Publication and contacting others require the caller's authorisation; discovering an offer is not permission to act on it. `serve` accepts the full JSON action contract for trusted local integrations. `command <profile-directory> -` accepts one raw action from stdin; `snapshot` and raw actions deliberately return the full local state, including private conversations. Named commands limit output to the requested operation. Errors are JSON on stderr with a nonzero exit status.
 
 The CLI also exposes `orders`, `order-request <listing-id> [json|-]`, `order-update <order-id> <json|->`, `order-archive <order-id>` and `order-restore <order-id>`. Private order commands use the existing encrypted profile store and return after durable local queuing; they do not wait for delivery acknowledgements.
+
+### Asking for a friend
+
+A buyer or seller can privately ask a chosen helper to publish a text listing. Each helper decides whose requests to consider, which sides to accept and, optionally, which categories to handle. The default policy accepts nobody. Every listing needs the helper’s explicit approval. A helper can vouch that they know the person or have traded with them, within the permissions the sender granted for that particular post.
+
+Use `iris-market command <profile> -` to submit one JSON action through stdin. Use account public keys in hex. Establish a private conversation by invitation or use a helper with a discoverable Market contact.
+
+1. The helper sets their private policy with `{"type":"set_friend_post_policy","policy":{"allowed_senders":["<origin-pubkey>"],"sides":["offer","request"],"categories":["Bikes"]}}`. An empty category list allows any category.
+2. The origin sends `{"type":"request_friend_post","helper":"<helper-pubkey>","request":{"draft":{"side":"request","title":"Looking for a cargo bike","description":"A longtail with two child seats.","category":"Bikes"},"allowed_vouches":["know_personally"]}}`. Use `offer` for a sale. Each chosen helper receives a separate request and may independently post it.
+3. The helper reviews `iris-market friend-posts <profile> --wait 5`. To publish the reviewed copy, send `{"type":"accept_friend_post","id":"<private-request-id>","vouches":["know_personally"]}`. Omit `vouches` to disclose only that the post is for a friend. The other supported vouch is `traded_before`. To decline, send `{"type":"decline_friend_post","id":"<private-request-id>"}`.
+
+The background worker delivers a versioned `iris-market/friend-post` tag inside a double-ratchet kind-14 message. Device verification gates delivery. Eligible requests appear in the helper’s encrypted review inbox for seven days or until the listing expires, whichever comes first. Changing the policy also changes which pending requests the helper can approve. The origin and helper can coordinate decisions and enquiries in their existing private conversation.
+
+Approval creates an ordinary kind-30402 listing signed by the helper, with a fresh local identifier and the chosen vouches in its description. Enquiries go to the helper. The private request ID, origin key and acceptance rules stay out of the public record. Both people should review the public copy for identifying details such as a name, contact information or a precise location. The helper can close the listing through the ordinary close action.
 
 ## Native alpha release contract
 

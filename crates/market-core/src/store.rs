@@ -303,6 +303,26 @@ impl Store {
         Ok(())
     }
     pub fn ingest(&mut self, event: &Event, at: u64, outgoing: bool) -> Result<bool> {
+        self.ingest_listing(event, at, outgoing, None)
+    }
+
+    pub(crate) fn ingest_with_contact(
+        &mut self,
+        event: &Event,
+        at: u64,
+        contact: &Event,
+    ) -> Result<bool> {
+        contact.verify()?;
+        self.ingest_listing(event, at, true, Some(contact))
+    }
+
+    fn ingest_listing(
+        &mut self,
+        event: &Event,
+        at: u64,
+        outgoing: bool,
+        contact: Option<&Event>,
+    ) -> Result<bool> {
         let parsed = listing::parse(event, at)?;
         let tx = self.db.transaction()?;
         let previous: Option<(u64, String)> = tx
@@ -329,8 +349,21 @@ impl Store {
                 params![id, event.as_json()],
             )?;
         }
+        if let Some(contact) = contact {
+            tx.execute(
+                "INSERT OR REPLACE INTO outbox VALUES (?1,?2)",
+                params![contact.id.to_hex(), contact.as_json()],
+            )?;
+        }
         tx.commit()?;
         Ok(true)
+    }
+    pub(crate) fn has_listing(&self, coordinate: &str) -> Result<bool> {
+        Ok(self.db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM events WHERE coordinate=?1)",
+            [coordinate],
+            |r| r.get(0),
+        )?)
     }
     pub fn listings(&self, owner: &str, at: u64) -> Result<Vec<Listing>> {
         self.listings_for_scope(owner, at, None)

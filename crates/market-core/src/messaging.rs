@@ -6,6 +6,7 @@
 //! listings or for receiving. Only acknowledge an outbound event after a relay OK.
 
 mod controls;
+pub mod friend_posts;
 pub mod mobile_push;
 pub use controls::Reaction;
 
@@ -153,6 +154,8 @@ struct QueuedPublish {
 
 #[derive(Clone, Serialize, Deserialize)]
 struct PendingContactMessage {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    expires_at: Option<u64>,
     peer_id: String,
     rumor: UnsignedEvent,
 }
@@ -172,6 +175,8 @@ struct PrivateState {
     authorization_heads: BTreeMap<String, Vec<Event>>,
     #[serde(default)]
     orders: crate::orders::OrderBook,
+    #[serde(default)]
+    friend_posts: friend_posts::Inbox,
     #[serde(default)]
     pending_invites: BTreeMap<String, Invite>,
     #[serde(default)]
@@ -636,7 +641,7 @@ impl Messaging {
             rumor.ensure_id();
             if !this.contact_recipient_ready(peer) {
                 let message_id = rumor.id.as_ref().ok_or("Private message identity is unavailable")?.to_hex();
-                this.state.pending_contact_messages.insert(message_id.clone(), PendingContactMessage { peer_id: id.clone(), rumor });
+                this.state.pending_contact_messages.insert(message_id.clone(), PendingContactMessage { peer_id: id.clone(), rumor, expires_at: None });
                 return this.append(&id, Message { id:message_id, order_id:context.as_ref().and_then(|value|value.order_id.clone()), context, text, mine:true, created_at:now, created_at_ms:millis, delivery:"pending".into(), cashu:None, reactions:Vec::new() });
             }
             let result = this.engine.send_direct_unsigned_event(peer, &id, rumor, UnixSeconds(now)).map_err(protocol_error)?;
@@ -799,8 +804,9 @@ impl Messaging {
             && self.state.pending_invites.is_empty()
             && !self.has_control_work()
             && !self.state.pending_contact_messages.values().any(|queued| {
-                PublicKey::from_hex(&queued.peer_id)
-                    .is_ok_and(|peer| self.contact_recipient_ready(peer))
+                queued.expires_at.is_some_and(|deadline| deadline <= now())
+                    || PublicKey::from_hex(&queued.peer_id)
+                        .is_ok_and(|peer| self.contact_recipient_ready(peer))
             })
         {
             return Ok(());
@@ -870,6 +876,10 @@ impl Messaging {
     }
 
     fn send_pending_contacts(&mut self) -> MessagingResult<()> {
+        let at = now();
+        self.state
+            .pending_contact_messages
+            .retain(|_, queued| queued.expires_at.is_none_or(|deadline| deadline > at));
         if !self.can_send() {
             return Ok(());
         }
@@ -1540,7 +1550,8 @@ impl Messaging {
         if inner.pubkey != message.sender && Some(inner.pubkey) != message.sender_device {
             return Err("Private message author does not match the authenticated sender".into());
         }
-        if matches!(inner.kind.as_u16(), 7 | 15) {
+        let friend_request = friend_posts::is_request(&inner);
+        if friend_request || matches!(inner.kind.as_u16(), 7 | 15) {
             let device = message.sender_device.unwrap_or(message.sender);
             if device != message.sender
                 && !self
@@ -1559,6 +1570,10 @@ impl Messaging {
                 {
                     return Err("Private control device is not authorized".into());
                 }
+            }
+            if friend_request {
+                self.receive_friend_post(message.sender, device, &inner);
+                return Ok(());
             }
             let peer = if message.sender == self.owner {
                 message.conversation_owner.or_else(|| {

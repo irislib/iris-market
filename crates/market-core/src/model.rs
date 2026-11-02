@@ -407,6 +407,21 @@ pub enum Command {
         #[serde(default)]
         context: Option<crate::conversation_context::MessageContext>,
     },
+    SetFriendPostPolicy {
+        policy: crate::messaging::friend_posts::Policy,
+    },
+    RequestFriendPost {
+        helper: nostr::PublicKey,
+        request: crate::messaging::friend_posts::Request,
+    },
+    AcceptFriendPost {
+        id: String,
+        #[serde(default)]
+        vouches: std::collections::BTreeSet<crate::messaging::friend_posts::Vouch>,
+    },
+    DeclineFriendPost {
+        id: String,
+    },
     RequestOrder {
         listing_id: String,
         #[serde(default = "one")]

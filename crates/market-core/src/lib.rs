@@ -587,6 +587,15 @@ impl Market {
             stopped,
         })
     }
+    /// Keep origin-to-listing links and private posting rules out of ordinary snapshots.
+    pub fn friend_posts(&self) -> Result<serde_json::Value> {
+        let s = self.state.lock().unwrap();
+        s.messaging
+            .as_ref()
+            .context("Private messaging unavailable")?
+            .friend_posts(&s.store)
+    }
+
     pub fn snapshot(&self) -> Result<String> {
         Ok(serde_json::to_string(
             &self.state.lock().unwrap().snapshot()?,
@@ -839,14 +848,14 @@ impl Market {
                     listing::now(),
                     false,
                 )?;
-                s.store.ingest(&event, listing::now(), true)?;
                 let contact = s
                     .messaging
                     .as_mut()
                     .context("Private messaging unavailable")?
                     .public_contact_event()
                     .map_err(anyhow::Error::msg)?;
-                s.store.queue_event(&contact)?;
+                s.store
+                    .ingest_with_contact(&event, listing::now(), &contact)?;
                 s.status = "Saved · publishing".into();
                 self.notify.notify_waiters();
             }
@@ -998,6 +1007,40 @@ impl Market {
                     .send_with_context(&peer_id, &text, context)
                     .map_err(anyhow::Error::msg)?;
                 self.notify.notify_waiters();
+            }
+            Command::SetFriendPostPolicy { policy } => {
+                s.messaging
+                    .as_mut()
+                    .context("Private messaging unavailable")?
+                    .set_friend_post_policy(policy)?;
+            }
+            Command::RequestFriendPost { helper, request } => {
+                s.messaging
+                    .as_mut()
+                    .context("Private messaging unavailable")?
+                    .request_friend_post(helper, request)?;
+                s.status = "Private posting request queued".into();
+                self.notify.notify_waiters();
+            }
+            Command::AcceptFriendPost { id, vouches } => {
+                let State {
+                    messaging, store, ..
+                } = &mut *s;
+                messaging
+                    .as_mut()
+                    .context("Private messaging unavailable")?
+                    .accept_friend_post(store, &id, &vouches)?;
+                s.status = "Friend post accepted".into();
+                self.notify.notify_waiters();
+            }
+            Command::DeclineFriendPost { id } => {
+                let State {
+                    messaging, store, ..
+                } = &mut *s;
+                messaging
+                    .as_mut()
+                    .context("Private messaging unavailable")?
+                    .decline_friend_post(store, &id)?;
             }
             Command::RequestOrder {
                 listing_id,

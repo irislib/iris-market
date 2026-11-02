@@ -489,7 +489,7 @@ fn terms(s: &str) -> std::collections::BTreeSet<String> {
     crate::literal_search::normalize(s)
         .split_whitespace()
         .filter(|w| {
-            w.len() > 1
+            w.chars().nth(1).is_some()
                 && !matches!(
                     *w,
                     "the"

@@ -140,7 +140,7 @@ function act(b:Book,me:string,a:MatchAction,at:number,send:Send,publicItem?:List
   }
 }
 const stop=new Set('the for and are can with need looking want offer request sell buy sale have any some to of is an'.split(' '))
-const terms=(s:string)=>new Set((s.normalize('NFKC').toLowerCase().match(/[\p{L}\p{N}]+/gu)||[]).filter(w=>w.length>1&&!stop.has(w)).slice(0,40))
+const terms=(s:string)=>new Set((s.normalize('NFKC').toLowerCase().match(/[\p{L}\p{N}]+/gu)||[]).filter(w=>[...w].length>1&&!stop.has(w)).slice(0,40))
 export function matchCandidates(view:MatchView,id:string,items:Listing[],at=Math.floor(Date.now()/1000)){
   const r=view.received[id];if(!r||r.expires_at<=at)return []
   const query=terms(r.summary)

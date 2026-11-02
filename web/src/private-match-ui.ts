@@ -79,6 +79,9 @@ export function setupPrivateMatches(api,getListings){
     if(dialog.open){if(v)render(v);else dialog.close()}
   }
   toggle.onchange=()=>void act({op:'enable',enabled:toggle.checked})
+  dialog.addEventListener('close',()=>{
+    selected='';helper.value='';text.value='';error.textContent='';rows.replaceChildren()
+  })
   open.onclick=()=>{selected='';error.textContent='';dialog.showModal();sync()}
   api.onState(sync);sync()
 }

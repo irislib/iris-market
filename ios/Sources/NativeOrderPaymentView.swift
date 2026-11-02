@@ -44,7 +44,7 @@ struct NativeOrderPaymentView: View {
                         }
                         Text("The token is sent privately to the seller. The seller confirms payment after redeeming it.").font(.caption).foregroundStyle(MarketTheme.muted)
                     } else { Text("This order has no payment awaiting confirmation.") }
-                    if wallet.busy { ProgressView("Working…") }
+                    if wallet.busy { Text("Working…").foregroundStyle(MarketTheme.muted) }
                     if let error = wallet.error { Text(error).foregroundStyle(.red) }
                     if let notice = wallet.notice { Text(notice).foregroundStyle(MarketTheme.green) }
                 }.padding(24).frame(maxWidth: 560, alignment: .leading).frame(maxWidth: .infinity)

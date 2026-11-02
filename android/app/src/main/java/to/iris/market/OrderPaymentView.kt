@@ -21,7 +21,7 @@ import androidx.compose.ui.unit.dp
         Text(mintLabel(payment.mint))
         if(isTestMint(payment.mint))Text("Test money · no bitcoin value")
         Text("The token goes privately to the seller. Payment is confirmed only after the seller redeems it.")
-        if(wallet.busy)LinearProgressIndicator(Modifier.fillMaxWidth())
+        if(wallet.busy)Text("Working…",color=Muted)
         if(wallet.error.isNotBlank())Text(wallet.error,color=MaterialTheme.colorScheme.error)
         if(wallet.message.isNotBlank())Text(wallet.message)
         if(wallet.snapshot.optBoolean("review_required")){

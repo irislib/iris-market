@@ -89,7 +89,7 @@ struct OrderReviewView: View {
                             requestError = nil
                             store.requestOrder(listing, quantity: quantity, note: note.trimmingCharacters(in: .whitespacesAndNewlines), deliveryRequest: delivery) { success in if success { dismiss(); onRequested() } }
                         } catch { requestError = error.localizedDescription }
-                    } label: { if store.busy { ProgressView() } else { Text(NativeTransportType.classify(listing.tags ?? [])?.requestLabel ?? "Request order") } }
+                    } label: { Text(NativeTransportType.classify(listing.tags ?? [])?.requestLabel ?? "Request order") }
                         .buttonStyle(PrimaryButton()).disabled(store.demo || store.busy || !store.snapshot.canSign).accessibilityIdentifier("requestOrder")
                 }.padding(24)
             }.background(MarketTheme.paper).foregroundStyle(MarketTheme.ink).navigationTitle("Review order").marketInlineTitle()

@@ -61,7 +61,7 @@ export function setupAI({ getCandidates, onChange, onTextSearch, fetchMoreCandid
     $('search-mode').setAttribute('data-loading',String(preparing));$('search-mode').setAttribute('data-indeterminate',String(preparing&&downloadFraction===undefined));
     $('search-mode').setAttribute('aria-busy',String(preparing));$('search-mode').style?.setProperty('--ai-download',String(downloadFraction??0));
     $('search-mode').title=preparing?`Preparing AI${downloadFraction===undefined?'':` · ${Math.round(downloadFraction*100)}%`}`:active?'Turn off AI search':'Turn on AI search';
-    progress.hidden=phase!=='loading';
+    progress.hidden=phase!=='loading'||downloadFraction===undefined;
     if(active&&!busy&&!$('ai-error').textContent){
       $('ai-progress').textContent = needsCPU() ? 'Qwen is unavailable in this browser. Use the smaller CPU model.' : submittedQuery&&!candidates.length&&!sourceError ? 'Refresh listings or clear filters to search.' : '';
     }

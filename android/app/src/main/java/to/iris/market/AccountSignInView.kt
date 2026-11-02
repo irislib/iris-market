@@ -32,12 +32,12 @@ import androidx.compose.ui.unit.dp
             Text("Open this link on a device signed in to Iris Chat.",color=Muted)
             Button(onClick={context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {type="text/plain";putExtra(Intent.EXTRA_TEXT,invitation)},"Share link"))},modifier=Modifier.fillMaxWidth()) {Icon(Icons.Filled.Share,null);Spacer(Modifier.width(8.dp));Text("Share link")}
             TextButton(onClick={clipboard.setText(AnnotatedString(invitation!!))},modifier=Modifier.fillMaxWidth()){Text("Copy link")}
-            LinearProgressIndicator(Modifier.fillMaxWidth());Text("Waiting for approval…",color=Muted)
+            Text("Waiting for approval on your other device.",color=Muted)
         } else {
             Button(onClick={model.beginDeviceLink()},enabled=!busy,modifier=Modifier.fillMaxWidth()) {Icon(Icons.Filled.Link,null);Spacer(Modifier.width(8.dp));Text("Link this device")}
             Text("Or sign in with your secret key",color=Muted,style=MaterialTheme.typography.bodyMedium)
             OutlinedTextField(value=secret,onValueChange={secret=it},label={Text("Secret key")},visualTransformation=PasswordVisualTransformation(),singleLine=true,modifier=Modifier.fillMaxWidth(),shape=RoundedCornerShape(16.dp))
-            OutlinedButton(onClick={model.signIn(secret.trim()){secret="";close()}},enabled=secret.isNotBlank()&&!busy,modifier=Modifier.fillMaxWidth()){if(busy) CircularProgressIndicator(Modifier.size(20.dp),strokeWidth=2.dp) else Text("Sign in")}
+            OutlinedButton(onClick={model.signIn(secret.trim()){secret="";close()}},enabled=secret.isNotBlank()&&!busy,modifier=Modifier.fillMaxWidth()){Text("Sign in")}
         }
     }
 }

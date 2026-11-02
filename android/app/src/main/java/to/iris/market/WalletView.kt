@@ -137,7 +137,7 @@ internal class NativeWalletSession(private val model:MarketModel,private val own
         if(state.error.isNotBlank())Text(state.error,color=MaterialTheme.colorScheme.error)
         if(state.message.isNotBlank())Text(state.message)
         if(notice.isNotBlank())Text(notice,style=MaterialTheme.typography.bodySmall)
-        if(state.busy)LinearProgressIndicator(Modifier.fillMaxWidth())
+        if(state.busy)Text("Working…",color=Muted)
         if(!state.ready){
             OutlinedTextField(backupText,{backupText=it},label={Text("Encrypted wallet backup")},modifier=Modifier.fillMaxWidth(),minLines=2,enabled=!state.busy)
             OutlinedTextField(backupPassword,{backupPassword=it},label={Text("Backup password")},visualTransformation=androidx.compose.ui.text.input.PasswordVisualTransformation(),enabled=!state.busy)

@@ -10,7 +10,6 @@ struct ReviewsView: View {
     let target: String
     var product = false
     @State private var reviews: [MarketReview] = []
-    @State private var loading = false
     @State private var expanded = false
     @State private var writing = false
     @State private var rating = 5
@@ -23,7 +22,6 @@ struct ReviewsView: View {
                 Button { expanded.toggle() } label: {
                     HStack { Text("\(reviews.count) reviews"); if !reviews.isEmpty { Image(systemName: expanded ? "chevron.up" : "chevron.down") } }
                 }.buttonStyle(.plain).font(.headline)
-                if loading { ProgressView().controlSize(.small) }
                 Spacer()
                 if !product && target != store.snapshot.publicKey && store.snapshot.canSign && !store.demo {
                     Button(writing ? "Cancel" : "Write a review") { writing.toggle(); expanded = true }.font(.subheadline)
@@ -52,11 +50,10 @@ struct ReviewsView: View {
             }
         }
         .task(id: target + store.snapshot.publicKey) {
-            reviews = []; writing = false; bodyText = ""; failure = nil; publishing = false; loading = true
+            reviews = []; writing = false; bodyText = ""; failure = nil; publishing = false
             if let cached = try? await store.loadReviews(target: target, product: product, refresh: false), !Task.isCancelled { reviews = cached }
             guard !Task.isCancelled else { return }
             if let fetched = try? await store.loadReviews(target: target, product: product, refresh: true), !Task.isCancelled { reviews = fetched }
-            if !Task.isCancelled { loading = false }
         }
     }
 }

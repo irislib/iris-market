@@ -131,14 +131,14 @@ struct AISettingsView: View {
                     HStack {
                         Button("Test") { testField = nil; save { if $0 { store.testAI(testInput) } } }.accessibilityIdentifier("aiSandboxTest")
                             .disabled(store.busy || store.aiTestBusy || !canSave || testInput.validationError != nil || (store.demo && !local) || !NativeAIReadiness.canEnable(provider: settings.ai.provider, model: settings.ai.model, endpoint: settings.ai.baseUrl, localAvailable: store.appleAIUnavailableReason == nil))
-                        if store.aiTestBusy { ProgressView(); Button("Stop") { store.clearAITest() }.accessibilityIdentifier("aiSandboxStop") }
+                        if store.aiTestBusy { Text("Testing…").font(.caption); Button("Stop") { store.clearAITest() }.accessibilityIdentifier("aiSandboxStop") }
                     }
                     if let result = store.aiTestResult {
                         Text(result.summary(providerLabel: preset.label)).font(.caption).accessibilityIdentifier("aiSandboxResult")
                         if let error = result.error { Text(error).font(.caption).foregroundStyle(MarketTheme.muted) }
                     }
                     if let error = store.aiTestError { Text(error).font(.caption).foregroundStyle(MarketTheme.muted).accessibilityIdentifier("aiSandboxError") }
-                    if let progress = store.localAIProgress { HStack { ProgressView(); Text(progress).font(.caption); Spacer(); Button("Stop") { store.cancelLocalAI() } } }
+                    if let progress = store.localAIProgress { HStack { Text(progress).font(.caption); Spacer(); Button("Stop") { store.cancelLocalAI() } } }
                     MarketInlineError()
                 }
             }.scrollContentBackground(.hidden).background(MarketTheme.paper).marketKeyboardDismissal().navigationTitle("AI search").marketInlineTitle()

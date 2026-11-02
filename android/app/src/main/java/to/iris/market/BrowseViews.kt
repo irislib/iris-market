@@ -78,8 +78,7 @@ import org.json.JSONObject
                     trailingIcon = { Row(verticalAlignment = Alignment.CenterVertically) {
                         Box(Modifier.size(48.dp).combinedClickable(enabled=!busy||ai?.optBoolean("enabled")==true,role=Role.Switch,onClick={showAll=false;model.toggleAI(settings)},onLongClick=settings,onLongClickLabel="Open AI settings")
                             .semantics { contentDescription="AI search";stateDescription=if(ai?.optBoolean("enabled")==true) { if(ai?.optString("provider")=="litert"&&localModel.phase==LocalModelPhase.VERIFYING) "On, checking" else if(aiSearch) "On" else "On, unavailable" } else "Off";toggleableState=if(ai?.optBoolean("enabled")==true) ToggleableState.On else ToggleableState.Off },contentAlignment=Alignment.Center) {
-                            if(busy||searching) CircularProgressIndicator(Modifier.size(20.dp),strokeWidth=2.dp)
-                            else Icon(Icons.Filled.AutoAwesome,null,tint=if(aiSearch) Forest else Muted)
+                            Icon(Icons.Filled.AutoAwesome,null,tint=if(aiSearch) Forest else Muted)
                         }
                         if(query.isNotBlank()) IconButton(onClick={query="";model.filter("",state.side)},modifier=Modifier.size(36.dp)) { Icon(Icons.Filled.Close,"Clear search") }
                     } },
@@ -98,7 +97,7 @@ import org.json.JSONObject
                 if(searching) Column(Modifier.fillMaxWidth()) {
                     if(localModel.phase==LocalModelPhase.REVIEWING && localModel.total>0) {
                         LinearProgressIndicator(progress={localModel.reviewed.toFloat()/localModel.total},modifier=Modifier.fillMaxWidth())
-                    } else LinearProgressIndicator(modifier=Modifier.fillMaxWidth())
+                    }
                     Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
                         Text(when(localModel.phase) {
                             LocalModelPhase.VERIFYING -> "Checking model"
@@ -139,9 +138,8 @@ import org.json.JSONObject
             MarketMapView(visibleListings,selected,Modifier.fillMaxWidth().height(440.dp).clip(RoundedCornerShape(20.dp)))
         }
         if (!showMap && visibleListings.isEmpty()) item(span={GridItemSpan(maxLineSpan)}) {
-            if(searching) Box(Modifier.fillMaxWidth().padding(48.dp), contentAlignment=Alignment.Center) { CircularProgressIndicator() }
-            else EmptyView(if(canCurate && !showAll && state.error != null) "Search paused" else if(canCurate && !showAll && (state.searchDiscovery?.hasMore == true || state.listings.any { it.relevanceShow == null })) "No matches yet" else if(canCurate && !showAll) "No matching listings" else if(query.isBlank()) "No listings" else "No matches",
-                if(canCurate && !showAll && state.error != null) "Check your AI settings, then try again." else if(canCurate && !showAll && (state.searchDiscovery?.hasMore == true || state.listings.any { it.relevanceShow == null })) "Load more to keep searching, or show all listings." else if(canCurate && !showAll) "Show all listings or change your AI settings." else if(query.isBlank()) "Sell something or post what you want to buy." else "Try a different search or clear the filters.",
+            EmptyView(if(canCurate && !showAll && state.error != null) "Search paused" else if(searching || canCurate && !showAll && (state.searchDiscovery?.hasMore == true || state.listings.any { it.relevanceShow == null })) "No matches yet" else if(canCurate && !showAll) "No matching listings" else if(query.isBlank()) "No listings yet" else "No matches",
+                if(canCurate && !showAll && state.error != null) "Check your AI settings, then try again." else if(searching) "New matches appear here as they arrive." else if(canCurate && !showAll && (state.searchDiscovery?.hasMore == true || state.listings.any { it.relevanceShow == null })) "Load more to keep searching, or show all listings." else if(canCurate && !showAll) "Show all listings or change your AI settings." else if(query.isBlank()) "Sell something or post what you want to buy." else "Try a different search or clear the filters.",
                 Icons.Filled.Storefront)
         }
         if(!showMap) items(visibleListings, key={it.id}) { listing -> ListingCard(listing, state.demo, {selected(listing)}, {model.save(listing.id)}) }

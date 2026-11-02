@@ -21,20 +21,17 @@ internal data class MarketReview(val id:String,val author:String,val body:String
 @Composable private fun ReviewsContent(target:String,model:MarketModel,product:Boolean,state:MarketSnapshot) {
     val scope=rememberCoroutineScope()
     var reviews by remember(target){mutableStateOf(emptyList<MarketReview>())}
-    var loading by remember(target){mutableStateOf(false)};var expanded by remember(target){mutableStateOf(false)}
+    var expanded by remember(target){mutableStateOf(false)}
     var writing by remember(target){mutableStateOf(false)};var rating by remember(target){mutableIntStateOf(5)}
     var body by remember(target){mutableStateOf("")};var publishing by remember(target){mutableStateOf(false)}
     var failed by remember(target){mutableStateOf(false)}
     LaunchedEffect(target) {
-        loading=true
         runCatching {model.loadReviews(target,product,false)}.onSuccess {reviews=it}
         runCatching {model.loadReviews(target,product,true)}.onSuccess {reviews=it}
-        loading=false
     }
     Column(Modifier.fillMaxWidth(),verticalArrangement=Arrangement.spacedBy(10.dp)) {
         Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween) {
             TextButton(onClick={expanded=!expanded}) {Text("${reviews.size} reviews")}
-            if(loading)CircularProgressIndicator(Modifier.size(20.dp))
             if(!product&&target!=state.publicKey&&state.canSign&&!state.demo) TextButton(onClick={writing=!writing;expanded=true}) {Text(if(writing) "Cancel" else "Write a review")}
         }
         if(writing) {

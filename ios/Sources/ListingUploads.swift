@@ -40,7 +40,7 @@ struct ListingUploadButton: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             Button { chooseFile = true } label: {
-                HStack { if uploading { ProgressView() }; Label(uploading ? "Uploading…" : "Add photo or file", systemImage: "photo.badge.plus") }
+                Label(uploading ? "Uploading…" : "Add photo or file", systemImage: "photo.badge.plus")
             }.disabled(uploading || store.demo || !store.snapshot.canSign).accessibilityIdentifier("listingUpload")
             Text("Uploads are public. Photos have location metadata removed.").font(.caption).foregroundStyle(MarketTheme.muted)
             if let failure { Text(failure).font(.caption).foregroundStyle(.red) }

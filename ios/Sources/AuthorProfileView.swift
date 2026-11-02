@@ -35,7 +35,6 @@ struct AuthorProfileView: View {
                                 Text(profile.person.connection.followDistance == nil ? "No known connections" : profile.person.connection.description).font(.caption).foregroundStyle(MarketTheme.muted)
                             }
                         }
-                        if profile.loading { ProgressView("Loading profile…") }
                         if !profile.about.isEmpty { Text(profile.about).font(.body).textSelection(.enabled) }
                         if let website = profile.website, let url = URL(string: website) { Link(website, destination: url).font(.subheadline).lineLimit(2) }
                         let known = uniqueKnown(profile)
@@ -55,7 +54,7 @@ struct AuthorProfileView: View {
                                 }
                             }
                             let people = selection == "following" ? profile.following : orderedFollowers(profile)
-                            if people.isEmpty { Text((selection == "followers" ? profile.followersLoading == true : profile.loading) ? "Loading…" : "No connections to show.").font(.subheadline).foregroundStyle(MarketTheme.muted).padding(.vertical, 12) }
+                            if people.isEmpty { Text("No connections to show yet.").font(.subheadline).foregroundStyle(MarketTheme.muted).padding(.vertical, 12) }
                             ForEach(people) { person in
                                 Button { history.append(author); switchAuthor(person.author) } label: {
                                     UserRow(person: person, subtitle: person.connection.description)
@@ -65,13 +64,12 @@ struct AuthorProfileView: View {
                             let feed = store.snapshot.profileListings.flatMap { $0.author == author ? $0 : nil }
                             let authorListings = feed?.listings ?? []
                             Text("Listings").font(.headline).accessibilityIdentifier("profileListings")
-                            if authorListings.isEmpty && feed?.loading != true { Text("No listings to show yet.").font(.subheadline).foregroundStyle(MarketTheme.muted).padding(.vertical, 12) }
+                            if authorListings.isEmpty { Text("No listings to show yet.").font(.subheadline).foregroundStyle(MarketTheme.muted).padding(.vertical, 12) }
                             LazyVGrid(columns: marketListingColumns, spacing: 22) {
                                 ForEach(authorListings) { listing in
                                     ListingCard(listing: listing, open: { selectedListing = listing }, save: { store.save(listing) })
                                 }
                             }
-                            if feed?.loading == true { ProgressView("Loading listings…").font(.caption) }
                             if let issue = feed?.error {
                                 HStack { Text(issue).font(.caption).foregroundStyle(MarketTheme.muted); Spacer(); Button("Retry") { loadMore() } }
                             } else if feed?.canLoadMore == true {
@@ -79,7 +77,7 @@ struct AuthorProfileView: View {
                             }
                         }
                         ReviewsView(target: author)
-                    } else { ProgressView("Loading profile…").frame(maxWidth: .infinity).padding(.vertical, 60) }
+                    } else { UserRow(person: .unnamed(author)) }
                 }.padding(23)
             }.background(MarketTheme.paper).navigationTitle("Profile").marketInlineTitle()
                 .toolbar {

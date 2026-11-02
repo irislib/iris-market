@@ -12,7 +12,9 @@ final class MarketUITests: XCTestCase {
         XCTAssertFalse(app.buttons["filterAll"].exists)
         // Offline preview fixtures intentionally have no photographs.
         app.buttons["listingFilters"].tap()
-        app.buttons["allPhotosFilter"].tap()
+        XCTAssertTrue(app.switches["hasPhotosFilter"].waitForExistence(timeout: 5))
+        setSwitch("hasPhotosFilter", enabled: false)
+        app.buttons["closeListingFilters"].tap()
         XCTAssertTrue(app.buttons.matching(identifier: "listingOpen").firstMatch.waitForExistence(timeout: 5))
     }
     private func capture(_ name: String) {
@@ -78,8 +80,9 @@ final class MarketUITests: XCTestCase {
         XCTAssertFalse(app.buttons["Accept invitation"].isEnabled)
         capture("14-private-invitation")
         app.buttons["Done"].tap()
-        app.buttons["tabProfile"].tap()
-        XCTAssertTrue(app.staticTexts["Profile"].waitForExistence(timeout: 5))
+        app.buttons["More"].tap()
+        app.buttons["Settings"].tap()
+        XCTAssertTrue(app.staticTexts["Settings"].waitForExistence(timeout: 5))
         app.buttons["aiSettingsRow"].tap()
         XCTAssertTrue(app.navigationBars["AI search"].waitForExistence(timeout: 5))
         capture("06-ai-settings")
@@ -95,7 +98,8 @@ final class MarketUITests: XCTestCase {
         app.terminate()
         app.launch()
         XCTAssertTrue(app.staticTexts["Listings"].waitForExistence(timeout: 15))
-        app.buttons["tabProfile"].tap()
+        app.buttons["More"].tap()
+        app.buttons["Settings"].tap()
         XCTAssertTrue(app.segmentedControls["appearancePicker"].buttons["Dark"].isSelected)
         app.buttons["aiSettingsRow"].tap()
         XCTAssertTrue(app.navigationBars["AI search"].waitForExistence(timeout: 5))

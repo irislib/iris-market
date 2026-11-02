@@ -10,7 +10,8 @@ export function homeFeedConditions(prompt:string,model:string):HomeCondition[] {
   // offer itself. Instruction-following models receive the full preference.
   if(model==='deberta'&&prompt===DEFAULT_HOME_FEED_PROMPT)
     return [{condition:'Someone is offering or looking for a useful item or service.'},
-      {condition:'This listing promotes spam, deception, exploitation or harmful claims.',exclude:true}];
+      {condition:'This listing promotes spam, deception, exploitation or harmful claims.',exclude:true},
+      {condition:'The seller offers prescription medicines, injectable hormones or anabolic steroids.',exclude:true}];
   const prefix=model==='deberta'?'This listing offers ':'This listing fits these home-feed preferences: ';
   const limit=MAX_CONDITION_LENGTH-prefix.length-1;
   const conditions:HomeCondition[]=[];
@@ -25,7 +26,7 @@ export function homeFeedConditions(prompt:string,model:string):HomeCondition[] {
   return conditions;
 }
 export function homeFeedPreferences(value?:Partial<HomeFeedPreferences>):HomeFeedPreferences {
-  return {enabled:value?.enabled!==false,prompt:typeof value?.prompt==='string'&&value.prompt.trim()?value.prompt.trim().slice(0,1000):DEFAULT_HOME_FEED_PROMPT};
+  return {enabled:value?.enabled!==false,prompt:typeof value?.prompt==='string'&&value.prompt.trim() && value.prompt.trim()!==defaults.previousPrompt?value.prompt.trim().slice(0,1000):DEFAULT_HOME_FEED_PROMPT};
 }
 export function loadHomeFeed(storage:Pick<Storage,'getItem'>):HomeFeedPreferences {
   try{return homeFeedPreferences(JSON.parse(storage.getItem(HOME_FEED_STORAGE_KEY)||'{}'));}catch{return homeFeedPreferences();}

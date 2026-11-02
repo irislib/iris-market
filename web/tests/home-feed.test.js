@@ -5,7 +5,7 @@ import {validateInput} from '../src/feed-filter/models.ts';
 
 test('the small model checks useful intent and exclusions separately; long custom prompts fit each request',()=>{
   const rules=homeFeedConditions(DEFAULT_HOME_FEED_PROMPT,'deberta');
-  assert.equal(rules.length,2);assert.match(rules[0].condition,/useful/);assert.equal(rules[1].exclude,true);
+  assert.equal(rules.length,3);assert.match(rules[0].condition,/useful/);assert.equal(rules[1].exclude,true);assert.equal(rules[2].exclude,true);assert.match(rules[2].condition,/steroids/);
   for(const model of ['browser','deberta']){
     const conditions=homeFeedConditions('creative things '.repeat(60)+'musical instruments',model);
     assert(conditions.length>1);

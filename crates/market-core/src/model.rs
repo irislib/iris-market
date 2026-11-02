@@ -152,16 +152,35 @@ pub struct AiSettings {
     pub interests: String,
     pub curate_feed: bool,
 }
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct HomeRanking {
+    pub graph_weight: f64,
+    pub relevance_weight: f64,
+    pub repeat_title_penalty: f64,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct HomeDefaults {
+    prompt: String,
+    previous_prompt: String,
+    pub ranking: HomeRanking,
+}
+pub(crate) fn home_defaults() -> &'static HomeDefaults {
+    static DEFAULTS: std::sync::LazyLock<HomeDefaults> = std::sync::LazyLock::new(|| {
+        serde_json::from_str(include_str!("../../../shared/home-feed.json"))
+            .expect("valid home preferences")
+    });
+    &DEFAULTS
+}
 pub fn default_home_feed_prompt() -> String {
-    serde_json::from_str::<serde_json::Value>(include_str!("../../../shared/home-feed.json"))
-        .expect("valid bundled home-feed preferences")["prompt"]
-        .as_str()
-        .expect("bundled home-feed prompt")
-        .to_owned()
+    home_defaults().prompt.clone()
 }
 impl AiSettings {
     pub fn home_feed_prompt(&self) -> String {
-        if self.interests.trim().is_empty() {
+        if self.interests.trim().is_empty()
+            || self.interests.trim() == home_defaults().previous_prompt
+        {
             default_home_feed_prompt()
         } else {
             self.interests.trim().to_owned()

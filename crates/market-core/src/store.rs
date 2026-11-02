@@ -170,9 +170,7 @@ impl Store {
         let mut settings: Settings = raw
             .map(|v| serde_json::from_str(&v).context("Read settings"))
             .unwrap_or_else(|| Ok(Settings::default()))?;
-        if settings.ai.interests.trim().is_empty() {
-            settings.ai.interests = crate::model::default_home_feed_prompt();
-        }
+        settings.ai.interests = settings.ai.home_feed_prompt();
         Ok(settings)
     }
     /// Existing explicit Off is a choice too; never infer intent from default values.

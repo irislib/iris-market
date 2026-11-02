@@ -1,3 +1,4 @@
+import homeFeed from '../../shared/home-feed.json' with {type:'json'};
 export interface RankableListing {
   id:string;author:string;category?:string;title?:string;description?:string;tags?:readonly string[];createdAt?:number;
   coordinates?:readonly [number,number]|null;locationBounds?:readonly [number,number,number,number]|null;
@@ -54,7 +55,10 @@ export function rankListings<T extends RankableListing>(listings:T[],{relationFo
   for(const listing of examples){const category=text(listing.category,80);if(category&&category!=='other')counts.set(category,Math.min(8,(counts.get(category)||0)+1))}
   const interests=new Map([...counts].sort((a,b)=>b[1]-a[1]||compare(a[0],b[0])).slice(0,32))
   const terms=[...new Set(words(query,500).filter(term=>!stopWords.has(term)))].slice(0,16)
+  const remainder:T[]=[]
+  const rows:Scored<T>[]=[]
   const relations=new Map<string,RankingRelation|null>(),authors=new Map<string,Scored<T>[]>()
+  const home=sort==='suggested' && !query.trim()
   for(const listing of listings){
     if(!relations.has(listing.author)){try{relations.set(listing.author,relationFor(listing.author))}catch{relations.set(listing.author,null)}}
     const relation=relations.get(listing.author),steps=relation?.distance
@@ -64,8 +68,24 @@ export function rankListings<T extends RankableListing>(listings:T[],{relationFo
     const literal=lexical(listing,terms)
     let ai:number|null|undefined;try{ai=aiScoreFor(listing)}catch{/* Inference failures must leave ordinary ranking usable. */}
     const relevance=typeof ai==='number'&&Number.isFinite(ai)&&ai>=0&&ai<=1?(terms.length?.85*ai+.15*literal:ai):literal
-    const score=(sort==='social'?8*relevance+16*graph:32*relevance+graph)+freshness+interest+nearby(listing,location)
-    const rows=authors.get(listing.author)||[];rows.push({listing,score,time,id:listing.id});authors.set(listing.author,rows)
+    const score=(sort==='social'?8*relevance+16*graph:home?homeFeed.ranking.relevanceWeight*relevance+homeFeed.ranking.graphWeight*graph:32*relevance+graph)+freshness+interest+nearby(listing,location)
+    rows.push({listing,score,time,id:listing.id})
+  }
+  if(home){
+    const titles=new Set<string>()
+    for(const row of rows.sort(byBase)){
+      const title=words(row.listing.title).join(' ')
+      if(title && titles.has(title))row.score-=homeFeed.ranking.repeatTitlePenalty
+      titles.add(title)
+    }
+  }
+  if(home && rows.length>1000){
+    rows.sort(byBase)
+    for(const row of rows.splice(1000))remainder.push(row.listing)
+  }
+  for(const row of rows){
+    const key=row.listing.author,items=authors.get(key)
+    if(items)items.push(row);else authors.set(key,[row])
   }
   // Each author's remaining rows share the same diversity penalty, so only
   // its best row belongs in the heap. This replaces the repeated full scan.
@@ -75,5 +95,5 @@ export function rankListings<T extends RankableListing>(listings:T[],{relationFo
   for(const items of authors.values()){items.sort(byBase);push({items,index:0,shown:0,score:items[0].score})}
   const output:T[]=[]
   while(heap.length){const entry=pop();output.push(entry.items[entry.index].listing);entry.index++;entry.shown++;if(entry.index<entry.items.length){entry.score=entry.items[entry.index].score-Math.min(3,1.5*entry.shown);push(entry)}}
-  return output
+  return output.concat(remainder)
 }

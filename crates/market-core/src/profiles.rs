@@ -55,6 +55,8 @@ pub struct Profile {
 pub struct Profiles {
     events: BTreeMap<(String, u16), Event>,
     graph: SocialGraph,
+    viewer: Option<String>,
+    home_graph: std::sync::OnceLock<std::sync::Arc<SocialGraph>>,
     bytes: usize,
     pub context_loaded: bool,
     public_cache: Option<PublicEventCache>,
@@ -66,6 +68,8 @@ impl Default for Profiles {
         Self {
             events: BTreeMap::new(),
             graph: SocialGraph::new(DEFAULT_ROOT),
+            viewer: None,
+            home_graph: Default::default(),
             bytes: 0,
             context_loaded: false,
             public_cache: None,
@@ -125,7 +129,10 @@ impl Profiles {
                 let _ = self.ingest(event);
             }
         }
-        self.context_loaded = self.events.contains_key(&(DEFAULT_ROOT.into(), 3));
+        self.context_loaded = self
+            .events
+            .get(&(DEFAULT_ROOT.into(), 3))
+            .is_some_and(supported_contacts);
         self.next_expiration = self.events.values().filter_map(expiration).min();
     }
     /// Public discovery alone writes the public cache. Private-peer hydration
@@ -178,16 +185,9 @@ impl Profiles {
         {
             return Ok(false);
         }
-        if kind == 3
-            && event
-                .tags
-                .iter()
-                .filter(|t| t.as_slice().first().is_some_and(|v| v == "p"))
-                .count()
-                > MAX_FOLLOWS
-        {
-            bail!("Follow list is too large");
-        }
+        // Retain the signed winner even when its list cannot be projected.
+        // Otherwise an older edge could regain a Home boost from the snapshot.
+        let unsupported = kind == 3 && !supported_contacts(&event);
         let key = (event.pubkey.to_hex(), kind);
         let previous = self.events.get(&key);
         if previous.is_some_and(|old| {
@@ -210,12 +210,35 @@ impl Profiles {
         if kind == 3 {
             self.rebuild_graph();
         }
+        if unsupported {
+            bail!("Follow list is too large");
+        }
         Ok(true)
     }
+    pub(crate) fn set_viewer(&mut self, viewer: String) {
+        if self.viewer.as_ref() != Some(&viewer) {
+            self.viewer = Some(viewer);
+            self.home_graph.take();
+        }
+    }
+
+    fn home_root(&self) -> &str {
+        self.viewer
+            .as_deref()
+            .filter(|viewer| !self.graph.get_followed_by_user(viewer).is_empty())
+            .unwrap_or(DEFAULT_ROOT)
+    }
+
     fn rebuild_graph(&mut self) {
-        self.graph = SocialGraph::new(DEFAULT_ROOT);
+        self.home_graph.take();
+        let mut graph = SocialGraph::new(DEFAULT_ROOT);
+        self.overlay_contacts(&mut graph, 1.0);
+        self.graph = graph;
+    }
+
+    fn overlay_contacts(&self, graph: &mut SocialGraph, mute_threshold: f64) {
         for event in self.events.values().filter(|e| e.kind == Kind::ContactList) {
-            self.graph.handle_event(
+            graph.handle_event(
                 &NostrEvent {
                     created_at: event.created_at.as_secs(),
                     content: String::new(),
@@ -223,24 +246,79 @@ impl Profiles {
                     pubkey: event.pubkey.to_hex(),
                     id: event.id.to_hex(),
                     sig: event.sig.to_string(),
-                    tags: event
-                        .tags
-                        .iter()
-                        .filter_map(|tag| {
-                            let parts = tag.as_slice();
-                            (parts.first().is_some_and(|s| s == "p"))
-                                .then(|| parts.get(1))
-                                .flatten()
-                                .and_then(|p| PublicKey::from_hex(p).ok())
-                                .map(|p| vec!["p".into(), p.to_hex()])
-                        })
-                        .collect(),
+                    tags: if !supported_contacts(event) {
+                        Vec::new()
+                    } else {
+                        event
+                            .tags
+                            .iter()
+                            .filter_map(|tag| {
+                                let parts = tag.as_slice();
+                                (parts.first().is_some_and(|s| s == "p"))
+                                    .then(|| parts.get(1))
+                                    .flatten()
+                                    .and_then(|p| PublicKey::from_hex(p).ok())
+                                    .map(|p| vec!["p".into(), p.to_hex()])
+                            })
+                            .collect()
+                    },
                 },
                 true,
-                1.0,
+                mute_threshold,
             );
         }
     }
+    pub(crate) fn home_relation(&self, author: &str) -> (Option<u32>, usize) {
+        let graph = self.home_graph.get_or_init(|| {
+            let root = self.home_root();
+            let use_snapshot = root == DEFAULT_ROOT
+                && self
+                    .events
+                    .get(&(DEFAULT_ROOT.into(), 3))
+                    .is_none_or(supported_contacts);
+            let mut graph = if use_snapshot {
+                // This snapshot has no signatures. Use it only for discovery,
+                // and let verified contacts replace even newer snapshot edges.
+                static BASE: std::sync::LazyLock<std::sync::Arc<SocialGraph>> =
+                    std::sync::LazyLock::new(|| {
+                        let bytes = include_bytes!("../../../web/src/data/social-graph.bin");
+                        let mut state = SocialGraph::from_binary(DEFAULT_ROOT, bytes)
+                            .expect("pinned public graph")
+                            .export_state();
+                        state.follow_list_created_at.clear();
+                        std::sync::Arc::new(
+                            SocialGraph::from_state(state).expect("valid discovery graph"),
+                        )
+                    });
+                if !self.events.values().any(|e| e.kind == Kind::ContactList) {
+                    return std::sync::Arc::clone(&BASE);
+                }
+                let mut graph = BASE.as_ref().clone();
+                self.overlay_contacts(&mut graph, f64::INFINITY);
+                graph
+            } else {
+                let mut graph = self.graph.clone();
+                graph.set_root(root).expect("verified viewer key");
+                graph
+            };
+            graph.recalculate_follow_distances();
+            std::sync::Arc::new(graph)
+        });
+        let graph =
+            if graph.get_root() == DEFAULT_ROOT && self.graph.get_follow_distance(author) < 1000 {
+                &self.graph
+            } else {
+                graph.as_ref()
+            };
+        let distance = graph.get_follow_distance(author);
+        let known = graph
+            .get_followers_by_user(author)
+            .iter()
+            .filter(|p| graph.get_follow_distance(p) == 1)
+            .count();
+        ((distance < 1000).then_some(distance), known)
+    }
+
     pub fn connection(&self, author: &str) -> Connection {
         let distance = self.graph.get_follow_distance(author);
         let known = self
@@ -306,7 +384,7 @@ impl Profiles {
         let metadata = self.metadata(author);
         Profile {
             person: self.person(author), about: text(&metadata, "about", 2000).unwrap_or_default(), website: safe_url(&metadata, "website"),
-            following_count: follows.len(), following_loaded: self.events.contains_key(&(author.into(), 3)),
+            following_count: follows.len(), following_loaded: self.events.get(&(author.into(), 3)).is_some_and(supported_contacts),
             following: follows.into_iter().take(DISPLAY_LIMIT).map(|p| self.person(&p)).collect(),
             followers_loaded: false, followers_loading: false, followers_error: None,
             followers: followers.into_iter().take(DISPLAY_LIMIT).map(|p| self.person(&p)).collect(),
@@ -315,6 +393,14 @@ impl Profiles {
             coverage: "Observed public lists · up to 32 network lists, 64 follower candidates and 256 displayed people. Not a complete follower count or identity verification.".into(), loading: false, error: None,
         }
     }
+}
+fn supported_contacts(event: &Event) -> bool {
+    event
+        .tags
+        .iter()
+        .filter(|tag| tag.as_slice().first().is_some_and(|s| s == "p"))
+        .nth(MAX_FOLLOWS)
+        .is_none()
 }
 fn expiration(event: &Event) -> Option<u64> {
     event
@@ -441,6 +527,14 @@ pub async fn fetch_cached(
     author: Option<String>,
     public_cache: Option<PublicEventCache>,
 ) -> Result<Profiles> {
+    fetch_viewer_context(relays, author, public_cache, None).await
+}
+pub(crate) async fn fetch_viewer_context(
+    relays: Vec<String>,
+    author: Option<String>,
+    public_cache: Option<PublicEventCache>,
+    viewer: Option<PublicKey>,
+) -> Result<Profiles> {
     if relays.is_empty() {
         bail!("Connect to a message server to load profiles");
     }
@@ -452,12 +546,20 @@ pub async fn fetch_cached(
     {
         owners.push(target);
     }
+    if let Some(viewer) = viewer
+        && !owners.contains(&viewer)
+    {
+        owners.push(viewer);
+    }
     let bus = RelayEventBus::new(relays, Duration::from_secs(5)).await?;
     bus.client()
         .wait_for_connection(Duration::from_secs(4))
         .await;
     let result = async {
         let mut cache = Profiles::from_public_cache(public_cache.clone());
+        if let Some(viewer) = viewer {
+            cache.set_viewer(viewer.to_hex());
+        }
         let initial = query(
             &bus,
             public_cache.as_ref(),
@@ -471,10 +573,13 @@ pub async fn fetch_cached(
         )
         .await?;
         retain_events(&mut cache, initial, &owners, None);
-        cache.context_loaded = cache.events.contains_key(&(DEFAULT_ROOT.into(), 3));
+        cache.context_loaded = cache
+            .events
+            .get(&(DEFAULT_ROOT.into(), 3))
+            .is_some_and(supported_contacts);
         let context: Vec<PublicKey> = cache
             .graph
-            .get_followed_by_user(DEFAULT_ROOT)
+            .get_followed_by_user(cache.home_root())
             .into_iter()
             .take(32)
             .filter_map(|p| PublicKey::from_hex(&p).ok())
@@ -623,6 +728,33 @@ mod tests {
             .custom_created_at(Timestamp::from(at))
             .sign_with_keys(keys)
             .unwrap()
+    }
+    #[test]
+    fn home_uses_personal_verified_follows_and_returns_to_discovery_when_cleared() {
+        let viewer = Keys::generate();
+        let friend = Keys::generate();
+        let seller = Keys::generate();
+        let mut profiles = Profiles::default();
+        profiles.set_viewer(viewer.public_key().to_hex());
+        let bundled = profiles.home_relation(DEFAULT_ROOT);
+        assert_eq!(bundled.0, Some(0));
+        profiles
+            .ingest(follows(&viewer, &[friend.public_key()], 100))
+            .unwrap();
+        profiles
+            .ingest(follows(&friend, &[seller.public_key()], 100))
+            .unwrap();
+        assert_eq!(
+            profiles.home_relation(&friend.public_key().to_hex()),
+            (Some(1), 0)
+        );
+        assert_eq!(
+            profiles.home_relation(&seller.public_key().to_hex()),
+            (Some(2), 1)
+        );
+        assert_eq!(profiles.home_relation(DEFAULT_ROOT).0, None);
+        profiles.ingest(follows(&viewer, &[], 101)).unwrap();
+        assert_eq!(profiles.home_relation(DEFAULT_ROOT), bundled);
     }
     #[test]
     fn verified_public_names_and_empty_lists_survive_offline_restart() {

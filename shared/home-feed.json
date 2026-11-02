@@ -1,3 +1,9 @@
 {
-  "prompt": "Inspiring, positive and useful offers and requests that enrich everyday life, creativity, learning, wellbeing or community. Avoid spam, scams, dubious claims and harmful or exploitative offers."
+  "prompt": "Show ordinary, useful goods and services people can use independently in everyday life: tools, technology, crafts, food, learning and community. Skip products intended for specialist supervision.",
+  "previousPrompt": "Inspiring, positive and useful offers and requests that enrich everyday life, creativity, learning, wellbeing or community. Avoid spam, scams, dubious claims and harmful or exploitative offers.",
+  "ranking": {
+    "graphWeight": 3,
+    "relevanceWeight": 8,
+    "repeatTitlePenalty": 3
+  }
 }

@@ -132,18 +132,29 @@ pub fn rank(
     now: u64,
     use_ai: bool,
 ) {
+    let home = query.trim().is_empty();
+    let weights = &crate::model::home_defaults().ranking;
     let terms = query_terms(query);
+    let mut relations = BTreeMap::new();
     let mut scored: Vec<_> = listings
         .drain(..)
         .map(|listing| {
-            let connection = profiles.connection(&listing.author);
-            let trust = match connection.follow_distance {
+            let (distance, known_followers) =
+                *relations.entry(listing.author.clone()).or_insert_with(|| {
+                    if home {
+                        profiles.home_relation(&listing.author)
+                    } else {
+                        let c = profiles.connection(&listing.author);
+                        (c.follow_distance, c.followed_by_friends)
+                    }
+                });
+            let trust = match distance {
                 Some(0 | 1) => 2.5,
                 Some(2) => 1.5,
                 Some(3) => 0.75,
                 _ => 0.0,
             };
-            let known = (((connection.followed_by_friends + 1) as f64).log2() / 4.0).min(1.25);
+            let known = (((known_followers + 1) as f64).log2() / 4.0).min(1.25);
             let freshness = 2.5
                 * 0.5_f64.powf(now.saturating_sub(listing.created_at) as f64 / (14.0 * 86400.0));
             let interest =
@@ -151,17 +162,31 @@ pub fn rank(
                     * 0.5)
                     .min(1.5);
             let relevance = relevance(&listing, &terms, query, use_ai);
-            (
-                listing,
-                trust + known + freshness + interest + 32.0 * relevance,
-            )
+            let graph = trust + known;
+            let priority = if home {
+                weights.graph_weight * graph + weights.relevance_weight * relevance
+            } else {
+                graph + 32.0 * relevance
+            };
+            (listing, priority + freshness + interest)
         })
         .collect();
-    scored.sort_by(|(a, sa), (b, sb)| {
+    let by_priority = |(a, sa): &(Listing, f64), (b, sb): &(Listing, f64)| {
         sb.total_cmp(sa)
             .then_with(|| b.created_at.cmp(&a.created_at))
             .then_with(|| a.id.cmp(&b.id))
-    });
+    };
+    scored.sort_by(by_priority);
+    if home {
+        let mut titles = HashSet::new();
+        for (listing, score) in &mut scored {
+            let title = normalize(&listing.title);
+            if !title.is_empty() && !titles.insert(title) {
+                *score -= weights.repeat_title_penalty;
+            }
+        }
+        scored.sort_by(by_priority);
+    }
     // Bound the diversity pass; older cached inventory remains accessible afterward.
     let remainder = if scored.len() > 1000 {
         scored.split_off(1000)
@@ -217,6 +242,28 @@ mod tests {
     use super::*;
     fn listing(id: &str, author: &str, at: u64) -> Listing {
         serde_json::from_value(serde_json::json!({"id":id,"author":author,"title":"Bicycle","description":"","side":"offer","price":"0","currency":"EUR","location":"","category":"Transport","image_url":null,"created_at":at,"expires_at":null,"status":"active","saved":false,"mine":false,"delivery":"published","relevance":null})).unwrap()
+    }
+    #[test]
+    fn home_prefers_a_distinct_offer_over_a_duplicate_title() {
+        let mut items = vec![
+            listing("a", "a", 100000),
+            listing("b", "b", 100000),
+            listing("c", "c", 13600),
+        ];
+        items[1].title = " BICYCLE! ".into();
+        items[2].title = "Guitar".into();
+        rank(
+            &mut items,
+            &Profiles::default(),
+            &BTreeMap::new(),
+            "",
+            100000,
+            false,
+        );
+        assert_eq!(
+            items.iter().map(|l| l.id.as_str()).collect::<Vec<_>>(),
+            ["a", "c", "b"]
+        );
     }
     #[test]
     fn cached_text_evidence_survives_snapshots_but_not_query_or_text_changes() {
@@ -293,7 +340,7 @@ mod tests {
             .map(|index| {
                 listing(
                     &format!("{index:04}"),
-                    &format!("{:064x}", index / 50),
+                    &format!("b8d31f{:058x}", index / 50),
                     1000,
                 )
             })

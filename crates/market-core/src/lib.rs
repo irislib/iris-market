@@ -503,6 +503,7 @@ impl Market {
             public_cache::PublicEventCache::open(&data_dir.join("public-events.sqlite")).ok()
         };
         let mut profiles = profiles::Profiles::from_public_cache(public_cache.clone());
+        profiles.set_viewer(owner.to_hex());
         if let Some(event) = local_profile {
             let _ = profiles.ingest_public(event);
         }
@@ -949,6 +950,8 @@ impl Market {
                         feed.cancel();
                     }
                     s.profiles = profiles::Profiles::from_public_cache(s.public_cache.clone());
+                    let owner = s.owner.to_hex();
+                    s.profiles.set_viewer(owner);
                     s.profile = None;
                     s.revision += 1;
                     drop(s);
@@ -1245,7 +1248,7 @@ impl Market {
         profile_listings::start(runtime, self.state.clone(), &author, more)
     }
     fn spawn_profiles(runtime: &Runtime, state: Arc<Mutex<State>>, author: Option<String>) {
-        let (relays, request, demo, public_cache) = {
+        let (relays, request, demo, public_cache, viewer) = {
             let mut s = state.lock().unwrap();
             s.profile_request += 1;
             Self::cancel_followers(&mut s);
@@ -1263,13 +1266,16 @@ impl Market {
                 s.profile_request,
                 s.demo,
                 s.public_cache.clone(),
+                s.owner,
             )
         };
         if demo {
             return;
         }
         runtime.spawn(async move {
-            let result = profiles::fetch_cached(relays, author.clone(), public_cache).await;
+            let result =
+                profiles::fetch_viewer_context(relays, author.clone(), public_cache, Some(viewer))
+                    .await;
             let mut s = state.lock().unwrap();
             if s.profile_request != request {
                 return;

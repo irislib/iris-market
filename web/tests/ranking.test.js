@@ -82,3 +82,9 @@ test('unsaving from Saved removes that item while keeping surviving saved items 
  assert.deepEqual(view.update(listings.filter(x=>saved.has(x.id)),'saved').map(x=>x.id),['a','c']);
  assert.equal(listings.length,3);
 });
+
+test('Home puts a distinct offer before a duplicate title from another seller',()=>{
+  const listings=[item('a'),item('b','b',{title:' BICYCLE! '}),item('c','c',{title:'Guitar',createdAt:now-86400})];
+  assert.deepEqual(rankListings(listings,{now}).map(l=>l.id),['a','c','b']);
+  assert.deepEqual(rankListings(listings,{now,sort:'newest'}).map(l=>l.id),['a','b','c']);
+});

@@ -148,6 +148,7 @@ import org.json.JSONObject
     var provider by remember { mutableStateOf(ai.optString("provider","compatible")) }
     var endpoint by remember { mutableStateOf(ai.optString("base_url","https://api.openai.com/v1")) }
     var modelName by remember { mutableStateOf(ai.optString("model")) }
+    var escrow by remember { mutableStateOf(initial.optBoolean("escrow_ui")) }
     var currency by remember { mutableStateOf(initial.optString("currency", "EUR")) }
     var currencyMenu by remember { mutableStateOf(false) }
     var presetID by remember { mutableStateOf(NativePreferences.matching(provider, endpoint).id) }
@@ -160,6 +161,7 @@ import org.json.JSONObject
     var servers by remember { mutableStateOf((initial.optJSONArray("relays") ?: JSONArray()).let { a -> (0 until a.length()).joinToString("\n"){a.getString(it)} }) }
     val settings={ JSONObject(initial.toString()).put("ai",JSONObject().put("enabled",enabled).put("provider",provider)
         .put("base_url",if(provider=="litert") "" else endpoint.trim()).put("model",if(provider=="litert") LocalModelManifest.ID else modelName.trim()).put("interests",initial.optJSONObject("ai")?.optString("interests") ?: "").put("curate_feed",initial.optJSONObject("ai")?.optBoolean("curate_feed",true) ?: true))
+        .put("escrow_ui",escrow)
         .put("currency", currency)
         .put("relays",JSONArray(servers.lines().map{it.trim()}.filter{it.isNotEmpty()}))
         .put("image_proxy",JSONObject(imageProxy.toString()).put("enabled",proxyEnabled).put("url",proxyURL.trim())) }
@@ -175,6 +177,9 @@ import org.json.JSONObject
         Row(verticalAlignment=Alignment.CenterVertically) {
             Icon(Icons.Filled.Settings,null,tint=Forest);Spacer(Modifier.width(10.dp));Text("Settings",style=MaterialTheme.typography.titleLarge,fontWeight=FontWeight.SemiBold)
         }
+        Text("Optional marketplace tools", style=MaterialTheme.typography.titleMedium)
+        ToolSwitch("Escrow", "Agree on a third person to help settle a payment.", escrow) { escrow=it }
+        HorizontalDivider()
         Row(verticalAlignment=Alignment.CenterVertically) {
             Text("AI search",modifier=Modifier.weight(1f),fontWeight=FontWeight.Medium)
             Switch(checked=enabled,onCheckedChange={enabled=it},modifier=Modifier.testTag("enableAI"))

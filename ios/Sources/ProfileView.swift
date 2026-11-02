@@ -46,6 +46,7 @@ struct ProfileView: View {
                         ForEach(MarketAppearance.allCases, id: \.rawValue) { option in Text(option.label).tag(option.rawValue) }
                     }.pickerStyle(.segmented).accessibilityIdentifier("appearancePicker")
                 }.padding(20).background(MarketTheme.surface, in: RoundedRectangle(cornerRadius: 23))
+                MarketplaceFeatureFlags()
                 MarketUpdatesView(preview: store.demo)
                 if store.demo { Label("Preview mode uses sample listings and stays offline.", systemImage: "eye").font(.system(size: 12)).foregroundStyle(MarketTheme.muted) }
             }.padding(23)

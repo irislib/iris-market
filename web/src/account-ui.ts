@@ -1,3 +1,4 @@
+import {setupMarketplaceFlags} from './marketplace-flags.ts';
 import {createChatPickerState,revealChatPicker} from './chat-picker-state.ts';
 import {visibleChatMessageIds} from './chat-visibility.ts';
 import {configuredLocalTestMint} from './wallet/mints.ts';
@@ -191,5 +192,7 @@ export function setupAccount({listingTitle=()=>undefined,getRelays,isPreview,onI
   $('account-button').onclick=()=>showAccount();$('inbox-tab').onclick=showInbox;
   if(!isPreview())void messaging.restore().then(value=>{state=value;renderAccount();if(pendingInvite)showAccount();}).catch(error=>{fail(error);if(pendingInvite)showAccount();}); else renderAccount();
   window.addEventListener('pagehide',()=>{if(readFrame!==undefined)cancelAnimationFrame(readFrame);window.removeEventListener('resize',scheduleSeen);$('chat-messages').removeEventListener('scroll',scheduleSeen);receiptSettings.remove();document.removeEventListener('visibilitychange',refreshUnread);document.removeEventListener('close',uncovered,true);window.removeEventListener('focus',refreshUnread);controller?.abort();messaging.destroy();});
-  return { messaging, state:()=>state, showAccount, showInbox, openChat, composeMessage, hideInbox:()=>inbox.hide(), closeAccount:()=>account.hide(), hideAccount:()=>account.hide(), onReady:listener=>readyListeners.add(listener), onState:listener=>{stateListeners.add(listener);return()=>stateListeners.delete(listener)} };
+  const api={ messaging, state:()=>state, showAccount, showInbox, openChat, composeMessage, hideInbox:()=>inbox.hide(), closeAccount:()=>account.hide(), hideAccount:()=>account.hide(), onReady:listener=>readyListeners.add(listener), onState:listener=>{stateListeners.add(listener);return()=>stateListeners.delete(listener)} };
+  setupMarketplaceFlags(api);
+  return api;
 }

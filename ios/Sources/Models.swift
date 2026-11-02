@@ -129,8 +129,9 @@ struct MarketSettings: Codable, Equatable {
     var currencyInitialized = true
     var sendDeliveryReceipts = true
     var sendReadReceipts = true
+    var escrowUi = false
     init() {}
-    private enum CodingKeys: String, CodingKey { case relays, ai, imageProxy, currency, currencyInitialized, sendDeliveryReceipts, sendReadReceipts }
+    private enum CodingKeys: String, CodingKey { case relays, ai, imageProxy, currency, currencyInitialized, sendDeliveryReceipts, sendReadReceipts, escrowUi }
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         relays = try values.decodeIfPresent([String].self, forKey: .relays) ?? relays
@@ -139,6 +140,7 @@ struct MarketSettings: Codable, Equatable {
         currency = try values.decodeIfPresent(String.self, forKey: .currency) ?? currency
         currencyInitialized = try values.decodeIfPresent(Bool.self, forKey: .currencyInitialized) ?? true
         sendDeliveryReceipts = try values.decodeIfPresent(Bool.self, forKey: .sendDeliveryReceipts) ?? true
+        escrowUi = try values.decodeIfPresent(Bool.self, forKey: .escrowUi) ?? false
         sendReadReceipts = try values.decodeIfPresent(Bool.self, forKey: .sendReadReceipts) ?? true
     }
 }

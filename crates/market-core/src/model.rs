@@ -230,6 +230,7 @@ pub struct Settings {
     pub send_delivery_receipts: bool,
     #[serde(default = "receipts_enabled")]
     pub send_read_receipts: bool,
+    pub escrow_ui: bool,
 }
 fn currency_already_initialized() -> bool {
     true
@@ -254,6 +255,7 @@ impl Default for Settings {
             currency_initialized: false,
             send_delivery_receipts: true,
             send_read_receipts: true,
+            escrow_ui: false,
         }
     }
 }
@@ -491,4 +493,19 @@ pub enum Command {
 }
 fn one() -> u16 {
     1
+}
+
+#[cfg(test)]
+mod marketplace_feature_flags {
+    use super::Settings;
+
+    #[test]
+    fn escrow_defaults_to_off_and_opt_in_persists() {
+        let mut settings: Settings = serde_json::from_str("{}").unwrap();
+        assert!(!settings.escrow_ui);
+        settings.escrow_ui = true;
+        let restored: Settings =
+            serde_json::from_value(serde_json::to_value(settings).unwrap()).unwrap();
+        assert!(restored.escrow_ui);
+    }
 }

@@ -1,5 +1,8 @@
 package to.iris.market
 
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.ui.semantics.Role
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -245,6 +248,19 @@ private fun inboxContextTitle(context:MessageContext?,state:MarketSnapshot):Stri
         OutlinedButton(onClick={signIn=true},enabled=!state.demo) {Icon(Icons.Filled.Login,null);Spacer(Modifier.width(8.dp));Text("Sign in")}
         if(!state.demo&&!state.canSign) Text("Sign in with your profile key to publish listings.",color=Muted,style=MaterialTheme.typography.bodySmall)
         TextButton(onClick=openWallet,enabled=!state.demo&&!state.profileNameRequired) { Icon(Icons.Filled.AccountBalanceWallet,null);Spacer(Modifier.width(8.dp));Text("Wallet") }
+        val escrowEnabled=remember(state.settings){JSONObject(state.settings).optBoolean("escrow_ui")}
+        Row(
+            modifier=Modifier.fillMaxWidth().toggleable(value=escrowEnabled, enabled=!busy, role=Role.Switch) { enabled ->
+                model.command(JSONObject().put("type","set_settings").put("settings",JSONObject(state.settings).put("escrow_ui",enabled)))
+            }.padding(vertical=8.dp),
+            horizontalArrangement=Arrangement.spacedBy(12.dp), verticalAlignment=Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("Escrow",style=MaterialTheme.typography.titleMedium)
+                Text("Agree on a third person to help settle a payment.",style=MaterialTheme.typography.bodySmall,color=Muted)
+            }
+            Switch(checked=escrowEnabled,onCheckedChange=null)
+        }
         TextButton(onClick=openTransport) { Icon(Icons.Filled.DirectionsCar,null);Spacer(Modifier.width(8.dp));Text("Transport · work, jobs and services") }
         TextButton(onClick=openProfile) { Icon(Icons.Filled.AccountCircle,null);Spacer(Modifier.width(8.dp));Text("My listings") }
         Column {

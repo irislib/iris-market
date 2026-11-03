@@ -304,8 +304,9 @@ def build_android(args, stage, cache, environment):
 
 def compact_asset_hashes(apk, generated):
     """Bind the generated offline search bundle to the bytes shipped in the APK."""
+    # AAPT decompresses .gz assets. The app serves the gzip bytes from .bin.
     expected = {"index.html", "page.js", "worker.js", "topic-vectors.bin", "THIRD_PARTY_NOTICES.txt",
-                "ort-wasm-simd-threaded.mjs", "ort-wasm-simd-threaded.wasm.gz"}
+                "ort-wasm-simd-threaded.mjs", "ort-wasm-simd-threaded.wasm.bin"}
     prefix = "assets/compact-search/"
     hashes = {}
     with zipfile.ZipFile(apk) as archive:

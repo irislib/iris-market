@@ -501,7 +501,7 @@ class AlphaContract(unittest.TestCase):
 
     def test_android_compact_asset_receipt_checks_packaged_bytes(self):
         bundle=self.root/'assets';bundle.mkdir()
-        names=['index.html','page.js','worker.js','topic-vectors.bin','THIRD_PARTY_NOTICES.txt','ort-wasm-simd-threaded.mjs','ort-wasm-simd-threaded.wasm.gz']
+        names=['index.html','page.js','worker.js','topic-vectors.bin','THIRD_PARTY_NOTICES.txt','ort-wasm-simd-threaded.mjs','ort-wasm-simd-threaded.wasm.bin']
         path=self.root/'compact.apk'
         with zipfile.ZipFile(path,'w') as archive:
             for name in names:

@@ -74,6 +74,11 @@ private class MapBridge {
     var web: WebView?=null
     var listings: List<Listing> = emptyList()
     var onSelect: (Listing)->Unit={}
+    var onArea: (JSONArray)->Unit={}
+    @JavascriptInterface fun discover(data:String) {
+        if(data.length>4096) return
+        web?.post { if(trustedMap(web?.url)) runCatching { JSONArray(data) }.getOrNull()?.takeIf { it.length()<=256 }?.let(onArea) }
+    }
     var dark=false
     var loaded=false
     private var lastPayload=""
@@ -103,13 +108,14 @@ private class MapBridge {
     }
 }
 @SuppressLint("SetJavaScriptEnabled")
-@Composable fun MarketMapView(listings: List<Listing>, onSelect:(Listing)->Unit, modifier: Modifier=Modifier) {
+@Composable fun MarketMapView(listings: List<Listing>, onSelect:(Listing)->Unit, modifier: Modifier=Modifier, onArea:(JSONArray)->Unit={}) {
     val context=LocalContext.current
     val dark=MaterialTheme.colorScheme.background.luminance()<.5f
     val bridge=remember { MapBridge() }
     val failed=remember { mutableStateOf(false) }
     val callback by rememberUpdatedState(onSelect)
-    DisposableEffect(bridge) {onDispose {bridge.web?.apply {stopLoading();removeJavascriptInterface("MarketMapBridge");destroy()};bridge.web=null}}
+    val areaCallback by rememberUpdatedState(onArea)
+    DisposableEffect(bridge) {onDispose {areaCallback(JSONArray());bridge.web?.apply {stopLoading();removeJavascriptInterface("MarketMapBridge");destroy()};bridge.web=null}}
     MapFrame(modifier,failed.value,{bridge.web?.reload()}) {
     AndroidView(modifier=Modifier.fillMaxSize(),factory={
         WebView(context).apply {
@@ -127,7 +133,7 @@ private class MapBridge {
                     return true
                 }
             }
-            bridge.web=this;bridge.listings=listings;bridge.dark=dark;bridge.onSelect={callback(it)}
+            bridge.onArea={areaCallback(it)};bridge.web=this;bridge.listings=listings;bridge.dark=dark;bridge.onSelect={callback(it)}
             loadUrl("https://market.iris.to/native-map?native=1&cache=512&theme=${if(dark) "dark" else "light"}")
         }
     },update={bridge.listings=listings;bridge.dark=dark;bridge.onSelect={callback(it)};bridge.send()})

@@ -126,6 +126,18 @@ pub fn build(
         ],
         vec!["client".into(), "Iris Market".into()],
     ];
+    if let Some(hash) = d
+        .location
+        .split_whitespace()
+        .last()
+        .and_then(|s| s.strip_prefix('#'))
+        && crate::geo::decode(hash).is_some()
+    {
+        let hash = hash.to_ascii_lowercase();
+        for length in 1..=hash.len() {
+            tags.push(vec!["g".into(), hash[..length].into()]);
+        }
+    }
     let mut topics = std::collections::HashSet::new();
     if let Some(category) = normalized_tag(&d.category) {
         topics.insert(category);

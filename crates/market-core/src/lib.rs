@@ -71,6 +71,7 @@ pub(crate) struct State {
     remote_ai_cancel: Option<Arc<Notify>>,
     remote_ai_is_check: bool,
     buying_request: u64,
+    map_cells: Vec<String>,
     search_request: u64,
     search_terms: Vec<String>,
     search_plan_applied: bool,
@@ -590,6 +591,7 @@ impl Market {
             remote_ai_cancel: None,
             remote_ai_is_check: false,
             buying_request: 0,
+            map_cells: Vec::new(),
             search_request: 0,
             search_terms: Vec::new(),
             search_plan_applied: false,
@@ -841,6 +843,24 @@ impl Market {
                 let has_query = s.can_discover_search();
                 s.search_discovery.restart(generation, has_query);
                 self.notify.notify_waiters();
+            }
+            Command::SetMapArea { mut cells } => {
+                if cells.len() > 256
+                    || cells
+                        .iter()
+                        .any(|cell| cell.len() > 8 || crate::geo::decode(cell).is_none())
+                {
+                    bail!("Invalid map area");
+                }
+                for cell in &mut cells {
+                    cell.make_ascii_lowercase();
+                }
+                cells.sort();
+                cells.dedup();
+                if cells != s.map_cells {
+                    s.map_cells = cells;
+                    self.notify.notify_waiters();
+                }
             }
             Command::ContinueSearch => {
                 if s.can_discover_search() {

@@ -99,6 +99,7 @@ pub(crate) async fn run(state: Arc<Mutex<State>>, notify: Arc<Notify>, stopped: 
         }
         let mut metadata_queried = std::collections::HashSet::new();
         let mut buying_request = 0;
+        let mut queried_cells = Vec::new();
         loop {
             if stopped.load(Ordering::Acquire) {
                 break;
@@ -110,6 +111,42 @@ pub(crate) async fn run(state: Arc<Mutex<State>>, notify: Arc<Notify>, stopped: 
             if request != buying_request {
                 buying_request = request;
                 backfill_buying(&bus, &state, &relays, request, &stopped).await;
+            }
+            let cells = state.lock().unwrap().map_cells.clone();
+            if queried_cells != cells {
+                queried_cells = cells;
+                if !queried_cells.is_empty() {
+                    let filter = Filter::new()
+                        .custom_tags(
+                            nostr::SingleLetterTag::lowercase(nostr::Alphabet::G),
+                            queried_cells.clone(),
+                        )
+                        .limit(128);
+                    if let Ok(report) = bus
+                        .query(listing::filters(filter), QueryOptions { limit: Some(128) })
+                        .await
+                    {
+                        let mut s = state.lock().unwrap();
+                        if s.map_cells == queried_cells && s.settings.relays == relays {
+                            for received in report.events.into_iter().take(128) {
+                                let event = received.event.as_event();
+                                if event.tags.iter().any(|tag| {
+                                    let parts = tag.as_slice();
+                                    parts[0] == "g"
+                                        && parts.get(1).is_some_and(|cell| {
+                                            queried_cells.binary_search(cell).is_ok()
+                                        })
+                                }) && s
+                                    .store
+                                    .ingest(event, listing::now(), false)
+                                    .unwrap_or(false)
+                                {
+                                    s.revision += 1;
+                                }
+                            }
+                        }
+                    }
+                }
             }
             // These are authors of the public marketplace feed, never inbox peers.
             let authors = {
@@ -163,7 +200,10 @@ pub(crate) async fn run(state: Arc<Mutex<State>>, notify: Arc<Notify>, stopped: 
                 .into();
                 s.revision += 1;
             }
-            if state.lock().unwrap().buying_request != buying_request {
+            if {
+                let s = state.lock().unwrap();
+                s.buying_request != buying_request || s.map_cells != queried_cells
+            } {
                 continue;
             }
             tokio::select! { _=notify.notified()=>{}, _=tokio::time::sleep(Duration::from_secs(20))=>{} }

@@ -79,7 +79,7 @@ export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetch
   };
   function scheduleHome() {
     if(homeScheduled||closed||!homeRequested()||homeStopped||showAll||phase!=='idle'||activeRun||testBusy||$('search').value.trim()||scores.size>=homeReviewLimit||matchCount()>=targetMatches||!candidates().some(l=>!scores.has(keyFor(l))))return;
-    if(!runtime().info&&(!autoPrepare||saveData()||$('ai-model').value==='browser'&&!browserAvailable))return;
+    if(!runtime().info&&(matchCount()>0||!autoPrepare||saveData()||$('ai-model').value==='browser'&&!browserAvailable))return;
     homeScheduled=true;
     queueMicrotask(()=>{homeScheduled=false;if(!closed&&homeRequested()&&!homeStopped&&phase==='idle'&&!activeRun&&!$('search').value.trim())void run({homeRun:true,automatic:true});});
   }
@@ -122,10 +122,10 @@ export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetch
       wakeCandidates=wake;wake();
     });
   }
-  function stop({reset=false,unload=true}={}) {
+  function stop({reset=false,unload=true,finishCurrent=false}={}) {
     homeStopped=!reset;
     sourceError=null;sourceErrorVisible=false;
-    generation++;runController?.abort();runController=null;activeRun=null;sourceEpoch++;wakeCandidates?.();if(unload){prepareGeneration++;preparation=undefined;downloadFraction=undefined;client.dispose();browserClient.dispose();}phase='idle';waitingCandidates=false;paused=!reset;progress.hidden=true;$('ai-progress').textContent='';
+    generation++;if(!finishCurrent)runController?.abort();runController=null;activeRun=null;sourceEpoch++;wakeCandidates?.();if(unload){prepareGeneration++;preparation=undefined;downloadFraction=undefined;client.dispose();browserClient.dispose();}phase='idle';waitingCandidates=false;paused=!reset;progress.hidden=true;$('ai-progress').textContent='';
     if(reset){scores.clear();submittedQuery='';homeContext='';homeReviewLimit=240;showAll=false;sourceExhausted=false;targetMatches=24;$('ai-error').textContent='';}
     refresh();onChange();
   }
@@ -322,7 +322,7 @@ export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetch
     const score=scores.get(keyFor(listing));return Number.isFinite(score)?score:undefined;
   };
   const planTags=(query:string,tags:readonly string[],signal?:AbortSignal)=>{const epoch=generation;return planBrowserTags(query,tags,{info:enabled()&&$('ai-model').value==='browser'?browserClient.info:null,signal,isCurrent:()=>!closed&&generation===epoch&&enabled()&&$('ai-model').value==='browser'&&submittedQuery===query});};
-  function viewChanged(){const visible=isHomeVisible();if(!visible&&homeContext&&!homeStopped)stop({unload:false});if(visible&&!homeWasVisible)homeStopped=false;homeWasVisible=visible;refresh();}
+  function viewChanged(){const visible=isHomeVisible();if(!visible&&homeContext&&!homeStopped){stop({unload:false,finishCurrent:true});paused=false;}if(visible&&!homeWasVisible)homeStopped=false;homeWasVisible=visible;refresh();}
   document.addEventListener?.('visibilitychange',viewChanged);
   return { ready,planTags,enabled,homeActive,showingAll:()=>showAll,viewChanged,submit:(query:string)=>{$('search').value=query;return run();},homeFeed:()=>({...home}),setHomeFeed:(value:HomeFeedPreferences)=>{home=homeFeedPreferences(value);if(submittedQuery){refresh();onChange();}else stop({reset:true,unload:false});},query:()=>submittedQuery, searching:()=>phase!=='idle', loadMore:()=>run({continuation:true,homeRun:homeActive()}), pagination, scoreFor, isVisible: listing => !enabled() || showAll || !curationActive() || matches(listing), refresh, stop: () => stop({reset:true}) };
 }

@@ -5,6 +5,15 @@ import {listingDraft,revisedListingDraft} from '../src/composer.ts';
 import {parseEvent} from '../src/market.ts';
 import {serviceAreaCircle,serviceAreaContains} from '../src/service-area.ts';
 const values={title:'Desk',description:'Local pickup',price:'100.50',currency:'eur',location:'Helsinki',side:'offer',category:'home'};
+test('explicit public location publishes legacy prefixes and an edit replaces them',()=>{
+ const key=generateSecretKey(),original={...values,location:'Pickup area #U60G'};
+ const listing=parseEvent(finalizeEvent(listingDraft(original),key));
+ assert.deepEqual(listing.originalTags.filter(t=>t[0]==='g').map(t=>t[1]),['u','u6','u60','u60g']);
+ assert.equal(listing.geohash,'u60g');
+ const updated=parseEvent(finalizeEvent(revisedListingDraft({...values,location:'#ezjm'},listing),key));
+ assert.equal(updated.geohash,'ezjm');assert(!updated.originalTags.some(t=>t[1]==='u60g'));
+ assert.equal(parseEvent(finalizeEvent(revisedListingDraft(values,updated),key)).coordinates,null);
+});
 test('transport areas survive signing and edits without becoming location pins',()=>{
  const key=generateSecretKey(),pickup=serviceAreaCircle([24.94,60.17],10),destination=serviceAreaCircle([25.6,60.4],30);
  const draft=listingDraft({...values,category:'transport',serviceAreas:{pickup,destination}},{identifier:'transport-area'});

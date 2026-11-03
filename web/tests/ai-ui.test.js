@@ -110,6 +110,17 @@ test('leaving Home cancels its review and reveals unreviewed items elsewhere',as
   field('search-mode').value='text';ui.stop();
 });
 
+test('returning to a reviewed Home keeps decisions after the runtime goes idle',async()=>{
+  let visible=true,loads=0,reviews=0;
+  const client={info:{model:'deberta'},async load(){loads++;this.info={model:'deberta'};},async classify(){reviews++;return {score:.9};},dispose(){this.info=null;}};
+  const {ui,setRows}=fixture({client,homeFeed:{enabled:true,prompt:'Useful things'},autoPrepare:true,isHomeVisible:()=>visible});
+  await ui.ready;await ui.submit('');
+  visible=false;ui.viewChanged();client.dispose();
+  setRows([bicycle,{id:'desk',title:'Desk'}]);visible=true;ui.viewChanged();
+  await new Promise(resolve=>setTimeout(resolve,10));
+  assert.equal(ui.isVisible(bicycle),true);assert.equal(reviews,1);assert.equal(loads,0);
+  await ui.loadMore();assert.equal(loads,1);assert.equal(reviews,2);
+});
 test('model failures leave direct candidates accessible through Show all',async()=>{
   const row={...bicycle,eventId:'first'};
   const client={info:null,async load(){throw Error('Model unavailable');},async classify(){throw Error('Unexpected inference');},dispose(){this.info=null;}};

@@ -1,10 +1,11 @@
+import {createViewportDiscovery} from './map/discovery.ts';
 import {mountNativeArea} from './native-area.ts';
 import {mountNativePlace} from './native-place.ts';
 import { createMarketMap, type MapListing } from './map/index.ts';
 import { setupShipmentMap, type Shipment } from './map/shipment.ts';
 import { validateServiceArea, type ServiceAreas } from './service-area.ts';
 
-interface NativeMapBridge { ready(): void; select?(id: string): void }
+interface NativeMapBridge { ready(): void; select?(id: string): void; discover?(cells: string):void }
 export interface NativeMapController {
   setListings?(value: unknown): void;
   setShipment?(value: unknown): boolean;
@@ -18,7 +19,7 @@ interface NativeRenderer {
 }
 declare global {
   interface Window {
-    webkit?: { messageHandlers?: { marketMap?: { postMessage(message: { type: string; id?: string }): void } } }
+    webkit?: { messageHandlers?: { marketMap?: { postMessage(message: { type: string; id?: string; cells?:string[] }): void } } }
     MarketMapBridge?: NativeMapBridge;
     marketMap: NativeMapController;
   }
@@ -122,6 +123,18 @@ export async function mountNativeMap() {
     else if (type === 'ready') window.MarketMapBridge?.ready();
     else if (type === 'select') window.MarketMapBridge?.select?.(id);
   };
+  const discovery=shipmentMode?null:createViewportDiscovery(cells=>{
+    // Keep complete precision levels. Never truncate a viewport to one side.
+    const bounded:string[]=[];
+    for(const precision of [...new Set(cells.map(cell=>cell.length))].sort((a,b)=>a-b)){
+      const level=cells.filter(cell=>cell.length===precision);
+      if(bounded.length+level.length>256)break;
+      bounded.push(...level);
+    }
+    if(window.webkit?.messageHandlers?.marketMap)window.webkit.messageHandlers.marketMap.postMessage({type:'discover',cells:bounded});
+    else window.MarketMapBridge?.discover?.(JSON.stringify(bounded));
+  });
+  discovery?.setActive(true);
   const controller = createNativeMapController({ shipmentMode, dark, onError: showError, onAppearance: value => { document.documentElement.dataset.appearance = value ? 'dark' : 'light'; } });
   window.marketMap = controller.api;
   window.marketMap.setDark(dark);
@@ -138,14 +151,14 @@ export async function mountNativeMap() {
   $<HTMLSelectElement>('map-cache').onchange = async () => { try { await instance?.setCacheMiB(Number($<HTMLSelectElement>('map-cache').value)); await stats(); } catch(error) { showError(error); } };
   $('map-clear').onclick = async () => { try { await instance?.clearCache(); await stats(); } catch(error) { showError(error); } };
   const interval = shipmentMode ? null : setInterval(() => stats().catch(() => {}), 5000);
-  window.addEventListener('pagehide', () => { disposed = true; if (interval !== null) clearInterval(interval); void controller.close(); }, { once: true });
+  window.addEventListener('pagehide', () => { disposed = true; discovery?.dispose(); if (interval !== null) clearInterval(interval); void controller.close(); }, { once: true });
   send('ready');
   try {
     if (shipmentMode) {
       const map = await setupShipmentMap($('map-canvas'), { dark, onError: showError });
       await controller.attach(map);
     } else {
-      instance = await createMarketMap($('map-canvas'), { dark, cacheMiB: Number($<HTMLSelectElement>('map-cache').value), onSelect: listing => send('select', listing.id), onError: showError });
+      instance = await createMarketMap($('map-canvas'), { dark, cacheMiB: Number($<HTMLSelectElement>('map-cache').value), onSelect: listing => send('select', listing.id), onViewport:view=>discovery?.update(view), onError: showError });
       await controller.attach(instance); await stats();
     }
     if (!disposed) { $('map-status').textContent = shipmentMode ? 'Stops joined directly; not driving directions.' : 'Approximate locations shared by authors'; send('ready'); }

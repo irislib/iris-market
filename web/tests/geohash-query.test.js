@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { decodeGeohash, geohashQueryForViewport } from '../src/map/geohash.ts'
+import { approximateLocationHash, decodeGeohash, geohashQueryForViewport } from '../src/map/geohash.ts'
 
 const alphabet = '0123456789bcdefghjkmnpqrstuvwxyz'
 const helsinki = { west: 24.75, south: 60.1, east: 25.15, north: 60.3, zoom: 11 }
@@ -15,6 +15,12 @@ function assertBounded(values) {
   assert.deepEqual(values, [...new Set(values)].sort())
   for (const value of values) assert.match(value, /^[0123456789bcdefghjkmnpqrstuvwxyz]{1,8}$/)
 }
+
+test('a shared device area contains the fix at four characters of precision',()=>{
+  const cell=approximateLocationHash(24.94,60.17)
+  assert.equal(cell.length,4)
+  assert(covers([cell],24.94,60.17))
+})
 
 test('world view covers every top-level cell without an unbounded query', () => {
   const values = geohashQueryForViewport({ west: -180, south: -90, east: 180, north: 90, zoom: 0 })

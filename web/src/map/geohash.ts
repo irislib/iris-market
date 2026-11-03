@@ -17,6 +17,16 @@ export function decodeGeohash(value: unknown): GeohashCell | null {
   return Object.freeze({ geohash, coordinates: Object.freeze([(west + east) / 2, (south + north) / 2] as const), bounds: Object.freeze([west, south, east, north] as const) })
 }
 
+export function locationHash(location: string): string | undefined {
+  return decodeGeohash(location?.trim().match(/(?:^|\s)#(\S+)$/u)?.[1])?.geohash
+}
+
+/** Match the old Iris publisher's four-character public area. */
+export function approximateLocationHash(longitude:number,latitude:number):string {
+  const point={west:longitude,east:longitude,south:latitude,north:latitude,zoom:0}
+  return gridHashes(cellGrid(viewportBounds(point),4))[0]
+}
+
 /** A pin describes the published cell's centre, never an inferred street address. */
 export function locationFromTags(tags: readonly (readonly string[])[]): GeohashCell | null {
   const cells = tags.filter(tag => tag[0] === 'g' && !['pickup','destination'].includes(tag[2])).map(tag => decodeGeohash(tag[1])).filter(Boolean)

@@ -3,6 +3,25 @@ use nostr::{EventBuilder, Keys, Tag, Timestamp};
 use serde_json::json;
 
 #[test]
+fn explicit_location_publishes_legacy_geohash_prefixes() {
+    let draft: Draft =
+        serde_json::from_value(json!({"title":"Desk","description":"","side":"offer","location":"Pickup area #U60G"})).unwrap();
+    let event = listing::build(&Keys::generate(), &draft, "desk", 100, false).unwrap();
+    let cells: Vec<_> = event
+        .tags
+        .iter()
+        .map(Tag::as_slice)
+        .filter(|t| t[0] == "g")
+        .map(|t| t[1].as_str())
+        .collect();
+    assert_eq!(cells, ["u", "u6", "u60", "u60g"]);
+    assert_eq!(
+        listing::parse(&event, 100).unwrap().coordinates,
+        iris_market_core::geo::decode("u60g")
+    );
+}
+
+#[test]
 fn explicit_courier_topics_round_trip_in_signed_listings_and_closed_revisions() {
     let keys = Keys::generate();
     let draft: Draft = serde_json::from_value(json!({"title":"Parcel delivery","description":"Small parcels","side":"offer","category":"transport","tags":["#Courier","parcel","COURIER","Transport"]})).unwrap();

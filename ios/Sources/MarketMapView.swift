@@ -38,6 +38,7 @@ private struct MarketMapContent: MarketMapRepresentable {
     let onSelect: (MarketListing) -> Void
     let retry: Int
     let onFailure: () -> Void
+    @EnvironmentObject private var store: MarketStore
     @Environment(\.colorScheme) private var scheme
     func makeCoordinator() -> Coordinator { Coordinator() }
     #if os(macOS)
@@ -61,6 +62,7 @@ private struct MarketMapContent: MarketMapRepresentable {
         #endif
         web.underPageBackgroundColor = .clear
         context.coordinator.web = web
+        context.coordinator.onArea = { cells in store.command(["type": "set_map_area", "cells": cells]) }
         context.coordinator.onFailure = onFailure
         context.coordinator.update(listings: listings, dark: scheme == .dark, onSelect: onSelect)
         context.coordinator.load(retry: retry)
@@ -75,6 +77,7 @@ private struct MarketMapContent: MarketMapRepresentable {
     final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         weak var web: WKWebView?
         var onFailure: (() -> Void)?
+        var onArea: (([String]) -> Void)?
         private var lastRetry = -1
         private var listings: [MarketListing] = []
         private var dark = false
@@ -106,6 +109,7 @@ private struct MarketMapContent: MarketMapRepresentable {
         }
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
             guard !closed, message.frameInfo.isMainFrame, trusted(message.frameInfo.request.url), trusted(web?.url), let value = message.body as? [String: Any] else { return }
+            if value["type"] as? String == "discover", let cells = value["cells"] as? [String], cells.count <= 256, cells.allSatisfy({ $0.utf8.count <= 8 }) { onArea?(cells) }
             if value["type"] as? String == "ready" { ready = true; lastPayload = ""; send() }
             if value["type"] as? String == "select", let id = value["id"] as? String, let listing = listings.first(where: { $0.id == id }) { callback?(listing) }
         }
@@ -131,6 +135,7 @@ private struct MarketMapContent: MarketMapRepresentable {
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { failed(error) }
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { failed() }
         func close(_ view: WKWebView) {
+            onArea?([]); onArea = nil
             closed = true; ready = false; listings = []; callback = nil; onFailure = nil; lastPayload = ""
             view.stopLoading(); view.configuration.userContentController.removeScriptMessageHandler(forName: "marketMap")
             view.navigationDelegate = nil; web = nil

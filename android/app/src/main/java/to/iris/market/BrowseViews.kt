@@ -140,7 +140,7 @@ import org.json.JSONObject
             }
         }
         if (showMap && !state.demo) item(span={GridItemSpan(maxLineSpan)}) {
-            MarketMapView(visibleListings,selected,Modifier.fillMaxWidth().height(440.dp).clip(RoundedCornerShape(20.dp)))
+            MarketMapView(visibleListings,selected,Modifier.fillMaxWidth().height(440.dp).clip(RoundedCornerShape(20.dp))) { cells -> model.command(JSONObject().put("type","set_map_area").put("cells",cells)) }
         }
         if (!showMap && visibleListings.isEmpty()) item(span={GridItemSpan(maxLineSpan)}) {
             EmptyView(if(canCurate && !showAll && state.error != null) "Search paused" else if(searching || canCurate && !showAll && (state.searchDiscovery?.hasMore == true || state.listings.any { it.relevanceShow == null })) "No matches yet" else if(canCurate && !showAll) "No matching listings" else if(query.isBlank()) "No listings yet" else "No matches",

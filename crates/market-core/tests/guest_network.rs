@@ -132,6 +132,23 @@ fn guest_activation(name: &str) {
         }
     };
     assert_guest(&guest);
+    // A map zoom must reach the relay with the new precision.
+    for cell in ["ud", "ud9w"] {
+        guest
+            .command(&json!({"type":"set_map_area","cells":[cell]}).to_string())
+            .unwrap();
+        wait_until(|| {
+            wire.lock().unwrap().iter().any(|frame| {
+                frame[0] == "REQ"
+                    && frame.as_array().unwrap()[2..]
+                        .iter()
+                        .any(|filter| filter["#g"] == json!([cell]))
+            })
+        });
+    }
+    guest
+        .command(r#"{"type":"set_map_area","cells":[]}"#)
+        .unwrap();
     assert!(
         store
             .pending()

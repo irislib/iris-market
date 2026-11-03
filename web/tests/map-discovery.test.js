@@ -57,7 +57,7 @@ test('map requests respect author/tag filters, have bounded results and reconnec
     assert.equal(query.slice(2).reduce((n,filter)=>n+filter.limit,0),240)
     socket.readyState=3;app.refresh();const next=Socket.instances.at(-1);next.open()
     assert.deepEqual(next.sent.at(-1).slice(2),query.slice(2))
-    for(const bad of [['u*'],['UD9'],Array(32769).fill('u'),['u'.repeat(9)],null])assert.throws(()=>app.setGeohashes(bad),/map search/)
+    for(const bad of [['u*'],['UD9'],Array(32769).fill('u'),['u'.repeat(13)],null])assert.throws(()=>app.setGeohashes(bad),/map search/)
   } finally {app.close()}
 })
 test('empty following filters never widen into map discovery',()=>{

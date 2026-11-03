@@ -382,6 +382,9 @@ pub enum Command {
     },
     BeginLocalCuration,
     ContinueSearch,
+    SetMapArea {
+        cells: Vec<String>,
+    },
     CancelSearch,
     ApplySearchPlan {
         generation: u64,

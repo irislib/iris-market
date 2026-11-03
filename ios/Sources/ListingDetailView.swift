@@ -157,7 +157,7 @@ struct NewListingView: View {
                 Section("Details") {
                     HStack { TextField("Price or budget", text: $price, prompt: Text("Price or budget").foregroundColor(MarketTheme.muted)).labelsHidden().marketDecimalKeyboard().accessibilityIdentifier("listingPrice"); Picker("Currency", selection: $currency) { Text("EUR").tag("EUR"); Text("USD").tag("USD"); Text("GBP").tag("GBP"); Text("BTC").tag("BTC") }.labelsHidden().frame(width: 90) }
                     Picker("Expires in", selection: $expiry) { ForEach(NativeListingExpiry.presets, id: \.self) { Text($0.label).tag($0) } }.accessibilityIdentifier("listingExpiry")
-                    TextField(transport == nil ? "Town, area, or remote" : "Pickup area", text: $location, prompt: Text(transport == nil ? "Town, area, or remote" : "Pickup area").foregroundColor(MarketTheme.muted)).labelsHidden().accessibilityIdentifier("listingLocation")
+                    TextField(transport == nil ? "Town, area, or #geohash" : "Pickup area", text: $location, prompt: Text(transport == nil ? "Town, area, or #geohash" : "Pickup area").foregroundColor(MarketTheme.muted)).labelsHidden().accessibilityIdentifier("listingLocation")
                     PlaceSearchButton(value: MarketDeliveryPlace(label: location, address: location)) { place in location = place.label }
                     if transport != nil && category == "Transport" {
                         Button { chooseServiceAreas = true } label: { Label(serviceAreas == nil ? "Choose pickup and destination areas" : "Edit service areas", systemImage: "map.fill") }.disabled(store.demo).accessibilityIdentifier("transportServiceAreas")

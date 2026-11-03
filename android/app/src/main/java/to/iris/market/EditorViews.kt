@@ -76,7 +76,7 @@ import org.json.JSONObject
                 NativeListingExpiry.entries.forEach { choice -> DropdownMenuItem(text={Text(choice.label)},onClick={expiry=choice;expiryOpen=false}) }
             }
         }
-        MarketField(location,{location=it},if(transport == null) "Location" else "Pickup area",hint="City or neighbourhood")
+        MarketField(location,{location=it},if(transport == null) "Location" else "Pickup area",hint="City, area or #geohash")
         Box {
             OutlinedButton(onClick={categoriesOpen=true},shape=RoundedCornerShape(14.dp),modifier=Modifier.fillMaxWidth().height(52.dp)) {
                 Text(category);Spacer(Modifier.weight(1f));Icon(Icons.Filled.ExpandMore,null)

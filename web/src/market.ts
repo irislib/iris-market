@@ -512,7 +512,7 @@ export class MarketRelayClient {
 
   /** Update only the map discovery subscription; received listings stay usable. */
   setGeohashes(values = []) {
-    if (!Array.isArray(values) || values.length > MAX_GEOHASH_QUERY_VALUES || values.some(value => typeof value !== 'string' || !/^[0123456789bcdefghjkmnpqrstuvwxyz]{1,8}$/.test(value))) fail('Invalid map search area')
+    if (!Array.isArray(values) || values.length > MAX_GEOHASH_QUERY_VALUES || values.some(value => typeof value !== 'string' || !/^[0123456789bcdefghjkmnpqrstuvwxyz]{1,12}$/.test(value))) fail('Invalid map search area')
     const next = [...new Set(values)].sort()
     if (JSON.stringify(next) === JSON.stringify(this.geohashes)) return
     this.geohashes = next

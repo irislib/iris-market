@@ -51,7 +51,7 @@ test('coincident cluster opens keyboard-focusable choices instead of useless zoo
   const items = [listing('a'), listing('b')], f = fixture(items); await f.click([cluster()]);
   assert.equal(f.eases.length, 0); const choices = f.popups[0].content.children[1]
   assert.equal(choices.children.length, 2); assert.equal(choices.firstElementChild.focused, true)
-  assert.equal(choices.children[1].textContent, 'Listing b'); choices.children[1].onclick()
+  assert.equal(choices.children[1].firstElementChild.firstElementChild.textContent, 'Listing b'); choices.children[1].onclick()
   assert.deepEqual(f.selected, [items[1]]); assert.equal(f.popups[0].removed, true); f.api.destroy()
 })
 
@@ -68,6 +68,40 @@ test('single pin opens the shared choices popover and only choosing its listing 
   assert.equal(content.children[0].textContent,'1 listing');assert.equal(content.getAttribute('role'),'dialog');assert.equal(choices.children.length,1);assert.equal(choices.firstElementChild.focused,true)
   choices.firstElementChild.onclick();assert.deepEqual(f.selected,[item]);assert.equal(f.popups[0].removed,true);f.api.destroy()
 })
+
+test('pin choices load photos near the scroll window and show the price only when supplied', async t => {
+  const targets = [], images = [];
+  let intersect, disconnected = false;
+  const previousObserver = globalThis.IntersectionObserver, previousDocument = globalThis.document;
+  globalThis.IntersectionObserver = class {
+    constructor(callback) { intersect = callback }
+    observe(target) { targets.push(target) }
+    unobserve() {}
+    disconnect() { disconnected = true }
+  };
+  globalThis.document = {createElement(tag) { const node = new Element(tag); images.push(node); return node }};
+  t.after(() => {
+    if (previousObserver) globalThis.IntersectionObserver = previousObserver; else delete globalThis.IntersectionObserver;
+    if (previousDocument) globalThis.document = previousDocument; else delete globalThis.document;
+  });
+  const photo = {...listing('photo'), imageUrl:'https://example.com/chair.jpg', priceLabel:'€25.00'};
+  const free = {...listing('free'), priceLabel:'Free'}, plain = listing('plain');
+  const f = fixture([photo, free, plain]);
+  await f.click([cluster()]);
+  const [first, second, third] = f.popups[0].content.children[1].children;
+  assert.equal(targets.length, 1);
+  assert.equal(images.length, 0);
+  intersect([{target:targets[0], isIntersecting:true}], {unobserve() {}});
+  assert.equal(targets[0].getAttribute('aria-hidden'), 'true');
+  assert.match(targets[0].firstElementChild.src, /rs:fill:48:48.*f:png/);
+  assert.deepEqual(first.children[1].children.map(node=>node.textContent), ['Listing photo','€25.00']);
+  assert.deepEqual(second.firstElementChild.children.map(node=>node.textContent), ['Listing free','Free']);
+  assert.deepEqual(third.firstElementChild.children.map(node=>node.textContent), ['Listing plain']);
+  first.onclick();
+  assert.equal(disconnected, true);
+  assert.deepEqual(f.selected, [photo]);
+  f.api.destroy();
+});
 
 test('single-pin choices dismiss outside, on Escape or Close with appropriate focus',async()=>{
   const item=listing('a'),f=fixture([item])
@@ -228,7 +262,7 @@ test('keyboard choices include intersecting areas but exclude a viewport wholly 
   const f=fixture([containing,crossing,hole,containing])
   f.canvas.listeners.get('keydown')({target:f.canvas,key:'Enter',preventDefault(){}})
   const choices=f.popups[0].content.children[1].children
-  assert.deepEqual(choices.map(c=>c.textContent),['Area containing','Area crossing'])
+  assert.deepEqual(choices.map(c=>c.firstElementChild.firstElementChild.textContent),['Area containing','Area crossing'])
   const edge=areaListing('date-line-edge',areaBox(179.6,10,179.9,11),areaBox(178,10,179,11))
   assert.equal(listingIntersectsViewport(edge,{west:179.5,east:-179.5,south:9,north:12,zoom:5}),true)
   assert.equal(listingIntersectsViewport(edge,{west:-10,east:10,south:9,north:12,zoom:5}),false)

@@ -2,7 +2,7 @@ import { byId, element as domElement, formFields } from './dom.ts';
 import { createViewportDiscovery } from './map/discovery.ts';
 const $=byId;
 export const darkAppearance = () => document.documentElement.dataset.appearance === 'dark' || (document.documentElement.dataset.appearance !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
-export function setupMap({ getListings, onSelect, onVisibilityChange = () => {}, onDiscover = () => {}, isDiscoveryLimited = () => false }: {getListings:()=>any[];onSelect:(listing:any)=>void;onVisibilityChange?:(visible:boolean)=>void;onDiscover?:(cells:string[])=>void;isDiscoveryLimited?:()=>boolean}) {
+export function setupMap({ getListings, getPriceLabel, onSelect, onVisibilityChange = () => {}, onDiscover = () => {}, isDiscoveryLimited = () => false }: {getListings:()=>any[];getPriceLabel:(listing:any)=>string|undefined;onSelect:(listing:any)=>void;onVisibilityChange?:(visible:boolean)=>void;onDiscover?:(cells:string[])=>void;isDiscoveryLimited?:()=>boolean}) {
   let instance, loading, visible = false, disposed = false;
   const mappable=(listings=getListings())=>listings.filter(item=>item.coordinates||item.serviceAreas);
   let selectForViewport:typeof import('./map/index.ts').listingsForViewport;
@@ -27,7 +27,7 @@ export function setupMap({ getListings, onSelect, onVisibilityChange = () => {},
       try {
         const { createMarketMap, listingsForViewport } = await import('./map/index.ts');
         selectForViewport=listingsForViewport;
-        const map = await createMarketMap($('map-canvas'), { listings: mappable(), dark: darkAppearance(), cacheMiB: Number($('map-cache').value), onSelect, onViewport: value => {discovery.update(value);if(instance)refresh();}, onError: () => { $('map-status').textContent = 'Map unavailable'; } });
+        const map = await createMarketMap($('map-canvas'), { listings: mappable(), getPriceLabel, dark: darkAppearance(), cacheMiB: Number($('map-cache').value), onSelect, onViewport: value => {discovery.update(value);if(instance)refresh();}, onError: () => { $('map-status').textContent = 'Map unavailable'; } });
         if (disposed) { await map.destroy(); return; }
         instance = map; await instance.setDark(darkAppearance()); refresh(); await stats();
       } catch { $('map-status').textContent = 'Map unavailable. Close and reopen to try again.'; }

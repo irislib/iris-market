@@ -100,7 +100,11 @@ private struct MarketMapContent: MarketMapRepresentable {
                 if let point = listing.coordinates, point.count == 2, point.allSatisfy(\.isFinite), abs(point[0]) <= 180, abs(point[1]) <= 90 { row["coordinates"] = point }
                 if let areas = listing.serviceAreas, let data = try? MarketJSON.encoder().encode(areas), data.count <= 32832, areaBytes + data.count <= 1048576,
                    let geometry = try? JSONSerialization.jsonObject(with: data) { row["serviceAreas"] = geometry; areaBytes += data.count }
-                return row["coordinates"] != nil || row["serviceAreas"] != nil ? row : nil
+                guard row["coordinates"] != nil || row["serviceAreas"] != nil else { return nil }
+                if let photo = listing.imageUrl, photo.utf8.count <= 8192, let url = URL(string: photo),
+                   url.scheme == "https", url.host != nil, url.user == nil, url.password == nil { row["imageUrl"] = photo }
+                if !listing.price.isEmpty { row["priceLabel"] = String(listing.formattedPrice.prefix(160)) }
+                return row
             }
             guard let data = try? JSONSerialization.data(withJSONObject: markers, options: [.sortedKeys]), let json = String(data: data, encoding: .utf8) else { return }
             let script = "window.marketMap?.setListings(\(json));window.marketMap?.setDark(\(dark ? "true" : "false"));"

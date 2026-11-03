@@ -87,6 +87,17 @@ test('listing mode remains separate and preserves valid marker interaction data'
   assert(!map.calls.some(call=>call[0]==='shipment'));await control.close();
 });
 
+test('native listing previews preserve the approved photo and display price, dropping malformed fields independently', () => {
+  const row = {id:'chair', title:'Chair', coordinates:[24,60]};
+  const photo = 'https://images.example/listing.jpg';
+  assert.deepEqual(cleanNativeListings([{...row, imageUrl:photo, priceLabel:'Free', owner:'private'}]),
+    [{...row, imageUrl:photo, priceLabel:'Free'}]);
+  for (const imageUrl of ['file:///photo', 'data:image/png;base64,AA', 'https://a:b@example.com/photo', 'https://example.com/' + 'a'.repeat(8192)]) {
+    assert.deepEqual(cleanNativeListings([{...row, imageUrl, priceLabel:'€25'}]), [{...row, priceLabel:'€25'}]);
+  }
+  assert.deepEqual(cleanNativeListings([{...row, imageUrl:photo, priceLabel:'x'.repeat(161)}]), [{...row, imageUrl:photo}]);
+});
+
 test('native public areas are bounded validated projections, without inferred point pins or private fields', () => {
   const area = structuredClone(serviceAreaCircle([24.94,60.17],5)), areas = {pickup:area,destination:structuredClone(area)};
   const input = {id:'courier',title:'Parcel service',serviceAreas:areas,author:'not-forwarded',token:'not-forwarded'};

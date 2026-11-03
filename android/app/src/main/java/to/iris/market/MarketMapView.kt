@@ -100,7 +100,13 @@ private class MapBridge {
                     row.put("serviceAreas", areas); areaBytes += size
                 }
             }
-            if (row.has("coordinates") || row.has("serviceAreas")) array.put(row)
+            if (!row.has("coordinates") && !row.has("serviceAreas")) return@forEach
+            listing.imageUrl?.takeIf { it.length <= 8192 }?.let { photo ->
+                val url = Uri.parse(photo)
+                if (url.scheme == "https" && !url.host.isNullOrEmpty() && url.userInfo == null) row.put("imageUrl", photo)
+            }
+            if (listing.price.isNotBlank()) row.put("priceLabel", listing.displayPrice.take(160))
+            array.put(row)
         }
         val script="window.marketMap?.setListings($array);window.marketMap?.setDark($dark);"
         if(script==lastPayload) return

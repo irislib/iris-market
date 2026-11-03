@@ -1,4 +1,5 @@
 import {createViewportDiscovery} from './map/discovery.ts';
+import { DEFAULT_IMAGE_SETTINGS } from './media.ts';
 import {mountNativeArea} from './native-area.ts';
 import {mountNativePlace} from './native-place.ts';
 import { createMarketMap, type MapListing } from './map/index.ts';
@@ -52,6 +53,14 @@ export function cleanShipmentProjection(input: unknown, now = Date.now() / 1000)
   }
   return result;
 }
+// Rust has already applied the native image-proxy preference to this URL.
+function nativePhoto(value: unknown): string | undefined {
+  if (!boundedText(value, 8192)) return;
+  try {
+    const url = new URL(value);
+    if (url.protocol === 'https:' && !url.username && !url.password) return url.href;
+  } catch { /* An invalid photo does not invalidate the listing. */ }
+}
 export function cleanNativeListings(value: unknown): MapListing[] {
   if (!Array.isArray(value)) return [];
   let areaBytes = 0;
@@ -69,7 +78,9 @@ export function cleanNativeListings(value: unknown): MapListing[] {
       }
     } catch { /* A malformed area never becomes a guessed point. Valid independent point locations may remain. */ }
     if (!point && !serviceAreas) continue;
-    result.push({ id: item.id, title: item.title.slice(0, 160), ...(point ? { coordinates: point } : {}), ...(serviceAreas ? { serviceAreas } : {}) });
+    const imageUrl = nativePhoto(item.imageUrl);
+    result.push({ id: item.id, title: item.title.slice(0, 160),
+      ...(imageUrl ? { imageUrl } : {}), ...(boundedText(item.priceLabel, 160) && item.priceLabel ? { priceLabel: item.priceLabel } : {}), ...(point ? { coordinates: point } : {}), ...(serviceAreas ? { serviceAreas } : {}) });
   }
   return result;
 }
@@ -158,7 +169,7 @@ export async function mountNativeMap() {
       const map = await setupShipmentMap($('map-canvas'), { dark, onError: showError });
       await controller.attach(map);
     } else {
-      instance = await createMarketMap($('map-canvas'), { dark, cacheMiB: Number($<HTMLSelectElement>('map-cache').value), onSelect: listing => send('select', listing.id), onViewport:view=>discovery?.update(view), onError: showError });
+      instance = await createMarketMap($('map-canvas'), { dark, thumbnailSettings: { ...DEFAULT_IMAGE_SETTINGS, useProxy: false }, cacheMiB: Number($<HTMLSelectElement>('map-cache').value), onSelect: listing => send('select', listing.id), onViewport:view=>discovery?.update(view), onError: showError });
       await controller.attach(instance); await stats();
     }
     if (!disposed) { $('map-status').textContent = shipmentMode ? 'Stops joined directly; not driving directions.' : 'Approximate locations shared by authors'; send('ready'); }

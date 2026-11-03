@@ -154,3 +154,23 @@ test('enabling For You immediately replaces ordinary cards with approved listing
   assert.deepEqual(grid.children.map(n=>n.dataset.listingId),[rows[2].id]);
   view.update(rows,'listings');assert.equal(grid.children.length,8);
 })
+
+test('For You spaces the approved sellers, including across a pinned page boundary', () => {
+  const rows=['a1','a2','a3','a4','b1','b2','c1','c2'].map(id=>({id,author:id[0]}));
+  const ids=rows=>rows.map(r=>r.id);
+  const view=new ListingWindow(3);
+  assert.deepEqual(ids(view.update(rows,'home',true)),['a1','b1','c1']);
+  view.more();
+  assert.deepEqual(ids(view.update(rows,'home',true)),['a1','b1','c1','a2','b2','c2']);
+  view.more();
+  assert.deepEqual(ids(view.update(rows,'home',true)),['a1','b1','c1','a2','b2','c2','a3','a4']);
+  assert.deepEqual(ids(view.update(rows,'price')),['a1','a2','a3']);
+});
+
+test('late approvals can separate unseen repeats while cards already read keep their position', () => {
+  const rows=['a1','a2','a3','a4','b1','b2','c1'].map(id=>({id,author:id[0]}));
+  const view=new ListingWindow(10);
+  view.update(rows.slice(0,4),'home',true);view.pin(1);
+  assert.deepEqual(view.update(rows,'home',true).map(r=>r.id),['a1','b1','c1','a2','b2','a3','a4']);
+  assert.deepEqual(view.update(rows.filter(r=>r.author!=='c'),'home',true).map(r=>r.id),['a1','b1','a2','b2','a3','a4']);
+});

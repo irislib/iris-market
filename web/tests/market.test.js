@@ -510,3 +510,28 @@ test('one limited relay does not stop older pages from a second relay',async()=>
     assert(client.listings().some(row=>row.identifier==='keep-paging'))
   }finally{client.close()}
 })
+
+test('Buying discovers old requests even when offers fill the feed, without advancing ordinary history', () => {
+  FakeSocket.sockets = [];
+  const indexed=[];
+  const client=new MarketRelayClient({relays:['wss://example.com'],WebSocketImpl:FakeSocket,now:()=>now,
+    maxRecords:1,browseDiscovery:true,indexQuery:async filters=>{indexed.push(filters);return {events:[]};}}).start();
+  try {
+    const socket=FakeSocket.sockets[0];socket.open();
+    const main=socket.sent[0][1];socket.frame(['EVENT',main,signed()]);
+    client.setBuying(true);client.setBuying(true);
+    const [,buy,...filters]=socket.sent[1];
+    assert.equal(socket.sent.length,2);
+    assert.deepEqual(filters.map(f=>[f.kinds,f['#t'],f['#k'],f['#y']]),[
+      [[30402],['market:request'],undefined,undefined],[[38383],undefined,['buy'],['iris-market']]]);
+    assert.deepEqual(indexed.at(-1),filters);
+    const request=signed({createdAt:now-100000,tags:[['d','wanted'],['title','Wanted chair'],['t','market:request']]});
+    socket.frame(['EVENT',buy,request]);socket.frame(['EOSE',buy]);socket.frame(['EOSE',main]);
+    assert.deepEqual(client.listings().map(l=>l.side),['offer','request']);
+    assert.equal([...client.history.values()][0].initialOldest,now-20);
+    client.setBuying(false);assert.deepEqual(socket.sent.at(-1),['CLOSE',buy]);
+    const sold=signed({createdAt:now-10,tags:[...request.tags,['status','sold']]});
+    socket.frame(['EVENT',main,sold]);socket.frame(['EVENT',buy,request]);
+    assert.deepEqual(client.listings().map(l=>l.side),['offer']);
+  } finally {client.close();}
+});

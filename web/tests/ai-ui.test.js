@@ -841,3 +841,22 @@ test('a relaxed Home cutoff completes deferred conditions before showing a listi
   assert.deepEqual(rows.filter(ui.isVisible).map(r=>r.id),['ordinary']);assert.equal(ui.scoreFor(rows[1]),.4);
   assert(calls.some(([q,t])=>q==='This product is a drug.'&&t==='Example product\ncategory'));
 });
+
+test('suggested Home reviews across sellers and counts only the current side, even after an exhausted review budget', async()=>{
+  const offers=Array.from({length:260},(_,i)=>({id:'o'+i,author:i<240?'A':i<250?'B':'C',title:'Offer',side:'offer'}));
+  const request={id:'wanted',author:'D',title:'Wanted desk',side:'request'};
+  const seen=[];
+  const client={info:{model:'deberta'},async classify(_,text,{eventId}){seen.push(eventId);return {score:text.includes('Wanted desk')?.9:.01};},dispose(){}};
+  const rows=offers.map(l=>({...l,eventId:l.id}));
+  const {ui,field,setRows}=fixture({rows,client,homeFeed:{enabled:true,prompt:'Useful listings'}});
+  field('sort').value='suggested';
+  await ui.submit('');
+  assert.deepEqual(seen.slice(0,6),['o0','o240','o250','o1','o241','o251']);
+  assert.equal(ui.pagination().reviewed,240);
+  setRows([]);
+  assert.equal(field('ai-summary-text').textContent,'For you · 0 matches · 0 checked');
+  setRows([{...request,eventId:request.id}]);
+  await until(()=>ui.pagination().reviewed===1);
+  assert.equal(field('ai-summary-text').textContent,'For you · 1 match · 1 checked');
+  field('search-mode').value='text';ui.stop();
+});

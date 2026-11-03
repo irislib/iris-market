@@ -16,6 +16,7 @@ export const MAX_RECORDS = 1000
 const MAX_EVENT_BYTES = 65536
 const MAX_FRAME_BYTES = MAX_EVENT_BYTES + 2048
 const SEARCH_RECORD_LIMIT = 5000
+const BUYING_RESERVE = 120
 const MAP_RECORD_RESERVE = 1000
 const HISTORY_PAGE_SIZE = 300
 const HISTORY_TIMEOUT = 12000
@@ -185,6 +186,7 @@ export interface QueryCandidates {loading:boolean;added:number;hasMore:boolean;e
 interface RelayConnection {
   url: string; attempt: number; socket: WebSocket | null; failed: boolean; ready: boolean; subscription: string
   initialOldest?: number | null
+  buyingId?:string
   bitcoinOldest?: number | null
   timer: ReturnType<typeof setTimeout> | null; retry: ReturnType<typeof setTimeout> | null
   frameStart: number; frames: number; geoSubscriptions?: Set<string>; geoNext?:number; geoTimer?:ReturnType<typeof setTimeout>
@@ -238,6 +240,8 @@ export class MarketRelayClient {
   maxRecords: number
   private browseDiscovery:boolean
   private inventoryCapacity:number
+  private buying=false
+  private buyingOverflow=0
   private mapOverflow=0
   onChange: NonNullable<MarketRelayOptions['onChange']>
   onStatus: NonNullable<MarketRelayOptions['onStatus']>
@@ -350,6 +354,7 @@ export class MarketRelayClient {
     void this.restoreOffline(++this.cacheGeneration)
     if (this.hasQueries) for (const url of this.relays) this.connect(url)
     this.requestIndex()
+    if (this.buying) this.requestIndex(this.buyingFilters(),false)
     this.emitStatus()
     this.emitChange()
     this.emitPagination()
@@ -450,7 +455,7 @@ export class MarketRelayClient {
     return this.queryTags
   }
 
-  private get inventoryFull(){return this.records.size>=this.inventoryCapacity+this.mapOverflow}
+  private get inventoryFull(){return this.records.size>=this.inventoryCapacity+this.mapOverflow+this.buyingOverflow}
   get mapDiscoveryLimited(){return this.inventoryFull&&(!this.browseDiscovery||this.mapOverflow>=MAP_RECORD_RESERVE)}
   openSearchPage(){
     if(this.browseDiscovery&&this.queryText&&this.queryExpansion==='expanded'&&this.inventoryFull)
@@ -534,13 +539,13 @@ export class MarketRelayClient {
   }
 
   /** The same verified winner reducer receives durable history and live relay events. */
-  requestIndex(extra:Filter[]=[]):void {
+  requestIndex(extra:Filter[]=[],addBitcoin=true):void {
     if(!this.running||!this.hasQueries||!this.indexQuery||this.indexReads.size>=2||this.indexRequests>=16||this.indexBytes>=MAX_HISTORY_BYTES)return
     const filters:Filter[]=extra.length?extra:[
       ...(this.hasInventoryQuery?[{kinds:[LISTING_KIND],limit:this.historyPageSize,...(this.authors?{authors:[...this.authors]}:{}),...(this.tags.length?{'#t':[...this.tags]}:{})}]:[]),
       ...(this.targetFilter?[{kinds:this.targetFilter.kinds,authors:[...this.targetFilter.authors!],'#d':this.targetFilter['#d'],...(this.targetFilter['#y']?{'#y':this.targetFilter['#y']}:{}),limit:1}]:[]),
     ]
-    for(const filter of [...filters]) {
+    if(addBitcoin) for(const filter of [...filters]) {
       if(filter.kinds?.length===1 && filter.kinds[0]===LISTING_KIND && !filter['#d'])filters.push(bitcoinFilter({...filter,kinds:[LISTING_KIND]}));
     }
     const controller=new AbortController();this.indexReads.add(controller);this.indexRequests++
@@ -552,6 +557,33 @@ export class MarketRelayClient {
       }
       this.emitPagination()
     }).catch(()=>{/* Relay results remain available when an index is offline. */}).finally(()=>this.indexReads.delete(controller))
+  }
+
+  private buyingFilters():Filter[] {
+    const scope = this.authors === null ? {} : {authors:[...this.authors]}
+    return [{kinds:[LISTING_KIND],'#t':['market:request'],limit:BUYING_RESERVE,...scope},
+      {...bitcoinFilter({kinds:[],limit:BUYING_RESERVE,...scope}),'#k':['buy']}]
+  }
+
+  setBuying(active:boolean) {
+    if (!this.browseDiscovery || !this.hasInventoryQuery || this.buying === active) return
+    this.buying = active
+    if (!this.running) return
+    if (active) this.requestIndex(this.buyingFilters(),false)
+    for (const connection of this.connections.values()) this.requestBuying(connection)
+  }
+
+  // Isolate older buy requests from the general feed's chronological cursor.
+  private requestBuying(connection:RelayConnection) {
+    if (connection.failed || connection.socket?.readyState !== 1) return
+    if (connection.buyingId) {
+      connection.socket.send(JSON.stringify(['CLOSE',connection.buyingId]))
+      connection.buyingId = undefined
+    }
+    if (this.buying) {
+      connection.buyingId = `buy-${Math.random().toString(36).slice(2,14)}`
+      connection.socket.send(JSON.stringify(['REQ',connection.buyingId,...this.buyingFilters()]))
+    }
   }
 
   /** Update only the map discovery subscription; received listings stay usable. */
@@ -612,7 +644,7 @@ export class MarketRelayClient {
     this.requestIndex()
     for (const url of this.relays) {
       const connection = this.connections.get(url)
-      if (connection?.socket?.readyState === 1 && !connection.failed) { this.request(connection); this.requestGeohashes(connection) }
+      if (connection?.socket?.readyState === 1 && !connection.failed) { this.request(connection); this.requestBuying(connection); this.requestGeohashes(connection) }
       else {
         if (connection) this.dispose(connection)
         this.connect(url)
@@ -653,6 +685,7 @@ export class MarketRelayClient {
       clearTimeout(connection.timer)
       connection.timer = null
       this.request(connection)
+      this.requestBuying(connection)
       this.requestGeohashes(connection)
       this.emitStatus()
     }
@@ -663,6 +696,15 @@ export class MarketRelayClient {
       let frame
       try { frame = JSON.parse(data) } catch { return }
       if (!Array.isArray(frame)) return
+      if (connection.buyingId && frame[1] === connection.buyingId) {
+        if (frame[0] === 'EVENT' && frame.length === 3) {
+          try {
+            const listing = this.parseIncoming(frame[2])
+            if (listing.side === 'request' || this.records.has(listing.id)) this.acceptListing(listing)
+          } catch { /* Invalid requests never enter the feed. */ }
+        }
+        return
+      }
       if (connection.geoSubscriptions?.has(frame[1])) {
         // No EOSE/ACK gate: each valid event becomes visible as it arrives.
         if(frame[0]==='EOSE'||frame[0]==='CLOSED'){this.finishGeoBatch(connection,frame[1],frame[0]==='CLOSED');return}
@@ -717,11 +759,13 @@ export class MarketRelayClient {
     if (!publishedLocally && listing.id !== this.targetId && !this.matchesFeed(listing) && !this.records.has(listing.id)) return
     // Keep the shared-listing slot and geographic discovery independent of a full general feed.
     const reserved=this.targetId&&listing.id!==this.targetId&&!this.records.has(this.targetId)?1:0
-    let capacity=this.inventoryCapacity+this.mapOverflow-reserved
+    let capacity=this.inventoryCapacity+this.mapOverflow+this.buyingOverflow-reserved
     if(!this.records.has(listing.id)&&this.records.size>=capacity){
-      if(!this.browseDiscovery||this.mapOverflow>=MAP_RECORD_RESERVE||!this.geohashSet.size||
-        !listing.originalTags.some(tag=>tag[0]==='g'&&this.geohashSet.has(tag[1])))return
-      this.mapOverflow++;capacity++
+      if (this.buying && listing.side==='request' && this.buyingOverflow<BUYING_RESERVE) this.buyingOverflow++
+      else if (this.browseDiscovery && this.mapOverflow<MAP_RECORD_RESERVE && this.geohashSet.size &&
+        listing.originalTags.some(tag=>tag[0]==='g'&&this.geohashSet.has(tag[1]))) this.mapOverflow++
+      else return
+      capacity++
     }
     if (applyListing(this.records, listing, capacity)) this.scheduleChange()
   }

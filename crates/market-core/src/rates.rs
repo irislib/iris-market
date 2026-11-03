@@ -20,6 +20,7 @@ pub const CURRENCIES: &[&str] = &[
     "BTC",
 ];
 pub const FRESH_SECONDS: u64 = 900;
+// Reject replayed network quotes outside this window. Saved estimates retain their timestamp.
 pub const MAX_AGE_SECONDS: u64 = 14400;
 pub const CACHE_BYTES: usize = 262144;
 const MAX_HTTP_BYTES: usize = 131072;
@@ -40,8 +41,8 @@ impl ExchangeRate {
         self.value.is_finite()
             && self.value > 0.0
             && self.value <= 1e18
+            && self.updated_at > 0
             && self.updated_at <= now.saturating_add(60)
-            && now.saturating_sub(self.updated_at) <= MAX_AGE_SECONDS
             && match self.source.as_str() {
                 "Snort" => self.event_id.as_ref().is_some_and(|id| {
                     id.len() == 64
@@ -129,6 +130,11 @@ impl RateBook {
                 && !["BTC", "SATS"].contains(&code.as_str())
                 && rate.usable(now)
         });
+        if self.rates.len() > MAX_RATES {
+            let mut entries: Vec<_> = std::mem::take(&mut self.rates).into_iter().collect();
+            entries.sort_by_key(|(_, rate)| std::cmp::Reverse(rate.updated_at));
+            self.rates.extend(entries.into_iter().take(MAX_RATES));
+        }
     }
     pub fn snapshot(&self, now: u64) -> RateSnapshot {
         let rates: BTreeMap<_, _> = self
@@ -157,7 +163,7 @@ impl RateBook {
                         || rate.updated_at == previous.updated_at
                             && rate.event_id < previous.event_id
                 } else {
-                    rate.fresh(now) || !previous.fresh(now)
+                    rate.fresh(now) || rate.updated_at >= previous.updated_at
                 }
             });
             if replace {
@@ -506,10 +512,7 @@ mod tests {
         let book = RateBook { rates };
         assert_eq!(book.snapshot(1000).status, "fresh");
         assert_eq!(book.snapshot(1000 + FRESH_SECONDS + 1).status, "stale");
-        assert_eq!(
-            book.snapshot(1000 + MAX_AGE_SECONDS + 1).status,
-            "unavailable"
-        );
+        assert_eq!(book.snapshot(1000 + MAX_AGE_SECONDS + 1).status, "stale");
         assert!(RateBook::from_cache(&" ".repeat(CACHE_BYTES + 1), 1000).is_err());
     }
 
@@ -550,11 +553,13 @@ mod tests {
                 .unwrap()
                 .stale
         );
-        assert!(
-            restored
-                .convert("66", "USD", "EUR", 1000 + MAX_AGE_SECONDS + 1)
-                .is_none()
-        );
+        let later = 1000 + 30 * 86400;
+        let reopened = RateBook::from_cache(&restored.cache_json().unwrap(), later).unwrap();
+        let offline = reopened.convert("66", "USD", "EUR", later).unwrap();
+        assert!(offline.stale);
+        assert_eq!(offline.updated_at, Some(1000));
+        assert_eq!(offline.amount, display.amount);
+        assert!(reopened.needs_http(later));
         assert!(restored.convert("66", "USD", "USD", 1000).is_none());
         assert!(restored.convert("66", "XYZ", "EUR", 1000).is_none());
         assert!(restored.convert("-1", "USD", "EUR", 1000).is_none());

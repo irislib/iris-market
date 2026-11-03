@@ -49,14 +49,14 @@ test('formatted estimates retain original amounts and expose source, time, and s
   assert.notEqual(formatPrice({ price: '1', currency: 'SATS' }, { preferredCurrency:'EUR', rates: snapshot(now), now, locale: 'en-US' }).primary, '€0.00')
 })
 
-test('missing, stale and expired rates never silently become current price estimates', () => {
+test('missing rates show the original price and older estimates keep their timestamp', () => {
   const listing = { price: '100', currency: 'USD' }
   const missing = formatPrice(listing, { preferredCurrency:'EUR',now, locale: 'en-US' })
   assert.equal(missing.primary, '$100.00'); assert.equal(missing.converted, null); assert.equal(missing.approximate, false)
   const stale = formatPrice(listing, { preferredCurrency:'EUR',rates: snapshot(now - 901), now, locale: 'en-US' })
   assert.equal(stale.primary, '€90.00'); assert.equal(stale.stale, true); assert.equal(stale.updatedAt, now - 901)
-  const expired = formatPrice(listing, { preferredCurrency:'EUR',rates: snapshot(now - RATE_POLICY.maxAgeSeconds - 1), now, locale: 'en-US' })
-  assert.equal(expired.primary, '$100.00'); assert.equal(expired.converted, null)
+  const older = formatPrice(listing, { preferredCurrency:'EUR',rates: snapshot(now - 7 * 86400), now, locale: 'en-US' })
+  assert.equal(older.primary, '€90.00'); assert.equal(older.stale, true); assert.equal(older.original, '$100.00')
   assert.equal(formatPrice({ price: '', currency: 'EUR' }).primary, 'Negotiable')
   assert.equal(formatPrice({ price: '0', currency: 'SATS' }).primary, 'Free')
   assert.equal(formatPrice({ price: '0', currency: 'SATS' }).converted, 0)
@@ -122,7 +122,7 @@ test('rate setup queries only the known public publisher and uses configured rel
   } finally { rates.close() }
 })
 
-test('failed refresh exposes last-known estimates as stale and drops them after four hours', async () => {
+test('failed refresh leaves the last-known estimate stale until a new quote arrives', async () => {
   let at = now, fail = false, changes = 0
   const rates = setupRates({ getRelays: () => ['wss://relay.example'], now: () => at, currencies: ['EUR'], onChange: () => changes++,
     query: async () => ({ events: [] }), fetchImpl: async () => { if (fail) throw Error('Offline'); return Response.json(body) },
@@ -133,8 +133,8 @@ test('failed refresh exposes last-known estimates as stale and drops them after 
     assert.equal(rates.snapshot().status, 'stale')
     assert.equal(formatPrice({ price: '100', currency: 'USD' }, { preferredCurrency:'EUR',rates: rates.snapshot(), now: at }).stale, true)
     at += RATE_POLICY.maxAgeSeconds; await rates.refresh()
-    assert.equal(rates.snapshot().status, 'unavailable')
-    assert.equal(formatPrice({ price: '100', currency: 'USD' }, { preferredCurrency:'EUR',rates: rates.snapshot(), now: at }).converted, null)
+    assert.equal(rates.snapshot().status, 'stale')
+    assert.equal(formatPrice({ price: '100', currency: 'USD' }, { preferredCurrency:'EUR',rates: rates.snapshot(), now: at }).updatedAt, now)
     assert.equal(changes, 3)
   } finally { rates.close() }
 })
@@ -148,6 +148,71 @@ test('closing cancels an in-flight HTTP read and prevents late UI updates', asyn
   await began; rates.close(); await rates.ready
   assert.equal(updates, 0)
   assert.equal((await rates.refresh()).status, 'unavailable')
+})
+
+test('a reopened rate service can convert immediately, survive an offline refresh and save the next quote', async () => {
+  const saved = new Map()
+  const storage = { getItem: key => saved.get(key) ?? null, setItem: (key, value) => saved.set(key, value) }
+  let at = now
+  const options = { storage, now: () => at, currencies: ['EUR', 'USD'], query: async () => ({ events: [] }) }
+  const first = setupRates({ ...options, fetchImpl: async () => Response.json(body) })
+  await first.ready
+  first.close()
+  at += 7 * 86400
+  let rejectFetch
+  const pending = new Promise((_, reject) => { rejectFetch = reject })
+  let response = pending
+  const reopened = setupRates({ ...options, fetchImpl: () => response })
+  try {
+    const price = () => formatPrice({ price: '100', currency: 'USD' }, {
+      preferredCurrency: 'EUR', rates: reopened.snapshot(), now: at, locale: 'en-US',
+    })
+    assert.equal(price().primary, '€90.00')
+    assert.equal(price().stale, true)
+    assert.equal(price().updatedAt, now)
+    rejectFetch(Error('Offline'))
+    await reopened.ready
+    assert.equal(price().updatedAt, now)
+    response = Promise.resolve(Response.json({ data: { currency: 'BTC', rates: { BTC: '1', EUR: '95000' } } }))
+    await reopened.refresh()
+    assert.equal(price().primary, '€95.00')
+    assert.equal(reopened.snapshot().rates.EUR.updatedAt, at)
+    assert.equal(reopened.snapshot().rates.USD.updatedAt, now)
+  } finally { reopened.close() }
+  const offline = setupRates({ ...options, fetchImpl: async () => { throw Error('Offline') } })
+  try {
+    await offline.ready
+    assert.equal(offline.snapshot().rates.EUR.value, 95000)
+    assert.equal(offline.snapshot().rates.USD.updatedAt, now)
+  } finally { offline.close() }
+})
+
+test('unreadable storage and failed cache writes still allow live conversions', async () => {
+  for (const read of [() => '{', () => { throw Error('Storage disabled') }]) {
+    const rates = setupRates({
+      storage: { getItem: read, setItem: () => { throw Error('Quota exceeded') } },
+      query: async () => ({ events: [] }), fetchImpl: async () => Response.json(body), now: () => now,
+    })
+    try {
+      assert.equal(rates.snapshot().status, 'unavailable')
+      assert.equal((await rates.ready).rates.USD.value, 100000)
+    } finally { rates.close() }
+  }
+})
+
+test('restored rates validate currency, amount, source and time before conversion', async () => {
+  const quote = { value: 90000, source: 'Coinbase', updatedAt: now - 86400 }
+  const cached = {
+    EUR: quote, GBP: { ...quote, source: 'unknown' }, CHF: { ...quote, value: -1 },
+    USD: { ...quote, updatedAt: now + 61 }, SATS: quote, XBT: quote,
+    SEK: { ...quote, source: 'Snort', eventId: 'bad' }, CAD: { ...quote, source: 'Snort', eventId: 'a'.repeat(64) },
+  }
+  const rates = setupRates({ now: () => now, storage: { getItem: () => JSON.stringify(cached), setItem: assert.fail },
+    query: async () => ({ events: [] }), fetchImpl: async () => { throw Error('Offline') } })
+  try {
+    assert.deepEqual(Object.keys(rates.snapshot().rates).sort(), ['CAD', 'EUR'])
+    assert.equal((await rates.ready).rates.EUR.updatedAt, quote.updatedAt)
+  } finally { rates.close() }
 })
 
 
@@ -167,6 +232,7 @@ test('first-run currency uses explicit choice, known region, device region, then
 test('wallet amounts use selected currency, preserve zero, and fall back when rates unavailable',()=>{
  const options={preferredCurrency:'EUR',rates:snapshot(now),now,locale:'en-US'};
  assert.equal(formatWalletAmount('100000',options),'€90.00');
+ assert.equal(formatWalletAmount('100000',{...options, now: now + 7 * 86400}),'€90.00 · older rate');
  assert.equal(formatWalletAmount('0',{...options,rates:undefined}),'€0.00');
  assert.equal(formatWalletAmount('100000',{...options,rates:undefined}),'');
  assert.equal(formatWalletAmount('100000000',{preferredCurrency:'BTC',locale:'en-US'}),'1 BTC');

@@ -252,7 +252,7 @@ Transfers journal their exact outputs and reserved inputs before contacting the 
 
 A fresh display-currency choice follows the device locale, falling back to USD; an explicit saved choice takes precedence and is retained locally. Listings preserve their original amount and currency; conversions are approximate display estimates. SAT/SATS/satoshi aliases normalize to satoshis, with exactly 100,000,000 satoshis per BTC. The rate adapter first checks configured relays for signed quotes from the pinned Snort publisher, accepting fresh quotes up to fifteen minutes old. It can fall back to Coinbase’s public BTC exchange-rate endpoint. No Snort quotes were observed in the live acceptance probe, so that lookup is not evidence of an active feed.
 
-Tiles show one price in the preferred currency without a prefix. Listing details retain the original amount and conversion source/time; retained quotes up to four hours old are explicitly marked stale there. Coinbase timing describes retrieval time rather than a trade timestamp. Missing or expired quotes leave the original price unchanged. Preview does not make rate-relay requests.
+The browser and native apps save fetched rates locally. They can show a converted price as soon as a listing opens, even after an offline restart. Rates older than fifteen minutes remain available as last-known estimates while the app refreshes in the background. Listing details show the original amount, rate source and timestamp. For Coinbase, the timestamp is the retrieval time. If either currency has no saved quote, the listing shows its original price. Preview does not make rate-relay requests.
 
 ## Maps and storage
 

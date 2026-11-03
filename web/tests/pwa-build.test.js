@@ -23,10 +23,10 @@ test('release builder includes current hashed chunks only and changes revision w
     // Exercise the actual bundled worker wiring, without a browser or external
     // requests, so install verification is covered through the release entry.
     const handlers=new Map(),stored=new Map(),downloads=[]
-    const worker={registration:{scope:'https://market.example/mount/'},addEventListener:(type,listener)=>handlers.set(type,listener),caches:{async open(){return{async put(url,response){stored.set(url,response)},async match(url){return stored.get(url)?.clone()}}},async keys(){return[]},async delete(){return true}},async fetch(request){downloads.push(request.url);return new Response(await readFile(join(dest,new URL(request.url).pathname.slice('/mount/'.length))))}}
+    const worker={registration:{scope:'https://market.example/mount/'},addEventListener:(type,listener)=>handlers.set(type,listener),caches:{async open(){return{async put(url,response){stored.set(url,response)},async match(url){return stored.get(url)?.clone()}}},async keys(){return[]},async delete(){return true}},async fetch(request){downloads.push(request.url);return new Response(await readFile(join(dest,new URL(request.url).pathname.slice('/mount/'.length)||'index.html')))}}
     runInNewContext(sw,{self:worker,crypto,Request,Response,Headers,URL,Uint8Array,Map,Error,Number,Array})
     let installed;handlers.get('install')({waitUntil:promise=>{installed=promise}});await installed
-    assert.equal(downloads.length,first.assets);assert(stored.has('https://market.example/mount/chunks/current.js'))
+    assert(downloads.includes('https://market.example/mount/'));assert.equal(downloads.length,first.assets);assert(stored.has('https://market.example/mount/chunks/current.js'))
     worker.fetch=async()=>{throw new Error('offline')};let response
     handlers.get('fetch')({request:{url:'https://market.example/mount/settings/profile',mode:'navigate',method:'GET'},respondWith:promise=>{response=promise}})
     assert.match(await(await response).text(),/<title>Market/)

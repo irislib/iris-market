@@ -187,8 +187,8 @@ export function marketAssets(downloads: boolean): Plugin {
           if (relative(dir, image).startsWith('..') || !(await stat(image)).isFile()) throw new Error(`Download page image is missing: ${src}`);
         }
       } else {
-        // Large AI payloads are fetched and verified on demand outside the offline shell.
-        const onDemand = new Set<string>([CPU_RUNTIME.mjs, CPU_RUNTIME.wasm, RUNTIME.mjs, RUNTIME.wasm]);
+        // The native map is a separate online page. The AI runtimes load on demand.
+        const onDemand = new Set<string>(['native-map.html', CPU_RUNTIME.mjs, CPU_RUNTIME.wasm, RUNTIME.mjs, RUNTIME.wasm]);
         const paths = [...Object.keys(bundle), ...assets.keys()].filter(name => !onDemand.has(name));
         const offline = await buildPwa({ root, dest: dir, paths });
         console.log(`offline: ${offline.assets} verified assets, ${offline.bytes} bytes`);

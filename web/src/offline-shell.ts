@@ -16,6 +16,8 @@ export function createOfflineShell({scope,revision,assets,caches,fetch}:ShellOpt
     files.set(new URL(asset.path,base).href,asset)
   }
   const index=new URL('index.html',base).href
+  // Static hosts serve index.html at the directory URL. Keep redirect rejection for every fetch.
+  const networkURL=(url:string)=>url===index?base.href:url
   if(!files.has(index))throw new Error('Offline shell requires its entry page')
   function navigation(url:URL) {
     if(url.origin!==base.origin||!url.pathname.startsWith(base.pathname))return false
@@ -34,7 +36,7 @@ export function createOfflineShell({scope,revision,assets,caches,fetch}:ShellOpt
       // responses, redirects and partially deployed bundles cannot become shell.
       const loaded:Array<[string,Response]>=[]
       for(const [url,asset] of files){
-        const response=await fetch(new Request(url,{cache:'no-store',credentials:'omit',redirect:'error'}))
+        const response=await fetch(new Request(networkURL(url),{cache:'no-store',credentials:'omit',redirect:'error'}))
         if(!response.ok||response.type==='opaque'||response.redirected)throw new Error('Offline asset is unavailable')
         const declared=Number(response.headers.get('content-length'))
         if(declared>asset.bytes)throw new Error('Offline asset is larger than its release')
@@ -57,7 +59,7 @@ export function createOfflineShell({scope,revision,assets,caches,fetch}:ShellOpt
       if(cached)return cached
       // Cache eviction may occur under storage pressure. Do not save an
       // unverified network replacement into this immutable release cache.
-      return fetch(new Request(url,{credentials:'omit'}))
+      return fetch(new Request(networkURL(url),{credentials:'omit'}))
     },
   }
 }

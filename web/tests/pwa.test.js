@@ -14,7 +14,12 @@ function memoryCaches(){
   return{stores,async open(name){if(!stores.has(name))stores.set(name,new Map());const store=stores.get(name);return{async put(url,response){store.set(url,response.clone())},async match(url){return store.get(url)?.clone()}}},async keys(){return [...stores.keys()]},async delete(name){return stores.delete(name)}}
 }
 const navigation=path=>({url:new URL(path,scope).href,method:'GET',mode:'navigate'})
-const fetchAsset=async request=>new Response(bodies[new URL(request.url).pathname.slice(new URL(scope).pathname.length)],{headers:{'Content-Type':request.url.endsWith('.html')?'text/html':'application/javascript'}})
+// Static hosts serve the entry at its directory URL and redirect index.html there.
+async function fetchAsset(request) {
+  const path = new URL(request.url).pathname.slice(new URL(scope).pathname.length)
+  if (path === 'index.html') throw new TypeError('Redirect rejected')
+  return new Response(bodies[path || 'index.html'], {headers: {'Content-Type': path ? 'application/javascript' : 'text/html'}})
+}
 
 test('installs a verified release and serves routed pages and chunks completely offline',async()=>{
   const caches=memoryCaches();let online=true,calls=0

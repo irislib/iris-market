@@ -113,6 +113,7 @@ interface IdTags {
   'map-panel': 'section';
   'map-status': 'div';
   'map-toggle': 'button';
+  'layout-toggle': 'button';
   'map-usage': 'span';
   'mode-toggle': 'button';
   'network-status': 'span';
@@ -204,5 +205,9 @@ export function byId<K extends string>(id:K,scope:ParentNode=document):ElementFo
 }
 export function element<K extends keyof HTMLElementTagNameMap>(tag:K,text?:string|number,className?:string):HTMLElementTagNameMap[K]{
   const value=document.createElement(tag);if(text!==undefined)value.textContent=String(text);if(className)value.className=className;return value;
+}
+export function setToggleLabel(button:HTMLButtonElement, active:boolean, offLabel:string, onLabel:string) {
+  button.textContent = active ? onLabel : offLabel;
+  button.setAttribute('data-alternate-label', active ? offLabel : onLabel);
 }
 export function formFields(form:HTMLFormElement):HTMLFormControlsCollection & Record<string, HTMLInputElement>{return form.elements as HTMLFormControlsCollection & Record<string, HTMLInputElement>;}

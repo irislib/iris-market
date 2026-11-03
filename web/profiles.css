@@ -17,8 +17,8 @@
 .relationship-trusted { background:#a77a16; }
 .profile-actions { display:flex; gap:10px 14px; align-items:center; flex-wrap:wrap; margin:22px 0; }
 .profile-tabs { display:flex; gap:20px; border-bottom:1px solid var(--line); overflow:auto; }
-.profile-tabs button { white-space:nowrap; padding:10px 0; border-bottom:2px solid transparent; font-size:13px; color:var(--muted); }
-.profile-tabs button[aria-selected="true"] { border-bottom-color:var(--accent); color:var(--ink); font-weight:600; }
+.profile-tabs button { white-space:nowrap; padding:10px 0; border-bottom:2px solid transparent; font-size:13px; font-weight:600; color:var(--muted); }
+.profile-tabs button[aria-selected="true"] { border-bottom-color:var(--accent); color:var(--ink); }
 .profile-list-note { margin:16px 0; }
 .profile-people { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:5px 10px; max-height:290px; overflow:auto; padding:5px; margin:-5px; }
 .profile-person { display:flex; align-items:center; gap:10px; padding:10px 8px; border-radius:10px; text-align:left; min-width:0; }

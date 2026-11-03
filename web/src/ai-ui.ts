@@ -1,5 +1,5 @@
 import {spaceSellers} from './seller-spacing.ts';
-import { byId, element } from './dom.ts';
+import { byId, element, setToggleLabel } from './dom.ts';
 import { FeedFilterClient } from './feed-filter/client.ts';
 import {BrowserFeedFilterClient} from './feed-filter/browser-client.ts';
 import {planBrowserTags} from './feed-filter/browser-tags.ts';
@@ -57,7 +57,7 @@ export function setupAI({ getCandidates, getOrderCount=()=>0, onChange, onTextSe
     $('ai-summary').hidden = !active || (!curationActive() && !busy);
     const activity = `${matchLabel} · ${homeActive()?reviewedCount(candidates):scores.size} checked${getOrderCount()?' · '+getOrderCount()+' bitcoin '+(getOrderCount()===1?'order':'orders'):''}`;
     $('ai-summary-text').textContent = showAll ? (submittedQuery?'All matching listings':'All listings') : phase==='loading' ? `${$('ai-progress').textContent || 'Loading model…'} · ${activity}` : `${waitingCandidates&&busy?'Waiting for listings · ':paused&&!sourceError?'Search paused · ':''}${activity}`;
-    $('result-view').textContent=showAll?'Show AI selected':'Show all';
+    setToggleLabel($('result-view'), showAll, 'Show all', 'Show AI selected');
     $('result-view').hidden=!curationActive();
     $('ai-stop').hidden = !busy;
     $('ai-model').disabled = busy;
@@ -68,7 +68,7 @@ export function setupAI({ getCandidates, getOrderCount=()=>0, onChange, onTextSe
     $('search-run').setAttribute('aria-busy',String(phase==='loading'));
     const preparing=!!preparation||phase==='loading';
     $('search-mode').setAttribute('aria-busy',String(preparing));
-    $('search-mode').textContent=active?'Disable local AI':'Enable local AI';
+    setToggleLabel($('search-mode'), active, 'Enable local AI', 'Disable local AI');
     progress.hidden=!preparing||downloadFraction===undefined;
     if(active&&!busy&&!$('ai-error').textContent){
       $('ai-progress').textContent = needsCPU() ? 'Qwen is unavailable in this browser. Use the smaller CPU model.' : '';

@@ -1,4 +1,4 @@
-import { byId, element as domElement, formFields } from './dom.ts';
+import { byId, element as domElement, formFields, setToggleLabel } from './dom.ts';
 import { createViewportDiscovery } from './map/discovery.ts';
 import publishedCells from './data/map-cells.json' with { type: 'json' };
 import { mapCellSelector } from './map/geohash.ts';
@@ -14,10 +14,15 @@ export function setupMap({ getListings, getPriceLabel, onSelect, onVisibilityCha
     const data = await instance.getStorageStats();
     $('map-usage').textContent = `${(data.bytes / 1048576).toFixed(1)} / ${Math.round(data.maxBytes / 1048576)} MB`;
   };
+  function paintToggle() {
+    const button = $('map-toggle');
+    button.setAttribute('aria-pressed', String(visible));
+    setToggleLabel(button, visible, 'Map', 'Grid');
+  }
+  paintToggle();
   async function open() {
     visible = !visible;
-    $('map-toggle').setAttribute('aria-pressed', String(visible));
-    $('map-toggle').textContent = visible ? 'Grid' : 'Map';
+    paintToggle();
     $('map-panel').hidden = !visible; $('listings').hidden = visible; onVisibilityChange(visible);
     discovery.setActive(visible);
     if (!visible) return;

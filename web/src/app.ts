@@ -13,7 +13,7 @@ import { dismissOnBackdrop } from './surface.ts';
 import { renderListingPage } from './listing-page.ts';
 import { setupProductReviews } from './product-reviews-ui.ts';
 import {setupServiceAreaPicker} from './service-area-ui.ts';
-import { byId, element as domElement, formFields } from './dom.ts';
+import { byId, element as domElement, formFields, setToggleLabel } from './dom.ts';
 import { MarketRelayClient, DEFAULT_RELAYS, validateRelays, parseEvent, applyEvent, type MarketListing } from './market.ts';
 import previewListings from './preview.json';
 import { setupTheme } from './theme.ts';
@@ -216,7 +216,7 @@ function setLayout(layout:string){
   const list=layout==='list';
   $('listings').classList.toggle('list-layout',list);
   const button=$('layout-toggle');
-  button.textContent=list?'Grid':'List';
+  setToggleLabel(button, list, 'List', 'Grid');
   button.setAttribute('aria-label',list?'Show as grid':'Show as list');
 }
 setLayout(load('market-listing-layout','grid'));

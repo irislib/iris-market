@@ -127,7 +127,9 @@ dialog { color:var(--ink); background:var(--bg); border:1px solid var(--line); b
 #filter-form .checkbox-label input{flex:none;width:18px;height:18px;margin:0;padding:0;accent-color:var(--accent)}
 #home-feed-help{margin-bottom:12px}
 
-#result-view{white-space:nowrap}
+/* Both labels size the column. Only the current label occupies a visible row. */
+button[data-alternate-label] { display:inline-grid; grid-template-rows:auto 0; row-gap:0; white-space:nowrap; }
+button[data-alternate-label]::after { content:attr(data-alternate-label); visibility:hidden; overflow:hidden; }
 #search-expansions{margin:12px 0 18px}
 #search-expansions h3{font-size:14px;margin:0 0 6px}
 #search-expansion-terms{display:flex;flex-wrap:wrap;gap:6px;list-style:none;padding:0;margin:0}

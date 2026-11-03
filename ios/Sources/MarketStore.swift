@@ -57,7 +57,7 @@ final class MarketStore: ObservableObject {
     private var browseVisibility = NativeBrowseVisibility()
     private var browseVisible: Bool { browseVisibility.isVisible }
     private var homeStartedContext: String?
-    var homeFilterActive: Bool { aiSearchEnabled && snapshot.settings.ai.curateFeed && snapshot.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    var homeFilterActive: Bool { snapshot.showAllResults != true && aiSearchEnabled && snapshot.settings.ai.curateFeed && snapshot.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     var curationActive: Bool { homeFilterActive || snapshot.settings.ai.enabled && snapshot.aiSearch && !snapshot.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     func setBrowseVisible(_ visible: Bool, owner: UUID) {
         guard browseVisibility.update(visible, owner: owner) else { return }
@@ -97,9 +97,6 @@ final class MarketStore: ObservableObject {
         let ai = snapshot.settings.ai
         return NativeAIReadiness.isOn(enabled: ai.enabled, provider: ai.provider, model: ai.model, endpoint: ai.baseUrl, localAvailable: appleAIUnavailableReason == nil, preview: demo)
     }
-    var aiSearchStateLabel: String {
-        snapshot.settings.ai.enabled ? (aiSearchEnabled ? "On" : "On, unavailable") : "Off"
-    }
     private func acceptSnapshot(_ next: MarketSnapshot) {
         #if DEBUG
         let next = messageFixture.project(next)
@@ -124,47 +121,6 @@ final class MarketStore: ObservableObject {
     func refreshAIAvailability() {
         appleAIUnavailableReason = appleAvailability()
         offerLocalAIDefault()
-    }
-    func toggleAI(openSettings: @escaping () -> Void) {
-        guard ready else { return }
-        let ai = snapshot.settings.ai
-        let action = NativeAIReadiness.tapAction(enabled: ai.enabled,
-            ready: NativeAIReadiness.canEnable(provider: ai.provider, model: ai.model, endpoint: ai.baseUrl, localAvailable: appleAIUnavailableReason == nil, preview: demo),
-            localFallback: appleAIUnavailableReason == nil && NativeAIReadiness.canSelectLocalOnTap(provider: ai.provider, model: ai.model, endpoint: ai.baseUrl))
-        if action == .settings { openSettings(); return }
-        if busy && action != .off { return }
-        let enabling = action != .off
-        let epoch = aiIntentGate.advance()
-        if !enabling { cancelLocalAI(); disableAI(epoch: epoch); return }
-        var settings = snapshot.settings
-        if action == .local { settings.ai.provider = "apple"; settings.ai.model = "apple-system"; settings.ai.baseUrl = "" }
-        settings.ai.enabled = enabling
-        saveSettings(settings, key: "", replaceKey: false, expectedAIIntent: epoch) { success in
-            if success { self.filter(query: self.snapshot.query, side: self.snapshot.side, aiSearch: enabling) }
-        }
-    }
-    private func disableAI(epoch: Int) {
-        guard let app else { return }
-        let generation = accountGeneration, gate = aiIntentGate
-        operationCount += 1; busy = true
-        aiPreferenceQueue.async { [weak self] in
-            do {
-                let next = try gate.perform(at: epoch) { () throws -> MarketSnapshot in
-                    let fresh = try MarketJSON.decoder().decode(MarketSnapshot.self, from: Data(try app.snapshot().utf8))
-                    var settings = fresh.settings; settings.ai.enabled = false
-                    let request = String(decoding: try JSONSerialization.data(withJSONObject: ["type": "set_settings", "settings": try MarketJSON.object(settings)]), as: UTF8.self)
-                    return try MarketJSON.decoder().decode(MarketSnapshot.self, from: Data(try app.command(request: request).utf8))
-                }
-                Task { @MainActor in
-                    guard let self, self.accountGeneration == generation else { return }
-                    self.operationCount -= 1; self.busy = self.operationCount > 0
-                    if let next { self.acceptSnapshot(next); if let error = next.error { self.alert = error } }
-                }
-            } catch { Task { @MainActor in
-                guard let self, self.accountGeneration == generation else { return }
-                self.operationCount -= 1; self.busy = self.operationCount > 0; self.alert = marketErrorMessage(error)
-            } }
-        }
     }
     private func open() {
         let demo = self.demo
@@ -402,18 +358,26 @@ final class MarketStore: ObservableObject {
             }
         } catch { if !backgroundReview { alert = marketErrorMessage(error) }; completion?(false) }
     }
-    func filter(query: String, side: String, aiSearch: Bool = false, completion: ((Bool) -> Void)? = nil) {
+    func filter(query: String, side: String, aiSearch: Bool = false, showAllResults: Bool? = nil, completion: ((Bool) -> Void)? = nil) {
         searchContinuation.stop()
-        if localAIProgress != nil && (query != snapshot.query || side != snapshot.side || aiSearch != snapshot.aiSearch) {
+        if localAIProgress != nil && (query != snapshot.query || side != snapshot.side || aiSearch != snapshot.aiSearch || showAllResults != nil) {
             // set_filter invalidates the old Rust batch and discovery together.
             // A separately queued cancel could otherwise stop the new query.
             localAIRequest = UUID(); localAITask?.cancel(); localAITask = nil
             localAIProgress = nil; localAIStatus = nil
         }
         searchPaused = false
-        command(["type": "set_filter", "query": query, "side": side, "ai_search": aiSearch]) { [weak self] success in
+        var request: [String: Any] = ["type": "set_filter", "query": query, "side": side, "ai_search": aiSearch]
+        if let showAllResults { request["show_all_results"] = showAllResults }
+        command(request) { [weak self] success in
             if success, let self, self.curationActive { self.searchContinuation.start(self.searchContext); self.homeStartedContext = self.searchContext }
             completion?(success)
+        }
+    }
+    func selectResultView(showAll: Bool) {
+        let useAI = !showAll && !snapshot.query.isEmpty && aiSearchEnabled
+        filter(query: snapshot.query, side: snapshot.side, aiSearch: useAI, showAllResults: showAll) { success in
+            if success && useAI && self.snapshot.aiSearch { self.runAI(type: "curate") }
         }
     }
     func searchAI(query: String, side: String) {

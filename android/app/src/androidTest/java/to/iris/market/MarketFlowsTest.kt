@@ -21,7 +21,7 @@ class MarketFlowsTest {
             .putExtra("demo", true).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         activity = ActivityScenario.launch(intent)
         compose.waitUntil(15_000) { compose.onAllNodesWithContentDescription("Filters").fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithContentDescription("Filters").performClick()
+        compose.onNodeWithTag("listingFilters").performClick()
         if(compose.onAllNodesWithTag("resetPhotoFilter").filter(isEnabled()).fetchSemanticsNodes().isNotEmpty()) compose.onNodeWithTag("resetPhotoFilter").performClick()
         compose.onNodeWithTag("hasPhotosFilter").assertIsOn().performClick()
         compose.onNodeWithText("Done").performClick()
@@ -164,17 +164,10 @@ class MarketFlowsTest {
         compose.onNodeWithText("Some connections are unavailable.").assertDoesNotExist()
         compose.onNodeWithText("Profiles are unavailable in offline preview.").assertDoesNotExist()
         compose.onNodeWithText("Done").performClick()
-        val sparkle = compose.onNodeWithContentDescription("AI search")
-        val previous = sparkle.fetchSemanticsNode().config[androidx.compose.ui.semantics.SemanticsProperties.ToggleableState]
-        sparkle.performTouchInput { longClick() }
-        compose.onNode(hasText("Settings") and hasClickAction().not()).assertExists()
-        compose.onNode(SemanticsMatcher.keyIsDefined(SemanticsActions.Dismiss)).performSemanticsAction(SemanticsActions.Dismiss) { it() }
-        compose.waitUntil(5_000) { compose.onAllNodes(hasText("Settings") and hasClickAction().not()).fetchSemanticsNodes().isEmpty() }
-        org.junit.Assert.assertEquals(previous,sparkle.fetchSemanticsNode().config[androidx.compose.ui.semantics.SemanticsProperties.ToggleableState])
-        compose.onNodeWithTag("runAISearch").assertDoesNotExist()
+        compose.onNodeWithContentDescription("AI search").assertDoesNotExist()
         compose.onNodeWithContentDescription("Show map").assertIsNotEnabled()
     }
-    @Test fun sparkleLongPressAndKeyboardSearchStayInline() {
+    @Test fun keyboardSubmitsSearchWithoutAnAIButton() {
         val search = compose.onNode(hasSetTextAction())
         search.performTextInput("no-such-preview-listing-783")
         compose.onNodeWithText("A little more green").assertExists()
@@ -182,53 +175,31 @@ class MarketFlowsTest {
         compose.waitUntil(5_000) { compose.onAllNodesWithText("No matches").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithContentDescription("Clear search").performClick()
         compose.waitUntil(5_000) { compose.onAllNodesWithText("A little more green").fetchSemanticsNodes().isNotEmpty() }
-        val sparkle = compose.onNodeWithContentDescription("AI search")
-        val previous = sparkle.fetchSemanticsNode().config[androidx.compose.ui.semantics.SemanticsProperties.ToggleableState]
-        org.junit.Assert.assertEquals("Open AI settings",sparkle.fetchSemanticsNode().config[SemanticsActions.OnLongClick].label)
-        sparkle.performTouchInput { longClick() }
-        compose.onNodeWithText("Settings").assertExists()
-        compose.onNode(SemanticsMatcher.keyIsDefined(SemanticsActions.Dismiss)).performSemanticsAction(SemanticsActions.Dismiss) { it() }
-        compose.waitUntil(5_000) { compose.onAllNodesWithText("Settings").fetchSemanticsNodes().isEmpty() }
-        org.junit.Assert.assertEquals(previous,sparkle.fetchSemanticsNode().config[androidx.compose.ui.semantics.SemanticsProperties.ToggleableState])
-        // Offline preview cannot run a provider, so a normal tap explains setup rather than pretending On.
-        sparkle.performClick()
-        compose.onNodeWithText("Settings").assertExists()
-        compose.onNode(SemanticsMatcher.keyIsDefined(SemanticsActions.Dismiss)).performSemanticsAction(SemanticsActions.Dismiss) { it() }
-        compose.waitUntil(5_000) { compose.onAllNodesWithText("Settings").fetchSemanticsNodes().isEmpty() }
-        compose.onNodeWithTag("runAISearch").assertDoesNotExist()
-        val fieldBounds = search.fetchSemanticsNode().boundsInRoot
-        val bounds = sparkle.fetchSemanticsNode().boundsInRoot
-        org.junit.Assert.assertTrue(bounds.left >= fieldBounds.left && bounds.right <= fieldBounds.right)
-        org.junit.Assert.assertTrue(kotlin.math.abs(bounds.center.y-fieldBounds.center.y)<1f)
-        capture("sparkle-only-search-keyboard-submit")
+        compose.onNodeWithContentDescription("AI search").assertDoesNotExist()
+        capture("search-without-ai-button")
     }
 
-    @Test fun unavailableOnUsesSettingsAndNormalTapPersistsOff() {
-        val sparkle=compose.onNodeWithContentDescription("AI search")
-        sparkle.performTouchInput { longClick() }
+    @Test fun allResultsUsesTextSearchWithAnUnavailableModel() {
+        compose.onNodeWithTag("listingFilters").performClick()
+        compose.onNodeWithText("AI settings").performScrollTo().performClick()
         val providers=NativePreferences.providers.map { hasText(it.label) }.reduce { left,right -> left or right }
         compose.onNode(providers).performScrollTo().performClick()
         compose.onAllNodesWithText("Groq · free quota").onLast().performClick()
         val enabled=compose.onNodeWithTag("enableAI")
         if(enabled.fetchSemanticsNode().config[androidx.compose.ui.semantics.SemanticsProperties.ToggleableState]!=androidx.compose.ui.state.ToggleableState.On) enabled.performClick()
         compose.onNode(SemanticsMatcher.keyIsDefined(SemanticsActions.Dismiss)).performSemanticsAction(SemanticsActions.Dismiss) { it() }
-        compose.waitUntil(5_000) { compose.onAllNodesWithText("Settings").fetchSemanticsNodes().isEmpty() && sparkle.fetchSemanticsNode().config[androidx.compose.ui.semantics.SemanticsProperties.StateDescription]=="On, unavailable" }
-        compose.onNode(hasSetTextAction()).performTextInput("no-such-preview-listing-783")
-        compose.onNode(hasSetTextAction()).performImeAction()
-        compose.onNodeWithText("Settings").assertExists()
-        compose.onNode(SemanticsMatcher.keyIsDefined(SemanticsActions.Dismiss)).performSemanticsAction(SemanticsActions.Dismiss) { it() }
-        compose.waitUntil(5_000) { compose.onAllNodesWithText("Settings").fetchSemanticsNodes().isEmpty() }
-        compose.onNodeWithText("A little more green").assertExists()
-        sparkle.performClick()
-        compose.waitUntil(5_000) { sparkle.fetchSemanticsNode().config[androidx.compose.ui.semantics.SemanticsProperties.ToggleableState]==androidx.compose.ui.state.ToggleableState.Off }
-        sparkle.performTouchInput { longClick() }
-        compose.onNodeWithTag("enableAI").assertIsOff()
-        capture("unavailable-on-normal-tap-off")
-        compose.onNode(SemanticsMatcher.keyIsDefined(SemanticsActions.Dismiss)).performSemanticsAction(SemanticsActions.Dismiss) { it() }
+        compose.onNodeWithTag("resultView").performClick()
+        compose.onNodeWithText("All results").performClick()
+        compose.onNodeWithTag("resultView").assertTextContains("All results")
+        val search=compose.onNode(hasSetTextAction())
+        search.performTextInput("no-such-preview-listing-783")
+        search.performImeAction()
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("No matches").fetchSemanticsNodes().isNotEmpty() }
+        capture("all-results-text-search")
     }
 
     @Test fun homePhotoDefaultKeepsSearchAndSavedWithoutPhotos() {
-        compose.onNodeWithContentDescription("Filters").performClick()
+        compose.onNodeWithTag("listingFilters").performClick()
         compose.onNodeWithTag("listingFiltersSheet").assertExists()
         compose.onNodeWithTag("hasPhotosFilter").assertIsOff()
         compose.onNodeWithText("Reset").assertIsEnabled().performClick()
@@ -244,7 +215,7 @@ class MarketFlowsTest {
         compose.waitUntil(5_000) { compose.onAllNodesWithText("A little more green").fetchSemanticsNodes().isNotEmpty() }
         if(compose.onAllNodesWithContentDescription("Unsave A little more green").fetchSemanticsNodes().isNotEmpty()) compose.onNodeWithContentDescription("Unsave A little more green").performClick()
         compose.onNodeWithContentDescription("Save A little more green").performClick()
-        compose.onNodeWithContentDescription("Filters").performClick()
+        compose.onNodeWithTag("listingFilters").performClick()
         compose.onNodeWithTag("hasPhotosFilter").assertIsOff().performClick().assertIsOn()
         compose.onNodeWithTag("listingFiltersSheet").assertExists()
         compose.onNodeWithText("Done").performClick()

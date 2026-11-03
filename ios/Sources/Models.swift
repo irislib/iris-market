@@ -16,6 +16,8 @@ struct MarketSnapshot: Decodable {
     var aiSearch = false
     var searchDiscovery: SearchDiscoveryStatus?
     var searchGeneration: UInt64?
+    var relatedSearchTerms: [String]?
+    var showAllResults: Bool?
     var searchPlanTags: [String]?
     var searchPlanPending: Bool?
     var sort = "suggested"

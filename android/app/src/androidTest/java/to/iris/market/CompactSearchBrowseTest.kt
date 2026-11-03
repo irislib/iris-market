@@ -118,10 +118,18 @@ class CompactSearchBrowseTest {
             activity.onActivity { if (android.os.Build.VERSION.SDK_INT >= 30) it.window.insetsController?.hide(WindowInsets.Type.ime()) }
             waitFor("listing card") { findNode { it.text?.toString()?.contains(title) == true } != null }
             screenshot(app, "compact-search-result")
-            val settings = checkNotNull(findNode { it.contentDescription?.toString() == "AI search" })
-            check(settings.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK)) { "Cannot open AI settings" }
-            waitFor("selected provider") { findNode { it.text?.toString()?.contains("On device · Compact search") == true } != null }
-            screenshot(app, "compact-search-settings")
+            fun clickText(label:String) {
+                var node = checkNotNull(findNode { it.text?.toString() == label })
+                while(!node.isClickable) node = checkNotNull(node.parent)
+                check(node.performAction(AccessibilityNodeInfo.ACTION_CLICK))
+            }
+            clickText("AI selected")
+            waitFor("result view menu") { findNode { it.text?.toString() == "All results" } != null }
+            clickText("All results")
+            waitFor("literal results for the submitted query") {
+                model.state.value.showAllResults && !model.state.value.aiSearch && model.state.value.query == query
+            }
+            screenshot(app, "compact-search-all-results")
         } finally {
             activity.close()
             // The installation belongs to Settings. Retire only the isolated fixture profile.

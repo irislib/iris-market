@@ -1,0 +1,191 @@
+[
+  {
+    "query": "bread",
+    "listings": [
+      {
+        "title": "Country sourdough",
+        "description": "Fresh rye loaf baked this morning."
+      },
+      {
+        "title": "Baguettes",
+        "description": "Two crisp French loaves."
+      },
+      {
+        "title": "Bread machine",
+        "description": "Electric appliance for baking bread."
+      },
+      {
+        "title": "Bamboo bread box",
+        "description": "Storage only."
+      }
+    ]
+  },
+  {
+    "query": "transport",
+    "listings": [
+      {
+        "title": "Commuter scooter",
+        "description": "Working electric scooter for getting around town."
+      },
+      {
+        "title": "Road bicycle",
+        "description": "Fast commuter bike in good working order."
+      },
+      {
+        "title": "Bus stop poster",
+        "description": "Vintage public transport artwork."
+      },
+      {
+        "title": "Bike parking sign",
+        "description": "Metal street sign."
+      }
+    ]
+  },
+  {
+    "query": "instruments",
+    "listings": [
+      {
+        "title": "Student violin",
+        "description": "Full size with bow and rosin."
+      },
+      {
+        "title": "Concert flute",
+        "description": "Silver wind instrument, recently serviced."
+      },
+      {
+        "title": "Violin shoulder rest",
+        "description": "Accessory only."
+      },
+      {
+        "title": "Piano tuning class",
+        "description": "Learn to service instruments."
+      }
+    ]
+  },
+  {
+    "query": "garden tools",
+    "listings": [
+      {
+        "title": "Pruning shears",
+        "description": "Hand tool for trimming rose bushes."
+      },
+      {
+        "title": "Garden fork",
+        "description": "Four steel tines for loosening soil."
+      },
+      {
+        "title": "Tool shed plans",
+        "description": "Downloadable drawings only."
+      },
+      {
+        "title": "Gardening gloves",
+        "description": "Protective clothing."
+      }
+    ]
+  },
+  {
+    "query": "decaf coffee",
+    "listings": [
+      {
+        "title": "Decaffeinated beans",
+        "description": "Whole bean coffee with caffeine removed."
+      },
+      {
+        "title": "Ground decaf",
+        "description": "Colombian coffee without caffeine."
+      },
+      {
+        "title": "Espresso roast",
+        "description": "Regular caffeinated coffee."
+      },
+      {
+        "title": "Coffee decanter",
+        "description": "Glass serving pot."
+      }
+    ]
+  },
+  {
+    "query": "running shoes",
+    "listings": [
+      {
+        "title": "Road runners",
+        "description": "Lightweight running shoes, size 42."
+      },
+      {
+        "title": "Trail runners",
+        "description": "Shoes made for off-road running."
+      },
+      {
+        "title": "Running socks",
+        "description": "Cushioned socks for athletes."
+      },
+      {
+        "title": "Dress shoes",
+        "description": "Leather formal footwear."
+      }
+    ]
+  },
+  {
+    "query": "I need a table that folds away.",
+    "listings": [
+      {
+        "title": "Folding table",
+        "description": "Folds flat for storage."
+      },
+      {
+        "title": "Drop-leaf picnic table",
+        "description": "Legs and top fold for easy storage."
+      },
+      {
+        "title": "Solid dining table",
+        "description": "Fixed legs and top, cannot fold."
+      },
+      {
+        "title": "Tablecloth",
+        "description": "Cotton cover for a folding table."
+      }
+    ]
+  },
+  {
+    "query": "I want a used monitor under 80 euros.",
+    "listings": [
+      {
+        "title": "Used monitor",
+        "description": "Working 22 inch screen for 65 euros."
+      },
+      {
+        "title": "Secondhand display",
+        "description": "24 inch computer monitor for 70 euros."
+      },
+      {
+        "title": "Used monitor",
+        "description": "Working monitor costs 150 euros."
+      },
+      {
+        "title": "Monitor stand",
+        "description": "Used aluminum riser for 25 euros."
+      }
+    ]
+  },
+  {
+    "query": "I am looking for someone to teach me Spanish.",
+    "listings": [
+      {
+        "title": "Spanish tuition",
+        "description": "One-on-one language lessons with a teacher."
+      },
+      {
+        "title": "Conversational Spanish classes",
+        "description": "Practice speaking with a tutor."
+      },
+      {
+        "title": "Spanish dictionary",
+        "description": "Bilingual reference book."
+      },
+      {
+        "title": "Spanish translation service",
+        "description": "I translate legal paperwork."
+      }
+    ]
+  }
+]

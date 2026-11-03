@@ -175,3 +175,21 @@ test('the general DeBERTa query fix cannot reuse a cached old search-meta decisi
     assert.equal((await client.classify(nextCondition,content,{eventId})).cached,true);
   }finally{client.dispose();}
 });
+
+test('trained and original classifier decisions use separate cache entries', async () => {
+  const client=make(), worker=await load(client)
+  try {
+    for (const trained of [false,true]) {
+      const decision=client.classify('example','listing',{searchHead:trained})
+      await tick()
+      assert.equal(worker.messages.at(-1).searchHead===true,trained)
+      worker.respond({score:trained ? .9 : .1})
+      assert.equal((await decision).show,trained)
+    }
+    for (const trained of [false,true]) {
+      const decision=await client.classify('example','listing',{searchHead:trained})
+      assert.equal(decision.cached,true)
+      assert.equal(decision.show,trained)
+    }
+  } finally { client.dispose() }
+})

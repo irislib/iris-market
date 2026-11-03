@@ -2,7 +2,7 @@ import { byId, element } from './dom.ts';
 import { FeedFilterClient } from './feed-filter/client.ts';
 import {BrowserFeedFilterClient} from './feed-filter/browser-client.ts';
 import {planBrowserTags} from './feed-filter/browser-tags.ts';
-import { searchCondition, listingSearchText, listingSearchTexts } from './search-condition.ts';
+import { searchCondition, listingSearchText, listingSearchTexts, usesTrainedSearchHead } from './search-condition.ts';
 import {homeFeedConditions,homeFeedPreferences,type HomeFeedPreferences} from './home-feed.ts';
 const $=byId;
 const keyFor = listing => listing.eventId || listing.id;
@@ -176,6 +176,7 @@ export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetch
       if(query!==submittedQuery){sourceEpoch++;submittedQuery=query;scores.clear();if(!homeRun)onSubmit?.(query);onChange();}
       if(!enabled()||!query&&!homeRun||homeRun&&!homeActive())return;
       const model=$('ai-model').value;
+      const searchHead=!homeRun&&usesTrainedSearchHead(query,model);
       const conditions=homeRun?homeFeedConditions(home.prompt,model):[{condition:searchCondition(query,model),exclude:false}];
       let sourceRequests=0,unpainted=0,painted=false,lastPaint=performance.now();
       phase='searching';refresh();
@@ -208,7 +209,7 @@ export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetch
         for(const text of homeRun?[listingSearchText(item)]:listingSearchTexts(item,query,$('ai-model').value)){
           let evidence=1;
           for(const {condition,exclude} of conditions){
-            const result=await selected.classify(condition,text,{eventId:item.eventId,signal:controller.signal});
+            const result=await selected.classify(condition,text,{eventId:item.eventId,signal:controller.signal,searchHead});
             if(current!==generation)return;
             if(!Number.isFinite(result.score))throw new Error('The model returned an invalid decision');
             evidence=Math.min(evidence,exclude?1-result.score:result.score);
@@ -286,7 +287,7 @@ export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetch
       testOwnsLoad=false;$('ai-test-progress').hidden=true;$('ai-test-status').textContent='Testing example…';
       let score=0,cached=true;
       for(const text of listingSearchTexts({title,description,side:'offer'},query,model)){
-        const result=await selected.classify(searchCondition(query,model),text,{signal:controller.signal});
+        const result=await selected.classify(searchCondition(query,model),text,{signal:controller.signal,searchHead:usesTrainedSearchHead(query,model)});
         if(!current())return;
         if(!Number.isFinite(result.score)||result.score<0||result.score>1)throw Error('The model returned an invalid decision.');
         cached&&=!!result.cached;score=Math.max(score,result.score);if(score>=cutoff)break;

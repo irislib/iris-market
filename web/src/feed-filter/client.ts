@@ -100,7 +100,7 @@ export class FeedFilterClient {
       return this.info
     })
   }
-  classify(condition: string, listingText: string, { signal, eventId }: { signal?: AbortSignal; eventId?: string } = {}) {
+  classify(condition: string, listingText: string, { signal, eventId, searchHead = false }: { signal?: AbortSignal; eventId?: string; searchHead?: boolean } = {}) {
     try { validateInput(condition, listingText) } catch (error) { return Promise.reject(error) }
     const content = listingText.slice(0, MAX_LISTING_LENGTH)
     const clipped = listingText.length > MAX_LISTING_LENGTH
@@ -108,10 +108,10 @@ export class FeedFilterClient {
       if (signal?.aborted) throw new DOMException('Local filtering cancelled.', 'AbortError')
       if (!this.info || !this.worker) throw new Error('Load a local model first.')
       const generation=this.generation,info=this.info
-      const key=decisionCacheKey({filterVersion:FILTER_VERSION,model:info.model,revision:info.revision,device:info.device,dtype:FEED_MODELS[info.model].dtype,condition:condition.trim(),content,truncated:clipped,eventId})
+      const key=decisionCacheKey({filterVersion:FILTER_VERSION,model:info.model,revision:searchHead ? info.revision + ":market-head-v1" : info.revision,device:info.device,dtype:FEED_MODELS[info.model].dtype,condition:condition.trim(),content,truncated:clipped,eventId})
       const cached = this.cache.get(key)
       if (cached) return { ...cached, cached: true }
-      const result = await this.request({ type: 'classify', condition: condition.trim(), content }, undefined, 60000, signal)
+      const result = await this.request({ type: 'classify', condition: condition.trim(), content, ...(searchHead ? { searchHead: true } : {}) }, undefined, 60000, signal)
       if(signal?.aborted||generation!==this.generation||this.info!==info)throw new DOMException('Local filtering cancelled.','AbortError')
       if (!Number.isFinite(result?.score) || result.score < 0 || result.score > 1) {
         this.dispose(); throw new Error('The local model returned an invalid score.')

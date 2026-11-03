@@ -9,7 +9,7 @@ self.onmessage = ({ data }: MessageEvent<(FilterRequest | { type: 'dispose' }) &
     try {
       let result
       if (data.type === 'load') result = await loadModel(data.model, data.device, (progress,progressDetails) => self.postMessage({ id, progress, progressDetails }))
-      else if (data.type === 'classify') result = await classifyListing(data.condition, data.content)
+      else if (data.type === 'classify') result = await classifyListing(data.condition, data.content, data.searchHead)
       else if (data.type === 'dispose') result = await disposeModel()
       else throw new Error('Unknown local filter request.')
       self.postMessage({ id, result })

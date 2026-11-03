@@ -8,3 +8,12 @@ export function debertaEntailmentScore(logits:ArrayLike<number>):number {
   const contradiction=Math.exp(logits[0]-maximum),entailment=Math.exp(logits[1]-maximum),neutral=Math.exp(logits[2]-maximum);
   return entailment/(contradiction+entailment+neutral);
 }
+
+// The fourth column is the marketplace-trained entailment logit. Applying
+// three quarters of the learned change recovers sentence matches while
+// admitting fewer incidental mentions than the fully tuned head.
+export function marketplaceEntailmentScore(logits:ArrayLike<number>, conversational:boolean):number {
+  if(logits.length!==4)throw new Error('The local model returned invalid relevance scores.')
+  const entailment=conversational ? .25*logits[1]+.75*logits[3] : logits[1]
+  return debertaEntailmentScore([logits[0],entailment,logits[2]])
+}

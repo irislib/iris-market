@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {debertaEntailmentScore} from '../src/feed-filter/scoring.ts';
+import {debertaEntailmentScore,marketplaceEntailmentScore} from '../src/feed-filter/scoring.ts';
 
 test('neutral-dominant output is a nonmatch even if entailment exceeds contradiction',()=>{
   const logits=new Float32Array([-2,-1,8]);
@@ -27,4 +27,11 @@ test('full three-way normalization remains finite and invariant under large logi
 
 test('wrong output shape and non-finite logits fail rather than becoming match decisions',()=>{
   for(const value of [[],[1,2],[1,2,3,4],[NaN,1,2],[1,Infinity,2],[1,2,-Infinity]])assert.throws(()=>debertaEntailmentScore(value),/invalid relevance/);
+});
+
+test('only conversational searches use the learned weight change',()=>{
+  const output=[-1,0,2,4];
+  assert.equal(marketplaceEntailmentScore(output,false),debertaEntailmentScore([-1,0,2]));
+  assert.equal(marketplaceEntailmentScore(output,true),debertaEntailmentScore([-1,3,2]));
+  assert.throws(()=>marketplaceEntailmentScore([1,2,3],true),/invalid relevance/);
 });

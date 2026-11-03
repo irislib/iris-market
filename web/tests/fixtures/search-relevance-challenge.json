@@ -1,0 +1,191 @@
+[
+  {
+    "query": "camera",
+    "listings": [
+      {
+        "title": "Mirrorless camera body",
+        "description": "Working camera with shutter count of 1400."
+      },
+      {
+        "title": "35mm film camera",
+        "description": "Includes working light meter."
+      },
+      {
+        "title": "Camera strap",
+        "description": "Leather neck strap only. Camera shown for scale."
+      },
+      {
+        "title": "Coffee mug",
+        "description": "Ceramic souvenir with camera motif."
+      }
+    ]
+  },
+  {
+    "query": "books",
+    "listings": [
+      {
+        "title": "Short story collection",
+        "description": "Paperback anthology. Excellent condition."
+      },
+      {
+        "title": "Geometry textbook",
+        "description": "Hardcover with practice exercises."
+      },
+      {
+        "title": "Wood bookcase",
+        "description": "Shelves for your favorite books. Books not included."
+      },
+      {
+        "title": "Book repair class",
+        "description": "Learn to restore old bindings."
+      }
+    ]
+  },
+  {
+    "query": "coffee",
+    "listings": [
+      {
+        "title": "Freshly roasted beans",
+        "description": "Medium roast Colombian coffee beans."
+      },
+      {
+        "title": "Ground espresso",
+        "description": "250 grams of arabica coffee."
+      },
+      {
+        "title": "Coffee grinder",
+        "description": "Burr mill for preparing coffee. No beans included."
+      },
+      {
+        "title": "Espresso cups",
+        "description": "Set of four ceramic cups."
+      }
+    ]
+  },
+  {
+    "query": "red bicycle",
+    "listings": [
+      {
+        "title": "Crimson city bike",
+        "description": "Red frame and seven speeds."
+      },
+      {
+        "title": "Road bicycle",
+        "description": "Freshly serviced red aluminum frame."
+      },
+      {
+        "title": "Blue road bike",
+        "description": "Blue bicycle with red pedals."
+      },
+      {
+        "title": "Red cycling helmet",
+        "description": "For road bicycle riders."
+      }
+    ]
+  },
+  {
+    "query": "electric guitar",
+    "listings": [
+      {
+        "title": "Solid-body electric guitar",
+        "description": "Two pickups and new strings."
+      },
+      {
+        "title": "Travel guitar",
+        "description": "Compact electric six-string with a headphone output."
+      },
+      {
+        "title": "Acoustic guitar",
+        "description": "Traditional nylon strings, no electronics."
+      },
+      {
+        "title": "Guitar amplifier",
+        "description": "Practice amp for electric guitars."
+      }
+    ]
+  },
+  {
+    "query": "gluten free bread",
+    "listings": [
+      {
+        "title": "Rice flour loaf",
+        "description": "Certified gluten free bread baked today."
+      },
+      {
+        "title": "Gluten-free rolls",
+        "description": "Six fresh bread rolls made from rice flour."
+      },
+      {
+        "title": "Sourdough loaf",
+        "description": "Wheat bread. Contains gluten."
+      },
+      {
+        "title": "Gluten free flour",
+        "description": "Bake your own bread at home."
+      }
+    ]
+  },
+  {
+    "query": "I need a bike under 100 euros.",
+    "listings": [
+      {
+        "title": "City bicycle",
+        "description": "Used bike for 80 euros."
+      },
+      {
+        "title": "Road bike",
+        "description": "Ride away for 95 euros."
+      },
+      {
+        "title": "City bicycle",
+        "description": "Used bike costs 180 euros."
+      },
+      {
+        "title": "Bicycle light",
+        "description": "Front lamp for 25 euros."
+      }
+    ]
+  },
+  {
+    "query": "I want a coat without wool.",
+    "listings": [
+      {
+        "title": "Cotton trench coat",
+        "description": "Made of 100 percent cotton."
+      },
+      {
+        "title": "Rain coat",
+        "description": "Polyester outer and nylon lining, contains no wool."
+      },
+      {
+        "title": "Peacoat",
+        "description": "Made from pure wool."
+      },
+      {
+        "title": "Cotton sweater",
+        "description": "Pullover in organic cotton."
+      }
+    ]
+  },
+  {
+    "query": "I am looking for someone to fix my phone.",
+    "listings": [
+      {
+        "title": "Smartphone repair",
+        "description": "Technician replaces broken displays."
+      },
+      {
+        "title": "Mobile phone servicing",
+        "description": "We diagnose and repair your handset."
+      },
+      {
+        "title": "Broken phone for sale",
+        "description": "Needs someone to fix the screen."
+      },
+      {
+        "title": "Phone repair tools",
+        "description": "Kit for repairing your own phone."
+      }
+    ]
+  }
+]

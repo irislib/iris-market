@@ -693,3 +693,17 @@ test('model and candidate waits are distinct from completed matching activity',a
   assert.equal(field('ai-summary-text').textContent,'Waiting for listings · 0 matches · 0 checked');source.resolve(false);await running;
   assert.equal(field('ai-summary-text').textContent,'0 matches · 0 checked');
 });
+
+test('only submitted conversational searches select the trained head', async()=>{
+  const heads=[];
+  const client={info:{model:'deberta'},async load(){},async classify(_condition,_text,options){
+    heads.push(options.searchHead);return{score:1};
+  },dispose(){}};
+  const {ui,field}=fixture({client,homeFeed:{enabled:true,prompt:'I need items for my house'}});
+  for(const [query,trained] of [['',false],['bicycle',false],['folding bicycle',false],['I need a folding bicycle.',true]]){
+    heads.length=0;
+    await ui.submit(query);
+    assert.deepEqual(heads,[trained]);
+  }
+  field('search-mode').value='text';ui.stop();
+});

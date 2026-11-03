@@ -32,6 +32,34 @@ fn begin(market: &Market) -> Value {
 }
 
 #[test]
+fn compact_reviews_submitted_searches_and_preserves_home_preferences() {
+    let (_dir, market) = setup();
+    let home = command(
+        &market,
+        json!({"type":"set_filter","query":"","side":"all"}),
+    );
+    let mut settings: Settings = serde_json::from_value(home["settings"].clone()).unwrap();
+    settings.ai.provider = "compact".into();
+    settings.ai.curate_feed = true;
+    settings.ai.interests = "My Home preferences".into();
+    let home = command(&market, json!({"type":"set_settings","settings":settings}));
+    assert_eq!(home["settings"]["ai"]["curate_feed"], true);
+    assert!(
+        market
+            .command(r#"{"type":"begin_local_curation"}"#)
+            .is_err()
+    );
+    command(
+        &market,
+        json!({"type":"set_filter","query":"a camera","side":"all","ai_search":true}),
+    );
+    let search = begin(&market);
+    assert_eq!(search["interests"], "a camera");
+    assert_eq!(search["home_feed"], false);
+    assert!(!search["candidates"].as_array().unwrap().is_empty());
+}
+
+#[test]
 fn enabling_ai_on_empty_home_does_not_start_a_search_plan_or_leak_late_errors() {
     let (_dir, market) = setup();
     let old: Value = serde_json::from_str(&market.snapshot().unwrap()).unwrap();

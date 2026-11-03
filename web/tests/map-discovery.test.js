@@ -184,3 +184,36 @@ test('a wide continental map finishes its complete four-character cover within n
     socket.receive(['EOSE',sent()[0][1]]);assert.equal(sent().length,count)
   }finally{app.close()}
 })
+
+test('map movement asks for observed precise spellings immediately and closes the extra map relay on exit', ()=>{
+  const app=client({mapRelay:'wss://geo.example',browseDiscovery:true,maxRecords:1}),ordinary=Socket.instances[0]
+  try {
+    ordinary.open()
+    const main=ordinary.sent[0][1]
+    ordinary.receive(['EVENT',main,listing('full','u60g')])
+    const hash='dr5rgf150', cells=['d','dr5']
+    app.setBuying(true)
+    app.setGeohashes(cells,[hash])
+    const extra=Socket.instances[1];extra.open()
+    assert.equal(Socket.instances.length,2)
+    assert(extra.sent.every(frame=>frame[0]==='REQ' && frame.slice(2).every(filter=>filter.kinds[0]===30402 && filter['#g'])))
+    for (const sock of [ordinary,extra]) {
+      const req=sock.sent.find(frame=>frame[2]?.['#g']?.includes(hash))
+      assert(req);assert.equal(req[2].limit,120)
+      sock.receive(['EVENT',req[1],listing('precise',hash)])
+    }
+    assert.equal(app.listings().filter(l=>l.identifier==='precise').length,1)
+    app.setGeohashes(cells,['dr5re9qz6'])
+    assert(extra.sent.some(frame=>frame[0]==='CLOSE'&&frame[1]===extra.sent[0][1]))
+    app.setGeohashes([])
+    assert.equal(extra.readyState,3);assert.equal(ordinary.readyState,1)
+  } finally {app.close()}
+})
+
+test('observed map cells are selected by viewport including the date line and their published case',async()=>{
+  const {mapCellSelector}=await import('../src/map/geohash.ts')
+  const select=mapCellSelector(['dr5rgf150','UD9WR2','8000','xbpb'])
+  assert.deepEqual(select({west:-125,east:-66,south:24,north:50,zoom:4}),['dr5rgf150'])
+  assert.deepEqual(select({west:23,east:26,south:59,north:61,zoom:8}),['UD9WR2'])
+  assert.deepEqual(select({west:175,east:-175,south:-5,north:5,zoom:4}),['8000','xbpb'])
+})

@@ -21,10 +21,14 @@ export function locationHash(location: string): string | undefined {
   return decodeGeohash(location?.trim().match(/(?:^|\s)#(\S+)$/u)?.[1])?.geohash
 }
 
-/** Match the old Iris publisher's four-character public area. */
+export function encodeLocationHash(longitude: number, latitude: number, precision: number): string {
+  if (!Number.isFinite(longitude) || Math.abs(longitude) > 180 || !Number.isFinite(latitude) || Math.abs(latitude) > 90 ||
+      !Number.isInteger(precision) || precision < 1 || precision > 12) throw Error('Invalid map coordinates or precision.')
+  return gridHashes(cellGrid({longitude:[[longitude,longitude]], south:latitude, north:latitude}, precision))[0]
+}
+
 export function approximateLocationHash(longitude:number,latitude:number):string {
-  const point={west:longitude,east:longitude,south:latitude,north:latitude,zoom:0}
-  return gridHashes(cellGrid(viewportBounds(point),4))[0]
+  return encodeLocationHash(longitude,latitude,4)
 }
 
 /** A pin describes the published cell's centre, never an inferred street address. */
@@ -58,6 +62,21 @@ function viewportBounds(viewport) {
     south: Math.max(-90, Math.min(90, viewport.south)),
     north: Math.max(-90, Math.min(90, viewport.north)),
     zoom: Math.max(0, Math.min(24, viewport.zoom)),
+  }
+}
+
+/** Select exact published spellings whose pin centres are in the visible map. */
+export function mapCellSelector(hashes: readonly string[]) {
+  const cells = hashes.flatMap(hash => {
+    const cell = decodeGeohash(hash)
+    return cell ? [{ hash, coordinates: cell.coordinates }] : []
+  })
+  return (viewport: MapViewport) => {
+    const bounds = viewportBounds(viewport)
+    if (!bounds) return []
+    return cells.filter(({ coordinates: [x, y] }) =>
+      y >= bounds.south && y <= bounds.north && bounds.longitude.some(([west, east]) => x >= west && x <= east)
+    ).map(cell => cell.hash)
   }
 }
 

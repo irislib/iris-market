@@ -24,7 +24,7 @@ export function nearbyViewport([longitude,latitude]:NearbyPoint):MapViewport {
   const latitudeDelta=NEARBY_KM/111.195,longitudeDelta=Math.min(180,latitudeDelta/Math.max(.00001,Math.cos(latitude*Math.PI/180)))
   return {west:longitude-longitudeDelta,east:longitude+longitudeDelta,south:Math.max(-90,latitude-latitudeDelta),north:Math.min(90,latitude+latitudeDelta),zoom:9}
 }
-export function currentPosition(geolocation: Pick<Geolocation,'getCurrentPosition'> | undefined = globalThis.navigator?.geolocation):Promise<GeolocationPosition> {
+export function currentPosition(geolocation: Pick<Geolocation,'getCurrentPosition'> | undefined = globalThis.navigator?.geolocation, precise=false):Promise<GeolocationPosition> {
   if(!geolocation)return Promise.reject(new Error('Location is unavailable. Choose a country or enter an area.'))
-  return new Promise((resolve,reject)=>geolocation.getCurrentPosition(resolve,error=>reject(new Error(error.code===1?'Location access is off. Choose a country or enter an area.':error.code===3?'Location took too long. Try again.':'Could not find your location. Try again.')),{enableHighAccuracy:false,timeout:10000,maximumAge:300000}))
+  return new Promise((resolve,reject)=>geolocation.getCurrentPosition(resolve,error=>reject(new Error(error.code===1?'Location access is off. Choose a country or enter an area.':error.code===3?'Location took too long. Try again.':'Could not find your location. Try again.')),{enableHighAccuracy:precise,timeout:10000,maximumAge:precise?0:300000}))
 }

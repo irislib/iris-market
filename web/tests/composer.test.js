@@ -85,3 +85,26 @@ test('Buying is relay-indexed without exposing its marker as a category',()=>{
  const parsed=parseEvent(finalizeEvent(indexed,key));assert.equal(parsed.side,'request');assert.equal(parsed.category,'home');assert(!parsed.tags.includes('market:request'));
  const explicit=parseEvent(finalizeEvent({...indexed,tags:[...indexed.tags,['market','offer']]},key));assert.equal(explicit.side,'offer');
 });
+
+test('the selected public pin includes all prefixes and only exact mode signs the coordinate',()=>{
+  const key=generateSecretKey(), coords='60.1701234, 24.9415678'
+  const make=precision=>listingDraft({...values,pinCoordinates:coords,pinPrecision:precision})
+  for(const precision of ['3','4','5','6','7','exact']){
+    const draft=make(precision), listing=parseEvent(finalizeEvent(draft,key)), hash=listing.geohash
+    assert.equal(hash.length,precision==='exact'?12:Number(precision))
+    assert.deepEqual(draft.tags.filter(t=>t[0]==='g').map(t=>t[1]),Array.from(hash,(_,i)=>hash.slice(0,i+1)))
+    if(precision==='exact'){
+      assert.deepEqual(listing.coordinates,[24.9415678,60.1701234])
+      assert(draft.tags.some(t=>t[0]==='r'&&t[1]==='geo:60.1701234,24.9415678'))
+    }else assert(!JSON.stringify(draft).includes('60.1701234'))
+  }
+  const exact=parseEvent(finalizeEvent(make('exact'),key))
+  for(const input of ['#'+exact.geohash,'']){
+    const draft=revisedListingDraft({...values,pinPrecision:'4',pinCoordinates:input},exact)
+    assert(!JSON.stringify(draft).includes('60.1701234'))
+    assert.equal(parseEvent(finalizeEvent(draft,key)).geohash,input?exact.geohash.slice(0,4):null)
+  }
+  const kept=parseEvent(finalizeEvent(revisedListingDraft({...values,title:'Edited'},exact),key))
+  assert.deepEqual(kept.coordinates,exact.coordinates)
+  assert.throws(()=>listingDraft({...values,pinPrecision:'exact',pinCoordinates:'95,40'}),/coordinates|latitude/)
+})

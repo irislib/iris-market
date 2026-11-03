@@ -1,12 +1,14 @@
 import { byId, element as domElement, formFields } from './dom.ts';
 import { createViewportDiscovery } from './map/discovery.ts';
+import publishedCells from './data/map-cells.json' with { type: 'json' };
+import { mapCellSelector } from './map/geohash.ts';
 const $=byId;
 export const darkAppearance = () => document.documentElement.dataset.appearance === 'dark' || (document.documentElement.dataset.appearance !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
-export function setupMap({ getListings, getPriceLabel, onSelect, onVisibilityChange = () => {}, onDiscover = () => {}, isDiscoveryLimited = () => false }: {getListings:()=>any[];getPriceLabel:(listing:any)=>string|undefined;onSelect:(listing:any)=>void;onVisibilityChange?:(visible:boolean)=>void;onDiscover?:(cells:string[])=>void;isDiscoveryLimited?:()=>boolean}) {
+export function setupMap({ getListings, getPriceLabel, onSelect, onVisibilityChange = () => {}, onDiscover = () => {}, isDiscoveryLimited = () => false }: {getListings:()=>any[];getPriceLabel:(listing:any)=>string|undefined;onSelect:(listing:any)=>void;onVisibilityChange?:(visible:boolean)=>void;onDiscover?:(cells:string[], observed:string[])=>void;isDiscoveryLimited?:()=>boolean}) {
   let instance, loading, visible = false, disposed = false;
   const mappable=(listings=getListings())=>listings.filter(item=>item.coordinates||item.serviceAreas);
   let selectForViewport:typeof import('./map/index.ts').listingsForViewport;
-  const discovery = createViewportDiscovery(onDiscover,{regionalCover:true});
+  const discovery = createViewportDiscovery(onDiscover,{regionalCover:true, observedCells:mapCellSelector(publishedCells)});
   const stats = async () => {
     if (!instance) return;
     const data = await instance.getStorageStats();

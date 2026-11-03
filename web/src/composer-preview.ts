@@ -1,3 +1,5 @@
+import {locationFromTags} from './map/geohash.ts';
+import {pinPreview} from './map/listing-pin.ts';
 import { readEscrowOffer } from './escrow-offer.ts';
 import {element} from './dom.ts';
 import {formatPrice} from './currency.ts';
@@ -26,6 +28,8 @@ export function renderComposerPreview(draft,files:DraftFile[],{priceNode=(listin
   const selected=listing.imageUrl?undefined:files.find(file=>file.image)?.image;
   const root=element('div',undefined,'post-preview-content');
   root.append(renderListingPage(listing,{priceNode,draftPreview:true,localImage:selected}));
+  const cell=locationFromTags(draft.tags);
+  if(cell)root.append(element('p',pinPreview(draft.tags,cell.geohash),'small'));
   if(files.length){
     const attachments=element('div',undefined,'post-preview-files');
     for(const file of files){

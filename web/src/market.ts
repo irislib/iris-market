@@ -2,6 +2,7 @@ import {BITCOIN_KIND,bitcoinFilter,readEscrowOffer} from './escrow-offer.ts';
 import {keywordSearches,matchesLiteralSearch,listingSearchText} from './lexical-search.ts'
 import { verifyEvent, type Event as NostrEvent } from 'nostr-tools/pure'
 import { locationFromTags, MAX_GEOHASH_QUERY_VALUES, WEB_REGIONAL_QUERY_VALUES } from './map/geohash.ts'
+import { exactListingPoint } from './map/listing-pin.ts'
 import { getPublicRuntime, queryPublicIndex } from './nostr-runtime.ts'
 import { createListingRecovery } from './listing-recovery.ts'
 import type { Filter } from 'nostr-tools'
@@ -63,6 +64,7 @@ export function parseEvent(input: NostrEvent, { now = seconds() } = {}) {
   if (side !== 'offer' && side !== 'request') fail('Invalid listing type')
   const location = singleton(event, 'location') ?? ''
   const geo = locationFromTags(event.tags)
+  const exactPoint = exactListingPoint(event.tags, geo?.geohash ?? null)
   const tags = event.tags.filter(tag => tag[0] === 't' && typeof tag[1] === 'string' && !tag[1].startsWith('market:')).map(tag => tag[1])
   const category = tags[0] ?? 'Other'
   if (length(location) > 160 || length(category) > 60) fail('Location or category is too long')
@@ -94,7 +96,7 @@ export function parseEvent(input: NostrEvent, { now = seconds() } = {}) {
   return Object.freeze({
     rawEvent, escrow:quote.escrow, id: (event.kind===BITCOIN_KIND?"38383:":"")+`${event.pubkey}:${identifier}`, eventId: event.id, author: event.pubkey,
     identifier, title, description: event.content, price, currency, location,
-    geohash: geo?.geohash ?? null, coordinates: geo?.coordinates ?? null, locationBounds: geo?.bounds ?? null,
+    geohash: geo?.geohash ?? null, coordinates: exactPoint ? Object.freeze(exactPoint) : geo?.coordinates ?? null, locationBounds: geo?.bounds ?? null,
     serviceAreas: parseServiceAreas(event.tags),
     category, tags: Object.freeze(tags), originalTags, imageUrl, side, createdAt: event.created_at, expiration, status,
   })
@@ -192,7 +194,7 @@ interface RelayConnection {
   frameStart: number; frames: number; geoSubscriptions?: Set<string>; geoNext?:number; geoTimer?:ReturnType<typeof setTimeout>
 }
 export interface MarketRelayOptions {
-  relays?: readonly string[]; tags?: readonly string[]; authors?: readonly string[] | null; targetId?: string
+  mapRelay?: string; relays?: readonly string[]; tags?: readonly string[]; authors?: readonly string[] | null; targetId?: string
   onChange?: (listings: MarketListing[]) => void; onStatus?: (status: MarketStatus) => void; onPagination?: (pagination: MarketPagination) => void
   historyPageSize?: number; records?: Map<string, MarketListing>; maxRecords?: number; browseDiscovery?:boolean
   WebSocketImpl?: typeof WebSocket; now?: () => number
@@ -265,6 +267,8 @@ export class MarketRelayClient {
   lastStatus: string
   geohashes: string[]
   geohashSet = new Set<string>()
+  private observedCells: string[] = []
+  private mapRelay?: string
   private geoBatches:MarketFilter[][]=[]
   geoSequence: number
   indexSearch:boolean
@@ -290,8 +294,10 @@ export class MarketRelayClient {
   cacheGeneration=0
   recovery:ReturnType<typeof createListingRecovery>|null=null
   recoveryEnabled:boolean
-  constructor({ relays = DEFAULT_RELAYS, onChange = () => {}, onStatus = () => {}, onPagination = () => {}, historyPageSize = HISTORY_PAGE_SIZE, records = new Map(), maxRecords = MAX_RECORDS, browseDiscovery=false, WebSocketImpl, now = seconds, targetId, tags = [], authors = null, indexQuery, indexSearch=false, tagCatalogue=observedMarketTags,offlineCache }: MarketRelayOptions = {}) {
+  constructor({ relays = DEFAULT_RELAYS, mapRelay, onChange = () => {}, onStatus = () => {}, onPagination = () => {}, historyPageSize = HISTORY_PAGE_SIZE, records = new Map(), maxRecords = MAX_RECORDS, browseDiscovery=false, WebSocketImpl, now = seconds, targetId, tags = [], authors = null, indexQuery, indexSearch=false, tagCatalogue=observedMarketTags,offlineCache }: MarketRelayOptions = {}) {
     this.relays = validateRelays(relays)
+    const extra = mapRelay && validateRelays([mapRelay])[0]
+    if (extra && !this.relays.includes(extra)) this.mapRelay = extra
     this.tags = feedTags(tags)
     this.authors = feedAuthors(authors)
     this.authorSet = this.authors === null ? null : new Set(this.authors)
@@ -352,7 +358,7 @@ export class MarketRelayClient {
       void this.recovery.recover(bitcoinFilter(filter))
     }
     void this.restoreOffline(++this.cacheGeneration)
-    if (this.hasQueries) for (const url of this.relays) this.connect(url)
+    if (this.hasQueries) for (const url of this.activeRelays()) this.connect(url)
     this.requestIndex()
     if (this.buying) this.requestIndex(this.buyingFilters(),false)
     this.emitStatus()
@@ -575,6 +581,7 @@ export class MarketRelayClient {
 
   // Isolate older buy requests from the general feed's chronological cursor.
   private requestBuying(connection:RelayConnection) {
+    if (connection.url === this.mapRelay) return
     if (connection.failed || connection.socket?.readyState !== 1) return
     if (connection.buyingId) {
       connection.socket.send(JSON.stringify(['CLOSE',connection.buyingId]))
@@ -587,17 +594,39 @@ export class MarketRelayClient {
   }
 
   /** Update only the map discovery subscription; received listings stay usable. */
-  setGeohashes(values = []) {
+  setGeohashes(values: string[] = [], observed: string[] = []) {
     if (!Array.isArray(values) || values.length > WEB_REGIONAL_QUERY_VALUES || values.some(value => typeof value !== 'string' || !/^[0123456789bcdefghjkmnpqrstuvwxyz]{1,12}$/.test(value))) fail('Invalid map search area')
+    if (!Array.isArray(observed) || observed.length > 4096 || observed.some(cell => typeof cell !== 'string' || !/^[0123456789bcdefghjkmnpqrstuvwxyz]{1,12}$/i.test(cell))) fail('Invalid observed map cells')
     const next = [...new Set(values)].sort()
-    if (JSON.stringify(next) === JSON.stringify(this.geohashes)) return
+    const priority = next.length ? [...new Set(observed)].sort() : []
+    if (JSON.stringify(next) === JSON.stringify(this.geohashes) && JSON.stringify(priority) === JSON.stringify(this.observedCells)) return
     this.geohashes = next
-    this.geohashSet = new Set(next)
+    this.observedCells = priority
+    this.geohashSet = new Set([...next, ...priority])
     this.geoBatches=this.hasInventoryQuery?geographicRequests(next,{authors:this.authors,tags:this.tags}):[]
+    if (this.hasInventoryQuery && priority.length) {
+      // A dense four-character cover can have a limit of only a few events per filter.
+      // Give known locations their own budget, including long tags with no published parent.
+      const exact: MarketFilter[][] = []
+      const limit = Math.min(GEO_QUERY_LIMIT, Math.floor(240 / Math.ceil(priority.length / 256)))
+      for (let i = 0; i < priority.length; i += 256) {
+        exact.push([{kinds:[LISTING_KIND], '#g':priority.slice(i,i+256), limit,
+          ...(this.authors ? {authors:this.authors} : {}), ...(this.tags.length ? {'#t':this.tags} : {})}])
+      }
+      this.geoBatches.unshift(...exact)
+    }
     if (!this.running) return
+    if (this.mapRelay) {
+      const connection = this.connections.get(this.mapRelay)
+      if (this.geoBatches.length && !connection) this.connect(this.mapRelay)
+      else if (!this.geoBatches.length && connection) {
+        this.dispose(connection)
+        this.connections.delete(this.mapRelay)
+      }
+    }
     if(next.length&&this.hasInventoryQuery){
       // Keep complete precision covers in the index's smaller query budget.
-      const indexed:string[]=[];
+      const indexed:string[]=priority.slice(0,2048);
       for(const precision of [...new Set(next.map(value=>value.length))].sort((a,b)=>a-b)){
         const cover=next.filter(value=>value.length===precision);if(indexed.length+cover.length>2048)break;indexed.push(...cover);
       }
@@ -638,11 +667,15 @@ export class MarketRelayClient {
     }catch{clearTimeout(connection.geoTimer)}
   }
 
+  private activeRelays() {
+    return this.mapRelay && this.geoBatches.length ? [...this.relays, this.mapRelay] : this.relays
+  }
+
   refresh() {
     if (!this.running) return this.start()
     if (!this.hasQueries) { this.emitStatus(); this.emitChange(); return this }
     this.requestIndex()
-    for (const url of this.relays) {
+    for (const url of this.activeRelays()) {
       const connection = this.connections.get(url)
       if (connection?.socket?.readyState === 1 && !connection.failed) { this.request(connection); this.requestBuying(connection); this.requestGeohashes(connection) }
       else {
@@ -716,7 +749,7 @@ export class MarketRelayClient {
         } catch { /* Ignore malformed or unrelated map results. */ }
         return
       }
-      if (frame[1] !== connection.subscription) return
+      if (connection.url === this.mapRelay || frame[1] !== connection.subscription) return
       if (frame[0] === 'EOSE') {
         const history = this.history.get(url)
         // Display partial inventory immediately, but only a completed initial
@@ -939,6 +972,7 @@ export class MarketRelayClient {
   }
 
   request(connection: RelayConnection) {
+    if (connection.url === this.mapRelay) return
     connection.ready = false
     connection.initialOldest = null
     connection.bitcoinOldest = null
@@ -980,7 +1014,7 @@ export class MarketRelayClient {
     clearTimeout(connection.timer)
     clearTimeout(connection.retry)
     try {
-      if (connection.socket?.readyState === 1) connection.socket.send(JSON.stringify(['CLOSE', connection.subscription]))
+      if (connection.url !== this.mapRelay && connection.socket?.readyState === 1) connection.socket.send(JSON.stringify(['CLOSE', connection.subscription]))
       if(connection.socket?.readyState===1)for(const id of connection.geoSubscriptions??[])connection.socket.send(JSON.stringify(['CLOSE',id]));connection.geoSubscriptions?.clear()
       connection.socket?.close()
     } catch { /* Closing an already-closed socket is harmless. */ }
@@ -1000,7 +1034,7 @@ export class MarketRelayClient {
   }
 
   emitStatus() {
-    const contexts = [...this.connections.values()]
+    const contexts = [...this.connections.values()].filter(connection => connection.url !== this.mapRelay)
     const connected = contexts.filter(item => !item.failed && item.socket?.readyState === 1).length
     const ready = contexts.filter(item => !item.failed && item.ready).length
     const attempting = contexts.some(item => !item.failed)

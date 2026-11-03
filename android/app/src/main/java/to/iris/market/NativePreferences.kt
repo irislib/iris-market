@@ -42,6 +42,7 @@ data class NativeAIProvider(val id: String, val label: String, val provider: Str
 object NativePreferences {
     val currencies = listOf("EUR", "USD", "GBP", "SEK", "NOK", "DKK", "CHF", "CAD", "AUD", "JPY", "CNY", "INR", "SATS", "BTC")
     val providers = listOf(
+        NativeAIProvider("compact","On device · Compact search","compact","",listOf(CompactSearchFiles.ID to "Compact search")),
         NativeAIProvider("litert","On device · Gemma 4","litert","",listOf(LocalModelManifest.ID to "Gemma 4 E2B")),
         NativeAIProvider("systemone","Jev · free promotion","systemone","https://opencode.ai/inference/systemone/v1",listOf("jev-1.13-free" to "Jev 1.13"),"https://opencode.ai/v2/docs/console/models/","https://opencode.ai/v2/docs/console/models/"),
         NativeAIProvider("gemini","Gemini","compatible","https://generativelanguage.googleapis.com/v1beta/openai",listOf("gemini-3.5-flash-lite" to "Gemini 3.5 Flash-Lite","gemini-3.1-flash-lite" to "Gemini 3.1 Flash-Lite"),"https://aistudio.google.com/app/apikey","https://ai.google.dev/gemini-api/terms"),
@@ -51,7 +52,7 @@ object NativePreferences {
         NativeAIProvider("anthropic","Anthropic · paid","anthropic","https://api.anthropic.com/v1",listOf("claude-haiku-5-5" to "Claude Haiku 5.5","claude-sonnet-5-5" to "Claude Sonnet 5.5"),"https://platform.claude.com/","https://platform.claude.com/docs/en/models/overview"),
         NativeAIProvider("custom","Custom compatible service","compatible","",emptyList())
     )
-    fun matching(provider: String, endpoint: String) = providers.firstOrNull { it.id!="custom" && it.provider==provider && (provider=="litert" || it.endpoint.trimEnd('/')==endpoint.trimEnd('/')) } ?: providers.last()
+    fun matching(provider: String, endpoint: String) = providers.firstOrNull { it.id!="custom" && it.provider==provider && (NativeAIReadiness.isLocal(provider) || it.endpoint.trimEnd('/')==endpoint.trimEnd('/')) } ?: providers.last()
     fun keySlot(provider: String, endpoint: String): String {
         val normalized = endpoint.trim().trimEnd('/')
         val hash = java.security.MessageDigest.getInstance("SHA-256").digest(normalized.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }

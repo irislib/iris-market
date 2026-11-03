@@ -3,6 +3,19 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
 }
+val compactAssets = layout.buildDirectory.dir("generated/compactAssets")
+val prepareCompactSearch by tasks.registering(Exec::class) {
+    val web = rootProject.file("../web")
+    val source = rootProject.file("compact-search")
+    inputs.files(source, file("src/main/java/to/iris/market/CompactSearchModel.kt"), web.resolve("package-lock.json"), web.resolve("src/feed-filter"),
+        web.resolve("src/search-condition.ts"), web.resolve("src/semantic-discovery.ts"),
+        web.resolve("src/lexical-search.ts"), web.resolve("src/asset-url.ts"), web.resolve("src/route-base.ts"),
+        web.resolve("licenses"), web.resolve("assets/topic-vectors.bin"), web.resolve("package.json"))
+    outputs.dir(compactAssets)
+    commandLine("node", source.resolve("build.mjs"), compactAssets.get().asFile.resolve("compact-search"))
+}
+tasks.named("preBuild") { dependsOn(prepareCompactSearch) }
+
 android {
     namespace = "to.iris.market"
     compileSdk = 36
@@ -40,6 +53,7 @@ android {
     }
     sourceSets.named("main") {
         assets.srcDir("../../shared/escrow")
+        assets.srcDir(compactAssets.get().asFile)
         jniLibs.srcDir(providers.environmentVariable("MARKET_ANDROID_JNI_DIR").orNull ?: layout.buildDirectory.dir("generated/jniLibs").get().asFile)
     }
     packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }

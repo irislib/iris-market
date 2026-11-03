@@ -145,6 +145,11 @@ class MarketFlowsTest {
         compose.onNodeWithText("Groq · free quota").assertExists()
         capture("provider-autosaved")
         compose.onNode(providerButton).performScrollTo().performClick()
+        compose.onAllNodesWithText("On device · Compact search").onLast().performClick()
+        compose.onNodeWithText("Searches listings on this device. Home shows all listings.").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("API key").assertDoesNotExist()
+        capture("compact-search-settings")
+        compose.onNode(providerButton).performScrollTo().performClick()
         compose.onAllNodesWithText("On device · Gemma 4").onLast().performClick()
         compose.onNode(SemanticsMatcher.keyIsDefined(SemanticsActions.Dismiss)).performSemanticsAction(SemanticsActions.Dismiss) { dismiss -> dismiss() }
         compose.waitUntil(5_000) { compose.onAllNodesWithText("Settings").fetchSemanticsNodes().size == 1 }

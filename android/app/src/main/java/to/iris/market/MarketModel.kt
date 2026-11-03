@@ -220,8 +220,14 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
     private val linking = MutableStateFlow<String?>(null)
     val deviceLinkUrl = linking.asStateFlow()
     private var linkJob: Job? = null
-    private val localModel = LocalModel(application, viewModelScope)
-    val localModelState = localModel.state
+    private val gemma = LocalModel(application, viewModelScope)
+    private val compact = CompactSearchModel(application, viewModelScope)
+    private fun engineFor(provider: String): NativeLocalModel =
+        if (provider == CompactSearchFiles.PROVIDER) compact else gemma
+    private val localModel get() = engineFor(JSONObject(state.value.settings).optJSONObject("ai")?.optString("provider").orEmpty())
+    val localModelState get() = localModel.state
+    fun localStateFor(provider: String) = engineFor(provider).state
+    private fun stopLocalModels() { gemma.stop(); compact.stop() }
     private var localCurationJob: Job? = null
     @Volatile private var remoteCurationRunning = false
     @Volatile private var remoteSnapshotLease: Pair<MarketApp, Long>? = null
@@ -230,7 +236,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
     private var homeStartedContext: String? = null
     fun homeFilterActive(): Boolean {
         val ai=JSONObject(state.value.settings).optJSONObject("ai") ?: return false
-        return state.value.query.isBlank() && ai.optBoolean("enabled") && ai.optBoolean("curate_feed") &&
+        return ai.optString("provider") != CompactSearchFiles.PROVIDER && state.value.query.isBlank() && ai.optBoolean("enabled") && ai.optBoolean("curate_feed") &&
             NativeAIReadiness.isOn(true,ai.optString("provider"),ai.optString("model"),ai.optString("base_url"),NativeAIReadiness.localReady(localModelState.value.phase),state.value.demo)
     }
     fun setBrowseVisible(value: Boolean) {
@@ -275,16 +281,16 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
     private val aiTestClearMutex=Mutex()
     @Volatile var aiPreferencesEditing = false
 
-    fun downloadLocalModel() { if (!state.value.demo) localModel.download() }
-    fun cancelLocalModelDownload() = localModel.cancelDownload()
-    fun deleteLocalModel() { if (!state.value.demo) localModel.delete() }
+    fun downloadLocalModel(provider: String) { if (!state.value.demo) engineFor(provider).download() }
+    fun cancelLocalModelDownload(provider: String) = engineFor(provider).cancelDownload()
+    fun deleteLocalModel(provider: String) { if (!state.value.demo) engineFor(provider).delete() }
     fun continueSearch() {
-        localModel.stop()
+        stopLocalModels()
         searchContinuation.start(searchContext())
         command(JSONObject().put("type", "continue_search")) { if (state.value.aiSearch || homeFilterActive()) ai("curate") }
     }
     fun cancelSearch() {
-        localModel.stop()
+        stopLocalModels()
         searchContinuation.stop()
         val app = core ?: return
         viewModelScope.launch(Dispatchers.IO) { runCatching { app.command("{\"type\":\"cancel_search\"}") } }
@@ -309,7 +315,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
         }
     }
     private fun openSavedAccount() {
-        localModel.stop()
+        stopLocalModels()
         localCurationJob?.cancel()
         pushAccountReady=false
         invalidateAITest()
@@ -383,7 +389,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
             val initialGeneration = accountGeneration
             val initialAIIntent = aiIntentEpoch
             viewModelScope.launch(Dispatchers.IO) {
-                val installed = localModel.verifyInstalled()
+                val installed = gemma.verifyInstalled()
                 mutex.withLock {
                     if (installed && accountGeneration == initialGeneration && !state.value.aiConfigured && !aiPreferencesEditing) {
                         val settings = JSONObject(state.value.settings)
@@ -685,15 +691,15 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
         val revision=invalidateAITest();val context=aiTestContext()
         sample.validationError?.let {mutableAITest.value=NativeAITestUI(error=it);return}
         if(state.value.demo){mutableAITest.value=NativeAITestUI(error="Preview stays offline. Leave preview to test this provider.");return}
-        if(context.provider=="litert"&&!localModelState.value.available){mutableAITest.value=NativeAITestUI(error=if(localModelState.value.busy) "The on-device model is preparing. Try again when ready." else "Download and verify the on-device model in Settings first.");return}
-        if(context.provider!="litert"&&!NativeAIReadiness.canEnable(context.provider,context.model,context.endpoint,false)){mutableAITest.value=NativeAITestUI(error="Choose a model and provider URL before testing.");return}
+        if(NativeAIReadiness.isLocal(context.provider)&&!localModelState.value.available){mutableAITest.value=NativeAITestUI(error=if(localModelState.value.busy) "The on-device model is preparing. Try again when ready." else "Download and verify the on-device model in Settings first.");return}
+        if(!NativeAIReadiness.isLocal(context.provider)&&!NativeAIReadiness.canEnable(context.provider,context.model,context.endpoint,false)){mutableAITest.value=NativeAITestUI(error="Choose a model and provider URL before testing.");return}
         val app=core ?: return
         mutableAITest.value=NativeAITestUI(busy=true)
         aiTestJob=viewModelScope.launch {
             val started=System.nanoTime()
             try {
-                val result=if(context.provider=="litert") {
-                    val matched=withTimeout(45_000){NativeAITestRunner.run(sample) {localModel.classify(it,sandbox=true)}}
+                val result=if(NativeAIReadiness.isLocal(context.provider)) {
+                    val matched=withTimeout(45_000){NativeAITestRunner.run(sample) {engineFor(context.provider).classify(it,sandbox=true)}}
                     ensureActive()
                     NativeAITestResult(matched,(System.nanoTime()-started)/1_000_000,context.provider,context.model)
                 } else withContext(Dispatchers.IO) { mutex.withLock {
@@ -743,7 +749,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
         if(browseVisible&&home&&homeStartedContext!=searchContext()){homeStartedContext=searchContext();searchContinuation.start(searchContext())}
         if (!active || working.value || mutableAITest.value.busy || localCurationJob?.isActive == true || !(home&&browseVisible||snapshot.aiSearch&&snapshot.query.isNotBlank()) || !ai.optBoolean("enabled") || snapshot.error != null) return
         if (snapshot.listings.count { it.relevanceShow != null && it.matchesSearch } >= 24) return
-        val local = ai.optString("provider") == "litert"
+        val local = NativeAIReadiness.isLocal(ai.optString("provider"))
         val candidates = snapshot.listings.asSequence().filter { it.relevanceShow == null }.map { it.localSearchRevision }
         if (searchContinuation.canReview(searchContext(), candidates.asIterable(), batchSize = if (local) 24 else 12)) {
             ai("curate")
@@ -752,7 +758,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
     fun ai(type: String) {
         if (remoteCurationRunning || mutableAITest.value.busy) return
         val provider = JSONObject(state.value.settings).optJSONObject("ai")?.optString("provider", "compatible") ?: "compatible"
-        if (provider == "litert") { runLocalCuration(checkOnly = type == "check_ai"); return }
+        if (NativeAIReadiness.isLocal(provider)) { runLocalCuration(checkOnly = type == "check_ai"); return }
         val requestEpoch=aiIntentEpoch
         val generation=accountGeneration
         val context=searchContext()
@@ -798,10 +804,11 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
 
     private fun runLocalCuration(checkOnly: Boolean) {
         if (state.value.demo || localCurationJob?.isActive == true || mutableAITest.value.busy) return
+        val selected = localModel
         val previous = localCurationJob
         localCurationJob = viewModelScope.launch {
             previous?.join()
-            if (!localModelState.value.available) {
+            if (!selected.state.value.available) {
                 if (!checkOnly) searchContinuation.stop()
                 alert.value = "Download the on-device model in Settings first."
                 return@launch
@@ -843,7 +850,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
                 }
                 var activeBatch = batch
                 val checkStarted = System.nanoTime()
-                val decisions = withTimeout(270_000) { localModel.classify(batch, run = run, planning = planning, onPlan = { terms ->
+                val decisions = withTimeout(270_000) { selected.classify(batch, run = run, planning = planning, onPlan = { terms ->
                     withContext(Dispatchers.IO) { mutex.withLock {
                         ensureActive()
                         check(accountGeneration == generation && state.value.searchGeneration == searchGeneration) { "Search changed" }
@@ -872,7 +879,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
                 ensureActive()
                 finished = true
                 if (run != null && (searchContinuation.remainingBudget(context) < 24 || state.value.listings.count { it.matchesSearch } >= 24)) {
-                    localModel.stop()
+                    stopLocalModels()
                 }
                 if (!checkOnly && activeBatch.candidates.isNotEmpty()) batchId = null
                 if (checkOnly) alert.value = if (decisions.none { it.unavailable } && decisions.map { it.show } == listOf(true,false)) "Search check passed · %.1f s".format((System.nanoTime()-checkStarted)/1_000_000_000.0)
@@ -976,7 +983,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
         }}
     }
     override fun onCleared() {
-        localModel.stop()
+        stopLocalModels()
         NativePushBridge.detach(this)
         invalidateAITest()
         val app=core

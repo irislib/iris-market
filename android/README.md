@@ -7,7 +7,7 @@ The live market uses Internet connections. Preview is explicit and makes no netw
 
 Requires JDK 17+, Android SDK 36, NDK 28.2.13676358, the Rust Android target,
 and the repository's pinned Rust toolchain. Set `ANDROID_HOME` or `ANDROID_SDK_ROOT`.
-From the repository root, run `scripts/android-build`.
+From the repository root, run `scripts/android-build`. Compact search also requires Node 22.18 or newer and the locked web dependencies. For direct Gradle builds, first run `npm ci --ignore-scripts --no-audit --no-fund` in `web/`.
 
 The script verifies the wrapper JAR; the wrapper verifies the pinned Gradle 9.3.1 archive.
 Gradle dependencies use reviewed locks and SHA-256 verification metadata. The initial

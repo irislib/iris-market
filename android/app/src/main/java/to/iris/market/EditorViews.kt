@@ -156,7 +156,6 @@ import org.json.JSONObject
 }
 
 @Composable fun SettingsView(state:MarketSnapshot,model:MarketModel,busy:Boolean,done:()->Unit) {
-    val localModel by model.localModelState.collectAsState()
     val aiTest by model.aiTest.collectAsState()
     val testFocus=LocalFocusManager.current
     var testQuery by remember { mutableStateOf("bicycle") }
@@ -169,6 +168,11 @@ import org.json.JSONObject
     val ai=remember { initial.optJSONObject("ai") ?: JSONObject() }
     var enabled by remember { mutableStateOf(ai.optBoolean("enabled")) }
     var provider by remember { mutableStateOf(ai.optString("provider","compatible")) }
+    val local = NativeAIReadiness.isLocal(provider)
+    val compact = provider == CompactSearchFiles.PROVIDER
+    val downloadBytes = if(compact) CompactSearchFiles.bytes else LocalModelManifest.BYTES
+    val downloadSize = if(compact) "96 MB" else LocalModelManifest.SIZE_LABEL
+    val localModel by model.localStateFor(provider).collectAsState()
     var endpoint by remember { mutableStateOf(ai.optString("base_url","https://api.openai.com/v1")) }
     var modelName by remember { mutableStateOf(ai.optString("model")) }
     var currency by remember { mutableStateOf(initial.optString("currency", "EUR")) }
@@ -182,7 +186,7 @@ import org.json.JSONObject
     var providerMenu by remember { mutableStateOf(false) };var advanced by remember { mutableStateOf(false) }
     var servers by remember { mutableStateOf((initial.optJSONArray("relays") ?: JSONArray()).let { a -> (0 until a.length()).joinToString("\n"){a.getString(it)} }) }
     val settings={ JSONObject(initial.toString()).put("ai",JSONObject().put("enabled",enabled).put("provider",provider)
-        .put("base_url",if(provider=="litert") "" else endpoint.trim()).put("model",if(provider=="litert") LocalModelManifest.ID else modelName.trim()).put("interests",initial.optJSONObject("ai")?.optString("interests") ?: "").put("curate_feed",initial.optJSONObject("ai")?.optBoolean("curate_feed",true) ?: true))
+        .put("base_url",if(local) "" else endpoint.trim()).put("model",if(compact) CompactSearchFiles.ID else if(local) LocalModelManifest.ID else modelName.trim()).put("interests",initial.optJSONObject("ai")?.optString("interests") ?: "").put("curate_feed",initial.optJSONObject("ai")?.optBoolean("curate_feed",true) ?: true))
         .put("currency", currency)
         .put("relays",JSONArray(servers.lines().map{it.trim()}.filter{it.isNotEmpty()}))
         .put("image_proxy",JSONObject(imageProxy.toString()).put("enabled",proxyEnabled).put("url",proxyURL.trim())) }
@@ -204,9 +208,9 @@ import org.json.JSONObject
             Switch(checked=enabled,onCheckedChange={enabled=it},modifier=Modifier.testTag("enableAI"))
         }
         if(state.demo) Text("Preview stays offline. AI search is unavailable here.",color=Muted,style=MaterialTheme.typography.bodySmall)
-        if(provider!="litert"&&!localModel.available&&NativeAIReadiness.canSelectLocalOnTap(provider,modelName,endpoint)) Text("On-device AI needs a downloaded, verified model.",color=Muted,style=MaterialTheme.typography.bodySmall)
+        if(!local&&!localModel.available&&NativeAIReadiness.canSelectLocalOnTap(provider,modelName,endpoint)) Text("On-device AI needs a downloaded, verified model.",color=Muted,style=MaterialTheme.typography.bodySmall)
         Surface(color=Mint,shape=RoundedCornerShape(16.dp)) {
-            Text(if(provider=="litert") "Listing searches run on this device. No cloud fallback." else "Sends your search and public listing text to this provider.",
+            Text(if(local) "Listing searches run on this device. No cloud fallback." else "Sends your search and public listing text to this provider.",
                 Modifier.padding(16.dp),style=MaterialTheme.typography.bodySmall)
         }
         Box {
@@ -220,23 +224,23 @@ import org.json.JSONObject
                 }
             }
         }
-        if(provider=="litert") {
-            Text("Gemma 4 E2B",fontWeight=FontWeight.Medium)
+        if(local) {
+            Text(if(compact) "Searches listings on this device. Home shows all listings." else "Gemma 4 E2B",fontWeight=FontWeight.Medium)
             when(localModel.phase) {
                 LocalModelPhase.ABSENT -> {
-                    Button(enabled=!state.demo,onClick=model::downloadLocalModel) { Icon(Icons.Filled.Download,null);Spacer(Modifier.width(8.dp));Text("Download · ${LocalModelManifest.SIZE_LABEL}") }
+                    Button(enabled=!state.demo,onClick={model.downloadLocalModel(provider)}) { Icon(Icons.Filled.Download,null);Spacer(Modifier.width(8.dp));Text("Download · $downloadSize") }
                     Text("Keep the app open during download.",color=Muted,style=MaterialTheme.typography.bodySmall)
                 }
                 LocalModelPhase.DOWNLOADING -> {
-                    LinearProgressIndicator(progress={ (localModel.bytes.toDouble()/LocalModelManifest.BYTES).toFloat() },modifier=Modifier.fillMaxWidth())
+                    LinearProgressIndicator(progress={ (localModel.bytes.toDouble()/downloadBytes).toFloat() },modifier=Modifier.fillMaxWidth())
                     Row(verticalAlignment=Alignment.CenterVertically) {
-                        Text("${localModel.bytes*100/LocalModelManifest.BYTES}% · ${localModel.bytes/1_000_000} / ${LocalModelManifest.BYTES/1_000_000} MB",Modifier.weight(1f),style=MaterialTheme.typography.bodySmall)
-                        TextButton(onClick=model::cancelLocalModelDownload) { Text("Cancel") }
+                        Text("${localModel.bytes*100/downloadBytes}% · ${localModel.bytes/1_000_000} / ${downloadBytes/1_000_000} MB",Modifier.weight(1f),style=MaterialTheme.typography.bodySmall)
+                        TextButton(onClick={model.cancelLocalModelDownload(provider)}) { Text("Cancel") }
                     }
                 }
                 LocalModelPhase.DOWNLOADED -> Row(verticalAlignment=Alignment.CenterVertically) {
-                    Text("Downloaded · ${LocalModelManifest.SIZE_LABEL}",Modifier.weight(1f),style=MaterialTheme.typography.bodySmall)
-                    TextButton(onClick=model::deleteLocalModel) { Icon(Icons.Filled.Delete,null);Spacer(Modifier.width(6.dp));Text("Delete") }
+                    Text("Downloaded · $downloadSize",Modifier.weight(1f),style=MaterialTheme.typography.bodySmall)
+                    TextButton(onClick={model.deleteLocalModel(provider)}) { Icon(Icons.Filled.Delete,null);Spacer(Modifier.width(6.dp));Text("Delete") }
                 }
                 else -> {
                     Row(verticalAlignment=Alignment.CenterVertically) {

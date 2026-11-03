@@ -10,7 +10,7 @@ data class NativeAITestInput(val query: String = "bicycle", val listing: String 
     }
 }
 data class NativeAITestResult(val matched: Boolean?, val elapsedMs: Long, val provider: String, val model: String, val error: String? = null) {
-    val summary: String get() = summary(if(provider=="litert") "On-device" else provider)
+    val summary: String get() = summary(if(NativeAIReadiness.isLocal(provider)) "On-device" else provider)
     fun summary(providerLabel: String): String = "${matched?.let { if(it) "Match" else "No match" } ?: "Test failed"} · $providerLabel · $model · $elapsedMs ms"
     companion object {
         fun parse(o: JSONObject) = NativeAITestResult(if(o.isNull("matched")) null else o.getBoolean("matched"),o.getLong("elapsed_ms"),o.getString("provider"),o.getString("model"),if(o.has("error")&&!o.isNull("error")) o.getString("error") else null)

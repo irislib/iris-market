@@ -102,7 +102,10 @@ impl State {
             .is_some_and(|current| Arc::ptr_eq(current, cancel))
     }
     fn home_curation(&self) -> bool {
-        self.settings.ai.enabled && self.settings.ai.curate_feed && self.query.trim().is_empty()
+        self.settings.ai.enabled
+            && self.settings.ai.provider != "compact"
+            && self.settings.ai.curate_feed
+            && self.query.trim().is_empty()
     }
     fn curation_prompt(&self) -> Option<String> {
         if !self.settings.ai.enabled {

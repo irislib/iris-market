@@ -3,6 +3,7 @@ package to.iris.market
 enum class NativeAISearchAction { WAIT, AI, TEXT, SETTINGS }
 enum class NativeAITapAction { OFF, ON, LOCAL, SETTINGS }
 object NativeAIReadiness {
+    fun isLocal(provider: String?) = provider == "litert" || provider == "compact"
     fun tapAction(enabled: Boolean,ready: Boolean,localFallback: Boolean): NativeAITapAction =
         if(enabled) NativeAITapAction.OFF else if(ready) NativeAITapAction.ON else if(localFallback) NativeAITapAction.LOCAL else NativeAITapAction.SETTINGS
     fun searchAction(intentOn: Boolean,ready: Boolean,busy: Boolean,inference: Boolean,query: String): NativeAISearchAction =
@@ -12,7 +13,7 @@ object NativeAIReadiness {
         provider.isEmpty() || provider=="none" || provider=="compatible"&&model.isBlank()&&endpoint.trimEnd('/') in setOf("","https://api.openai.com/v1")
     fun canEnable(provider: String, model: String, endpoint: String, localAvailable: Boolean, preview: Boolean = false): Boolean {
         if(preview) return false
-        if(provider=="litert") return localAvailable
+        if(isLocal(provider)) return localAvailable
         if(model.isBlank()) return false
         if(provider !in setOf("compatible","ollama","anthropic","systemone")) return false
         return runCatching {

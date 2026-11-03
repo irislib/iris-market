@@ -46,7 +46,7 @@ import org.json.JSONObject
     DisposableEffect(Unit) { model.setBrowseVisible(true); onDispose { model.setBrowseVisible(false) } }
     val ai = remember(state.settings) { JSONObject(state.settings).optJSONObject("ai") }
     val localModel by model.localModelState.collectAsState()
-    val localInference = ai?.optString("provider")=="litert" && localModel.phase in setOf(LocalModelPhase.VERIFYING, LocalModelPhase.LOADING, LocalModelPhase.REVIEWING)
+    val localInference = NativeAIReadiness.isLocal(ai?.optString("provider")) && localModel.phase in setOf(LocalModelPhase.VERIFYING, LocalModelPhase.LOADING, LocalModelPhase.REVIEWING)
     val localReady = NativeAIReadiness.localReady(localModel.phase)
     val aiSearch = NativeAIReadiness.isOn(ai?.optBoolean("enabled")==true,ai?.optString("provider") ?: "",ai?.optString("model") ?: "",ai?.optString("base_url") ?: "",localReady,state.demo)
     val homeFeed = model.homeFilterActive()
@@ -79,7 +79,7 @@ import org.json.JSONObject
                     leadingIcon = { Icon(Icons.Filled.Search, null, tint = Forest) },
                     trailingIcon = { Row(verticalAlignment = Alignment.CenterVertically) {
                         Box(Modifier.size(48.dp).combinedClickable(enabled=!busy||ai?.optBoolean("enabled")==true,role=Role.Switch,onClick={showAll=false;model.toggleAI(settings)},onLongClick=settings,onLongClickLabel="Open AI settings")
-                            .semantics { contentDescription="AI search";stateDescription=if(ai?.optBoolean("enabled")==true) { if(ai?.optString("provider")=="litert"&&localModel.phase==LocalModelPhase.VERIFYING) "On, checking" else if(aiSearch) "On" else "On, unavailable" } else "Off";toggleableState=if(ai?.optBoolean("enabled")==true) ToggleableState.On else ToggleableState.Off },contentAlignment=Alignment.Center) {
+                            .semantics { contentDescription="AI search";stateDescription=if(ai?.optBoolean("enabled")==true) { if(NativeAIReadiness.isLocal(ai?.optString("provider"))&&localModel.phase==LocalModelPhase.VERIFYING) "On, checking" else if(aiSearch) "On" else "On, unavailable" } else "Off";toggleableState=if(ai?.optBoolean("enabled")==true) ToggleableState.On else ToggleableState.Off },contentAlignment=Alignment.Center) {
                             Icon(Icons.Filled.AutoAwesome,null,tint=if(aiSearch) Forest else Muted)
                         }
                         if(query.isNotBlank()) IconButton(onClick={query="";model.filter("",state.side)},modifier=Modifier.size(36.dp)) { Icon(Icons.Filled.Close,"Clear search") }
@@ -93,7 +93,7 @@ import org.json.JSONObject
                     singleLine = true, shape = RoundedCornerShape(18.dp), modifier = Modifier.fillMaxWidth(),
                     colors = OutlinedTextFieldDefaults.colors(unfocusedBorderColor = Line, focusedBorderColor = Forest,
                         unfocusedContainerColor = White, focusedContainerColor = White))
-                if(ai?.optString("provider")=="litert"&&!localModel.available&&!localInference) {
+                if(NativeAIReadiness.isLocal(ai?.optString("provider"))&&!localModel.available&&!localInference) {
                     Text("The on-device model is not ready. Open AI settings to download or check it.",color=Muted,style=MaterialTheme.typography.bodySmall)
                 }
                 if(searching) Column(Modifier.fillMaxWidth()) {
@@ -160,6 +160,9 @@ import org.json.JSONObject
                 Text("Filters",style=MaterialTheme.typography.headlineSmall,modifier=Modifier.weight(1f))
                 TextButton(onClick={model.saveHomeFilter(homeEnabled,homePrompt);filtersSheet=false}) { Text("Done") }
             }
+            if (ai?.optString("provider") == CompactSearchFiles.PROVIDER) {
+                Text("Compact search reviews submitted searches. Home shows all listings.", style=MaterialTheme.typography.bodySmall, color=Muted)
+            } else {
             Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
                 Text("Home feed",modifier=Modifier.weight(1f))
                 Switch(checked=homeEnabled,onCheckedChange={homeEnabled=it},modifier=Modifier.testTag("homeFeedFilter"))
@@ -167,6 +170,7 @@ import org.json.JSONObject
             OutlinedTextField(value=homePrompt,onValueChange={homePrompt=it.take(1000)},label={Text("What would you like to see?")},
                 minLines=3,maxLines=6,modifier=Modifier.fillMaxWidth().testTag("homeFeedPrompt"))
             Text("Uses your selected AI when enabled. Search keeps its own query.",style=MaterialTheme.typography.bodySmall,color=Muted,modifier=Modifier.padding(vertical=8.dp))
+            }
             Surface(color=MaterialTheme.colorScheme.surfaceContainerLow,shape=RoundedCornerShape(16.dp),modifier=Modifier.padding(vertical=16.dp)) {
                 Row(Modifier.fillMaxWidth().padding(horizontal=16.dp,vertical=8.dp),verticalAlignment=Alignment.CenterVertically) {
                     Text("Has photos",style=MaterialTheme.typography.bodyLarge,modifier=Modifier.weight(1f))

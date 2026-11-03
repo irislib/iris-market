@@ -42,7 +42,7 @@ pub fn validate(settings: &AiSettings) -> Result<()> {
 }
 
 pub fn is_local(settings: &AiSettings) -> bool {
-    ["apple", "litert"].contains(&settings.provider.as_str())
+    ["apple", "litert", "compact"].contains(&settings.provider.as_str())
 }
 
 fn request_spec(settings: &AiSettings, system: &str, input: &str) -> (String, Value) {

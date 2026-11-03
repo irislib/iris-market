@@ -3,6 +3,9 @@ import org.junit.Assert.*
 import org.junit.Test
 class NativeAIReadinessTest {
     @Test fun onStateRequiresPreferenceAndActualProviderReadiness() {
+        assertFalse(NativeAIReadiness.isOn(true,"compact","market-deberta-xsmall","",false))
+        assertTrue(NativeAIReadiness.isOn(true,"compact","market-deberta-xsmall","",true))
+        assertFalse(NativeAIReadiness.canSelectLocalOnTap("compact","market-deberta-xsmall",""))
         assertFalse(NativeAIReadiness.isOn(true,"litert","model","",false))
         assertTrue(NativeAIReadiness.isOn(true,"litert","model","",true))
         assertFalse(NativeAIReadiness.isOn(false,"litert","model","",true))

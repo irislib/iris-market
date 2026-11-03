@@ -13,6 +13,12 @@ for arg in "$@"; do
   esac
 done
 if [[ "$offline" == true ]]; then export CARGO_NET_OFFLINE=true; fi
+# Build Android's compact search with the same locked runtime as the web app.
+if [[ ! -x "$root/web/node_modules/.bin/esbuild" ]]; then
+  npm_flags=()
+  if [[ "$offline" == true ]]; then npm_flags+=(--offline); fi
+  (cd "$root/web" && npm ci --ignore-scripts --no-audit --no-fund "${npm_flags[@]}")
+fi
 gradle_network=()
 if [[ "$offline" == true ]]; then gradle_network+=(--offline); fi
 sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}}"

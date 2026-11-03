@@ -151,12 +151,24 @@ internal object LocalModelContract {
 }
 
 /** One device-local model operation at a time; no provider key, chat, or HTTP inference path. */
-class LocalModel(application: Application, private val scope: CoroutineScope) {
+interface NativeLocalModel {
+    val state: StateFlow<LocalModelState>
+    fun stop()
+    fun download()
+    fun cancelDownload()
+    fun delete()
+    suspend fun classify(batch: LocalCurationBatch, sandbox: Boolean = false, run: Long? = null,
+        planning: LocalSearchPlanInput? = null,
+        onPlan: suspend (List<String>) -> LocalCurationBatch = { batch },
+        onDecision: suspend (LocalCurationDecision) -> Unit = {}): List<LocalCurationDecision>
+}
+
+class LocalModel(application: Application, private val scope: CoroutineScope) : NativeLocalModel {
     private val directory = File(application.noBackupFilesDir, "local-model")
     private val file = File(directory, "${LocalModelManifest.SHA256}.litertlm")
     private val partial = File(directory, "${LocalModelManifest.SHA256}.part")
     private val mutable = MutableStateFlow(LocalModelState())
-    val state: StateFlow<LocalModelState> = mutable.asStateFlow()
+    override val state: StateFlow<LocalModelState> = mutable.asStateFlow()
     private var download: Job? = null
     @Volatile private var connection: HttpURLConnection? = null
 
@@ -193,7 +205,7 @@ class LocalModel(application: Application, private val scope: CoroutineScope) {
                 mutable.value = LocalModelState(if (file.length() == LocalModelManifest.BYTES) LocalModelPhase.DOWNLOADED else LocalModelPhase.ABSENT)
             }
         })
-    fun stop() { engines.invalidate() }
+    override fun stop() { engines.invalidate() }
 
     private suspend fun verifyFile() {
         val context = currentCoroutineContext()
@@ -215,7 +227,7 @@ class LocalModel(application: Application, private val scope: CoroutineScope) {
         catch (_: Exception) { mutable.value = LocalModelState(error = "Installed model failed verification. Download it again."); false }
     }
 
-    fun download() {
+    override fun download() {
         if (state.value.busy || state.value.available || download?.isCompleted == false) return
         mutable.value = LocalModelState(LocalModelPhase.DOWNLOADING)
         val closed = engines.invalidate()
@@ -259,9 +271,9 @@ class LocalModel(application: Application, private val scope: CoroutineScope) {
         }
     }
 
-    fun cancelDownload() { download?.cancel(); connection?.disconnect() }
+    override fun cancelDownload() { download?.cancel(); connection?.disconnect() }
 
-    fun delete() {
+    override fun delete() {
         if (state.value.busy) return
         mutable.value = LocalModelState(LocalModelPhase.DELETING)
         val closed = engines.invalidate()
@@ -272,10 +284,10 @@ class LocalModel(application: Application, private val scope: CoroutineScope) {
         }
     }
 
-    suspend fun classify(batch: LocalCurationBatch, sandbox: Boolean = false, run: Long? = null,
-        planning: LocalSearchPlanInput? = null,
-        onPlan: suspend (List<String>) -> LocalCurationBatch = { batch },
-        onDecision: suspend (LocalCurationDecision) -> Unit = {}): List<LocalCurationDecision> {
+    override suspend fun classify(batch: LocalCurationBatch, sandbox: Boolean, run: Long?,
+        planning: LocalSearchPlanInput?,
+        onPlan: suspend (List<String>) -> LocalCurationBatch,
+        onDecision: suspend (LocalCurationDecision) -> Unit): List<LocalCurationDecision> {
         // Capture before dispatch so a stopped or replaced file cannot be reopened by a queued call.
         val submitted = engines.revision
         check(state.value.available) { "Download the on-device model in Settings first." }

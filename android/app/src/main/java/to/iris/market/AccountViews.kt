@@ -285,11 +285,11 @@ private fun inboxContextTitle(context:MessageContext?,state:MarketSnapshot):Stri
 
         val localModel by model.localModelState.collectAsState()
         if(ai.optBoolean("enabled")) Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-            if(ai.optString("provider")=="litert" && localModel.phase in setOf(LocalModelPhase.VERIFYING,LocalModelPhase.LOADING,LocalModelPhase.REVIEWING)) {
+            if(NativeAIReadiness.isLocal(ai.optString("provider")) && localModel.phase in setOf(LocalModelPhase.VERIFYING,LocalModelPhase.LOADING,LocalModelPhase.REVIEWING)) {
                 TextButton(onClick=model::cancelLocalAI){Text("Stop")}
-            } else TextButton(enabled=!busy&&!state.demo,onClick={model.ai("check_ai")}){Text(if(ai.optString("provider")=="litert") "Check model" else "Test connection")}
+            } else TextButton(enabled=!busy&&!state.demo,onClick={model.ai("check_ai")}){Text(if(NativeAIReadiness.isLocal(ai.optString("provider"))) "Check model" else "Test connection")}
         }
-        if(ai.optString("provider")=="litert" && localModel.phase==LocalModelPhase.REVIEWING) {
+        if(NativeAIReadiness.isLocal(ai.optString("provider")) && localModel.phase==LocalModelPhase.REVIEWING) {
             Text("Reviewing ${localModel.reviewed} of ${localModel.total}",color=Muted,style=MaterialTheme.typography.bodySmall)
         }
         Row(Modifier.fillMaxWidth().padding(vertical=7.dp),verticalAlignment=Alignment.CenterVertically) {

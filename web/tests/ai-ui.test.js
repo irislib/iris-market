@@ -855,10 +855,10 @@ test('suggested Home reviews across sellers and counts only the current side, ev
   assert.deepEqual(seen.slice(0,6),['o0','o240','o250','o1','o241','o251']);
   assert.equal(ui.pagination().reviewed,240);
   setRows([]);
-  assert.equal(field('ai-summary-text').textContent,'For you · 0 matches · 0 checked');
+  assert.equal(field('ai-summary-text').textContent,'0 matches · 0 checked');
   setRows([{...request,eventId:request.id}]);
   await until(()=>ui.pagination().reviewed===1);
-  assert.equal(field('ai-summary-text').textContent,'For you · 1 match · 1 checked');
+  assert.equal(field('ai-summary-text').textContent,'1 match · 1 checked');
   field('search-mode').value='text';ui.stop();
 });
 

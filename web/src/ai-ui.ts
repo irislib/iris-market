@@ -55,7 +55,7 @@ export function setupAI({ getCandidates, getOrderCount=()=>0, onChange, onTextSe
     const count=candidates.length-hidden,matchLabel=`${count} ${count===1?'match':'matches'}`;
 
     $('ai-summary').hidden = !active || (!curationActive() && !busy);
-    const activity = `${homeActive()?'For you · ':''}${matchLabel} · ${homeActive()?reviewedCount(candidates):scores.size} checked${getOrderCount()?' · '+getOrderCount()+' bitcoin '+(getOrderCount()===1?'order':'orders'):''}`;
+    const activity = `${matchLabel} · ${homeActive()?reviewedCount(candidates):scores.size} checked${getOrderCount()?' · '+getOrderCount()+' bitcoin '+(getOrderCount()===1?'order':'orders'):''}`;
     $('ai-summary-text').textContent = showAll ? (submittedQuery?'All matching listings':'All listings') : phase==='loading' ? `${$('ai-progress').textContent || 'Loading model…'} · ${activity}` : `${waitingCandidates&&busy?'Waiting for listings · ':paused&&!sourceError?'Search paused · ':''}${activity}`;
     $('result-view').textContent=showAll?'Show AI selected':'Show all';
     $('result-view').hidden=!curationActive();

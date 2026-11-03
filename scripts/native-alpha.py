@@ -7,6 +7,7 @@ Generated bindings/projects remain in a new ignored artifact staging directory.
 import argparse
 import datetime
 import fnmatch
+import hashlib
 import importlib.util
 import json
 import os
@@ -275,6 +276,10 @@ def build_android(args, stage, cache, environment):
     release.require('Pkg.Revision = 28.2.13676358' in (ndk/'source.properties').read_text(), 'Unexpected Android NDK revision')
     release.require((ROOT/'android/gradle/wrapper/gradle-wrapper.jar').is_file(), 'Missing Gradle wrapper')
     release.require(release.sha256(ROOT/'android/gradle/wrapper/gradle-wrapper.jar') == 'b3a875ddc1f044746e1b1a55f645584505f4a10438c1afea9f15e92a7c42ec13', 'Gradle wrapper checksum mismatch')
+    spec = importlib.util.spec_from_file_location("android_release_inputs", ROOT/"scripts/android-release-inputs.py")
+    android_inputs = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(android_inputs)
+    android_inputs.prepare_web(work, android, environment, args.acquire_android_dependencies)
     bindings(stage, cache, environment, 'kotlin')
     host = 'darwin-x86_64' if sys.platform == 'darwin' else 'linux-x86_64'
     tools = ndk/'toolchains/llvm/prebuilt'/host/'bin'
@@ -297,6 +302,27 @@ def build_android(args, stage, cache, environment):
     shutil.copyfile(apk, args.output/artifact_name(args))
 
 
+def compact_asset_hashes(apk, generated):
+    """Bind the generated offline search bundle to the bytes shipped in the APK."""
+    expected = {"index.html", "page.js", "worker.js", "topic-vectors.bin", "THIRD_PARTY_NOTICES.txt",
+                "ort-wasm-simd-threaded.mjs", "ort-wasm-simd-threaded.wasm.gz"}
+    prefix = "assets/compact-search/"
+    hashes = {}
+    with zipfile.ZipFile(apk) as archive:
+        packaged = [entry.filename[len(prefix):] for entry in archive.infolist()
+                    if entry.filename.startswith(prefix) and not entry.is_dir()]
+        release.require(sorted(packaged) == sorted(expected), "Unexpected compact search APK assets")
+        for name in sorted(expected):
+            with archive.open(prefix + name) as stream:
+                h = hashlib.sha256()
+                for block in iter(lambda: stream.read(1024 * 1024), b""):
+                    h.update(block)
+                digest = h.hexdigest()
+            release.require(digest == release.sha256(generated / name), "APK contains a stale compact search asset: " + name)
+            hashes[name] = digest
+    return hashes
+
+
 def artifact_name(args):
     name = release.asset_name(args.tag, args.platform)
     return name.removesuffix('.apk')+'.unsigned.apk' if args.unsigned_android else name
@@ -308,7 +334,7 @@ def main():
     parser.add_argument('--tag', required=True); parser.add_argument('--commit', required=True); parser.add_argument('--build-number', type=int, required=True)
     parser.add_argument('--android-inputs', type=Path); parser.add_argument('--inputs', type=Path, required=True); parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--unsigned-android', action='store_true', help='Build an explicitly nonpublishable Android signing handoff')
-    parser.add_argument('--acquire-android-dependencies', action='store_true', help='Acquire strictly checksum-verified Gradle dependencies, then replay offline')
+    parser.add_argument('--acquire-android-dependencies', action='store_true', help='Acquire locked npm and Gradle dependencies, then replay offline')
     args = parser.parse_args(); inputs = release.preflight(args.tag, args.commit, args.platform, args.inputs, args.build_number, args.unsigned_android)
     release.require(not args.acquire_android_dependencies or args.platform == 'android-arm64', 'Dependency acquisition only applies to Android')
     args.output = args.output.resolve(); args.output.mkdir(parents=True, exist_ok=True)
@@ -326,6 +352,10 @@ def main():
     artifact = args.output/artifact_name(args)
     verify_release_paths(artifact, environment)
     receipt = {'platform':args.platform,'asset':artifact.name,'tag':args.tag,'sourceCommit':args.commit,'sha256':release.sha256(artifact),'readyForPublication':False,'signed':not args.unsigned_android,'buildNumber':args.build_number,'inputsSHA256':release.sha256(args.inputs),'sourcePathPolicy':'home=/build/home; cargo=/build/cargo; source=/source/iris-market'}
+    if args.platform == 'android-arm64':
+        receipt['androidInputsSHA256'] = release.sha256(args.android_inputs)
+        receipt['webLockSHA256'] = release.sha256(ROOT/'web/package-lock.json')
+        receipt['compactSearchAssetsSHA256'] = compact_asset_hashes(artifact, ROOT/'android/app/build/generated/compactAssets/compact-search')
     if args.platform == 'ios-arm64':
         receipt['iosPushEnabled'] = release.ios_push_enabled(environment)
         receipt['iosNotificationFilteringEnabled'] = release.ios_notification_filtering_enabled(environment)

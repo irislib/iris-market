@@ -44,7 +44,12 @@ def check_pins(pins):
     require(packages == {"platforms;android-36", "build-tools;36.0.0", "ndk;28.2.13676358"},
             "Unexpected Android SDK package set")
     require(pins["jdk"]["version"] == "17.0.20+8", "Unexpected reviewed JDK version")
-    entries = [*pins["sdk_linux"], pins["jdk"]]
+    node = pins["node"]
+    require(re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", node["version"]) and
+            node["root"] == f"node-v{node['version']}-linux-x64" and
+            node["url"] == f"https://nodejs.org/dist/v{node['version']}/{node['root']}.tar.gz" and
+            node["binary"] == node["root"] + "/bin/node" and node["format"] == "tar.gz", "Unexpected Node distribution")
+    entries = [*pins["sdk_linux"], pins["jdk"], node]
     for pin in entries:
         SHARED.native_url(pin["url"])
         parsed = urllib.parse.urlsplit(pin["url"])
@@ -167,6 +172,33 @@ def prepare_gradle_home():
     return home
 
 
+def prepare_web(work, receipt, environment, acquire):
+    """Use only the pinned Node/npm and materialize the reviewed npm lock offline."""
+    pin = json.loads(PINS.read_text())["node"]
+    require(receipt.get("node", {}).get("input") == pin, "Android receipt lacks the reviewed Node input")
+    SHARED.verify_native_install(work / "archives/node.tar.gz", archive_pin(pin), work / "node")
+    home = work / "node" / pin["root"]
+    binary = home / "bin/node"
+    environment["PATH"] = str(binary.parent) + os.pathsep + environment.get("PATH", "")
+    for key in ("ESBUILD_BINARY_PATH", "NODE_OPTIONS", "NODE_PATH"):
+        environment.pop(key, None)
+
+    web = ROOT / "web"
+    lock = web / "package-lock.json"
+    require(receipt.get("webLockSHA256") == digest(lock), "Android receipt does not match the web dependency lock")
+    packages = json.loads(lock.read_text())["packages"]
+    require(all(re.fullmatch(r"sha512-[A-Za-z0-9+/]{86}==", entry.get("integrity", "")) and
+                entry.get("resolved", "").startswith("https://")
+                for name, entry in packages.items() if name), "Every npm package needs a locked HTTPS tarball and integrity")
+    # npm ci replaces node_modules. An official release starts from an isolated checkout.
+    require(not os.path.lexists(web / "node_modules"), "Use a clean release checkout without web/node_modules")
+    ci = [binary, home / "lib/node_modules/npm/bin/npm-cli.js", "ci", "--ignore-scripts",
+          "--no-audit", "--no-fund", "--no-update-notifier", "--include=dev", "--include=optional", "--cache", work / "npm-cache"]
+    if acquire:
+        subprocess.run(ci, cwd=web, env=environment, check=True)
+    subprocess.run([*ci, "--offline"], cwd=web, env=environment, check=True)
+
+
 def install(pins, work, rust_work):
     check_pins(pins)
     require(os.environ.get("GITHUB_ACTIONS") == "true" and platform.system() == "Linux" and
@@ -198,6 +230,16 @@ def install(pins, work, rust_work):
                                           text=True, timeout=30).strip()
         require(pins["jdk"]["version"] in version, "JDK executable version mismatch")
         receipt["jdk"] = {"input": pins["jdk"], "version": version}
+        node_pin = pins["node"]
+        archive = SHARED.download_native(archive_pin(node_pin), archives / "node.tar.gz")
+        SHARED.unpack_native(archive, archive_pin(node_pin), work / "node")
+        node_home = work / "node" / node_pin["root"]
+        node_version = subprocess.check_output([node_home / "bin/node", "--version"], text=True).strip()
+        npm_version = json.loads((node_home / "lib/node_modules/npm/package.json").read_text())["version"]
+        require(node_version == "v" + node_pin["version"] and npm_version == node_pin["npm_version"],
+                "Installed Node/npm version mismatch")
+        receipt["node"] = {"input": node_pin, "version": node_version, "npmVersion": npm_version}
+        receipt["webLockSHA256"] = digest(ROOT / "web/package-lock.json")
         for index, pin in enumerate(pins["sdk_linux"]):
             archive = SHARED.download_native(archive_pin(pin), archives / f"sdk-{index}.zip")
             package = unpack_sdk(archive, pin, work / f"sdk-extract-{index}")
@@ -235,7 +277,7 @@ def main():
         require(args.work is not None and args.rust_work is not None, "--work and --rust-work are required")
         install(pins, args.work, args.rust_work)
     else:
-        print("Reviewed Android SDK and JDK pins; no native process or download executed.")
+        print("Reviewed Android SDK, JDK and Node/npm pins; no native process or download executed.")
 
 
 if __name__ == "__main__":

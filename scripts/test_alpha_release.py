@@ -26,6 +26,7 @@ def load(name, filename):
 installer=load('release_inputs_test','release-build-inputs.py')
 signer=load('android_sign_test','android-sign.py')
 native=load('native_alpha_test','native-alpha.py')
+android_inputs=load('android_inputs_test','android-release-inputs.py')
 TAG, COMMIT, DIGEST = 'v0.1.0-alpha.1', 'a'*40, 'b'*64
 
 
@@ -471,6 +472,49 @@ class AlphaContract(unittest.TestCase):
         self.assertNotEqual(signer.payload(unsigned),signer.payload(apk('mode.apk',mode=0o100644),True))
         with zipfile.ZipFile(signed,'a') as archive:archive.writestr('../escaped',b'bad')
         with self.assertRaises(ValueError):signer.payload(signed,True)
+
+    def test_android_compact_dependencies_require_verified_lock_and_offline_replay(self):
+        web=self.root/'web';web.mkdir()
+        lock=web/'package-lock.json'
+        lock.write_text(json.dumps({'packages':{'':{},'node_modules/one':{'integrity':'sha512-'+'A'*86+'==','resolved':'https://example.org/one.tgz'}}}))
+        pin=release.read_json(android_inputs.PINS)['node']
+        record={'webLockSHA256':release.sha256(lock),'node':{'input':pin}}
+        environment={'PATH':'/usr/bin','ESBUILD_BINARY_PATH':'unreviewed'}
+        with patch.object(android_inputs,'ROOT',self.root), patch.object(android_inputs.SHARED,'verify_native_install') as verify, patch.object(android_inputs.subprocess,'run') as run:
+            android_inputs.prepare_web(self.root,record,environment,True)
+            verify.assert_called_once()
+            first,replayed=[call.args[0] for call in run.call_args_list]
+            self.assertEqual(replayed,[*first,'--offline'])
+            self.assertEqual(first[0],self.root/'node'/pin['binary'])
+            self.assertIn('--ignore-scripts',first)
+            self.assertTrue(environment['PATH'].startswith(str(first[0].parent)+os.pathsep))
+            self.assertNotIn('ESBUILD_BINARY_PATH',environment)
+            run.reset_mock()
+            android_inputs.prepare_web(self.root,record,environment,False)
+            self.assertEqual(run.call_args.args[0],replayed)
+            (web/'node_modules').mkdir()
+            with self.assertRaisesRegex(ValueError,'clean release checkout'):
+                android_inputs.prepare_web(self.root,record,environment,True)
+            lock.write_text('{}')
+            with self.assertRaisesRegex(ValueError,'dependency lock'):
+                android_inputs.prepare_web(self.root,record,environment,False)
+
+    def test_android_compact_asset_receipt_checks_packaged_bytes(self):
+        bundle=self.root/'assets';bundle.mkdir()
+        names=['index.html','page.js','worker.js','topic-vectors.bin','THIRD_PARTY_NOTICES.txt','ort-wasm-simd-threaded.mjs','ort-wasm-simd-threaded.wasm.gz']
+        path=self.root/'compact.apk'
+        with zipfile.ZipFile(path,'w') as archive:
+            for name in names:
+                (bundle/name).write_bytes(name.encode())
+                archive.write(bundle/name,'assets/compact-search/'+name)
+        self.assertEqual(native.compact_asset_hashes(path,bundle),{name:release.sha256(bundle/name) for name in names})
+        (bundle/'worker.js').write_text('different')
+        with self.assertRaisesRegex(ValueError,'stale'):
+            native.compact_asset_hashes(path,bundle)
+        with zipfile.ZipFile(path,'a') as archive:
+            archive.writestr('assets/compact-search/unexpected','unexpected')
+        with self.assertRaisesRegex(ValueError,'Unexpected'):
+            native.compact_asset_hashes(path,bundle)
 
     def test_unsigned_handoff_cannot_masquerade_as_release(self):
         path=self.root/(release.asset_name(TAG,'android-arm64').removesuffix('.apk')+'.unsigned.apk')

@@ -118,9 +118,9 @@ jobs:
           python3 -c 'import importlib.util,os; s=importlib.util.spec_from_file_location("release","scripts/alpha-release.py"); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); m.exact_source(os.environ["RELEASE_TAG"],os.environ["RELEASE_COMMIT"])'
       - name: Install checksum-verified Rust inputs
         run: python3 scripts/release-build-inputs.py --install --work "$RUNNER_TEMP/market-rust" --target aarch64-linux-android
-      - name: Install checksum-verified Android inputs
+      - name: Install checksum-verified Android and Node inputs
         run: python3 scripts/android-release-inputs.py --install --work "$RUNNER_TEMP/market-android" --rust-work "$RUNNER_TEMP/market-rust"
-      - name: Build unsigned release payload and replay dependencies offline
+      - name: Build unsigned release payload with locked npm and Gradle dependencies
         run: |
           python3 scripts/native-alpha.py --platform android-arm64 --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT" --build-number "$RELEASE_BUILD_NUMBER" --inputs "$RUNNER_TEMP/market-rust/receipt.json" --android-inputs "$RUNNER_TEMP/market-android/receipt.json" --output artifacts/alpha --unsigned-android --acquire-android-dependencies
       - name: Attest unsigned payload and build receipt

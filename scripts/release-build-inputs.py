@@ -94,7 +94,7 @@ def native_url(url):
     require(parsed.scheme == 'https' and parsed.hostname in {
         'github.com', 'release-assets.githubusercontent.com',
         'builds.dotnet.microsoft.com', 'www.nasm.us', 'downloads.sourceforge.net',
-        'dl.google.com', 'static.crates.io',
+        'dl.google.com', 'static.crates.io', 'nodejs.org',
     } | ({parsed.hostname} if parsed.hostname and
          parsed.hostname.endswith('.dl.sourceforge.net') else set())
         and not parsed.username and not parsed.password and parsed.port in (None, 443),

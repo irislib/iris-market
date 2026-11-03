@@ -28,12 +28,13 @@ interface RuntimeOptions {
   relays: readonly string[];
   createClient?: (failed: (error?:Error) => void) => Promise<PublicWorkerClient>;
   retryMs?: number;
+  storeName?: string;
 }
 const cancelled = () => new DOMException('Public request cancelled', 'AbortError');
 
 /** Shared worker initializes a graph even for anonymous reads; its root must be a public key. */
-export function publicWorkerConfig(relays:readonly string[]) {
-  return {relays:[...relays],blossomServers:[],pubkey:GRAPH_BOOTSTRAP.root,storeName:'iris-market-public-events-v1',reconciliation:{lookbackSeconds:7*86400}};
+export function publicWorkerConfig(relays:readonly string[],storeName='iris-market-public-events-v1') {
+  return {relays:[...relays],blossomServers:[],pubkey:GRAPH_BOOTSTRAP.root,storeName,reconciliation:{lookbackSeconds:7*86400}};
 }
 
 function publicFilters(filters: Filter[]): Filter[] {
@@ -45,13 +46,17 @@ function publicFilters(filters: Filter[]): Filter[] {
   return structuredClone(filters);
 }
 
-function publicEvent(input: Event): VerifiedEvent | null {
+function publicEvent(input: Event, allowExternalOrders=true): VerifiedEvent | null {
   if (!PUBLIC_KINDS.has(input?.kind)) return null;
   try {
     const event = {id:input.id,pubkey:input.pubkey,created_at:input.created_at,kind:input.kind,
       content:input.content,tags:input.tags.map(tag=>[...tag]),sig:input.sig};
     if (JSON.stringify(event).length > 1024 * 1024) return null;
-    if (event.kind===BITCOIN_KIND) readEscrowOffer(event.kind,event.tags);
+    if (event.kind===BITCOIN_KIND) {
+      const external=allowExternalOrders && event.tags.some(([name,value])=>name==='z'&&value==='order') &&
+        !event.tags.some(([name,value])=>name==='iris-escrow'||name==='y'&&value==='iris-market');
+      if(!external)readEscrowOffer(event.kind,event.tags);
+    }
     return verifyEvent(event) ? event : null;
   } catch { return null; }
 }
@@ -70,7 +75,7 @@ export function publicIndexSource(source: RuntimeSource): RuntimeSource {
     ...(source.subscribe?{subscribe(filters,handler){
       const selected=publicFilters(filters);return source.subscribe(selected,record=>{const valid=accept(record,selected);if(valid)handler(valid);});
     }}:{}),
-    ...(source.publish?{async publish(input,origin){const event=publicEvent(input);if(!event)throw new Error('Invalid public event.');return source.publish(event,origin);}}:{}),
+    ...(source.publish?{async publish(input,origin){const event=publicEvent(input,false);if(!event)throw new Error('Invalid public event.');return source.publish(event,origin);}}:{}),
   };
 }
 
@@ -84,7 +89,7 @@ export function rejectPublicSigning(event: MessageEvent, worker: Pick<Worker, 'p
   return true;
 }
 
-export async function createPublicWorkerClient(relays: readonly string[], failed: (error?:Error) => void, {WorkerImpl=globalThis.Worker,workerURL=assetUrl('nostr.worker.js')}={}): Promise<PublicWorkerClient> {
+export async function createPublicWorkerClient(relays: readonly string[], failed: (error?:Error) => void, {WorkerImpl=globalThis.Worker,workerURL=assetUrl('nostr.worker.js'),storeName='iris-market-public-events-v1'}={}): Promise<PublicWorkerClient> {
   const { RelayWorkerClient } = await import('@hashtree/worker/relay-client');
   const workers=new Set<Worker>();let disposed=false,closing:Promise<void>|undefined;
   // The shared client accepts a Worker constructor. Install the public-only
@@ -104,7 +109,7 @@ export async function createPublicWorkerClient(relays: readonly string[], failed
       return worker;
     }
   } as unknown as new () => Worker;
-  const client=new RelayWorkerClient(PublicWorker, publicWorkerConfig(relays));
+  const client=new RelayWorkerClient(PublicWorker, publicWorkerConfig(relays,storeName));
   return {
     async init(){
       await client.init();
@@ -130,7 +135,7 @@ export async function createPublicWorkerClient(relays: readonly string[], failed
 }
 
 /** One shared worker, with bounded crash recovery. Relay reconnects belong to pubsub. */
-export function createPublicRuntime({relays,createClient,retryMs=500}: RuntimeOptions): PublicEventRuntime {
+export function createPublicRuntime({relays,createClient,retryMs=500,storeName}: RuntimeOptions): PublicEventRuntime {
   let client: PublicWorkerClient | null = null, initializing:PublicWorkerClient|null=null, starting: Promise<PublicWorkerClient> | null = null;
   let closed = false, generation = 0, retries = 0, restart: ReturnType<typeof setTimeout> | null = null;
   let source: RuntimeSource | null = null;
@@ -162,7 +167,7 @@ export function createPublicRuntime({relays,createClient,retryMs=500}: RuntimeOp
     if (starting) return starting;
     const version=generation;
     const task=(async()=>{
-      const next=await (createClient ? createClient(failed) : createPublicWorkerClient(relays,failed));
+      const next=await (createClient ? createClient(failed) : createPublicWorkerClient(relays,failed,{storeName}));
       if(closed || version!==generation) { void next.close().catch(()=>{}); throw cancelled(); }
       initializing=next;
       try { await next.init(); }
@@ -194,7 +199,7 @@ export function createPublicRuntime({relays,createClient,retryMs=500}: RuntimeOp
         const result=await active.queryEvents(selected,{...options,signal:controller.signal,limit:Math.min(options.limit??1024,1024)});
         if(controller.signal.aborted) throw controller.signal.reason??cancelled();
         if(closed)throw cancelled();
-        return {...result,events:result.events.map(publicEvent).filter((event):event is VerifiedEvent=>!!event)};
+        return {...result,events:result.events.map(event=>publicEvent(event)).filter((event):event is VerifiedEvent=>!!event)};
       } finally { clearTimeout(timer);queries.delete(controller);options.signal?.removeEventListener('abort',abort); }
     },
     subscribe(filters,handlers) {
@@ -205,12 +210,12 @@ export function createPublicRuntime({relays,createClient,retryMs=500}: RuntimeOp
       return {close(){subscriptions.delete(entry);entry.handle?.close();}};
     },
     async publish(input) {
-      const event=publicEvent(input); if(!event) throw new Error('Invalid public event.');
+      const event=publicEvent(input,false); if(!event) throw new Error('Invalid public event.');
       return (await ready()).publishEvent(event);
     },
     async ingest(inputs) {
       if(!Array.isArray(inputs)||inputs.length>128)throw new Error('Public event import is too large.');
-      const events=inputs.map(publicEvent);
+      const events=inputs.map(event=>publicEvent(event));
       if(events.some(event=>!event))throw new Error('Only signed public records belong in this cache.');
       await (await ready()).ingestEvents(events as Event[]);
     },

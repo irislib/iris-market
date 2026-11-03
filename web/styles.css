@@ -132,3 +132,12 @@ dialog { color:var(--ink); background:var(--bg); border:1px solid var(--line); b
 #search-expansions h3{font-size:14px;margin:0 0 6px}
 #search-expansion-terms{display:flex;flex-wrap:wrap;gap:6px;list-style:none;padding:0;margin:0}
 #search-expansion-terms li{font-size:13px;overflow-wrap:anywhere;padding:3px 8px;border-radius:6px;background:var(--soft)}
+
+#bitcoin-orders{margin:0 0 1.5rem;padding:1rem;border:1px solid var(--line);border-radius:12px}
+#bitcoin-orders h3,#bitcoin-orders p{margin:0 0 .35rem}
+.bitcoin-orders-list{list-style:none;padding:0;margin:.5rem 0}
+.bitcoin-orders-list li{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:.6rem 0;border-top:1px solid var(--line)}
+.bitcoin-orders-list li div{min-width:0;overflow-wrap:anywhere}
+.bitcoin-orders-list li span{display:block;margin-top:.15rem}
+.bitcoin-orders-list a{flex-shrink:0;max-width:45%;overflow-wrap:anywhere}
+#filters-dialog .categories{flex-wrap:wrap}

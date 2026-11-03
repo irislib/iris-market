@@ -14,13 +14,13 @@ export function createHiddenListings(storage: Store, key: string) {
 }
 
 export interface PhotoFilterContext {
-  saved: boolean; map: boolean; query: string; side: string; category: string;
+  saved: boolean; map: boolean; query: string; side: string;
   location: string; shipsTo: string; tags: readonly string[]; authors: readonly string[] | null; network: boolean;
 }
 /** A deliberate checkbox choice wins; the automatic default applies only to the entry feed. */
 export function wantsPhotos(choice: boolean | null, context: PhotoFilterContext): boolean {
   if (choice !== null) return choice;
-  return !context.saved && !context.map && !context.query.trim() && context.side === 'offer' && context.category === 'all' &&
+  return !context.saved && !context.map && !context.query.trim() && context.side === 'offer' &&
     !context.location && !context.shipsTo && !context.tags.length && context.authors === null && !context.network;
 }
 

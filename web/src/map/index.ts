@@ -103,6 +103,12 @@ export function listingIntersectsViewport(listing: MapListing, viewport: MapView
   }))
 }
 
+/** Keep distant listings from using the overlay budget ahead of a newly visited area. */
+export function listingsForViewport(located:MapListing[],viewport:MapViewport|null):MapListing[]{
+  if(!viewport)return located.slice(0,1000)
+  return located.filter(listing=>listingIntersectsViewport(listing,viewport)).slice(0,1000)
+}
+
 /** A style can accept layers before its basemap tiles have finished loading. */
 export function createListingOverlay(map, listings: MapListing[] = [], dark = false) {
   let ready = false, destroyed = false, currentListings = listings, currentDark = !!dark, featureKey, areaKey
@@ -301,8 +307,8 @@ export async function createMarketMap(container, { listings = [], dark = false, 
     const bounds = new maplibre.LngLatBounds()
     for (const feature of features) bounds.extend([feature.geometry.coordinates[0], feature.geometry.coordinates[1]])
     if(extent){bounds.extend([extent[0],extent[1]]);bounds.extend([extent[2],extent[3]])}
-    map.fitBounds(bounds, { padding: 50, maxZoom: 11, duration: 0 })
     fittedListings = true
+    map.fitBounds(bounds, { padding: 50, maxZoom: 11, duration: 0 })
   }
   async function destroy() {
     if (destroyed) return
@@ -320,6 +326,7 @@ export async function createMarketMap(container, { listings = [], dark = false, 
     overlay = createOverlay ? createOverlay(map, currentDark) : createListingOverlay(map, currentListings, currentDark)
     if (!createOverlay) interactions = createListingInteractions(map, { getListings: () => currentListings, onSelect, onError: report })
     const reportViewport = () => { const viewport = mapViewport(map); if (!destroyed && viewport) onViewport(viewport) }
+    map.on('movestart', event => { if (event.originalEvent) fittedListings = true })
     map.on('moveend', reportViewport)
     fitFirstListings()
     await Promise.race([map.once('load'), new Promise((_, reject) => { const timeout = setTimeout(() => reject(new Error('Map loading timed out')), 35000); map.once('load').then(() => clearTimeout(timeout)); lifecycle.signal.addEventListener('abort', () => { clearTimeout(timeout); reject(new DOMException('Map closed', 'AbortError')) }, { once: true }) })])

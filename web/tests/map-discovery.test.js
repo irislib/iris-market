@@ -138,3 +138,24 @@ test('long geohashes and large audiences retain complete covers without oversize
  for(const length of new Set(selected.map(g=>g.length)))assert.deepEqual(selected.filter(g=>g.length===length).sort(),hashes.filter(g=>g.length===length).sort());
  for(const filters of requests)assert(Buffer.byteLength(JSON.stringify(['REQ','map-0000000000000000',...filters]))<=28*1024);
 });
+
+test('a full browsing feed still admits moved-area pins and can retry a dropped event for search',()=>{
+  const app=client({browseDiscovery:true,maxRecords:2}),socket=Socket.instances[0]
+  try{
+    socket.open();const main=socket.sent[0][1]
+    socket.receive(['EVENT',main,listing('sold','u6',[['status','sold']])])
+    socket.receive(['EVENT',main,listing('recent','u6')])
+    const apple=listing('apple','dp3q');socket.receive(['EVENT',main,apple])
+    assert.equal(app.records.size,2)
+    app.setGeohashes(['ud9']);socket.receive(['EVENT',socket.sent.at(-1)[1],listing('Helsinki','ud9')])
+    app.setGeohashes(['9y5q']);socket.receive(['EVENT',socket.sent.at(-1)[1],listing('Oklahoma','9y5q')])
+    assert.deepEqual(app.listings().map(item=>item.title).sort(),['Helsinki','Oklahoma','recent'])
+    assert.equal(app.pagination().limited,true)
+    assert.equal(app.mapDiscoveryLimited,false)
+    app.searchTags('apple',[],'expanded')
+    socket.receive(['EVENT',main,apple])
+    assert(app.listings().some(item=>item.title==='apple'))
+    assert.equal(app.records.size,5)
+    assert.equal(app.listings().some(item=>item.title==='sold'),false)
+  }finally{app.close()}
+})

@@ -4,6 +4,8 @@ const $=byId;
 export const darkAppearance = () => document.documentElement.dataset.appearance === 'dark' || (document.documentElement.dataset.appearance !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
 export function setupMap({ getListings, onSelect, onVisibilityChange = () => {}, onDiscover = () => {}, isDiscoveryLimited = () => false }: {getListings:()=>any[];onSelect:(listing:any)=>void;onVisibilityChange?:(visible:boolean)=>void;onDiscover?:(cells:string[])=>void;isDiscoveryLimited?:()=>boolean}) {
   let instance, loading, visible = false, disposed = false;
+  const mappable=(listings=getListings())=>listings.filter(item=>item.coordinates||item.serviceAreas);
+  let selectForViewport:typeof import('./map/index.ts').listingsForViewport;
   const discovery = createViewportDiscovery(onDiscover);
   const stats = async () => {
     if (!instance) return;
@@ -23,8 +25,9 @@ export function setupMap({ getListings, onSelect, onVisibilityChange = () => {},
     $('map-status').textContent = 'Loading map…';
     loading = (async () => {
       try {
-        const { createMarketMap } = await import('./map/index.ts');
-        const map = await createMarketMap($('map-canvas'), { listings: getListings(), dark: darkAppearance(), cacheMiB: Number($('map-cache').value), onSelect, onViewport: value => discovery.update(value), onError: () => { $('map-status').textContent = 'Map unavailable'; } });
+        const { createMarketMap, listingsForViewport } = await import('./map/index.ts');
+        selectForViewport=listingsForViewport;
+        const map = await createMarketMap($('map-canvas'), { listings: mappable(), dark: darkAppearance(), cacheMiB: Number($('map-cache').value), onSelect, onViewport: value => {discovery.update(value);if(instance)refresh();}, onError: () => { $('map-status').textContent = 'Map unavailable'; } });
         if (disposed) { await map.destroy(); return; }
         instance = map; await instance.setDark(darkAppearance()); refresh(); await stats();
       } catch { $('map-status').textContent = 'Map unavailable. Close and reopen to try again.'; }
@@ -33,9 +36,10 @@ export function setupMap({ getListings, onSelect, onVisibilityChange = () => {},
   }
   function refresh() {
     if (!visible || !instance) return;
-    const listings = getListings(), located = listings.filter(item => item.coordinates||item.serviceAreas).length;
-    instance.setListings(listings);
-    $('map-status').textContent = isDiscoveryLimited() ? 'Listing limit reached. Narrow your search in Filters to find more.' : `${located} of ${listings.length} listings have a shared location or service area`;
+    const listings = getListings(), located = mappable(listings);
+    const inView=selectForViewport(located,instance.viewport());
+    instance.setListings(located.length>1000?inView:located);
+    $('map-status').textContent = isDiscoveryLimited() ? 'Map listing limit reached for this session.' : inView.length ? `${inView.length} ${inView.length===1?'listing':'listings'} in this area` : 'No shared listing locations in view yet.';
   }
   const theme = () => instance?.setDark(darkAppearance()).catch(() => {});
   const watcher = matchMedia('(prefers-color-scheme: dark)'); watcher.addEventListener('change', theme);

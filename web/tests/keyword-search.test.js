@@ -141,3 +141,36 @@ test('model refinement restarts interrupted keyword reads without resetting shar
   resolveFirst({events:[fixtures[4]],complete:true});await tick();assert.ok(!feed.listings().some(l=>l.identifier==='pan'))
  }finally{feed.close()}
 })
+
+test('a full ranked relay or index stream widens without a date cursor, then stops on a short page',async()=>{
+ const fruit=Array.from({length:125},(_,i)=>signed('fruit-'+i,'Fruit '+i))
+ for(const source of ['relay','index']){
+   const limits=[]
+   const results=filter=>{
+     if(!filter.search)return []
+     assert.equal(filter.until,undefined)
+     limits.push(filter.limit);return fruit.slice(0,filter.limit)
+   }
+   class RankedRelay extends Relay{
+     send(raw){
+       const [command,id,filter]=JSON.parse(raw)
+       if(command!=='REQ'||!id.startsWith('older-'))return
+       queueMicrotask(()=>{
+         for(const event of results(filter))this.onmessage?.({data:JSON.stringify(['EVENT',id,event])})
+         this.onmessage?.({data:JSON.stringify(['EOSE',id])})
+       })
+     }
+   }
+   const options=source==='relay'?{relays:['wss://fruit.example'],WebSocketImpl:RankedRelay}:
+     {relays:[],indexSearch:true,indexQuery:async ([filter])=>({events:results(filter),complete:true})}
+   const feed=new MarketRelayClient({...options,browseDiscovery:true,now:()=>now}).start()
+   try{
+     const initial=source==='relay'?80:120
+     feed.searchTags('fruit',[],'expanded')
+     await feed.loadQueryCandidates();assert.equal(feed.listings().length,initial)
+     await feed.loadQueryCandidates();assert.equal(feed.listings().length,125)
+     await feed.loadQueryCandidates();assert.deepEqual(limits,[initial,initial*2])
+     assert.equal(feed.queryPagination().hasMore,false)
+   }finally{feed.close()}
+ }
+})

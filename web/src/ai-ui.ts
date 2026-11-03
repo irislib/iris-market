@@ -43,9 +43,9 @@ export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetch
   const enabled = () => $('search-mode').value === 'ai';
   const threshold = () => ['qwen35','browser'].includes($('ai-model').value) ? .5 : Number($('ai-threshold').value);
   const needsCPU = () => $('ai-model').value === 'qwen35' && !hasWebGPU();
-  const candidates=()=>getCandidates().slice(0,1000);
+  const candidates=getCandidates;
   const matches=(listing:SearchListing)=>scores.has(keyFor(listing))&&scores.get(keyFor(listing))>=threshold();
-  const matchCount=()=>candidates().filter(matches).length;
+  const matchCount=(rows=candidates())=>rows.reduce((count,item)=>count+Number(matches(item)),0);
   const refresh = () => {
     const candidates = getCandidates(), active = enabled(), busy=phase!=='idle';
     const hidden = curationActive()?candidates.filter(l => !matches(l)).length:0;
@@ -180,10 +180,25 @@ export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetch
       const conditions=homeRun?homeFeedConditions(home.prompt,model):[{condition:searchCondition(query,model),exclude:false}];
       let sourceRequests=0,unpainted=0,painted=false,lastPaint=performance.now();
       phase='searching';refresh();
-      while(matchCount()<targetMatches) {
+      let reviewRows:SearchListing[]|undefined,position=0,visibleMatches=0,lastThreshold=threshold();
+      let reviewBoundary=scores.size+(preserve?250:1000),previousMatches=matchCount();
+      while(true) {
         if (current !== generation) return;
         if(homeRun&&(!homeActive()||scores.size>=homeReviewLimit))break;
-        const item=candidates().find(listing=>!scores.has(keyFor(listing)));
+        const rows=candidates();
+        if(rows!==reviewRows||lastThreshold!==threshold()){
+          reviewRows=rows;position=0;visibleMatches=matchCount(rows);lastThreshold=threshold();
+        }
+        if(visibleMatches>=targetMatches)break;
+        while(position<rows.length&&scores.has(keyFor(rows[position])))position++;
+        const item=rows[position];
+        if(!homeRun&&scores.size>=reviewBoundary){
+          if(visibleMatches<=previousMatches){
+            paused=!!item||!!fetchMoreCandidates&&!sourceExhausted;
+            break;
+          }
+          previousMatches=visibleMatches;reviewBoundary=scores.size+250;
+        }
         if(!item){
           if(homeRun&&!continuation)break;
           if(sourceRequest?.done){
@@ -204,7 +219,8 @@ export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetch
           if(current!==generation)return;
           continue;
         }
-        waitingCandidates=false;$('ai-progress').textContent = homeRun?'Choosing listings…':'Searching…';refresh();
+        if(waitingCandidates){waitingCandidates=false;refresh();}
+        $('ai-progress').textContent = homeRun?'Choosing listings…':'Searching…';
         let score=0;
         for(const text of homeRun?[listingSearchText(item)]:listingSearchTexts(item,query,$('ai-model').value)){
           let evidence=1;
@@ -218,7 +234,8 @@ export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetch
           score=Math.max(score,evidence);
           if(score>=threshold())break;
         }
-        scores.set(keyFor(item),score);unpainted++;
+        scores.set(keyFor(item),score);position++;unpainted++;
+        if(score>=threshold()){visibleMatches++;sourceRequests=0;}
         if(!painted||unpainted>=16||performance.now()-lastPaint>=12){
           onChange();painted=true;unpainted=0;lastPaint=performance.now();
           // Cached decisions can otherwise keep resolving in one microtask

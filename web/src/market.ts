@@ -15,6 +15,8 @@ export const LISTING_KIND = 30402
 export const MAX_RECORDS = 1000
 const MAX_EVENT_BYTES = 65536
 const MAX_FRAME_BYTES = MAX_EVENT_BYTES + 2048
+const SEARCH_RECORD_LIMIT = 5000
+const MAP_RECORD_RESERVE = 1000
 const HISTORY_PAGE_SIZE = 300
 const HISTORY_TIMEOUT = 12000
 const MAX_HISTORY_REQUESTS = 32
@@ -175,7 +177,7 @@ export interface MarketFilter {
 }
 export interface MarketPagination { loading: boolean; exhausted: boolean; limited: boolean; hasMore: boolean; error: string; added: number; records: number }
 export interface MarketStatus { state: 'closed' | 'empty' | 'live' | 'connecting' | 'offline'; connected: number; total: number; message: string }
-interface RelayHistory { initialOldest: number | null; cursor: number | null; started: boolean; exhausted: boolean; limited: boolean; requests: number; pager?: HistoryCursor }
+interface RelayHistory { initialOldest: number | null; cursor: number | null; started: boolean; exhausted: boolean; limited: boolean; requests: number; rankedLimit?:number; pager?: HistoryCursor }
 interface HistoryPage { error?: string; limited?: boolean; count?: number; oldest?: number | null }
 interface HistoryOptions {bitcoin?:boolean;search?:string; tags?:readonly string[];signal?:AbortSignal;pageSize?:number;maxRequests?:number;rounds?:number;timeoutMs?:number;budget?:{bytes:number;max:number};requestBudget?:{count:number;max:number};observe?:(event:NostrVerifiedEvent)=>void }
 interface QueryTagPlan {search?:string;tags:readonly string[];history:Map<string,RelayHistory>;indexHistory:RelayHistory}
@@ -190,7 +192,7 @@ interface RelayConnection {
 export interface MarketRelayOptions {
   relays?: readonly string[]; tags?: readonly string[]; authors?: readonly string[] | null; targetId?: string
   onChange?: (listings: MarketListing[]) => void; onStatus?: (status: MarketStatus) => void; onPagination?: (pagination: MarketPagination) => void
-  historyPageSize?: number; records?: Map<string, MarketListing>; maxRecords?: number
+  historyPageSize?: number; records?: Map<string, MarketListing>; maxRecords?: number; browseDiscovery?:boolean
   WebSocketImpl?: typeof WebSocket; now?: () => number
   indexSearch?: boolean
   indexQuery?: ((filters:Filter[],options:RuntimeQueryOptions)=>Promise<{events:NostrEvent[];complete?:boolean}>) | null
@@ -233,6 +235,9 @@ export class MarketRelayClient {
   hasQueries: boolean
   records: Map<string, MarketListing>
   maxRecords: number
+  private browseDiscovery:boolean
+  private inventoryCapacity:number
+  private mapOverflow=0
   onChange: NonNullable<MarketRelayOptions['onChange']>
   onStatus: NonNullable<MarketRelayOptions['onStatus']>
   onPagination: NonNullable<MarketRelayOptions['onPagination']>
@@ -249,7 +254,6 @@ export class MarketRelayClient {
   now: () => number
   running: boolean
   connections: Map<string, RelayConnection>
-  seen: Set<string>
   changeTimer: ReturnType<typeof setTimeout> | null
   expiryTimer: ReturnType<typeof setInterval> | null
   lastVisible: string | null
@@ -279,7 +283,7 @@ export class MarketRelayClient {
   cacheGeneration=0
   recovery:ReturnType<typeof createListingRecovery>|null=null
   recoveryEnabled:boolean
-  constructor({ relays = DEFAULT_RELAYS, onChange = () => {}, onStatus = () => {}, onPagination = () => {}, historyPageSize = HISTORY_PAGE_SIZE, records = new Map(), maxRecords = MAX_RECORDS, WebSocketImpl, now = seconds, targetId, tags = [], authors = null, indexQuery, indexSearch=false, tagCatalogue=observedMarketTags,offlineCache }: MarketRelayOptions = {}) {
+  constructor({ relays = DEFAULT_RELAYS, onChange = () => {}, onStatus = () => {}, onPagination = () => {}, historyPageSize = HISTORY_PAGE_SIZE, records = new Map(), maxRecords = MAX_RECORDS, browseDiscovery=false, WebSocketImpl, now = seconds, targetId, tags = [], authors = null, indexQuery, indexSearch=false, tagCatalogue=observedMarketTags,offlineCache }: MarketRelayOptions = {}) {
     this.relays = validateRelays(relays)
     this.tags = feedTags(tags)
     this.authors = feedAuthors(authors)
@@ -294,6 +298,8 @@ export class MarketRelayClient {
     if (this.targetId && !records.has(this.targetId) && records.size >= maxRecords) fail('Leave room in the listing store for the shared listing')
     this.records = records
     this.maxRecords = maxRecords
+    this.inventoryCapacity=maxRecords
+    this.browseDiscovery=browseDiscovery
     this.onChange = onChange
     this.onStatus = onStatus
     this.onPagination = onPagination
@@ -314,7 +320,6 @@ export class MarketRelayClient {
     this.now = now
     this.running = false
     this.connections = new Map()
-    this.seen = new Set()
     this.changeTimer = null
     this.expiryTimer = null
     this.lastVisible = null
@@ -390,6 +395,7 @@ export class MarketRelayClient {
       if(this.tagSelectionTimer!==null){clearTimeout(this.tagSelectionTimer);this.tagSelectionTimer=null}
     }
     this.queryText=text;this.queryExpansion=policy
+    if(changed)this.openSearchPage()
     if(policy==='literal')this.queryExtraTags=[]
     else if(extraTags!==undefined)this.queryExtraTags=Array.isArray(extraTags)?extraTags.slice(0,TAG_LIMITS.queryTags).filter(tag=>typeof tag==='string'&&tag.length<=60):[]
     const proposed=policy==='expanded'?this.tagCatalogue.select(text,TAG_LIMITS.queryTags,this.queryExtraTags):changed?this.tagCatalogue.selectLiteral(text):this.queryTags
@@ -424,9 +430,16 @@ export class MarketRelayClient {
     return this.queryTags
   }
 
+  private get inventoryFull(){return this.records.size>=this.inventoryCapacity+this.mapOverflow}
+  get mapDiscoveryLimited(){return this.inventoryFull&&(!this.browseDiscovery||this.mapOverflow>=MAP_RECORD_RESERVE)}
+  openSearchPage(){
+    if(this.browseDiscovery&&this.queryText&&this.queryExpansion==='expanded'&&this.inventoryFull)
+      this.inventoryCapacity=Math.min(SEARCH_RECORD_LIMIT,this.inventoryCapacity+HISTORY_PAGE_SIZE)
+  }
+
   queryPagination():QueryCandidates {
     const histories=this.queryPlans.flatMap(plan=>[...plan.history.values(),plan.indexHistory])
-    const full=this.records.size>=this.maxRecords||this.queryBudget.bytes>=this.queryBudget.max||this.queryRequestBudget.count>=this.queryRequestBudget.max
+    const full=this.inventoryFull||this.queryBudget.bytes>=this.queryBudget.max||this.queryRequestBudget.count>=this.queryRequestBudget.max
     const limited=full||histories.some(item=>item.limited)
     return{loading:!!this.queryPromise,added:this.queryAdded,error:this.queryError,limited,
       hasMore:!!this.queryPlans.length&&this.hasInventoryQuery&&!full&&histories.some(item=>!item.exhausted&&!item.limited)}
@@ -462,7 +475,7 @@ export class MarketRelayClient {
     if(requestBudget.count>=requestBudget.max){history.limited=true;return{limited:true}}
     requestBudget.count++
     if(++history.requests>4){history.limited=true;return{limited:true}}
-    const until=history.cursor??this.now(),limit=120
+    const until=history.cursor??this.now(),limit=search?(history.rankedLimit??120):120
     let timer:ReturnType<typeof setTimeout>,abort:()=>void
     try{
       const timeout=new Promise<never>((_,reject)=>{
@@ -472,14 +485,16 @@ export class MarketRelayClient {
       const report=await Promise.race([this.indexQuery([{kinds:[LISTING_KIND],...(search?{search}:{'#t':[...tags],until}),limit,...(this.authors?{authors:[...this.authors]}:{})}],{signal,deadline:Date.now()+3500,limit}),timeout])
       if(signal.aborted||!this.running)return{error:'Loading stopped.'}
       let oldest:number|null=null,count=0
+      const seen=new Set<string>()
       for(const event of report.events.slice(0,limit)){
         budget.bytes+=bytes(JSON.stringify(event));if(budget.bytes>budget.max){history.limited=true;return{limited:true}}
         try{const listing=this.parseIncoming(event)
           if((!search&&listing.createdAt>until)||!(search?matchesLiteralSearch(listingSearchText(listing),search):listing.tags.some(tag=>tags.includes(tag)))||(this.authorSet&&!this.authorSet.has(listing.author)))continue
-          oldest=Math.min(oldest??listing.createdAt,listing.createdAt);count++;this.acceptListing(listing)
+          if(seen.has(listing.eventId))continue
+          seen.add(listing.eventId);oldest=Math.min(oldest??listing.createdAt,listing.createdAt);count++;this.acceptListing(listing)
         }catch{/* Invalid index records are not candidates. */}
       }
-      if(search){history.exhausted=true;return{}}
+      if(search){this.finishRankedPage(history,limit,count);return{}}
       if(oldest!==null&&oldest<until)history.cursor=oldest
       else if(count>=limit){history.limited=true;return{limited:true}}
       else if(report.complete){if(count)history.cursor=Math.max(0,until-1);else history.exhausted=true}
@@ -652,17 +667,21 @@ export class MarketRelayClient {
   acceptListing(listing: MarketListing, publishedLocally=false) {
     // Preserve newer revisions of known coordinates even if their tags changed.
     if (!publishedLocally && listing.id !== this.targetId && !this.matchesFeed(listing) && !this.records.has(listing.id)) return
-    if (this.seen.has(listing.eventId)) return
-    this.seen.add(listing.eventId)
-    if (this.seen.size > 4000) this.seen.delete(this.seen.values().next().value)
-    const capacity = this.targetId && listing.id !== this.targetId && !this.records.has(this.targetId) ? this.maxRecords - 1 : this.maxRecords
+    // Keep the shared-listing slot and geographic discovery independent of a full general feed.
+    const reserved=this.targetId&&listing.id!==this.targetId&&!this.records.has(this.targetId)?1:0
+    let capacity=this.inventoryCapacity+this.mapOverflow-reserved
+    if(!this.records.has(listing.id)&&this.records.size>=capacity){
+      if(!this.browseDiscovery||this.mapOverflow>=MAP_RECORD_RESERVE||!this.geohashSet.size||
+        !listing.originalTags.some(tag=>tag[0]==='g'&&this.geohashSet.has(tag[1])))return
+      this.mapOverflow++;capacity++
+    }
     if (applyListing(this.records, listing, capacity)) this.scheduleChange()
   }
 
   pagination(): MarketPagination {
     const histories = [...this.history.values(), ...this.bitcoinHistory.values()]
     const exhausted = !this.hasInventoryQuery || (histories.length > 0 && histories.every(item => item.exhausted))
-    const limited = this.records.size >= this.maxRecords || histories.some(item => item.limited)
+    const limited = this.inventoryFull || (!exhausted && histories.length > 0 && histories.every(item => item.limited || item.exhausted))
     return {
       loading: this.pageLoading, exhausted, limited,
       hasMore: !exhausted && !limited && this.hasInventoryQuery,
@@ -707,11 +726,21 @@ export class MarketRelayClient {
     return this.pagePromise
   }
 
+  private finishRankedPage(history:RelayHistory,limit:number,count:number){
+    // Ranked sources have no chronological cursor. Widen a full prefix while
+    // signed candidates keep arriving, within the existing shared query budget.
+    if(this.browseDiscovery&&this.queryExpansion==='expanded'&&count===limit){
+      if(limit<320)history.rankedLimit=Math.min(320,limit*2)
+      else history.limited=true
+    }else history.exhausted=true
+  }
+
   private async loadKeywordRelay(url:string,history:RelayHistory,search:string,options:HistoryOptions):Promise<HistoryPage> {
     if(options.requestBudget.count>=options.requestBudget.max){history.limited=true;return{limited:true}}
     options.requestBudget.count++;history.started=true;history.requests++
-    const page=await this.readHistory(url,this.now(),80,{...options,search,tags:[]})
-    if(!options.signal.aborted)history.exhausted=true
+    const limit=history.rankedLimit??80
+    const page=await this.readHistory(url,this.now(),limit,{...options,search,tags:[]})
+    if(!options.signal.aborted&&!page.limited)this.finishRankedPage(history,limit,page.count??0)
     return page.limited?{limited:true}:{}
   }
 
@@ -731,7 +760,7 @@ export class MarketRelayClient {
     // At most four reads drain a dense second (300, 600, 1000) and
     // check the next second. Never silently skip an unfilled boundary.
     for (let round = 0; round < (options.rounds??4) && this.running&&!options.signal?.aborted; round++) {
-      if (this.records.size >= this.maxRecords) return { limited: true }
+      if (this.inventoryFull) return { limited: true }
       if (history.requests >= (options.maxRequests??MAX_HISTORY_REQUESTS)) { history.limited = true; return { limited: true } }
       if(options.requestBudget){if(options.requestBudget.count>=options.requestBudget.max){history.limited=true;return{limited:true}}options.requestBudget.count++}
       const request = pager.beginPage()
@@ -809,7 +838,7 @@ export class MarketRelayClient {
           oldest = Math.min(oldest ?? listing.createdAt, listing.createdAt)
           options.observe?.(listing.rawEvent as NostrVerifiedEvent)
           this.acceptListing(listing)
-          if (this.records.size >= this.maxRecords) finish({ limited: true })
+          if (this.inventoryFull) finish({ limited: true })
         } catch { invalid = true }
       }
       socket.onerror = () => finish({ error: 'Connection failed.' })

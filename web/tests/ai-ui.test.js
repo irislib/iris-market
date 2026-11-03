@@ -735,3 +735,24 @@ test('only submitted conversational searches select the trained head', async()=>
   }
   field('search-mode').value='text';ui.stop();
 });
+
+test('a productive sparse search reaches beyond 1,000 and pauses after a dry batch; Load more resumes in place',async()=>{
+  const rows=Array.from({length:1800},(_,i)=>({
+    id:String(i),eventId:String(i),title:[900,1120,1650].includes(i)?'Orchard fruit':'Desk',
+  }));
+  const checked=new Set();
+  const client={info:{},async classify(_,text,{eventId}){
+    // Single-word search can also review the listing's description.
+    if(!text.includes('\n')){assert(!checked.has(eventId));checked.add(eventId);}
+    return {score:text==='Orchard fruit'?.9:.01};
+  },dispose(){}};
+  const {ui}=fixture({rows,query:'fruit',client});
+  await ui.submit('fruit');
+  assert.equal(ui.pagination().matches,2);
+  assert.equal(ui.pagination().reviewed,1500);
+  assert.equal(ui.pagination().paused,true);
+  assert.equal(ui.pagination().hasMore,true);
+  await ui.loadMore();
+  assert.equal(ui.pagination().matches,3);
+  assert.equal(ui.pagination().reviewed,1800);
+});

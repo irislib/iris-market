@@ -495,3 +495,18 @@ test('closing stops pending older reads and empty follow filters never open hist
   const count = FakeSocket.sockets.length
   empty.start(); assert.equal((await empty.loadOlder()).hasMore, false); assert.equal(FakeSocket.sockets.length, count); empty.close()
 })
+
+test('one limited relay does not stop older pages from a second relay',async()=>{
+  FakeSocket.sockets=[]
+  const client=new MarketRelayClient({relays:['wss://one.example','wss://two.example'],WebSocketImpl:FakeSocket,now:()=>now}).start()
+  try{
+    client.history.get('wss://one.example/').limited=true
+    assert.equal(client.pagination().hasMore,true)
+    const page=client.loadOlder();await turn()
+    const socket=FakeSocket.sockets.at(-1),[,id]=openHistory(socket)
+    assert.equal(socket.url,'wss://two.example/')
+    socket.frame(['EVENT',id,signed({identifier:'keep-paging',createdAt:now-30})]);socket.frame(['EOSE',id])
+    assert.equal((await page).added,1)
+    assert(client.listings().some(row=>row.identifier==='keep-paging'))
+  }finally{client.close()}
+})

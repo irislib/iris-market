@@ -5,7 +5,7 @@ import { decodeGeohash, locationFromTags } from '../src/map/geohash.ts'
 import { MAP_ROOT, GLYPH_ROOT, cacheBytes, validatePath } from '../src/map/config.ts'
 import { MapBlockCache, readBounded } from '../src/map/cache.ts'
 import { createPmtilesSource } from '../src/map/source.ts'
-import { createListingOverlay } from '../src/map/index.ts'
+import { createListingOverlay, listingsForViewport } from '../src/map/index.ts'
 
 class MemoryStore {
   values = new Map(); evictions = []; closed = false
@@ -217,4 +217,11 @@ test('service-area sources update and survive theme replacement without producin
   const restored=map.updates;map.emit('load');assert.equal(map.updates,restored)
   overlay.setListings([]);assert.equal(map.getSource('market-service-areas').data.features.length,0)
   overlay.destroy()
+})
+
+
+test('a newly discovered pin in view survives a thousand distant mapped listings',()=>{
+  const distant=Array.from({length:1000},(_,i)=>({id:String(i),coordinates:[0,0]}))
+  const pin={id:'nearby',coordinates:[-87.6,41.9]}
+  assert.deepEqual(listingsForViewport([...distant,pin],{west:-89,south:40,east:-87,north:42,zoom:8}),[pin])
 })

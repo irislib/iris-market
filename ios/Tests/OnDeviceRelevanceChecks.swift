@@ -6,7 +6,46 @@ import Darwin
 /// No account, relay or provider key is opened by this check.
 @main struct OnDeviceRelevanceChecks {
     struct Example: Decodable { let query: String; let listing: [String:String]; var expected: Bool? = nil; var homeFeed: Bool? = nil; var allowsListingFailure: Bool? = nil }
+    static func checkOfferReuse() async throws {
+        let cache = NativeListingOffers(capacity: 2)
+        let first = Data("first revision".utf8), edited = Data("edited revision".utf8)
+        let other = Data("another listing".utf8), unknown = Data("unknown".utf8)
+        let initial = try await cache.offer(for: first) { "shelf" }
+        let reused = try await cache.offer(for: first) { fatalError("Repeated extraction") }
+        precondition(initial == "shelf" && reused == initial)
+        let revised = try await cache.offer(for: edited) { "stool" }
+        precondition(revised == "stool")
+        _ = try await cache.offer(for: other) { "desk" }
+        let evicted = try await cache.offer(for: first) { "new extraction" }
+        precondition(evicted == "new extraction")
+        do {
+            _ = try await cache.offer(for: unknown) { throw CancellationError() }
+            preconditionFailure("Failed extraction became a result")
+        } catch is CancellationError {}
+        let empty = try await cache.offer(for: unknown) { "" }
+        let retry = try await cache.offer(for: unknown) { "identified on retry" }
+        precondition(empty.isEmpty && retry == "identified on retry")
+        let cancelledKey = Data("cancelled revision".utf8)
+        let cancelled = Task {
+            try await cache.offer(for: cancelledKey) {
+                withUnsafeCurrentTask { $0?.cancel() }
+                return "late result"
+            }
+        }
+        do {
+            _ = try await cancelled.value
+            preconditionFailure("Cancellation became a cached success")
+        } catch is CancellationError {}
+        let recovered = try await cache.offer(for: cancelledKey) { "fresh result" }
+        precondition(recovered == "fresh result")
+        let newAccount = NativeListingOffers()
+        let fresh = try await newAccount.offer(for: first) { "fresh account" }
+        precondition(fresh == "fresh account")
+    }
+
     static func main() async {
+        do { try await checkOfferReuse() } catch { fatalError("Offer reuse check failed") }
+        if CommandLine.arguments.contains("--cache-only") { return }
         let timeout = OnDeviceAI.Unavailable(message: "The on-device model took too long.")
         precondition(OnDeviceAI.failureMessage(timeout) == timeout.message)
         precondition(!OnDeviceAI.isListingFailure(timeout))

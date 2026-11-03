@@ -52,6 +52,7 @@ final class MarketStore: ObservableObject {
     private var localAITask: Task<Void, Never>?
     private var remoteReviewRequest: UUID?
     private var localAIRequest = UUID()
+    private var listingOffers = NativeListingOffers()
     private var searchContinuation = NativeSearchContinuation()
     private var browseVisibility = NativeBrowseVisibility()
     private var browseVisible: Bool { browseVisibility.isVisible }
@@ -176,6 +177,7 @@ final class MarketStore: ObservableObject {
         if !demo && !NativeTestStorage.enabled { NativePushCredentials.remove() }
         #endif
         localAIRequest = UUID(); localAITask?.cancel(); localAITask = nil; localAIProgress = nil; localAIStatus = nil
+        listingOffers = NativeListingOffers()
         let previous = app
         pushRoute = nil; activePushPeerID = nil; activePushThreadID = nil
         invalidateAITest()
@@ -608,7 +610,7 @@ final class MarketStore: ObservableObject {
               curationActive, !homeFilterActive || browseVisible,
               snapshot.listings.filter({ $0.relevance != nil && $0.matchesSearch }).count < 24,
               !searchPaused else { return }
-        let candidates = snapshot.listings.filter { $0.relevance == nil }.map(\.localSearchRevision)
+        let candidates = snapshot.listings.lazy.filter { $0.relevance == nil }.map(\.localSearchRevision)
         let batchSize = snapshot.settings.ai.provider == "apple" ? 24 : 12
         guard searchContinuation.canReview(searchContext, candidates: candidates, batchSize: batchSize) else { return }
         runAI(type: "curate")
@@ -686,7 +688,7 @@ final class MarketStore: ObservableObject {
             }
             return
         }
-        let generation = accountGeneration
+        let generation = accountGeneration, offers = listingOffers
         let needsPlan = snapshot.searchPlanPending == true && snapshot.listings.count > 24
         let planGeneration = snapshot.searchGeneration
         let originalQuery = snapshot.query
@@ -723,7 +725,7 @@ final class MarketStore: ObservableObject {
                     let l = candidate.listing
                     let decision: [String: Any]
                     do {
-                        let review = try await OnDeviceAI.review(interests: batch.interests, listing: ["title": l.title, "description": String(l.description.prefix(2000)), "side": l.side, "price": l.price, "currency": l.currency, "location": l.location, "category": l.category, "tags": (l.tags ?? []).prefix(24).map { String($0.prefix(60)) }.joined(separator: ", ")], homeFeed: batch.homeFeed == true)
+                        let review = try await OnDeviceAI.review(interests: batch.interests, listing: ["title": l.title, "description": String(l.description.prefix(2000)), "side": l.side, "price": l.price, "currency": l.currency, "location": l.location, "category": l.category, "tags": (l.tags ?? []).prefix(24).map { String($0.prefix(60)) }.joined(separator: ", ")], homeFeed: batch.homeFeed == true, offers: offers)
                         decision = ["event_id": candidate.eventId, "show": review.show, "score": review.score, "reason": review.show ? "Matches your search" : "Does not match your search"]
                     } catch where OnDeviceAI.isListingFailure(error) {
                         decision = ["event_id": candidate.eventId, "show": false, "unavailable": true, "reason": "AI review unavailable"]

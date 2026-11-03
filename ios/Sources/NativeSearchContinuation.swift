@@ -22,10 +22,9 @@ struct NativeSearchContinuation {
     mutating func start(_ value: String) { context = value; attempted.removeAll(); historyWindows = 0 }
     mutating func stop() { context = nil; attempted.removeAll(); historyWindows = 0 }
     mutating func record(_ values: [String]) { attempted.formUnion(values.prefix(max(0, 240 - attempted.count))) }
-    func canReview(_ value: String, candidates: [String], batchSize: Int = 24) -> Bool {
+    func canReview<C: Sequence>(_ value: String, candidates: C, batchSize: Int = 24) -> Bool where C.Element == String {
         guard context == value, batchSize > 0, batchSize <= 240 - attempted.count else { return false }
-        let batch = Array(candidates.prefix(batchSize))
-        return batch.contains { !attempted.contains($0) }
+        return candidates.prefix(batchSize).contains { !attempted.contains($0) }
     }
     mutating func claimHistory(_ value: String) -> Bool {
         guard context == value, attempted.count < 240, historyWindows < 2 else { return false }

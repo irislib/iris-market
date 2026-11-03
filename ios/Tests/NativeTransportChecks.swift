@@ -52,6 +52,15 @@ import Foundation
         // Eligibility does not spend the budget before a provider has answered.
         precondition(search.canReview("remote", candidates: firstBatch, batchSize: 12))
         search.record(firstBatch)
+        var reads = 0
+        let many = (0..<10_000).lazy.map { index in
+            reads += 1
+            return index < firstBatch.count ? firstBatch[index] : "late"
+        }
+        precondition(!search.canReview("stale", candidates: many, batchSize: 12))
+        precondition(reads == 0)
+        precondition(!search.canReview("remote", candidates: many, batchSize: 12))
+        precondition(reads == 12)
         precondition(!search.canReview("remote", candidates: firstBatch, batchSize: 12))
         precondition(search.canReview("remote", candidates: ["matching-thirteenth"], batchSize: 12))
         search.record(["matching-thirteenth"])

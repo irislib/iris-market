@@ -406,7 +406,7 @@ export class MarketRelayClient {
     // replenishing finite budgets. Literal spelling variants are frozen at submission.
     const selected=policy==='expanded'&&!changed&&extraTags===undefined?[...new Set([...this.queryTags,...proposed])].slice(0,TAG_LIMITS.queryTags):proposed
     if(policy==='expanded'&&extraTerms!==undefined)
-      this.queryExtraTerms=extraTerms.filter(term=>typeof term==='string'&&/^\p{L}{2,60}$/u.test(term)).slice(0,2)
+      this.queryExtraTerms=extraTerms.filter(term=>typeof term==='string'&&term.length<=60&&/^[\p{L}\p{N}]+(?: [\p{L}\p{N}]+)?$/u.test(term)).slice(0,2)
     return this.applyQueryTags(selected,changed)
   }
 
@@ -419,7 +419,7 @@ export class MarketRelayClient {
 
   private applyQueryTags(tags:readonly string[],reset:boolean):readonly string[] {
     const selected=feedTags(tags)
-    const searches=[...new Set([...keywordSearches(this.queryText),...this.queryExtraTerms])].slice(0,4)
+    const searches=[...new Set([...keywordSearches(this.queryText),...this.queryExtraTerms])]
     const unchanged=JSON.stringify(selected)===JSON.stringify(this.queryTags)&&JSON.stringify(searches)===JSON.stringify(this.queryPlans.filter(p=>p.search).map(p=>p.search))
     if(!reset&&unchanged)return this.queryTags
     // A cold topic plan can finish before the first relay sockets open. Let
@@ -433,7 +433,19 @@ export class MarketRelayClient {
     this.queryPlans=[selected.slice(0,1),selected.slice(1)].filter(group=>group.length).map(group=>previous.find(plan=>JSON.stringify(plan.tags)===JSON.stringify(group))??{
       tags:Object.freeze(group),history:new Map(this.relays.map(url=>[url,newHistory()])),indexHistory:{...newHistory(),exhausted:!this.indexQuery},
     })
-    for(const [index,search] of searches.entries())this.queryPlans.push(previous.find(plan=>plan.search===search)??{search,tags:[],history:new Map(this.relays.filter((_,relay)=>index===0||index===1+relay%Math.max(1,searches.length-1)).map(url=>[url,newHistory()])),indexHistory:{...newHistory(),exhausted:!this.indexQuery||!this.indexSearch}})
+    const groups=Math.min(this.relays.length,searches.length-1)
+    const connected=this.relays.filter(url=>this.connections.get(url)?.socket?.readyState===1)
+    const refinementRelays=[...new Set([...connected,...this.relays])].slice(0,2)
+    for(const [index,search] of searches.entries()){
+      const existing=previous.find(plan=>plan.search===search)
+      if(existing){this.queryPlans.push(existing);continue}
+      // Distribute alternate filters, including when there are more words than
+      // relays. The exact query keeps all relays and every plan shares one budget.
+      const endpoints=this.queryExtraTerms.includes(search)?refinementRelays:
+        this.relays.filter((_,relay)=>index===0||relay%groups===(index-1)%groups)
+      this.queryPlans.push({search,tags:[],history:new Map(endpoints.map(url=>[url,newHistory()])),
+        indexHistory:{...newHistory(),exhausted:!this.indexQuery||!this.indexSearch}})
+    }
     if(this.running&&this.queryPlans.length)void this.loadQueryCandidates()
     return this.queryTags
   }
@@ -463,7 +475,10 @@ export class MarketRelayClient {
     this.queryPromise=Promise.resolve().then(async()=>{
       // Round robin across plan types and endpoints before spending a second
       // request on any one plan. Keywords cannot crowd out tag sources.
-      const groups=plans.map(({tags,search,history,indexHistory})=>[
+      // Try newly selected terms before spending another read on an existing
+      // history cursor. All sources still share the per-query cap.
+      const order=[...plans].sort((a,b)=>Number(this.queryExtraTerms.includes(b.search))-Number(this.queryExtraTerms.includes(a.search)))
+      const groups=order.map(({tags,search,history,indexHistory})=>[
         ...[...history].filter(([,item])=>!item.exhausted&&!item.limited).map(([url,item])=>()=>search?this.loadKeywordRelay(url,item,search,options):this.loadOlderFrom(url,item,{...options,tags})),
         ...(this.indexQuery&&!indexHistory.exhausted&&!indexHistory.limited?[()=>this.loadQueryIndex(tags,indexHistory,controller.signal,budget,requestBudget,search)]:[]),
       ])

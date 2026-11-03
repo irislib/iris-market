@@ -217,3 +217,48 @@ test('a cold topic plan lets in-flight exact reads open before using the remaini
    assert(feed.listings().some(l=>l.identifier==='meat'))
  }finally{feed.close()}
 })
+
+test('multiword AI discovery sends a contextual relay filter and retains the full request and finite budget',async()=>{
+ const select=readTopicVectors(readFileSync(new URL('../assets/topic-vectors.bin',import.meta.url)));
+ const q='used electric bike',selected=select(q,['Bicycle','orchard']);
+ assert.deepEqual(selected.tags,['Bicycle']);assert(selected.terms.includes('electric bike'));
+ assert.deepEqual(select('electric bike',['Bicycle']).terms,['bicycle']);
+ const sentence='Could you help me find fruit baskets?';
+ assert.deepEqual(select(sentence,[]).terms,['fruit baskets']);
+ assert.deepEqual(select('exact foreign productname',[]).terms.filter(p=>!p.includes(' ')),[]);
+ const event=signed('bike','Used electric bike with rear rack'),seen=[];
+ class SingleRelay extends Relay{
+   send(raw){const [cmd,id,f]=JSON.parse(raw);if(cmd!=='REQ'||!id.startsWith('older-'))return;
+     seen.push(f);queueMicrotask(()=>{
+       if(f.search==='electric bike')this.onmessage?.({data:JSON.stringify(['EVENT',id,event])});
+       this.onmessage?.({data:JSON.stringify(['EOSE',id])});
+     });
+   }
+ }
+ const feed=new MarketRelayClient({relays:['wss://only.example'],WebSocketImpl:SingleRelay,indexQuery:null,now:()=>now}).start();
+ const ai={enabled:()=>true,topicPlanning:()=>true};
+ const discovery=createSearchDiscovery({getClient:()=>feed,getAI:()=>ai,planTopics:async(q,t)=>select(q,t)});
+ try{
+   discovery.update(q,'literal');await tick();await feed.loadQueryCandidates();
+   assert.equal(feed.listings().length,0);
+   discovery.update(q,'expanded');await tick();await feed.loadQueryCandidates();
+   assert(seen.some(f=>f.search===q));assert(seen.some(f=>f.search==='electric bike'));
+   assert.deepEqual(feed.listings().map(l=>l.identifier),['bike']);
+   assert(feed.queryPlans.filter(p=>p.search).length<=6);
+   assert(feed.queryRequestBudget.count<=32);
+ }finally{discovery.dispose();feed.close()}
+});
+
+test('late phrase filters get a connected relay even when their round-robin relay is offline',()=>{
+ const relays=Array.from({length:6},(_,i)=>`wss://slot${i}.example`);
+ const feed=new MarketRelayClient({relays,indexQuery:null,WebSocketImpl:Relay,now:()=>now});
+ const connected=feed.relays[5];
+ feed.connections.set(connected,{socket:{readyState:1}});
+ const q='Could you help me find fruit baskets?';
+ feed.searchTags(q,undefined,'expanded');
+ const original=feed.queryPlans.find(p=>p.search===q),budget=feed.queryRequestBudget;
+ feed.searchTags(q,[],'expanded',['fruit baskets']);
+ const selected=feed.queryPlans.find(p=>p.search==='fruit baskets');
+ assert(selected.history.has(connected));assert.equal(selected.history.size,2);
+ assert.equal(feed.queryPlans.find(p=>p.search===q),original);assert.equal(feed.queryRequestBudget,budget);
+});

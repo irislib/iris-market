@@ -1,4 +1,5 @@
 import {assetUrl} from './asset-url.ts'
+import {keywordSearches,literalKeywords} from './lexical-search.ts'
 
 const stride=48 // 384 MiniLM dimensions, one sign bit per dimension.
 const popcount=Uint8Array.from({length:256},(_,value)=>{
@@ -14,33 +15,58 @@ export function readTopicVectors(bytes:Uint8Array){
   if(separator<0||words.length!==9000||vectors.length!==words.length*stride)throw Error('Invalid topic index')
   const positions=new Map(words.map((word,i)=>[word,i]))
   return (query:string,observed:readonly string[])=>{
-    const word=query.normalize('NFKC').trim().toLowerCase(),position=positions.get(word)
-    if(position===undefined)return {tags:[],terms:[]}
-    const distance=(i:number,j:number)=>{
-      let different=0
-      for(let k=0;k<stride;k++)different+=popcount[vectors[i*stride+k]^vectors[j*stride+k]]
-      return different
+    const text=query.normalize('NFKC').trim().toLowerCase()
+    const tokens:string[]=text.match(/[\p{L}\p{N}]+/gu)??[]
+    const significant=new Set(tokens.length===1?tokens:literalKeywords(text))
+    // Tokenizer order approximates word frequency. Give specific vocabulary
+    // more weight and bound the work for long requests.
+    const focus=[...significant].filter(w=>positions.has(w))
+      .map(w=>positions.get(w)).sort((a,b)=>b-a).slice(0,8)
+      .map((i,_,known)=>({offset:i*stride,weight:known.length===1?1:Math.log2(2+i)}))
+    const total=focus.reduce((sum,word)=>sum+word.weight,0)
+    const direct=new Set(keywordSearches(text))
+    const specificity=(word:string)=>positions.get(word)??words.length
+    const searchable=(word:string)=>word.length>=3&&/\p{L}/u.test(word)&&significant.has(word)
+    const phrases:{term:string;weight:number;unsearched:boolean}[]=[]
+    for(let i=1;i<tokens.length;i++){
+      const left=tokens[i-1],right=tokens[i],term=left+' '+right
+      if(term.length<=60&&searchable(left)&&searchable(right)&&!direct.has(term))
+        phrases.push({term,weight:specificity(left)+specificity(right),unsearched:!direct.has(left)||!direct.has(right)})
     }
-    // Sign agreement estimates cosine similarity. Keep only neighbors within
-    // the equivalent of 0.45 cosine, and preserve exact on-wire tag spelling.
+    phrases.sort((a,b)=>b.weight-a.weight)
+    // Mean sign agreement measures how close a suggestion is to the query
+    // words together. The single-word cutoff is the original 134 bits.
     const neighbors=new Map<string,number>()
-    for(let i=0;i<words.length;i++){
-      if(i===position)continue
-      const d=distance(position,i)
-      if(d<=134)neighbors.set(words[i],d)
+    const candidates=tokens.length===1?words:new Set(observed.map(tag=>tag.toLowerCase()))
+    for(const word of total?candidates:[]){
+      const position=positions.get(word)
+      if(position===undefined||significant.has(word))continue
+      let weighted=0
+      for(const part of focus){
+        let difference=0
+        for(let k=0;k<stride;k++)difference+=popcount[vectors[part.offset+k]^vectors[position*stride+k]]
+        weighted+=part.weight*difference
+      }
+      const distance=weighted/total
+      if(distance<=134)neighbors.set(word,distance)
     }
-    const tags=observed.flatMap(tag=>{
-      const d=neighbors.get(tag.toLowerCase())
-      return d===undefined?[]:[{tag,d}]
-    }).sort((a,b)=>a.d-b.d).slice(0,4).map(t=>t.tag)
-    const terms=[...neighbors].sort((a,b)=>a[1]-b[1]).slice(0,2).map(([term])=>term)
+    const tags=observed.filter(tag=>neighbors.has(tag.toLowerCase()))
+      .sort((a,b)=>neighbors.get(a.toLowerCase())-neighbors.get(b.toLowerCase())).slice(0,4)
+    // For a compound request only add semantic terms sellers have actually
+    // published. Keep phrase probes verbatim instead of synthesizing phrases.
+    const related=tokens.length===1
+      ?[...neighbors].sort((a,b)=>a[1]-b[1]).map(([word])=>word)
+      :tags.map(tag=>tag.toLowerCase())
+    const unsearched=phrases.filter(p=>p.unsearched)
+    const probes=unsearched.length?unsearched:phrases.slice(0,1)
+    const terms=[...new Set([...probes.map(p=>p.term),...related])].slice(0,2)
     return {tags,terms}
   }
 }
 
 let loading:Promise<ReturnType<typeof readTopicVectors>>|undefined
 export async function planTopicFilters(query:string,tags:readonly string[],signal:AbortSignal){
-  if(signal.aborted||!/^\p{L}+$/u.test(query.trim()))return {tags:[],terms:[]}
+  if(signal.aborted||query.length>500||!/\p{L}/u.test(query))return {tags:[],terms:[]}
   loading??=fetch(assetUrl('topic-vectors.bin')).then(async response=>{
     if(!response.ok)throw Error('Topic index unavailable')
     const data=await response.arrayBuffer()

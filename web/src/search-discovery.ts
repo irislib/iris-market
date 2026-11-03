@@ -27,7 +27,7 @@ export function createSearchDiscovery({getClient,getAI,planTopics}:{planTopics?:
     if(!query||expansion!=='expanded'||!ai?.enabled())return
     const live=()=>!signal.aborted&&current===search&&getClient()===client&&getAI()===ai&&ai.enabled()
     if(planTopics&&ai.topicPlanning?.()){
-      if(search.topicStage===2||!/^\p{L}+$/u.test(query.trim()))return
+      if(search.topicStage===2)return
       const tags=client.tagCatalogue.entries().flatMap(entry=>entry.spellings).slice(0,128)
       const stage=tags.length?2:1
       if(stage<=search.topicStage)return

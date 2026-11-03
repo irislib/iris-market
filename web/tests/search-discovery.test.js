@@ -46,9 +46,15 @@ test('a cold search can use signed tags that arrive after submission and the bro
 
 test('a late topic plan cannot expand a replacement query',async()=>{
   const f=fixture(),pending=deferred();f.ai.active=true;f.ai.topicPlanning=()=>true;
-  const discovery=createSearchDiscovery({getClient:()=>f.client,getAI:()=>f.ai,planTopics:()=>pending.promise});
+  const next=deferred(),queries=[];
+  const discovery=createSearchDiscovery({getClient:()=>f.client,getAI:()=>f.ai,planTopics:q=>{
+    queries.push(q);return q==='fruit'?pending.promise:next.promise;
+  }});
   discovery.update('fruit','expanded');discovery.update('used bicycle','expanded');
   pending.resolve({terms:['apples'],tags:[]});await tick();
   assert.deepEqual(f.calls,[['fruit',undefined,'expanded'],['used bicycle',undefined,'expanded']]);
+  assert.deepEqual(queries,['fruit','used bicycle']);
+  next.resolve({terms:['used bike'],tags:[]});await tick();
+  assert.deepEqual(f.calls.at(-1),['used bicycle',[],'expanded',['used bike']]);
   discovery.dispose();
 });

@@ -47,15 +47,15 @@ hmac = "=0.12.1"
 sha2 = "=0.10.9"
 rand = "=0.8.5"
 fs2 = "=0.4.3"
-hashtree-core = "=0.2.91"
-hashtree-blossom = { version = "=0.2.83", default-features = false }
+hashtree-core = "=0.3.0"
+hashtree-blossom = { version = "=0.3.0", default-features = false }
 reqwest.workspace = true
 url.workspace = true
 uuid.workspace = true
 unicode-normalization = "=0.1.26"
 
 [target.'cfg(not(target_os = "ios"))'.dependencies]
-hashtree-updater = { version = "=0.2.89", features = ["secure-nostr-blossom"] }
+hashtree-updater = { version = "=0.3.0", features = ["secure-nostr-blossom"] }
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -136,10 +136,9 @@ mod tests {
         let media = describe(b"hello", "/private/person/hello.txt", "text/plain").unwrap();
         assert_eq!(media.name, "hello.txt");
         assert!(media.url.starts_with("https://cdn.iris.to/2cf24dba"));
-        assert_eq!(
-            hashtree_core::nhash_decode(&media.nhash).unwrap().hash,
-            <[u8; 32]>::from(Sha256::digest(b"hello"))
-        );
+        let cid = hashtree_core::nhash_decode(&media.nhash).unwrap();
+        assert_eq!(cid.hash, <[u8; 32]>::from(Sha256::digest(b"hello")));
+        assert!(cid.decrypt_key.is_none());
         assert!(!media.file_link.contains("private"));
         assert!(!media.is_image);
         assert!(describe(b"bad", "a.jpg", "image/jpeg").is_err());

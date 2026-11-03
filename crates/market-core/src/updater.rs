@@ -397,6 +397,97 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn signed_updates_preserve_legacy_and_versioned_object_keys() -> Result<()> {
+        use hashtree_core::{
+            Cid, DirEntry, EncryptionMode, HashTree, HashTreeConfig, LinkType, MemoryStore, to_hex,
+        };
+        use hashtree_updater::build_secure_pubsub_store_updater;
+        use nostr::{EventBuilder, Keys, Kind, Tag, TagKind, ToBech32};
+        use nostr_pubsub::{EventBus, EventSource, VerifiedEvent};
+
+        let keys = Keys::generate();
+        let reference = UpdateRef {
+            npub: keys.public_key().to_bech32()?,
+            tree_name: "releases/iris-market".into(),
+            path: Some("latest".into()),
+        };
+        let target = "x86_64-unknown-linux-gnu";
+        let name = "iris-market-v0.1.4-alpha.8-linux-x64.deb";
+        let payload = b"Market test package";
+        let manifest = serde_json::to_vec(&serde_json::json!({
+            "version": "0.1.4-alpha.8",
+            "assets": [{"name": name, "path": name, "size": payload.len(), "target": target}]
+        }))?;
+        let directory = tempfile::tempdir()?;
+        let app = Updater::new(directory.path().into(), "0.1.4-alpha.5".into(), true);
+
+        for mode in [
+            EncryptionMode::LegacyChk,
+            EncryptionMode::ChkV1,
+            EncryptionMode::RndV1,
+        ] {
+            let store = Arc::new(MemoryStore::new());
+            let tree = HashTree::new(HashTreeConfig::new(store.clone())).with_encryption_mode(mode);
+            let mut entries = Vec::new();
+            for (path, bytes) in [
+                ("release.json", manifest.as_slice()),
+                (name, payload.as_slice()),
+            ] {
+                let (cid, size) = tree.put_file(bytes).await?;
+                if mode == EncryptionMode::LegacyChk && path == name {
+                    // Ciphertext digest produced by the pre-migration SDK for this file.
+                    assert_eq!(
+                        to_hex(&cid.hash),
+                        "109dddc875ebda1eb9529c084b1859b109f433248000003955e0459e4d47a454"
+                    );
+                }
+                entries.push(
+                    DirEntry::from_cid(path, &cid)
+                        .with_size(size)
+                        .with_link_type(LinkType::File),
+                );
+            }
+            let release = tree.put_directory(entries).await?;
+            let root = tree
+                .put_directory(vec![
+                    DirEntry::from_cid("latest", &release).with_link_type(LinkType::Dir),
+                ])
+                .await?;
+            let event = EventBuilder::new(Kind::Custom(30064), "")
+                .tags([
+                    Tag::identifier(&reference.tree_name),
+                    Tag::custom(TagKind::Custom("hash".into()), [to_hex(&root.hash)]),
+                    Tag::custom(TagKind::Custom("key".into()), [root.key.unwrap().to_hex()]),
+                ])
+                .sign_with_keys(&keys)?;
+            let bus = Arc::new(InMemoryEventBus::new());
+            let updater =
+                build_secure_pubsub_store_updater(bus.clone(), store, Duration::from_millis(25));
+            let check = updater.check(UpdateCheckOptions {
+                reference: reference.clone(),
+                current_version: app.current_version.clone(),
+                target: UpdateTarget::new(target),
+                ..Default::default()
+            });
+            tokio::pin!(check);
+            // Register the live subscriber before announcing the signed root.
+            assert!(futures_util::poll!(&mut check).is_pending());
+            bus.publish(
+                VerifiedEvent::try_from(event)?,
+                EventSource::peer("fixture"),
+            )
+            .await?;
+            let mut check = check.await?;
+            assert!(check.update_available);
+            check.asset = Some(select_asset(&check.manifest, target, app.app)?);
+            assert_eq!(Cid::parse(&app.info(&check, None).release_cid)?, release);
+            let downloaded = updater.download_asset(&check, Some(MAX_DOWNLOAD)).await?;
+            assert_eq!(downloaded.bytes, payload);
+        }
+        Ok(())
+    }
+
     #[test]
     fn saved_announcements_are_verified_and_bound_to_the_publisher() {
         use nostr::{EventBuilder, Keys, Kind, Tag, TagKind, Timestamp, ToBech32};

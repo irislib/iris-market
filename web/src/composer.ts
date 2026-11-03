@@ -195,7 +195,7 @@ export function setupComposer({account,isPreview,onPublished,defaultCurrency=()=
   for(const button of sideButtons){button.onclick=()=>chooseSide(button);button.onkeydown=event=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;event.preventDefault();const next=event.key==='Home'?sideButtons[0]:event.key==='End'?sideButtons[1]:sideButtons.find(other=>other!==button);chooseSide(next);next.focus();};}
   function paintFiles(){fileList.replaceChildren(...selection.items().map((entry,index)=>{const row=document.createElement('li'),name=document.createElement('span'),remove=document.createElement('button');name.textContent=entry.file.name;remove.type='button';remove.className='text-button';remove.textContent='Remove';remove.disabled=busy;remove.setAttribute('aria-label',`Remove ${entry.file.name}`);remove.onclick=()=>{selection.remove(index);pendingEvent=null;pendingShipping=null;paintFiles()};row.append(name,remove);return row}));}
   function syncKeepOption(){const keep=formFields(form).expiration.querySelector<HTMLOptionElement>('option[value=keep]');keep.hidden=!editing;keep.disabled=controlState().keepDisabled;keep.textContent=editing?`Keep current (${relativeExpiry(editing.expiration)?.replace(/^Expires /,'')||'never'})`:'Keep current';}
-  const setBusy=value=>{busy=value;for(const field of form.elements)(field as HTMLInputElement).disabled=value;editButton.disabled=value;publish.disabled=value;paintFiles();if(!value){paintDelivery();syncAreaEditor();syncKeepOption();tradeTools.sync(!!editing);}publish.textContent=value?(editing?'Saving…':'Publishing…'):(editing?'Save changes':'Publish listing');};
+  const setBusy=value=>{busy=value;for(const field of form.elements)(field as HTMLInputElement).disabled=value;editButton.disabled=value;publish.disabled=value;paintFiles();if(!value){paintDelivery();syncAreaEditor();syncKeepOption();tradeTools.sync(!!editing);}publish.textContent=value?'Saving…':(editing?'Save changes':'Publish listing');};
   function showEditor(){tradeTools.sync(!!editing);syncKeepOption();releasePreview();reviewedValues=undefined;reviewOwner=undefined;form.hidden=false;preview.hidden=true;dialog.classList.remove('showing-preview');dialog.querySelector('h2').textContent=editing?'Edit listing':'Post a listing';error.textContent='';progress.textContent='';syncAreaEditor();}
   function drawPreview(){
     releasePreview();
@@ -231,9 +231,24 @@ export function setupComposer({account,isPreview,onPublished,defaultCurrency=()=
       const files=await selection.uploadAll({signal:active.signal,onFile:(index,total)=>{filePosition={index,total}}});
       if(active.signal.aborted)throw new DOMException('Upload cancelled','AbortError');
       if(account.state().ownerPubkey!==owner)throw new Error('Your profile changed. Edit and preview the listing again.');
-      progress.textContent='Publishing listing…';const publication=await signedListingPublication(values,{previous:editing,identifier:draftId,attachments:files,pendingEvent,pendingShipping,onShipping:event=>{pendingShipping=event;},signEvent:draft=>account.messaging.signEvent(draft)});const signed=publication.event;parseEvent(signed);pendingEvent=signed;pendingShipping=publication.shipping;
+      if(!pendingEvent && account.state().mode!=='local')publish.textContent='Waiting for signature…';
+      const publication=await signedListingPublication(values,{
+        previous:editing,identifier:draftId,attachments:files,pendingEvent,pendingShipping,
+        onShipping:event=>{pendingShipping=event;},signEvent:draft=>account.messaging.signEvent(draft),
+      });
+      const signed=publication.event;
+      parseEvent(signed);
+      pendingEvent=signed;pendingShipping=publication.shipping;
       if(active.signal.aborted)throw new DOMException('Upload cancelled','AbortError');
-      const receipts=await account.messaging.publishSignedEvents([...(pendingShipping?[pendingShipping]:[]),signed]);const receipt=receipts.at(-1);onPublished(signed,receipt);pendingEvent=null;pendingShipping=null;editing=null;draftId=crypto.randomUUID();form.reset();pinTouched=false;pinRequest++;paintPin();dialog.querySelector<HTMLDetailsElement>('#post-map-pin').open=false;shippingTouched=false;selectedCountries.clear();removeExistingDelivery=false;removeDelivery.hidden=true;paintDelivery();selection.clear();currencyTouched=false;areaPicker.setValue(null);areaTouched=false;areaEditor.open=false;showEditor();paintSide();dialog.close();
+      publish.textContent='Saving…';progress.textContent='';
+      const receipts=await account.messaging.publishSignedEvents([...(pendingShipping?[pendingShipping]:[]),signed]);
+      const showSaved=dialog.open;
+      pendingEvent=null;pendingShipping=null;editing=null;draftId=crypto.randomUUID();
+      form.reset();pinTouched=false;pinRequest++;paintPin();dialog.querySelector<HTMLDetailsElement>('#post-map-pin').open=false;
+      shippingTouched=false;selectedCountries.clear();removeExistingDelivery=false;removeDelivery.hidden=true;paintDelivery();
+      selection.clear();currencyTouched=false;areaPicker.setValue(null);areaTouched=false;areaEditor.open=false;
+      showEditor();paintSide();dialog.hide();
+      onPublished(signed,receipts.at(-1),showSaved);
     } catch(cause){error.textContent=cause.name==='AbortError'?'Upload stopped. Your draft and selected files are still here.':cause.message||'Could not publish. Your draft is still here.';}
     finally{uploadController=null;setBusy(false);progress.textContent='';}
   };

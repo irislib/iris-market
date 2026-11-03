@@ -87,6 +87,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
   let controls:ReturnType<typeof createChatControls>,syncingControls:Promise<void>;
   let tradeBook:ReturnType<typeof createMarketTrades>, syncingTrades:Promise<void>;
   let messageWrites = Promise.resolve(),lastChatMs=0;
+  const canSend = () => status === 'ready' && authorizationChecked && runtime?.getState().isCurrentDeviceRegistered === true;
   const state = ():MessagingState => ({ status, error, password: !!savedStatus?.password,
     ownerPubkey: account?.owner, devicePubkey: runtime?.getState().currentDevicePubkey ?? (account?.deviceSecret ? getPublicKey(Uint8Array.from(account.deviceSecret)) : undefined),
     tradeSteps:tradeBook?.rows(false)??[],
@@ -96,7 +97,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
     pendingListings: [...publicQueue.values()].filter(event => [30402,38383].includes(event.kind)).map(event => structuredClone(event)),
     pendingReviews: [...publicQueue.values()].filter(event => event.kind === REVIEW_KIND).map(event => structuredClone(event)),
     orders: orders?.state() ?? [],
-    canSend: status === 'ready' && authorizationChecked && runtime?.getState().isCurrentDeviceRegistered === true,
+    canSend: canSend(),
     canSign: !!signer && status === 'ready', mode: account?.mode, needsLogin: status === 'locked' && !account?.ownerSecret,
     devices: runtime?.getState().registeredDevices.map(device => ({ pubkey: device.identityPubkey,
       current: device.identityPubkey === runtime.getState().currentDevicePubkey })) ?? [],
@@ -328,7 +329,13 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
     // Persist the complete publication before exposing any member to the worker.
     await vault.putMany(stored.map(event=>[`market/public/${event.id}`,event] as const));
     check(attempt);for(const event of stored)publicQueue.set(event.id,event);
-    notify();scheduleBackground();
+    // The caller can show the saved listing as soon as its local transaction commits.
+    // Relay dispatch and other views' projections belong on the next turn.
+    setTimeout(() => {
+      if (attempt !== generation || status !== 'ready') return;
+      void syncPublic();
+      notify();
+    }, 0);
     return stored.map(event=>({event:structuredClone(event),delivery:'queued',accepted:[]}));
   }
   async function queuePublic(event) { return (await queuePublicEvents([event]))[0]; }
@@ -419,7 +426,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
     queueMicrotask(()=>void syncControls());
   }
   async function syncTradeJobs(){
-    if(syncingTrades || !tradeBook || !state().canSend)return;
+    if(syncingTrades || !tradeBook || !canSend())return;
     const attempt=generation,book=tradeBook,activeRuntime=runtime;
     syncingTrades=(async()=>{for(const job of book.jobs()){
       check(attempt);
@@ -429,13 +436,13 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
     return syncingTrades;
   }
   async function syncControls(){
-    if(syncingControls||!controls||!state().canSend)return syncingControls;
+    if(syncingControls||!controls||!canSend())return syncingControls;
     const attempt=generation,book=controls,activeRuntime=runtime,attempted=new Set<string>();
     syncingControls=(async()=>{for(const job of book.jobs()){check(attempt);attempted.add(job.rumor.id);await activeRuntime.sendEvent(job.peer,job.rumor);check(attempt);await book.handed(job.rumor.id);}})().catch(report).finally(()=>{if(attempt===generation){syncingControls=undefined;if(book.jobs().some(job=>!attempted.has(job.rumor.id)))queueMicrotask(()=>void syncControls());}});
     return syncingControls;
   }
   async function syncMatches(){
-    if(syncingMatches||!matches||!state().canSend||!matches.jobs().length)return syncingMatches;
+    if(syncingMatches||!matches||!canSend()||!matches.jobs().length)return syncingMatches;
     const attempt=generation,book=matches,activeRuntime=runtime;
     syncingMatches=(async()=>{
       for(const job of book.jobs()){
@@ -448,7 +455,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
     return syncingMatches;
   }
   async function syncOrders() {
-    if(syncingOrders || !orders || !state().canSend)return syncingOrders;
+    if(syncingOrders || !orders || !canSend())return syncingOrders;
     const attempt=generation,book=orders,activeRuntime=runtime,attempted=new Set();
     syncingOrders=(async()=>{
       await book.prune();await pruneOrderQueues();
@@ -513,7 +520,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
     privateMatchView:()=>matches?.view()??null,
     async privateMatch(action:MatchAction,listing?:Parameters<typeof matches.action>[1]){
       requireReady();
-      if(action.op!=='enable'&&!state().canSend)throw Error('Authorize this device before sending a private match.');
+      if(action.op!=='enable'&&!canSend())throw Error('Authorize this device before sending a private match.');
       await matches.action(action,listing);scheduleBackground();
     },
     async restore() {
@@ -610,7 +617,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
     },
     async send(pubkey, text, context?:MessageContext) {
       requireReady();
-      if (!state().canSend) throw new Error('This device is not authorized to send.');
+      if (!canSend()) throw new Error('This device is not authorized to send.');
       if (!HEX.test(pubkey) || typeof text !== 'string' || !text.trim() || text.length > 16_000) throw new Error('Write a message of up to 16,000 characters.');
       if(context&&(!validMessageContext(context)||context.order_id&&!validOrderContext(context.order_id,pubkey)))throw new Error('This order is not shared with this person.');
       if(!conversations.has(pubkey)){await vault.put(`market/messages/${pubkey}`,[]);conversations.set(pubkey,[]);}
@@ -621,7 +628,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
       return rumor.id;
     },
     async react(peer:string,messageId:string,emoji:string){
-      requireReady();if(!state().canSend)throw Error('This device is not authorized to send.');
+      requireReady();if(!canSend())throw Error('This device is not authorized to send.');
       const message=conversations.get(peer)?.find(m=>m.id===messageId);if(!message)throw Error('Message not found in this conversation.');
       await controls.reaction(peer,message,emoji);await saveMessage(peer,message);scheduleBackground();
     },
@@ -652,7 +659,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
     },
     tradeSteps(){requireReady();return tradeBook.rows(true);},
     async sendTradeStep(peers:string[],step:Parameters<typeof tradeBook.send>[1],operationId:string){
-      requireChat();if(!state().canSend)throw Error('Approve this device before sending a trade update.');
+      requireChat();if(!canSend())throw Error('Approve this device before sending a trade update.');
       await tradeBook.send(peers,step,operationId);notify();scheduleBackground();
     },
     escrowProvider(key:string){requireReady();

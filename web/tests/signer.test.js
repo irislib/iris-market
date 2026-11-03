@@ -146,6 +146,24 @@ test('forged verification flags and malformed relay events cannot authorize a si
   finally { client.close() }
 })
 
+test('a signed listing can return after dispatch without any relay acknowledgement', async () => {
+  const runtime = signerRuntime()
+  const respond = runtime.publish.bind(runtime)
+  runtime.publish = async (event, options) => {
+    setTimeout(() => { void respond(event, options) }, 0)
+    return { remoteAccepted: false, sentWithoutAck: true }
+  }
+  const client = clientFor(runtime, { permissions: ['sign_event:30402'] })
+  try {
+    await client.connect()
+    const draft = { pubkey: owner, kind: 30402, created_at: now(), tags: [['d','route'],['t','transport']], content: 'Transport offer' }
+    const signed = await client.signEvent(draft)
+    assert(verifyEvent(signed))
+    assert.equal(signed.pubkey, owner)
+    assert.deepEqual(signed.tags, draft.tags)
+  } finally { client.close() }
+})
+
 test('rejected signer publications surface a connection error instead of waiting', async () => {
   const runtime = signerRuntime(); runtime.accepted = false
   const client = clientFor(runtime)

@@ -97,3 +97,17 @@ test('queued publication callbacks do not consume inbox subscription slots',asyn
   await waitFor(()=>server.frames.some(item=>item.frame[0]==='REQ'));
   subscription.close();
 });
+
+
+test('a missing acknowledgement differs from an explicit rejection of the signed event', async t=>{
+  const server=await relay(t, (socket, [kind, event])=>{
+    if(kind==='EVENT' && event.content==='reject')socket.send(JSON.stringify(['OK',event.id,false,'blocked']));
+  });
+  const transport=createPrivateTransport(()=>[server.url]);t.after(()=>transport.close());
+  const silent=await transport.publish(event('silent'),{timeoutMs:300});
+  assert.equal(silent.remoteAccepted,false);
+  assert.equal(silent.sentWithoutAck,true);
+  const rejected=await transport.publish(event('reject'));
+  assert.equal(rejected.remoteAccepted,false);
+  assert.equal(rejected.sentWithoutAck,false);
+});

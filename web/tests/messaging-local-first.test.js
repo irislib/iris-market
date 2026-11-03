@@ -163,3 +163,18 @@ test('explicit optional name is trimmed and updates the new profile once', {time
   await createProfileWithOptionalName(app,'  Alice  ');assert.deepEqual(updates,[{name:'Alice'}]);assert.equal(app.state().displayName,'Alice');
   await waitFor(()=>app.state().profileEvent);assert.equal(app.state().profileEvent.kind,0);assert.equal(JSON.parse(app.state().profileEvent.content).name,'Alice');
 });
+
+test('sending to a new contact returns a durable queued message while discovery is silent', {timeout:3000}, async t=>{
+  const network=silentNetwork(),backend=memoryBackend(),app=make(createVault({backend}),network);
+  t.after(()=>app.destroy());
+  await app.createAccount();
+  await waitFor(()=>app.state().canSend);
+  const peer=getPublicKey(generateSecretKey());
+  const id=await app.send(peer,'Can you deliver this?');
+  const message=()=>app.state().conversations.find(chat=>chat.pubkey===peer)?.messages.find(item=>item.id===id);
+  assert.equal(message()?.delivery,'queued');
+  await app.lock();
+  await app.restore();
+  assert.equal(message()?.text,'Can you deliver this?');
+  assert.equal(message()?.delivery,'queued');
+});

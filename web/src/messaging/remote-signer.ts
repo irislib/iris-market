@@ -199,8 +199,9 @@ class RemoteSigner {
       try {
         const conversationKey = nip44.v2.utils.getConversationKey(this.key, this.remoteKey);
         const event = finalizeEvent({ kind: 24133, created_at: Math.floor(Date.now() / 1e3), tags: [["p", this.remoteKey]], content: nip44.v2.encrypt(JSON.stringify({ id, method, params }), conversationKey) }, this.key);
-        this.options.runtime.publish(event, { relays: this.relays, sources: [], requireAck: true, queue: false, localEcho: false }).then((result) => {
-          if (!result.remoteAccepted) throw new Error("Signer request was not accepted");
+        // The authenticated signer reply settles the RPC. A missing relay OK cannot rule out delivery.
+        this.options.runtime.publish(event, { relays: this.relays, sources: [], requireAck: true, queue: false, localEcho: false, signal: this.options.signal }).then((result) => {
+          if (!result.remoteAccepted && !result.sentWithoutAck) throw new Error("Signer request was not delivered");
         }).catch(() => {
           if (this.pending.has(id)) fail(new Error("Could not reach signer. Try again."));
         });

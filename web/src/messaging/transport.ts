@@ -2,7 +2,7 @@ import { matchFilters, verifyEvent } from 'nostr-tools';
 import type { Event, Filter, VerifiedEvent } from 'nostr-tools';
 export interface TransportOptions {signal?:AbortSignal;relays?:string[];deadline?:number;timeoutMs?:number;sources?:unknown[];cache?:string;localEcho?:boolean;requireAck?:boolean;queue?:boolean;onAccepted?:(receipt:PublishReceipt)=>void}
 export interface QueryResult {events:VerifiedEvent[];complete:boolean;sources?:{id:string;complete:boolean}[]}
-export interface PublishReceipt {remoteAccepted:boolean;pending?:boolean;sources?:{id:string;accepted:boolean}[]}
+export interface PublishReceipt {remoteAccepted:boolean;pending?:boolean;sentWithoutAck?:boolean;sources?:{id:string;accepted:boolean}[]}
 interface RelayState {id:string;complete:boolean;socket:WebSocket|null;timer:ReturnType<typeof setTimeout>|null;tries:number}
 interface Subscription {close():void;states?:RelayState[]}
 export interface PrivateTransport {subscribe(filters:Filter[],handlers:{onEvent:(event:VerifiedEvent)=>void},options?:TransportOptions):Subscription;query(filters:Filter[],options?:TransportOptions):Promise<QueryResult>;publish(raw:Event,options?:TransportOptions):Promise<PublishReceipt>;dispatch?(raw:Event,options?:TransportOptions):Promise<PublishReceipt>;close():void}
@@ -128,7 +128,7 @@ export function createPrivateTransport(getRelays:()=>string[], { WebSocketImpl =
     if(publications.size>=256)return {receipt:{remoteAccepted:false,pending:true},completion:Promise.resolve({remoteAccepted:false})};
     const callbacks=new Set<(receipt:PublishReceipt)=>void>();if(options.onAccepted)callbacks.add(options.onAccepted);
     const sources=urls.map(id=>({id,accepted:false}));
-    let resolve:(receipt:PublishReceipt)=>void,remaining=urls.length,complete=false,cancelled=false;
+    let resolve:(receipt:PublishReceipt)=>void,remaining=urls.length,complete=false,cancelled=false,sentWithoutAck=false;
     const completion=new Promise<PublishReceipt>(done=>{resolve=done;});
     const stops:Array<()=>void>=[];
     const finish=(index:number,value:boolean)=>{
@@ -140,7 +140,7 @@ export function createPrivateTransport(getRelays:()=>string[], { WebSocketImpl =
       }
       if(!remaining){
         publications.delete(event.id);active.delete(abort);options.signal?.removeEventListener('abort',abort);
-        if(!complete){complete=true;resolve({remoteAccepted:false,sources:structuredClone(sources)});}
+        if(!complete){complete=true;resolve({remoteAccepted:false,sentWithoutAck,sources:structuredClone(sources)});}
       }
     };
     const abort=()=>{
@@ -153,15 +153,24 @@ export function createPrivateTransport(getRelays:()=>string[], { WebSocketImpl =
       if(cancelled)return;
       for(const [index,url] of urls.entries()){
         if(cancelled)break;
-        let socket:WebSocket,timer:ReturnType<typeof setTimeout>,done=false;
-        const stop=(value=false)=>{if(done)return;done=true;clearTimeout(timer);try{socket?.close();}catch{}finish(index,value);};
+        let socket:WebSocket,timer:ReturnType<typeof setTimeout>,done=false,sent=false;
+        const stop=(ack?:boolean)=>{
+          if(done)return;
+          done=true;
+          if(sent && ack===undefined && !cancelled)sentWithoutAck=true;
+          clearTimeout(timer);try{socket?.close();}catch{}
+          finish(index,ack===true);
+        };
         stops.push(()=>stop());timer=setTimeout(()=>stop(),options.timeoutMs??6000);
         try{
           socket=new WebSocketImpl(url);
-          socket.addEventListener('open',()=>{if(!done)socket.send(JSON.stringify(['EVENT',event]));});
+          socket.addEventListener('open',()=>{
+            if(done)return;
+            try{socket.send(JSON.stringify(['EVENT',event]));sent=true;}catch{stop();}
+          });
           socket.addEventListener('message',incoming=>{
             if(typeof incoming.data!=='string'||incoming.data.length>4096)return;
-            try{const frame=JSON.parse(incoming.data);if(frame[0]==='OK'&&frame[1]===event.id)stop(frame[2]===true);}catch{}
+            try{const frame=JSON.parse(incoming.data);if(frame[0]==='OK'&&frame[1]===event.id&&typeof frame[2]==='boolean')stop(frame[2]);}catch{}
           });
           socket.addEventListener('close',()=>stop());socket.addEventListener('error',()=>stop());
         }catch{stop();}

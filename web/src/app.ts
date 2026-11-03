@@ -193,10 +193,12 @@ function start(){searchDiscovery.reset();client?.close();aiFilter?.stop();listin
 function syncCourierFeed(){
   if(!['courier','orders'].includes(currentRoute.type)){courierClient?.close();courierClient=null;courierListings=[];return;}
   if(preview||courierClient)return;
-  const active=new MarketRelayClient({relays,tags:['transport','courier','parcel','parcels','delivery','deliveries','passenger','ride'],offlineCache:null,
+  const active=new MarketRelayClient({relays,tags:['transport','courier','parcel','parcels','delivery','deliveries','passenger','ride'],
     onChange:rows=>{if(courierClient!==active)return;courierListings=rows;ordersUI?.refreshCourier();},
     onPagination:()=>ordersUI?.refreshCourier()});
-  courierClient=active;active.start();
+  courierClient=active;
+  for(const listing of client?.records.values()||[])active.acceptListing(listing);
+  active.start();
 }
 function courierCard(listing){
   const row=node('article',undefined,'courier-gig'),head=node('div',undefined,'courier-gig-head'),link=node('a',listing.title,'courier-gig-title');
@@ -207,7 +209,7 @@ function courierCard(listing){
 }
 function unavailableListing(){detailRenderKey='';closeDetailReviews();closeDetailAreas();focusedListing=null;$('detail-content').replaceChildren(node('h1','Listing unavailable'),node('p','This listing is no longer available.','muted'));}
 window.addEventListener('market-tools-change',()=>{if(currentRoute.type==='listing'&&focusedListing)openDetail(focusedListing,false);});
-function showShared(){if(currentRoute.type!=='listing')return;const id=currentRoute.id;const l=bitcoinOrders.get(id)||listings.find(l=>l.id===id);if(l)openDetail(l,false);else if(bitcoinOrders.known(id)||client?.records.has(id)||focusedListing?.expiration!==null&&focusedListing?.expiration<=Date.now()/1000)unavailableListing();}
+function showShared(){if(currentRoute.type!=='listing')return;const id=currentRoute.id;const record=client?.records.get(id);const l=bitcoinOrders.get(id)||listings.find(l=>l.id===id)||(record?.status==='active'&&(record.expiration===null||record.expiration>Date.now()/1000)?record:null);if(l)openDetail(l,false);else if(bitcoinOrders.known(id)||record||focusedListing?.expiration!==null&&focusedListing?.expiration<=Date.now()/1000)unavailableListing();}
 $('sort').onchange=render;
 for(const b of document.querySelectorAll<HTMLButtonElement>('[data-side]'))b.onclick=()=>{side=b.dataset.side;document.querySelectorAll<HTMLButtonElement>('[data-side]').forEach(x=>{x.classList.toggle('selected',x===b);x.setAttribute('aria-pressed',String(x===b))});render()};
 $('browse-tab').onclick=()=>navigate(pageURL('',location.href));$('saved-tab').onclick=()=>navigate(pageURL('saved',location.href));$('clear-filters').onclick=()=>{photoFilter=null;feedNetwork=false;feedTags=[];feedAuthors=null;locationFilter='';nearbyFilter=null;shipsTo='';syncAreaURL();resetShipping();updateFilterSummary();start();$('search').value='';submittedTextQuery='';$('location').value='';document.querySelector<HTMLButtonElement>('[data-side="offer"]').click()};
@@ -332,9 +334,19 @@ profiles=setupProfiles({page:$('profile-page'),onNavigate:key=>pageOpened(profil
   getReviewAccount:()=>({owner:accountUI?.state().ownerPubkey,canSign:!!accountUI?.state().canSign,pending:accountUI?.state().pendingReviews}),
   publishReview:draft=>accountUI.messaging.publishEvent(draft),onReviewSignIn:()=>accountUI.showAccount({posting:true})});
 $('graph-context').onclick=()=>profiles.open(contextKey);
-accountUI=setupAccount({getMatchListings:()=>preview?[]:listings,renderEscrowTrades:(host,peer,listing)=>escrowTrade.inbox(host,peer,listing),listingTitle:coordinate=>listings.find(item=>item.id===coordinate.replace(/^30402:/,''))?.title,accountPage:$('workspace-page'),onAccountPage:()=>pageOpened(pageURL('settings/profile',location.href)),onAccountClose:backToBrowse,messagePage:$('workspace-page'),onMessagePage:key=>pageOpened(pageURL('messages'+(key?'/'+npubEncode(key):''),location.href)),onMessageClose:backToBrowse,onUnread:count=>unreadNav('inbox-tab',count),getRelays:()=>relays,isPreview:()=>preview,onProfile:key=>profiles.open(key),onOrder:id=>ordersUI?.open(id),onToken:token=>walletUI?.openToken(token),onIdentity:(key,status,previous,pending)=>{$('my-listings-menu').hidden=!key||preview;rootChoice.setIdentity(key||null,previous);if(client){let changed=false;for(const event of pending)try{changed=applyEvent(client.records,event)||changed}catch{}if(changed)client.emitChange();refreshPeople();}}});
+accountUI=setupAccount({getMatchListings:()=>preview?[]:listings,renderEscrowTrades:(host,peer,listing)=>escrowTrade.inbox(host,peer,listing),listingTitle:coordinate=>listings.find(item=>item.id===coordinate.replace(/^30402:/,''))?.title,accountPage:$('workspace-page'),onAccountPage:()=>pageOpened(pageURL('settings/profile',location.href)),onAccountClose:backToBrowse,messagePage:$('workspace-page'),onMessagePage:key=>pageOpened(pageURL('messages'+(key?'/'+npubEncode(key):''),location.href)),onMessageClose:backToBrowse,onUnread:count=>unreadNav('inbox-tab',count),getRelays:()=>relays,isPreview:()=>preview,onProfile:key=>profiles.open(key),onOrder:id=>ordersUI?.open(id),onToken:token=>walletUI?.openToken(token),onIdentity:(key,status,previous,pending)=>{$('my-listings-menu').hidden=!key||preview;rootChoice.setIdentity(key||null,previous);if(client){let changed=false;for(const event of pending)try{changed=applyEvent(client.records,event)||changed;if(courierClient)courierClient.acceptListing(parseEvent(event));}catch{}if(changed)client.emitChange();refreshPeople();}}});
 accountUI.onState(()=>profiles?.refreshReviews());
-composerUI=setupComposer({priceNode,page:$('workspace-page'),onNavigate:()=>pageOpened(pageURL('post',location.href)),onClose:backToBrowse,account:accountUI,isPreview:()=>preview,defaultCurrency:()=>preferredCurrency,onPublished:(event,receipt)=>{if(client){client.acceptListing(client.parseIncoming(event),true);client.emitChange();}toast(receipt?.accepted?.length?'Listing published':'Listing queued');}});
+composerUI=setupComposer({priceNode,page:$('workspace-page'),onNavigate:()=>pageOpened(pageURL('post',location.href)),onClose:backToBrowse,account:accountUI,isPreview:()=>preview,defaultCurrency:()=>preferredCurrency,onPublished:(event,receipt,showSaved=false)=>{
+  const listing=client?client.parseIncoming(event):parseEvent(event);
+  client?.acceptListing(listing,true);
+  if(showSaved&&currentRoute.type==='post'){
+    focusedListing=listing;
+    navigate(listingURL(listing.id,location.href),{replace:true});
+  }
+  client?.emitChange();
+  courierClient?.acceptListing(listing);
+  toast(receipt?.accepted?.length?'Listing published':'Saved on this device. Queued for sync.');
+}});
 ordersUI=setupOrders({onPay:order=>walletUI.payOrder(order,token=>accountUI.messaging.send(order.seller,token,orderContext(order.id)),()=>ordersUI.open(order.id)),onReceiveToken:(token,id)=>walletUI.openToken(token,()=>ordersUI.open(id)),page:$('workspace-page'),onNavigate:(id,tab)=>pageOpened(pageURL(id?'orders/'+encodeURIComponent(id):tab==='deliveries'?'courier':'orders',location.href)),onClose:backToBrowse,onUnread:count=>unreadNav('orders-tab',count),account:accountUI,isPreview:()=>preview,onProfile:key=>profiles.open(key),onReview:key=>profiles.openReviews(key),courier:{getListings:()=>courierListings,onListing:openDetail,onAnnounce:draft=>composerUI.prefill(draft),onEditListing:listing=>composerUI.edit(listing),renderListing:courierCard,loadMore:async()=>{const active=courierClient;if(!active)return;const page=await active.loadOlder();if(page.error)throw new Error(page.error);},pagination:()=>courierClient?.pagination()||{}},formatPrice:item=>priceFor(item).primary});
 $('orders-tab').onclick=()=>navigate(pageURL('orders',location.href));$('post-button').onclick=()=>navigate(pageURL('post',location.href));$('inbox-tab').onclick=()=>navigate(pageURL('messages',location.href));
 walletUI=setupWallet({page:$('workspace-page'),onNavigate:()=>pageOpened(pageURL('wallet',location.href)),onClose:backToBrowse,isPreview:()=>preview,onShareMessage:text=>accountUI.composeMessage(text),formatEstimate:amount=>formatWalletAmount(amount,{preferredCurrency,rates:rateService?.snapshot()})});

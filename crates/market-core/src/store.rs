@@ -102,17 +102,22 @@ mod snapshot_cpu_tests {
 /// saved/outbox/relevance state and expiry are still read on every snapshot.
 #[derive(Default)]
 struct VerifiedListings {
-    entries: HashMap<Arc<str>, Listing>,
+    entries: HashMap<Arc<str>, Arc<VerifiedListing>>,
     order: VecDeque<Arc<str>>,
     bytes: usize,
     #[cfg(test)]
     verifications: usize,
 }
+struct VerifiedListing {
+    listing: Listing,
+    // The UI uses normalized topics. Nostr filters require the exact signed spelling.
+    relay_tags: Vec<String>,
+}
 impl VerifiedListings {
-    fn parse(&mut self, raw: &str, at: u64) -> Result<Listing> {
+    fn parse(&mut self, raw: &str, at: u64) -> Result<Arc<VerifiedListing>> {
         if let Some(listing) = self.entries.get(raw) {
             anyhow::ensure!(
-                listing.created_at <= at.saturating_add(300),
+                listing.listing.created_at <= at.saturating_add(300),
                 "Listing timestamp is too far in the future"
             );
             return Ok(listing.clone());
@@ -121,7 +126,22 @@ impl VerifiedListings {
         {
             self.verifications += 1;
         }
-        let listing = listing::parse(&Event::from_json(raw)?, at)?;
+        let event = Event::from_json(raw)?;
+        let listing = listing::parse(&event, at)?;
+        let relay_tags = event
+            .tags
+            .iter()
+            .map(|tag| tag.as_slice())
+            .filter(|tag| tag.first().is_some_and(|name| name == "t"))
+            .filter_map(|tag| tag.get(1))
+            .filter(|tag| tag.trim() == tag.as_str() && crate::search_plan::valid(tag))
+            .take(24)
+            .cloned()
+            .collect();
+        let listing = Arc::new(VerifiedListing {
+            listing,
+            relay_tags,
+        });
         let size = raw.len();
         while self.entries.len() >= 5000 || self.bytes + size > 32 * 1024 * 1024 {
             if let Some(old) = self.order.pop_front() {
@@ -366,6 +386,44 @@ impl Store {
     pub fn listings(&self, owner: &str, at: u64) -> Result<Vec<Listing>> {
         self.listings_for_scope(owner, at, None)
     }
+    /// Only already-verified projections can add spellings. Read the winning IDs,
+    /// so stale revisions cannot teach the next search tags that sellers removed.
+    pub(crate) fn relay_spellings(
+        &self,
+        at: u64,
+        keys: &std::collections::HashSet<String>,
+    ) -> Result<HashMap<String, HashMap<String, usize>>> {
+        let mut counts: HashMap<String, HashMap<String, usize>> = HashMap::new();
+        let mut stmt = self
+            .db
+            .prepare("SELECT event_id FROM events ORDER BY created_at DESC,event_id LIMIT 5000")?;
+        let winners = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<std::collections::HashSet<_>>>()?;
+        let cache = self.verified_listings.borrow();
+        let mut seller_votes = std::collections::HashSet::new();
+        for item in cache.entries.values() {
+            if !winners.contains(&item.listing.event_id) {
+                continue;
+            }
+            if item.listing.status != "active"
+                || item.listing.expires_at.is_some_and(|expires| expires <= at)
+            {
+                continue;
+            }
+            for tag in &item.relay_tags {
+                let key = tag.to_lowercase();
+                if keys.contains(&key) && seller_votes.insert((&item.listing.author, tag)) {
+                    *counts
+                        .entry(key)
+                        .or_default()
+                        .entry(tag.clone())
+                        .or_default() += 1;
+                }
+            }
+        }
+        Ok(counts)
+    }
     pub fn listings_for_author(&self, owner: &str, author: &str, at: u64) -> Result<Vec<Listing>> {
         let author = nostr::PublicKey::from_hex(author)?.to_hex();
         self.listings_for_scope(owner, at, Some(&author))
@@ -390,7 +448,12 @@ impl Store {
         let mut listings = Vec::new();
         for row in rows {
             let (raw, saved, queued, relevance) = row?;
-            let mut l = self.verified_listings.borrow_mut().parse(&raw, at)?;
+            let mut l = self
+                .verified_listings
+                .borrow_mut()
+                .parse(&raw, at)?
+                .listing
+                .clone();
             if l.status != "active" || l.expires_at.is_some_and(|x| x <= at) {
                 continue;
             }

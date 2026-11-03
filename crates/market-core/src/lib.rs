@@ -1603,11 +1603,11 @@ impl Market {
             let mut listings = listings;
             if !check {
                 s.search_plan_locked = true;
+                listings.retain(|listing| listing.relevance.is_none());
                 search_plan::prioritize(&mut listings, &s.search_terms);
             }
             let candidates = listings
                 .into_iter()
-                .filter(|l| l.relevance.is_none())
                 .take(12)
                 .map(|l| {
                     let event = s.store.event(&l.id)?;

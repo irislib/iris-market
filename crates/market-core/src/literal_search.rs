@@ -62,10 +62,17 @@ fn is_stop_word(word: &str) -> bool {
 
 pub fn matches_literal_search(text: &str, query: &str) -> bool {
     let phrase = normalize(query);
+    phrase.is_empty() || matches_normalized(&normalize(text), &phrase)
+}
+
+/// Both inputs have already been normalized with the same Unicode and word boundaries.
+pub(crate) fn matches_normalized(haystack: &str, phrase: &str) -> bool {
     if phrase.is_empty() {
         return true;
     }
-    let haystack = normalize(text);
+    if !phrase.contains(' ') {
+        return haystack.split(' ').any(|word| word == phrase);
+    }
     if format!(" {haystack} ").contains(&format!(" {phrase} ")) {
         return true;
     }

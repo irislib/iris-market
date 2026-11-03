@@ -117,10 +117,9 @@ fn ingest_locked(s: &mut State, budget: &mut Budget, event: &Event) {
         s.revision += 1;
     }
 }
-fn indexed_filters(query: &str) -> Vec<Filter> {
-    let normalized = query.trim().to_lowercase();
+fn literal_tags(query: &str) -> Vec<String> {
     let mut tags = Vec::new();
-    for word in normalized
+    for word in query
         .split(|c: char| !c.is_alphanumeric())
         .filter(|s| !s.is_empty())
     {
@@ -131,28 +130,52 @@ fn indexed_filters(query: &str) -> Vec<Filter> {
             break;
         }
     }
-    if tags.is_empty() {
-        return vec![];
+    tags
+}
+
+type Spellings = HashMap<String, HashMap<String, usize>>;
+
+/// Keep the original filter terms and their priority, then add bounded exact spellings.
+fn extend_spellings(tags: &mut Vec<String>, keys: &[String], observed: &Spellings) {
+    for key in keys {
+        if let Some(counts) = observed.get(key) {
+            let mut spellings: Vec<_> = counts.iter().collect();
+            spellings.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+            for (spelling, _) in spellings.into_iter().take(3) {
+                if tags.len() >= 16 {
+                    return;
+                }
+                if !tags.contains(spelling) {
+                    tags.push(spelling.clone());
+                }
+            }
+        }
     }
+}
+
+fn filters(request: &Request, store: &crate::store::Store) -> Vec<Filter> {
     let base = Filter::new()
         .kind(Kind::Custom(listing::LISTING_KIND))
         .limit(PAGE_SIZE);
-    vec![base.clone().hashtags(tags), base.search(normalized)]
-}
-fn filters(request: &Request) -> Vec<Filter> {
-    let mut result = vec![
-        Filter::new()
-            .kind(Kind::Custom(listing::LISTING_KIND))
-            .limit(PAGE_SIZE),
-    ];
-    result.extend(indexed_filters(&request.query));
+    let normalized = request.query.trim().to_lowercase();
+    let mut tags = literal_tags(&normalized);
+    let mut literals = vec![normalized.clone()];
+    literals.extend_from_slice(&tags);
+    let planned: Vec<_> = request.terms.iter().map(|t| t.to_lowercase()).collect();
+    let keys = literals.iter().chain(&planned).cloned().collect();
+    let observed = store
+        .relay_spellings(listing::now(), &keys)
+        .unwrap_or_default();
+    extend_spellings(&mut tags, &literals, &observed);
+    let mut result = vec![base.clone()];
+    if !tags.is_empty() {
+        result.push(base.clone().hashtags(tags));
+        result.push(base.clone().search(normalized));
+    }
     if !request.terms.is_empty() {
-        result.push(
-            Filter::new()
-                .kind(Kind::Custom(listing::LISTING_KIND))
-                .hashtags(request.terms.clone())
-                .limit(PAGE_SIZE),
-        );
+        let mut terms = request.terms.clone();
+        extend_spellings(&mut terms, &planned, &observed);
+        result.push(base.hashtags(terms));
     }
     result
 }
@@ -247,6 +270,7 @@ async fn relay_window(
     state: Arc<Mutex<State>>,
     request: Request,
     relay: String,
+    branches: Arc<Vec<Filter>>,
     budget: Arc<Mutex<Budget>>,
     slots: Arc<Semaphore>,
     deadline: tokio::time::Instant,
@@ -260,7 +284,6 @@ async fn relay_window(
         bus.client().wait_for_connection(Duration::from_secs(2)),
     )
     .await;
-    let branches = filters(&request);
     // Three pages per source per window. Branch rotation persists across windows.
     for _ in 0..3 {
         if tokio::time::Instant::now() >= deadline
@@ -339,7 +362,8 @@ async fn relay_window(
     bus.client().shutdown().await;
 }
 pub(crate) async fn run(state: Arc<Mutex<State>>, notify: Arc<Notify>, stopped: Arc<AtomicBool>) {
-    let mut previous = None;
+    let mut previous: Option<Request> = None;
+    let mut branches = Arc::new(Vec::new());
     while !stopped.load(Ordering::Acquire) {
         let request = {
             let s = state.lock().unwrap();
@@ -359,6 +383,13 @@ pub(crate) async fn run(state: Arc<Mutex<State>>, notify: Arc<Notify>, stopped: 
             tokio::select! {_=notify.notified()=>{},_=tokio::time::sleep(Duration::from_millis(250))=>{}}
             continue;
         }
+        // Freeze each submitted query/plan across Load more windows so its cursor keys stay stable.
+        if previous
+            .as_ref()
+            .is_none_or(|p| p.generation != request.generation || p.terms != request.terms)
+        {
+            branches = Arc::new(filters(&request, &state.lock().unwrap().store));
+        }
         previous = Some(request.clone());
         let deadline = tokio::time::Instant::now() + Duration::from_secs(12);
         let budget = Arc::new(Mutex::new(Budget::default()));
@@ -373,6 +404,7 @@ pub(crate) async fn run(state: Arc<Mutex<State>>, notify: Arc<Notify>, stopped: 
                 state.clone(),
                 request.clone(),
                 relay.clone(),
+                branches.clone(),
                 budget.clone(),
                 slots.clone(),
                 deadline,
@@ -383,7 +415,6 @@ pub(crate) async fn run(state: Arc<Mutex<State>>, notify: Arc<Notify>, stopped: 
         let mut s = state.lock().unwrap();
         if request.current(&s) {
             s.search_discovery.status.loading = false;
-            let branches = filters(&request);
             s.search_discovery.status.has_more = request.relays.iter().any(|relay| {
                 branches.iter().any(|filter| {
                     s.search_discovery
@@ -400,6 +431,53 @@ pub(crate) async fn run(state: Arc<Mutex<State>>, notify: Arc<Notify>, stopped: 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn relay_filters_add_verified_spellings_and_forget_replaced_tags() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = crate::store::Store::open(&dir.path().join("market.sqlite")).unwrap();
+        let keys = nostr::Keys::generate();
+        let now = listing::now();
+        let owner = keys.public_key().to_hex();
+        let request = Request {
+            generation: 1,
+            attempt: 1,
+            query: "fine art".into(),
+            relays: vec![],
+            terms: vec!["prints".into()],
+        };
+        let offer = |at, topic: &str| {
+            nostr::EventBuilder::new(Kind::Custom(listing::LISTING_KIND), "Signed offer")
+                .tags([
+                    nostr::Tag::identifier("sample"),
+                    nostr::Tag::title("Etching"),
+                    nostr::Tag::hashtag("Other"),
+                    nostr::Tag::parse(["t", topic]).unwrap(),
+                    nostr::Tag::parse(["t", "Prints"]).unwrap(),
+                ])
+                .custom_created_at(nostr::Timestamp::from_secs(at))
+                .sign_with_keys(&keys)
+                .unwrap()
+        };
+        store
+            .ingest(&offer(now - 1, "Fine Art"), now, false)
+            .unwrap();
+        let _ = store.listings(&owner, now).unwrap();
+        let result = filters(&request, &store);
+        let json = |index: usize| serde_json::to_value(&result[index]).unwrap();
+        assert_eq!(
+            json(1)["#t"],
+            serde_json::json!(["Fine Art", "art", "fine"])
+        );
+        assert_eq!(json(2)["search"], "fine art");
+        assert_eq!(json(3)["#t"], serde_json::json!(["Prints", "prints"]));
+        store.ingest(&offer(now, "Drawings"), now, false).unwrap();
+        let result = filters(&request, &store);
+        assert_eq!(
+            serde_json::to_value(&result[1]).unwrap()["#t"],
+            serde_json::json!(["art", "fine"])
+        );
+    }
+
     #[test]
     fn duplicate_wire_deliveries_still_exhaust_the_window_budget() {
         let dir = tempfile::tempdir().unwrap();

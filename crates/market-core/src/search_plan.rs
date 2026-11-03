@@ -18,7 +18,7 @@ pub(crate) fn catalog(listings: &[Listing]) -> Vec<String> {
     values.into_iter().take(128).map(|(tag, _)| tag).collect()
 }
 
-fn valid(term: &str) -> bool {
+pub(crate) fn valid(term: &str) -> bool {
     !term.trim().is_empty()
         && term.chars().count() <= 60
         && !term.chars().any(char::is_control)
@@ -55,25 +55,30 @@ pub(crate) fn prioritize(listings: &mut [Listing], terms: &[String]) {
     }
     // Stable sorting retains ordinary ranking within each evidence tier.
     // A title is stronger evidence than incidental description mentions.
+    let phrases: Vec<_> = terms
+        .iter()
+        .map(|term| literal_search::normalize(term))
+        .collect();
     listings.sort_by_cached_key(|listing| {
-        let title = terms
+        let title = literal_search::normalize(&listing.title);
+        let tags: Vec<_> = std::iter::once(&listing.category)
+            .chain(&listing.tags)
+            .map(|tag| literal_search::normalize(tag))
+            .collect();
+        let description = literal_search::normalize(&listing.description);
+        let count = |text: &str| {
+            phrases
+                .iter()
+                .filter(|phrase| literal_search::matches_normalized(text, phrase))
+                .count()
+        };
+        let matched_tags = phrases
             .iter()
-            .filter(|term| literal_search::matches_literal_search(&listing.title, term))
-            .count();
-        let tags = terms
-            .iter()
-            .filter(|term| {
-                literal_search::matches_literal_search(&listing.category, term)
-                    || listing
-                        .tags
-                        .iter()
-                        .any(|tag| literal_search::matches_literal_search(tag, term))
+            .filter(|phrase| {
+                tags.iter()
+                    .any(|tag| literal_search::matches_normalized(tag, phrase))
             })
             .count();
-        let description = terms
-            .iter()
-            .filter(|term| literal_search::matches_literal_search(&listing.description, term))
-            .count();
-        std::cmp::Reverse((title, tags, description))
+        std::cmp::Reverse((count(&title), matched_tags, count(&description)))
     });
 }

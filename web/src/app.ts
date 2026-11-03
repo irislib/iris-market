@@ -251,7 +251,24 @@ walletUI=setupWallet({page:$('workspace-page'),onNavigate:()=>pageOpened(pageURL
 $('my-listings-menu').onclick=()=>{const owner=accountUI.state().ownerPubkey;if(owner)profiles.open(owner);};
 $('courier-menu').onclick=()=>navigate(pageURL('courier',location.href));$('manage-profile').onclick=()=>navigate(pageURL('settings/profile',location.href));$('wallet-tab').onclick=()=>navigate(pageURL('wallet',location.href));$('appearance-settings').onclick=()=>navigate(pageURL('settings',location.href));
 mapUI=setupMap({getListings:()=>visibleResult,onSelect:openDetail,onVisibilityChange:visible=>{mapVisible=visible;gridUI.setVisible(!visible&&['home','search','saved'].includes(currentRoute.type));render();},onDiscover:cells=>{if(!preview)client?.setGeohashes(cells.length?cells:nearbyFilter?geohashQueryForViewport(nearbyViewport(nearbyFilter)):[])},isDiscoveryLimited:()=>!preview&&!!client?.pagination().limited});
-for(const currency of CURRENCIES){const option=node('option',currency==='SATS'?'Satoshis':currency);option.value=currency;$('preferred-currency').append(option);}$('preferred-currency').value=preferredCurrency;$('preferred-currency').onchange=()=>{preferredCurrency=$('preferred-currency').value;persist('market-currency',preferredCurrency);render();walletUI?.refresh();ordersUI?.refresh(accountUI.state());if(focusedListing)openDetail(focusedListing,false)};
+const currencySelectors = [$('preferred-currency'), $('menu-currency')] as HTMLSelectElement[];
+for (const selector of currencySelectors) {
+  for (const currency of CURRENCIES) {
+    const option = node('option', currency === 'SATS' ? 'Satoshis' : currency);
+    option.value = currency;
+    selector.append(option);
+  }
+  selector.value = preferredCurrency;
+  selector.onchange = () => {
+    preferredCurrency = selector.value;
+    for (const other of currencySelectors) other.value = preferredCurrency;
+    persist('market-currency', preferredCurrency);
+    render();
+    walletUI?.refresh();
+    ordersUI?.refresh(accountUI.state());
+    if (focusedListing) openDetail(focusedListing, false);
+  };
+}
 if(!preview)rateService=setupRates({getRelays:()=>relays,onChange:()=>{render();walletUI?.refreshDisplay();if(focusedListing)openDetail(focusedListing,false)}});
 window.addEventListener('popstate',()=>{activateRoute();requestAnimationFrame(()=>window.scrollTo(0,history.state?.marketScroll||0));});
 userLocation=setupUserLocation({onChange:render,isPreview:preview});$('your-location-filters').append(userLocation.createControl());$('your-location-settings').append(userLocation.createControl());

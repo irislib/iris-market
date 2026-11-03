@@ -86,6 +86,7 @@ fun MarketAppView(model: MarketModel, appearance: Appearance, changeAppearance: 
     var profileAuthor by remember { mutableStateOf<String?>(null) }
     var posting by remember { mutableStateOf(false) }
     var transport by remember { mutableStateOf(false) }
+    var currencyExpanded by remember { mutableStateOf(false) }
     var menuExpanded by remember { mutableStateOf(false) }
     var serviceType by remember { mutableStateOf<NativeTransportType?>(null) }
     var serviceArea by remember { mutableStateOf("") }
@@ -153,12 +154,26 @@ fun MarketAppView(model: MarketModel, appearance: Appearance, changeAppearance: 
                         DropdownMenuItem(text = { Text("Settings") }, leadingIcon = { Icon(Icons.Filled.Settings, null) }, onClick = { menuExpanded = false; tab = 5 })
                         DropdownMenuItem(text = { Text("AI settings") }, leadingIcon = { Icon(Icons.Filled.AutoAwesome, null) }, onClick = { menuExpanded = false; settings = true })
                         HorizontalDivider()
+                        val currency = org.json.JSONObject(state.settings).optString("currency", "EUR")
+                        DropdownMenuItem(text = { Text("Display currency · $currency") }, onClick = {
+                            menuExpanded = false
+                            currencyExpanded = true
+                        })
                         Row(Modifier.padding(horizontal = 12.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             listOf(Appearance.Light to Icons.Filled.LightMode, Appearance.Dark to Icons.Filled.DarkMode, Appearance.System to Icons.Filled.BrightnessAuto).forEach { (mode, icon) ->
                                 FilledIconToggleButton(checked = appearance == mode, onCheckedChange = { changeAppearance(mode) }) {
                                     Icon(icon, mode.name, Modifier.size(20.dp))
                                 }
                             }
+                        }
+                    }
+                    DropdownMenu(expanded = currencyExpanded, onDismissRequest = { currencyExpanded = false }) {
+                        NativePreferences.currencies.forEach { currency ->
+                            DropdownMenuItem(text = { Text(currency) }, onClick = {
+                                currencyExpanded = false
+                                val settings = org.json.JSONObject(state.settings).put("currency", currency)
+                                model.command(org.json.JSONObject().put("type", "set_settings").put("settings", settings))
+                            })
                         }
                     }
                 }

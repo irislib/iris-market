@@ -28,7 +28,12 @@ struct IrisMarketApp: App {
         #if os(macOS)
         .defaultSize(width: 1000, height: 760)
         .windowResizability(.contentMinSize)
-        .commands { CommandGroup(replacing: .newItem) {} }
+        .commands {
+            CommandGroup(replacing: .newItem) {}
+            CommandGroup(after: .toolbar) {
+                DisplayCurrencyPicker(store: store).pickerStyle(.menu)
+            }
+        }
         #endif
     }
 }

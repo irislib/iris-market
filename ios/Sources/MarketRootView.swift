@@ -55,6 +55,7 @@ struct MarketRootView: View {
                     Button { tab = .settings } label: { Label("Settings", systemImage: "gearshape.fill") }
                     Button { aiSettings = true } label: { Label("AI settings", systemImage: "sparkles") }
                     Divider()
+                    DisplayCurrencyPicker(store: store).pickerStyle(.menu)
                     Picker("Appearance", selection: $appearance) {
                         Label("Light", systemImage: "sun.max.fill").tag(MarketAppearance.light.rawValue)
                         Label("Dark", systemImage: "moon.fill").tag(MarketAppearance.dark.rawValue)

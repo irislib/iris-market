@@ -9,7 +9,7 @@ import {relativeExpiry} from './expiry.ts';
 import {courierListingType} from './transport-type.ts';
 
 interface PublicListingEvent {id:string;pubkey:string;created_at:number;kind:number;tags:readonly (readonly string[])[];content:string;sig:string}
-interface ListingPresentation extends ListingDates {escrow?:import('./escrow-offer.ts').EscrowOffer;title:string;side:string;category:string;tags?:readonly string[];price:string;currency:string;location:string;imageUrl?:string;description:string;author?:string;id?:string;rawEvent?:PublicListingEvent}
+interface ListingPresentation extends ListingDates {externalOrder?:import('./bitcoin-orders.ts').BitcoinQuote;escrow?:import('./escrow-offer.ts').EscrowOffer;title:string;side:string;category:string;tags?:readonly string[];price:string;currency:string;location:string;imageUrl?:string;description:string;author?:string;id?:string;rawEvent?:PublicListingEvent}
 interface ListingPageOptions {
   saved?:boolean;onSave?:(listing:ListingPresentation)=>void;onBuy?:(listing:ListingPresentation)=>void;onProfile?:(key:string)=>void;
   priceNode:(listing:ListingPresentation,className:string)=>HTMLElement;authorRow?:(listing:ListingPresentation)=>HTMLElement;
@@ -43,11 +43,11 @@ export function renderListingPage(listing:ListingPresentation,{saved=false,onSav
   const transport=listing.category==='transport'?courierListingType(listing):null;
   const category=transport?({parcel:'Delivery',passenger:'Passenger ride',both:'Delivery and passenger rides'}[transport]):listing.category;
   const bitcoin=listing.escrow?.trade==='bitcoin_fiat'?listing.escrow:undefined;
-  if(bitcoin && !local && !listing.imageUrl){wrap.classList.add('detail-quote-only');media.hidden=true;}
-  const context=bitcoin?(listing.side==='request'?'Buying bitcoin':'Selling bitcoin'):draftPreview?`${listing.side==='request'?'Buying':'Selling'} · ${category}`:listing.side==='request'?`Buying${transport?` · ${category}`:''}`:category;
-  copy.append(node('div',context,'eyebrow'),node('h1',listing.title),priceNode(listing,'detail-price'),node('p',listing.location||'Anywhere','detail-place'));
+  if((bitcoin||listing.externalOrder) && !local && !listing.imageUrl){wrap.classList.add('detail-quote-only');media.hidden=true;}
+  const context=listing.externalOrder?listing.externalOrder.platform:bitcoin?(listing.side==='request'?'Buying bitcoin':'Selling bitcoin'):draftPreview?`${listing.side==='request'?'Buying':'Selling'} · ${category}`:listing.side==='request'?`Buying${transport?` · ${category}`:''}`:category;
+  copy.append(node('div',context,'eyebrow'),node('h1',listing.title),priceNode(listing,'detail-price'),...(listing.externalOrder?[]:[node('p',listing.location||'Anywhere','detail-place')]));
   if(bitcoin)copy.append(node('p',bitcoin.sats.toLocaleString()+' sats · '+fiatMethodLabel(bitcoin.method),'detail-quote'));
-  if(!draftPreview&&!isPreview&&listing.author)copy.append(authorRow(listing));
+  if(!draftPreview&&!isPreview&&listing.author&&!listing.externalOrder)copy.append(authorRow(listing));
   const added=listingPublishedAt(listing),dates=node('p',undefined,'listing-dates small muted');
   const date=(label:string,seconds:number,includeTime=false)=>{const value=new Date(seconds*1000),time=node('time',`${label} ${value.toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric',...(includeTime?{hour:'numeric',minute:'2-digit'}:{})})}`);time.dateTime=value.toISOString();time.title=value.toLocaleString();return time;};
   const hasAdded=!draftPreview&&added!==undefined,expiry=relativeExpiry(listing.expiration),hasExpiry=expiry!==null;
@@ -56,8 +56,8 @@ export function renderListingPage(listing:ListingPresentation,{saved=false,onSav
   if(hasAdded||hasExpiry)copy.append(dates);
   if(draftPreview){copy.append(renderDescription(listing.description));wrap.append(media,copy);return wrap;}
   const actions=node('div',undefined,'detail-actions');
-  if(!isPreview&&listing.author!==owner){const buy=node('button',bitcoin?(listing.side==='request'?'Message buyer':'Message seller'):listing.side==='request'?'Respond':'Buy','button primary');buy.onclick=()=>onBuy(listing);actions.append(buy);}
-  if(!isPreview&&listing.author===owner&&onEdit){const edit=node('button','Edit listing','button primary');edit.onclick=()=>onEdit(listing);actions.append(edit);}
+  if(!isPreview&&!listing.externalOrder&&listing.author!==owner){const buy=node('button',bitcoin?(listing.side==='request'?'Message buyer':'Message seller'):listing.side==='request'?'Respond':'Buy','button primary');buy.onclick=()=>onBuy(listing);actions.append(buy);}
+  if(!isPreview&&!listing.externalOrder&&listing.author===owner&&onEdit){const edit=node('button','Edit listing','button primary');edit.onclick=()=>onEdit(listing);actions.append(edit);}
   if(!isPreview && bitcoin && listing.author===owner && onCloseBitcoin){
     const close=node('details',undefined,'account-option'),confirm=node('button','Close offer','button secondary'),problem=node('p','','error small');
     confirm.type='button';problem.setAttribute('role','alert');
@@ -67,7 +67,15 @@ export function renderListingPage(listing:ListingPresentation,{saved=false,onSav
   }
   const save=node('button',saved?'♥ Saved':'♡ Save','button secondary');save.setAttribute('aria-pressed',String(saved));save.onclick=()=>onSave(listing);
   const share=node('button','Copy link','button secondary');share.onclick=async()=>{try{await navigator.clipboard.writeText(listingURL(listing.id,location.href));onToast('Link copied');}catch{onToast('Copy the address from your browser');}};
-  actions.append(save,share);copy.append(actions,renderDescription(listing.description));
+  actions.append(save,share);
+  if(listing.externalOrder){
+    const q=listing.externalOrder,terms=node('dl',undefined,'order-terms');
+    for(const [label,value] of [['Payment method',q.methods],['Settlement',q.layer],
+      ['Bitcoin amount',q.quantity===null?'':q.quantity.toLocaleString()+' sats'],['Premium',q.premium===null?'':q.premium+'%']]){
+      if(value)terms.append(node('dt',label),node('dd',value));
+    }
+    copy.append(terms,actions);
+  }else copy.append(actions,renderDescription(listing.description));
   if(isPreview)copy.append(node('p','Sample listing','small muted'));
   wrap.append(media,copy);
   if(!isPreview&&listing.rawEvent){

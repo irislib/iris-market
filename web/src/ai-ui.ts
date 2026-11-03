@@ -9,9 +9,9 @@ const $=byId;
 const keyFor = listing => listing.eventId || listing.id;
 export const AI_MODE_STORAGE_KEY='market-ai-mode-v1',AI_MODEL_STORAGE_KEY='market-ai-model-v1';
 interface SearchListing {id:string;author?:string;eventId?:string;title:string;description?:string;side?:string;category?:string;location?:string;tags?:string[];price?:string|number;currency?:string}
-interface AIOptions {getCandidates:()=>SearchListing[];onChange:()=>void;onTextSearch?:(query:string)=>void;onSubmit?:(query:string)=>void;fetchMoreCandidates?:()=>Promise<boolean>;client?:Pick<FeedFilterClient,'info'|'load'|'classify'|'dispose'>&{pin?:()=>()=>void;selectSearchHead?:FeedFilterClient['selectSearchHead'];startSearchWorker?:FeedFilterClient['startSearchWorker']};browserClient?:BrowserFeedFilterClient;hasWebGPU?:()=>boolean;autoPrepare?:boolean;storage?:Pick<Storage,'getItem'|'setItem'>;saveData?:()=>boolean;homeFeed?:HomeFeedPreferences;isHomeVisible?:()=>boolean}
+interface AIOptions {getCandidates:()=>SearchListing[];getOrderCount?:()=>number;onChange:()=>void;onTextSearch?:(query:string)=>void;onSubmit?:(query:string)=>void;fetchMoreCandidates?:()=>Promise<boolean>;client?:Pick<FeedFilterClient,'info'|'load'|'classify'|'dispose'>&{pin?:()=>()=>void;selectSearchHead?:FeedFilterClient['selectSearchHead'];startSearchWorker?:FeedFilterClient['startSearchWorker']};browserClient?:BrowserFeedFilterClient;hasWebGPU?:()=>boolean;autoPrepare?:boolean;storage?:Pick<Storage,'getItem'|'setItem'>;saveData?:()=>boolean;homeFeed?:HomeFeedPreferences;isHomeVisible?:()=>boolean}
 interface SourceRequest {epoch:number;done:boolean;more?:boolean;error?:unknown}
-export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetchMoreCandidates, client = new FeedFilterClient(), browserClient=new BrowserFeedFilterClient(),hasWebGPU=()=>!!globalThis.navigator&&'gpu' in globalThis.navigator,autoPrepare=true,storage:providedStorage,saveData=()=>!!(globalThis.navigator as Navigator&{connection?:{saveData?:boolean}})?.connection?.saveData,homeFeed,isHomeVisible=()=>true }:AIOptions) {
+export function setupAI({ getCandidates, getOrderCount=()=>0, onChange, onTextSearch, onSubmit, fetchMoreCandidates, client = new FeedFilterClient(), browserClient=new BrowserFeedFilterClient(),hasWebGPU=()=>!!globalThis.navigator&&'gpu' in globalThis.navigator,autoPrepare=true,storage:providedStorage,saveData=()=>!!(globalThis.navigator as Navigator&{connection?:{saveData?:boolean}})?.connection?.saveData,homeFeed,isHomeVisible=()=>true }:AIOptions) {
   let scores = new Map(), phase:'idle'|'loading'|'searching'='idle', generation = 0, submittedQuery='', paused=false, waitingCandidates=false;
   let home=homeFeed?homeFeedPreferences(homeFeed):{enabled:false,prompt:''},homeContext='',homeStopped=false,homeScheduled=false,homeReviewLimit=240,homeWasVisible=isHomeVisible(),browserAvailable=false;
   const homeRequested=()=>enabled()&&home.enabled&&!submittedQuery&&isHomeVisible();
@@ -55,9 +55,9 @@ export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetch
     const count=candidates.length-hidden,matchLabel=`${count} ${count===1?'match':'matches'}`;
 
     $('ai-summary').hidden = !active || (!curationActive() && !busy);
-    const activity = `${homeActive()?'For you · ':''}${matchLabel} · ${homeActive()?reviewedCount(candidates):scores.size} checked`;
+    const activity = `${homeActive()?'For you · ':''}${matchLabel} · ${homeActive()?reviewedCount(candidates):scores.size} checked${getOrderCount()?' · '+getOrderCount()+' bitcoin '+(getOrderCount()===1?'order':'orders'):''}`;
     $('ai-summary-text').textContent = showAll ? (submittedQuery?'All matching listings':'All listings') : phase==='loading' ? `${$('ai-progress').textContent || 'Loading model…'} · ${activity}` : `${waitingCandidates&&busy?'Waiting for listings · ':paused&&!sourceError?'Search paused · ':''}${activity}`;
-    $('result-view').value=showAll?'all':'ai';
+    $('result-view').textContent=showAll?'Show AI selected':'Show all';
     $('result-view').hidden=!curationActive();
     $('ai-stop').hidden = !busy;
     $('ai-model').disabled = busy;
@@ -347,8 +347,8 @@ export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetch
   };
   $('ai-stop').onclick = () => stop();
   $('ai-unload').onclick = () => {cancelTest();preference='off';writeSetting(AI_MODE_STORAGE_KEY,preference);setEnabled(false);stop({reset:true});};
-  $('result-view').onchange = () => {
-    showAll=$('result-view').value==='all';
+  $('result-view').onclick = () => {
+    showAll=!showAll;
     writeSetting('market-result-view',showAll?'all':'ai');
     if(showAll){$('ai-error').textContent='';stop({unload:false});return;}
     homeStopped=false;

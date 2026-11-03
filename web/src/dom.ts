@@ -57,7 +57,7 @@ interface IdTags {
   'ai-test-status': 'p';
   'ai-options': 'div';
   'ai-progress': 'span';
-  'result-view': 'select';
+  'result-view': 'button';
   'ai-stop': 'button';
   'ai-summary': 'div';
   'ai-summary-text': 'span';

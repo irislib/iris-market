@@ -12,7 +12,7 @@ class Element extends EventTarget {
   removeAttribute(name){this.attributes.delete(name);}
   focus(){this.focused=true;}
 }
-function setView(field,value){const select=field('result-view');select.value=value;return select.onchange();}
+function setView(field,value){const button=field('result-view');assert.equal(button.textContent,value==='all'?'Show all':'Show AI selected');return button.onclick();}
 const bicycle={id:'bicycle',title:'Bicycle',description:'City bicycle',side:'offer',category:'transport'};
 function fixture({rows=[bicycle],query='',gpu=true,client:provided,fetchMoreCandidates,onTextSearch,autoPrepare=false,mode='ai',storage,saveData,browserClient,homeFeed,isHomeVisible,onSubmit,onRender=()=>{}}={}){
   const elements=new Map(),calls=[];
@@ -873,7 +873,7 @@ test('All results survives queries and reloads and AI selected resumes the submi
   const next=fixture({storage,mode:'text',autoPrepare:true});
   await next.ui.ready;
   await next.ui.submit('garden');
-  assert.equal(next.field('result-view').value,'all');
+  assert.equal(next.field('result-view').textContent,'Show AI selected');
   assert.equal(next.calls.length,0);
   next.field('search').value='unsubmitted edit';
   await setView(next.field,'ai');

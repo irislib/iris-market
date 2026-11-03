@@ -1,7 +1,7 @@
 import {BITCOIN_KIND,bitcoinFilter,readEscrowOffer} from './escrow-offer.ts';
 import {keywordSearches,matchesLiteralSearch,listingSearchText} from './lexical-search.ts'
 import { verifyEvent, type Event as NostrEvent } from 'nostr-tools/pure'
-import { locationFromTags, MAX_GEOHASH_QUERY_VALUES } from './map/geohash.ts'
+import { locationFromTags, MAX_GEOHASH_QUERY_VALUES, WEB_REGIONAL_QUERY_VALUES } from './map/geohash.ts'
 import { getPublicRuntime, queryPublicIndex } from './nostr-runtime.ts'
 import { createListingRecovery } from './listing-recovery.ts'
 import type { Filter } from 'nostr-tools'
@@ -187,7 +187,7 @@ interface RelayConnection {
   initialOldest?: number | null
   bitcoinOldest?: number | null
   timer: ReturnType<typeof setTimeout> | null; retry: ReturnType<typeof setTimeout> | null
-  frameStart: number; frames: number; geoSubscription?: string | null; geoSubscriptions?: Set<string>
+  frameStart: number; frames: number; geoSubscriptions?: Set<string>; geoNext?:number; geoTimer?:ReturnType<typeof setTimeout>
 }
 export interface MarketRelayOptions {
   relays?: readonly string[]; tags?: readonly string[]; authors?: readonly string[] | null; targetId?: string
@@ -202,12 +202,13 @@ export interface MarketRelayOptions {
 
 /** Complete precision covers, split below common relay frame/subscription limits. */
 export function geographicRequests(values:readonly string[],{authors=null,tags=[]}:{authors?:readonly string[]|null;tags?:readonly string[]}={}):MarketFilter[][] {
+  const regional=values.length>MAX_GEOHASH_QUERY_VALUES;
   const groups=new Map<number,string[]>();
   for(const hash of values){if(!groups.has(hash.length))groups.set(hash.length,[]);groups.get(hash.length).push(hash);}
   let selected:string[][]=[],accepted:MarketFilter[][]=[];
   for(const [,cover] of [...groups].sort(([a],[b])=>a-b)){
     const candidate=[...selected];for(let start=0;start<cover.length;start+=512)candidate.push(cover.slice(start,start+512));
-    const limit=Math.min(GEO_QUERY_LIMIT,Math.floor(240/candidate.length));
+    const limit=Math.min(GEO_QUERY_LIMIT,Math.floor((regional?480:240)/candidate.length));
     const filters:MarketFilter[]=candidate.map(cells=>({kinds:[LISTING_KIND],'#g':cells,limit,...(authors!==null?{authors}:{}),...(tags.length?{'#t':tags}:{})}));
     const batches:MarketFilter[][]=[];let batch:MarketFilter[]=[];
     for(const filter of filters){
@@ -217,7 +218,7 @@ export function geographicRequests(values:readonly string[],{authors=null,tags=[
     if(batch.length)batches.push(batch);
     // Never trim a fine cover to its western/first cells: keep the preceding
     // whole covers when an audience or long tags consume the frame budget.
-    if(batches.length>9||batches.some(value=>bytes(JSON.stringify(['REQ','map-0000000000000000',...value]))>28*1024))break;
+    if(batches.length>(regional?18:9)||batches.some(value=>bytes(JSON.stringify(['REQ','map-0000000000000000',...value]))>28*1024))break;
     selected=candidate;accepted=batches;
   }
   return accepted;
@@ -260,6 +261,7 @@ export class MarketRelayClient {
   lastStatus: string
   geohashes: string[]
   geohashSet = new Set<string>()
+  private geoBatches:MarketFilter[][]=[]
   geoSequence: number
   indexSearch:boolean
   indexQuery: MarketRelayOptions['indexQuery']
@@ -269,6 +271,7 @@ export class MarketRelayClient {
   tagCatalogue: SeenTags
   queryTags:readonly string[]=[]
   queryPlans:QueryTagPlan[]=[]
+  queryExtraTerms:readonly string[]=[]
   queryExtraTags:readonly string[]=[]
   queryRequestBudget={count:0,max:32}
   queryController=new AbortController()
@@ -387,11 +390,11 @@ export class MarketRelayClient {
   }
 
   /** Literal retrieval is the default; only AI mode opts into observed/model expansions. */
-  searchTags(query:string,extraTags?:readonly string[],expansion:SearchTagExpansion=this.queryExpansion):readonly string[] {
+  searchTags(query:string,extraTags?:readonly string[],expansion:SearchTagExpansion=this.queryExpansion,extraTerms?:readonly string[]):readonly string[] {
     const text=typeof query==='string'&&query.length<=TAG_LIMITS.queryChars?query:'',policy=expansion==='expanded'?'expanded':'literal'
     const changed=text!==this.queryText||policy!==this.queryExpansion
     if(changed){
-      this.queryExtraTags=[]
+      this.queryExtraTerms=[];this.queryExtraTags=[]
       if(this.tagSelectionTimer!==null){clearTimeout(this.tagSelectionTimer);this.tagSelectionTimer=null}
     }
     this.queryText=text;this.queryExpansion=policy
@@ -402,20 +405,26 @@ export class MarketRelayClient {
     // New observations may fill AI slots without reshuffling its cursor or
     // replenishing finite budgets. Literal spelling variants are frozen at submission.
     const selected=policy==='expanded'&&!changed&&extraTags===undefined?[...new Set([...this.queryTags,...proposed])].slice(0,TAG_LIMITS.queryTags):proposed
+    if(policy==='expanded'&&extraTerms!==undefined)
+      this.queryExtraTerms=extraTerms.filter(term=>typeof term==='string'&&/^\p{L}{2,60}$/u.test(term)).slice(0,2)
     return this.applyQueryTags(selected,changed)
   }
 
   setQueryTags(tags:readonly string[]):readonly string[] {
     const selected=feedTags(tags).filter(tag=>this.tagCatalogue.has(tag))
-    this.queryText='';this.queryExtraTags=[];this.queryExpansion='literal'
+    this.queryText='';this.queryExtraTags=[];this.queryExtraTerms=[];this.queryExpansion='literal'
     if(this.tagSelectionTimer!==null){clearTimeout(this.tagSelectionTimer);this.tagSelectionTimer=null}
     return this.applyQueryTags(selected,true)
   }
 
   private applyQueryTags(tags:readonly string[],reset:boolean):readonly string[] {
     const selected=feedTags(tags)
-    if(!reset&&JSON.stringify(selected)===JSON.stringify(this.queryTags))return this.queryTags
-    this.queryController.abort();this.queryController=new AbortController();this.queryPromise=null
+    const searches=[...new Set([...keywordSearches(this.queryText),...this.queryExtraTerms])].slice(0,4)
+    const unchanged=JSON.stringify(selected)===JSON.stringify(this.queryTags)&&JSON.stringify(searches)===JSON.stringify(this.queryPlans.filter(p=>p.search).map(p=>p.search))
+    if(!reset&&unchanged)return this.queryTags
+    // A cold topic plan can finish before the first relay sockets open. Let
+    // those reads finish and keep their spent request budget and cursors.
+    if(reset||!this.queryExtraTerms.length){this.queryController.abort();this.queryController=new AbortController();this.queryPromise=null}
     this.queryTags=Object.freeze(selected);this.queryAdded=0;this.queryError=''
     if(reset){this.queryBudget={bytes:0,max:8*1024*1024};this.queryRequestBudget={count:0,max:32}}
     const previous=reset?[]:this.queryPlans,newHistory=():RelayHistory=>({initialOldest:null,cursor:null,started:false,exhausted:false,limited:false,requests:0})
@@ -424,7 +433,6 @@ export class MarketRelayClient {
     this.queryPlans=[selected.slice(0,1),selected.slice(1)].filter(group=>group.length).map(group=>previous.find(plan=>JSON.stringify(plan.tags)===JSON.stringify(group))??{
       tags:Object.freeze(group),history:new Map(this.relays.map(url=>[url,newHistory()])),indexHistory:{...newHistory(),exhausted:!this.indexQuery},
     })
-    const searches=keywordSearches(this.queryText)
     for(const [index,search] of searches.entries())this.queryPlans.push(previous.find(plan=>plan.search===search)??{search,tags:[],history:new Map(this.relays.filter((_,relay)=>index===0||index===1+relay%Math.max(1,searches.length-1)).map(url=>[url,newHistory()])),indexHistory:{...newHistory(),exhausted:!this.indexQuery||!this.indexSearch}})
     if(this.running&&this.queryPlans.length)void this.loadQueryCandidates()
     return this.queryTags
@@ -466,7 +474,13 @@ export class MarketRelayClient {
       this.queryAdded=Math.max(0,this.records.size-before)
       if(results.some(result=>result.error))this.queryError='Some matching listings could not be loaded.'
     }).catch(()=>{if(controller===this.queryController)this.queryError='Matching listings could not be loaded.'}).finally(()=>{
-      if(controller===this.queryController){this.queryPromise=null;if(this.running){this.emitChange();this.onPagination(this.pagination())}}
+      if(controller===this.queryController){
+        this.queryPromise=null
+        if(this.running){
+          if(plans!==this.queryPlans)void this.loadQueryCandidates()
+          this.emitChange();this.onPagination(this.pagination())
+        }
+      }
     }).then(()=>this.queryPagination())
     return this.queryPromise
   }
@@ -527,11 +541,12 @@ export class MarketRelayClient {
 
   /** Update only the map discovery subscription; received listings stay usable. */
   setGeohashes(values = []) {
-    if (!Array.isArray(values) || values.length > MAX_GEOHASH_QUERY_VALUES || values.some(value => typeof value !== 'string' || !/^[0123456789bcdefghjkmnpqrstuvwxyz]{1,12}$/.test(value))) fail('Invalid map search area')
+    if (!Array.isArray(values) || values.length > WEB_REGIONAL_QUERY_VALUES || values.some(value => typeof value !== 'string' || !/^[0123456789bcdefghjkmnpqrstuvwxyz]{1,12}$/.test(value))) fail('Invalid map search area')
     const next = [...new Set(values)].sort()
     if (JSON.stringify(next) === JSON.stringify(this.geohashes)) return
     this.geohashes = next
     this.geohashSet = new Set(next)
+    this.geoBatches=this.hasInventoryQuery?geographicRequests(next,{authors:this.authors,tags:this.tags}):[]
     if (!this.running) return
     if(next.length&&this.hasInventoryQuery){
       // Keep complete precision covers in the index's smaller query budget.
@@ -545,17 +560,35 @@ export class MarketRelayClient {
   }
 
   requestGeohashes(connection: RelayConnection) {
+    clearTimeout(connection.geoTimer)
     try {
-      for(const id of connection.geoSubscriptions??[])connection.socket.send(JSON.stringify(['CLOSE',id]));
-      connection.geoSubscriptions=new Set();connection.geoSubscription = null
-      if (!this.geohashes.length || !this.hasInventoryQuery) return
-      const batches=geographicRequests(this.geohashes,{authors:this.authors,tags:this.tags});
-      for(const filters of batches){
-        connection.geoSubscription=`map-${++this.geoSequence}`;
-        connection.geoSubscriptions.add(connection.geoSubscription);
-        connection.socket.send(JSON.stringify(['REQ',connection.geoSubscription,...filters]));
-      }
-    } catch { connection.geoSubscription = null;connection.geoSubscriptions?.clear() }
+      for(const id of connection.geoSubscriptions??[])connection.socket.send(JSON.stringify(['CLOSE',id]))
+      connection.geoSubscriptions=new Set();connection.geoNext=0
+      this.sendGeoBatches(connection)
+    }catch{connection.geoSubscriptions?.clear()}
+  }
+
+  private sendGeoBatches(connection:RelayConnection){
+    const active=connection.geoSubscriptions
+    clearTimeout(connection.geoTimer)
+    while(active.size<9&&connection.geoNext<this.geoBatches.length){
+      const id=`map-${++this.geoSequence}`
+      connection.socket.send(JSON.stringify(['REQ',id,...this.geoBatches[connection.geoNext++]]))
+      active.add(id)
+    }
+    if(connection.geoNext<this.geoBatches.length){
+      const oldest=active.values().next().value
+      connection.geoTimer=setTimeout(()=>this.finishGeoBatch(connection,oldest,false),3500)
+    }
+  }
+
+  private finishGeoBatch(connection:RelayConnection,id:string,closed:boolean){
+    if(!connection.geoSubscriptions?.has(id)||!closed&&connection.geoNext>=this.geoBatches.length)return
+    connection.geoSubscriptions.delete(id)
+    try{
+      if(!closed)connection.socket.send(JSON.stringify(['CLOSE',id]))
+      this.sendGeoBatches(connection)
+    }catch{clearTimeout(connection.geoTimer)}
   }
 
   refresh() {
@@ -617,7 +650,7 @@ export class MarketRelayClient {
       if (!Array.isArray(frame)) return
       if (connection.geoSubscriptions?.has(frame[1])) {
         // No EOSE/ACK gate: each valid event becomes visible as it arrives.
-        if (frame[0] === 'CLOSED') { connection.geoSubscriptions.delete(frame[1]);if(frame[1]===connection.geoSubscription)connection.geoSubscription = null;return }
+        if(frame[0]==='EOSE'||frame[0]==='CLOSED'){this.finishGeoBatch(connection,frame[1],frame[0]==='CLOSED');return}
         if (frame[0] !== 'EVENT' || frame.length !== 3) return
         try {
           const listing = this.parseIncoming(frame[2])
@@ -883,6 +916,7 @@ export class MarketRelayClient {
   }
 
   dispose(connection: RelayConnection) {
+    clearTimeout(connection.geoTimer)
     connection.failed = true
     clearTimeout(connection.timer)
     clearTimeout(connection.retry)

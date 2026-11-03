@@ -145,3 +145,16 @@ test('a short initial feed cannot pin rankings or load history until the reader 
   assert.equal(grid.children.length,48, 'a new search gets a fresh automatic allowance');
   view.dispose();
 });
+
+test('Home keeps eligible cards mounted until a curated page is ready and releases them on a filter change', t=>{
+  const {grid,view}=streamingGrid(t,async()=>{},()=>({hasMore:false}))
+  const rows=items(8);view.update(rows,'home',{ordinary:true,pending:false,candidates:rows})
+  const retained=grid.children[1]
+  view.update([],'home',{ordinary:false,pending:true,candidates:rows.slice(1)})
+  assert.equal(grid.children.length,7);assert.equal(grid.children[0],retained)
+  view.update(rows.slice(2,4),'home',{ordinary:false,pending:false,candidates:rows})
+  assert.deepEqual(grid.children.map(n=>n.dataset.listingId),rows.slice(2,4).map(row=>row.id))
+  view.update(rows,'home',{ordinary:true,pending:false,candidates:rows})
+  view.update([],'other filter',{ordinary:false,pending:true,candidates:rows})
+  assert.equal(grid.children.length,0)
+})

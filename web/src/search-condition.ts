@@ -1,10 +1,5 @@
 // A bare word is a topic; longer searches retain the user's full intent.
 export const isTopicSearch = value => /^[\p{L}\p{N}_-]+$/u.test(String(value ?? '').trim());
-// The marketplace-trained head improved English shopping requests. Product
-// names and keyword phrases scored better with the upstream classifier.
-export function usesTrainedSearchHead(query: string, model: string): boolean {
-  return model === 'deberta' && /^(?:i (?:am looking for|want|need)|i['’]m looking for|i['’]d like|(?:can|could) (?:you|somebody|someone)|(?:show|find) me|please (?:show|find)|where can i|do you have)\s+\S/iu.test(query.trim());
-}
 export function searchCondition(value,model='deberta') {
   const query = String(value ?? '').trim().slice(0, 500);
   if(isTopicSearch(query))return model==='deberta'?`The item being offered is ${query}.`:`This text is about ${query}.`;

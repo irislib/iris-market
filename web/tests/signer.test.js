@@ -199,7 +199,9 @@ test('roster lookup keeps competing heads, partial newer data, and fails closed 
   assert.equal(await lookup(), null)
 })
 
-test('invalid or oversized device lists are rejected before authorizing another device', async () => {
+test('invalid or oversized device lists are rejected before authorizing another device', async t => {
+  const timestamp = Date.now()
+  t.mock.method(Date, 'now', () => timestamp)
   assert.throws(() => selectSignerRoster([roster(now() + 301)], owner), /Invalid/)
   const bad = roster(); bad.tags = bad.tags.map(tag => tag[0] === 'device' ? ['device', 'broken', '123'] : tag)
   assert.throws(() => selectSignerRoster([finalizeEvent(bad, ownerSecret)], owner), /Invalid/)

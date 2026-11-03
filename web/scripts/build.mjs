@@ -30,6 +30,7 @@ async function writeNotices(dest, bundleResults, includeRuntime) {
     `Iris Chat messaging adapters\n${await readFile(resolve(root, 'src/messaging/IRIS_CHAT_LICENSE.txt'), 'utf8')}`,
     `Iris Client image proxy\n${await readFile(resolve(root, 'licenses/IRIS-CLIENT-LICENSE.txt'), 'utf8')}`,
   ];
+  if(includeRuntime)notices.push(`MiniLM topic vectors (derived from the Iris Client keyword index)\n${await readFile(resolve(root,'licenses/MINILM-NOTICE.txt'),'utf8')}\n${await readFile(resolve(root,'licenses/MINILM-LICENSE.txt'),'utf8')}`);
   for (const folder of [...packages].sort()) {
     const info = JSON.parse(await readFile(resolve(folder, 'package.json'), 'utf8'));
     const files = (await readdir(folder, { withFileTypes: true }))
@@ -103,6 +104,7 @@ for (const [name, source, entry] of [['web', root, 'src/app.ts'], ['site', resol
     const graphBytes = await readFile(resolve(root, GRAPH_BOOTSTRAP.packagePath));
     if (graphBytes.byteLength !== GRAPH_BOOTSTRAP.byteLength || hash(graphBytes) !== GRAPH_BOOTSTRAP.sha256) throw new Error('Unexpected social graph bootstrap payload');
     await writeFile(resolve(dest, 'social-graph.bin'), graphBytes);
+    await copyFile(resolve(root, 'assets/topic-vectors.bin'),resolve(dest,'topic-vectors.bin'));
     await copyFile(resolve(root, 'native-map.html'), resolve(dest, 'native-map.html'));
     for (const file of ['maplibre-gl.css','maplibre-gl-worker.mjs','maplibre-gl-shared.mjs']) await copyFile(resolve(root, 'node_modules/maplibre-gl/dist', file), resolve(dest, file));
     results.push(await build({ absWorkingDir: root, entryPoints: [resolve(root, 'src/native-map.ts')], bundle: true, minify: true, format: 'esm', target: 'es2022', outfile: resolve(dest, 'native-map.js'), legalComments: 'eof', metafile: true }));

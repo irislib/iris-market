@@ -36,6 +36,7 @@ export function locationFromTags(tags: readonly (readonly string[])[]): GeohashC
 
 const MAX_COVER_CELLS = 32
 export const MAX_GEOHASH_QUERY_VALUES = 32768
+export const WEB_REGIONAL_QUERY_VALUES = 65536
 const MAX_QUERY_PRECISION = 8
 
 function viewportBounds(viewport) {
@@ -93,13 +94,13 @@ function gridHashes(grid) {
 /**
  * Exact Nostr #g values covering a viewport, never a partial/truncated cover.
  * Start at a zoom-appropriate precision and coarsen until at most 32 cells fit.
- * Include complete finer precision covers within a bounded 32,768-value budget
+ * Include complete finer precision covers within the value budget (larger for regional 4-character web queries)
  * so single-tag listings are found at city/region zooms; an immediate parent
  * is included only at precision 3+ and within four times the base cover's area.
  * Relays match tags exactly. Arbitrary longer single tags remain undiscoverable
  * through this filter; publishers should include their geohash prefixes.
  */
-export function geohashQueryForViewport(viewport: MapViewport): string[] {
+export function geohashQueryForViewport(viewport: MapViewport, regionalCover=false): string[] {
   const bounds = viewportBounds(viewport)
   if (!bounds) return []
   let precision = Math.max(1, Math.min(MAX_QUERY_PRECISION, Math.ceil((bounds.zoom + 1) / 2.5)))
@@ -113,7 +114,8 @@ export function geohashQueryForViewport(viewport: MapViewport): string[] {
   }
   for (let next = precision + 1; next <= MAX_QUERY_PRECISION; next++) {
     const finer = cellGrid(bounds, next)
-    if (count + finer.count > MAX_GEOHASH_QUERY_VALUES) break
+    const limit=regionalCover&&next===4&&bounds.zoom>=3?WEB_REGIONAL_QUERY_VALUES:MAX_GEOHASH_QUERY_VALUES
+    if (count + finer.count > limit) break
     covers.push(finer); count += finer.count
   }
   return covers.flatMap(gridHashes).sort()

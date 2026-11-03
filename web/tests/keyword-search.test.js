@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {readFileSync} from 'node:fs'
 import {finalizeEvent} from 'nostr-tools/pure'
 import {MarketRelayClient} from '../src/market.ts'
+import {readTopicVectors} from '../src/semantic-discovery.ts'
 import {SeenTags} from '../src/seen-tags.ts'
 import {createSearchDiscovery} from '../src/search-discovery.ts'
 import {matchesLiteralSearch,matchesSingleTermSearch,keywordSearches,listingSearchText} from '../src/lexical-search.ts'
@@ -173,4 +174,46 @@ test('a full ranked relay or index stream widens without a date cursor, then sto
      assert.equal(feed.queryPagination().hasMore,false)
    }finally{feed.close()}
  }
+})
+
+test('MiniLM plans a real relay word and observed tag without admitting unsigned listings or changing literal search',async()=>{
+ const vectors=readTopicVectors(readFileSync(new URL('../assets/topic-vectors.bin',import.meta.url)));
+ const plan=vectors('meat',['Beef','unrelated']);
+ assert(plan.tags.includes('Beef'));assert(plan.terms.includes('beef'));assert(!plan.tags.includes('unrelated'));
+ assert.deepEqual(vectors('unlistedword',['Beef']),{tags:[],terms:[]});
+ const catalogue=new SeenTags(),seed=signed('seed','Example',['Beef']),beef=signed('cut','Beef brisket'),tagged=signed('roast','Sunday roast',['Beef']);
+ const calls=[];
+ const feed=new MarketRelayClient({relays:[],now:()=>now,indexSearch:true,tagCatalogue:catalogue,indexQuery:async([f])=>{
+   calls.push(f);return{events:f.search==='beef'?[beef,{...beef,content:'tampered'}]:f['#t']?.includes('Beef')?[tagged]:[],complete:true};
+ }}).start();
+ const ai={enabled:()=>true,topicPlanning:()=>true};
+ const discovery=createSearchDiscovery({getClient:()=>feed,getAI:()=>ai,planTopics:async(q,t)=>vectors(q,t)});
+ try{
+   discovery.update('meat','literal');await feed.loadQueryCandidates();
+   assert(!calls.some(f=>f.search==='beef'));assert.equal(feed.listings().length,0);
+   discovery.update('meat','expanded');await tick();await feed.loadQueryCandidates();
+   assert(calls.some(f=>f.search==='beef'));assert.deepEqual(feed.listings().map(l=>l.identifier),['cut']);
+   catalogue.observe(seed,now);discovery.update('meat','expanded');await tick();await feed.loadQueryCandidates();
+   assert(calls.some(f=>f['#t']?.includes('Beef')));assert.deepEqual(feed.listings().map(l=>l.identifier).sort(),['cut','roast']);
+   discovery.update('meat','literal');await feed.loadQueryCandidates();
+   assert(!feed.queryPlans.some(p=>p.search==='beef'||p.tags.includes('Beef')));
+ }finally{discovery.dispose();feed.close()}
+});
+
+test('a cold topic plan lets in-flight exact reads open before using the remaining budget',async()=>{
+ const seen=[];let complete;
+ const feed=new MarketRelayClient({relays:[],now:()=>now,indexSearch:true,tagCatalogue:catalogue(),indexQuery:async([f])=>{
+   if(f.search)seen.push(f.search)
+   if(f.search==='meat')return new Promise(resolve=>{complete=resolve})
+   return{events:[],complete:true}
+ }}).start()
+ try{
+   feed.searchTags('meat',undefined,'expanded');await tick()
+   const exact=feed.loadQueryCandidates(),controller=feed.queryController,budget=feed.queryRequestBudget
+   feed.searchTags('meat',[],'expanded',['beef'])
+   assert.equal(controller.signal.aborted,false);assert.deepEqual(seen,['meat'])
+   complete({events:[fixtures[0]],complete:true});await exact;await feed.loadQueryCandidates()
+   assert.deepEqual(seen,['meat','beef']);assert.equal(feed.queryRequestBudget,budget)
+   assert(feed.listings().some(l=>l.identifier==='meat'))
+ }finally{feed.close()}
 })

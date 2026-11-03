@@ -2,13 +2,13 @@ import { byId, element } from './dom.ts';
 import { FeedFilterClient } from './feed-filter/client.ts';
 import {BrowserFeedFilterClient} from './feed-filter/browser-client.ts';
 import {planBrowserTags} from './feed-filter/browser-tags.ts';
-import { searchCondition, listingSearchText, listingSearchTexts, usesTrainedSearchHead } from './search-condition.ts';
+import { searchCondition, listingSearchText, listingSearchTexts } from './search-condition.ts';
 import {homeFeedConditions,homeFeedPreferences,type HomeFeedPreferences} from './home-feed.ts';
 const $=byId;
 const keyFor = listing => listing.eventId || listing.id;
 export const AI_MODE_STORAGE_KEY='market-ai-mode-v1',AI_MODEL_STORAGE_KEY='market-ai-model-v1';
 interface SearchListing {id:string;eventId?:string;title:string;description?:string;side?:string;category?:string;location?:string;tags?:string[];price?:string|number;currency?:string}
-interface AIOptions {getCandidates:()=>SearchListing[];onChange:()=>void;onTextSearch?:(query:string)=>void;onSubmit?:(query:string)=>void;fetchMoreCandidates?:()=>Promise<boolean>;client?:Pick<FeedFilterClient,'info'|'load'|'classify'|'dispose'>&{pin?:()=>()=>void};browserClient?:BrowserFeedFilterClient;hasWebGPU?:()=>boolean;autoPrepare?:boolean;storage?:Pick<Storage,'getItem'|'setItem'>;saveData?:()=>boolean;homeFeed?:HomeFeedPreferences;isHomeVisible?:()=>boolean}
+interface AIOptions {getCandidates:()=>SearchListing[];onChange:()=>void;onTextSearch?:(query:string)=>void;onSubmit?:(query:string)=>void;fetchMoreCandidates?:()=>Promise<boolean>;client?:Pick<FeedFilterClient,'info'|'load'|'classify'|'dispose'>&{pin?:()=>()=>void;selectSearchHead?:FeedFilterClient['selectSearchHead']};browserClient?:BrowserFeedFilterClient;hasWebGPU?:()=>boolean;autoPrepare?:boolean;storage?:Pick<Storage,'getItem'|'setItem'>;saveData?:()=>boolean;homeFeed?:HomeFeedPreferences;isHomeVisible?:()=>boolean}
 interface SourceRequest {epoch:number;done:boolean;more?:boolean;error?:unknown}
 export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetchMoreCandidates, client = new FeedFilterClient(), browserClient=new BrowserFeedFilterClient(),hasWebGPU=()=>!!globalThis.navigator&&'gpu' in globalThis.navigator,autoPrepare=true,storage:providedStorage,saveData=()=>!!(globalThis.navigator as Navigator&{connection?:{saveData?:boolean}})?.connection?.saveData,homeFeed,isHomeVisible=()=>true }:AIOptions) {
   let scores = new Map(), showAll = false, phase:'idle'|'loading'|'searching'='idle', generation = 0, submittedQuery='', paused=false, waitingCandidates=false;
@@ -39,7 +39,7 @@ export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetch
   let sourceErrorVisible=false,runController:AbortController|null=null;
   let activeRun:{query:string;promise:Promise<void>}|null=null;
   const progress=element('progress');progress.id='ai-download-progress';progress.max=1;progress.hidden=true;progress.setAttribute('aria-label','Model download');
-  $('ai-options').append(progress);
+  $('ai-summary').append(progress);
   const enabled = () => $('search-mode').value === 'ai';
   const threshold = () => ['qwen35','browser'].includes($('ai-model').value) ? .5 : Number($('ai-threshold').value);
   const needsCPU = () => $('ai-model').value === 'qwen35' && !hasWebGPU();
@@ -50,7 +50,7 @@ export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetch
     const candidates = getCandidates(), active = enabled(), busy=phase!=='idle';
     const hidden = curationActive()?candidates.filter(l => !matches(l)).length:0;
     const count=candidates.length-hidden,matchLabel=`${count} ${count===1?'match':'matches'}`;
-    $('ai-options').hidden = !active;
+
     $('ai-summary').hidden = !active || (!curationActive() && !busy);
     const activity = `${homeActive()?'For you · ':''}${matchLabel} · ${scores.size} checked`;
     $('ai-summary-text').textContent = showAll ? 'Showing all listings' : phase==='loading' ? `${$('ai-progress').textContent || 'Loading model…'} · ${activity}` : `${waitingCandidates&&busy?'Waiting for listings · ':paused&&!sourceError?'Search paused · ':''}${activity}`;
@@ -72,6 +72,7 @@ export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetch
       $('ai-progress').textContent = needsCPU() ? 'Qwen is unavailable in this browser. Use the smaller CPU model.' : submittedQuery&&!candidates.length&&!sourceError ? 'Refresh listings or clear filters to search.' : '';
     }
     $('ai-progress').hidden=busy||!$('ai-progress').textContent;
+    $('ai-options').hidden=!active||($('ai-progress').hidden&&!$('ai-error').textContent);
     if(active)$('search').setAttribute('aria-describedby','ai-progress');else $('search').removeAttribute('aria-describedby');
     $('search').placeholder = active ? 'Describe what you’re looking for' : 'Search listings';
     wakeCandidates?.();
@@ -176,7 +177,8 @@ export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetch
       if(query!==submittedQuery){sourceEpoch++;submittedQuery=query;scores.clear();if(!homeRun)onSubmit?.(query);onChange();}
       if(!enabled()||!query&&!homeRun||homeRun&&!homeActive())return;
       const model=$('ai-model').value;
-      const searchHead=!homeRun&&usesTrainedSearchHead(query,model);
+      const searchHead=!homeRun&&'selectSearchHead' in selected&&!!(await selected.selectSearchHead?.(query,controller.signal));
+      if(current!==generation)return;
       const conditions=homeRun?homeFeedConditions(home.prompt,model):[{condition:searchCondition(query,model),exclude:false}];
       let sourceRequests=0,unpainted=0,painted=false,lastPaint=performance.now();
       phase='searching';refresh();
@@ -302,9 +304,11 @@ export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetch
       if(!current())return;
       if(!selected.info||selected.info.model!==model)throw Error('The selected model is not ready.');
       testOwnsLoad=false;$('ai-test-progress').hidden=true;$('ai-test-status').textContent='Testing example…';
+      const searchHead='selectSearchHead' in selected&&!!(await selected.selectSearchHead?.(query,controller.signal));
+      if(!current())return;
       let score=0,cached=true;
       for(const text of listingSearchTexts({title,description,side:'offer'},query,model)){
-        const result=await selected.classify(searchCondition(query,model),text,{signal:controller.signal,searchHead:usesTrainedSearchHead(query,model)});
+        const result=await selected.classify(searchCondition(query,model),text,{signal:controller.signal,searchHead});
         if(!current())return;
         if(!Number.isFinite(result.score)||result.score<0||result.score>1)throw Error('The model returned an invalid decision.');
         cached&&=!!result.cached;score=Math.max(score,result.score);if(score>=cutoff)break;
@@ -341,5 +345,5 @@ export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetch
   const planTags=(query:string,tags:readonly string[],signal?:AbortSignal)=>{const epoch=generation;return planBrowserTags(query,tags,{info:enabled()&&$('ai-model').value==='browser'?browserClient.info:null,signal,isCurrent:()=>!closed&&generation===epoch&&enabled()&&$('ai-model').value==='browser'&&submittedQuery===query});};
   function viewChanged(){const visible=isHomeVisible();if(!visible&&homeContext&&!homeStopped){stop({unload:false,finishCurrent:true});paused=false;}if(visible&&!homeWasVisible)homeStopped=false;homeWasVisible=visible;refresh();}
   document.addEventListener?.('visibilitychange',viewChanged);
-  return { ready,planTags,enabled,homeActive,showingAll:()=>showAll,viewChanged,submit:(query:string)=>{$('search').value=query;return run();},homeFeed:()=>({...home}),setHomeFeed:(value:HomeFeedPreferences)=>{home=homeFeedPreferences(value);if(submittedQuery){refresh();onChange();}else stop({reset:true,unload:false});},query:()=>submittedQuery, searching:()=>phase!=='idle', loadMore:()=>run({continuation:true,homeRun:homeActive()}), pagination, scoreFor, isVisible: listing => !enabled() || showAll || !curationActive() || matches(listing), refresh, stop: () => stop({reset:true}) };
+  return { ready,planTags,topicPlanning:()=>$('ai-model').value==='deberta',canPlanTags:()=>runtime()===browserClient&&!!browserClient.info,enabled,homeActive,showingAll:()=>showAll,viewChanged,submit:(query:string)=>{$('search').value=query;return run();},homeFeed:()=>({...home}),setHomeFeed:(value:HomeFeedPreferences)=>{home=homeFeedPreferences(value);if(submittedQuery){refresh();onChange();}else stop({reset:true,unload:false});},query:()=>submittedQuery, searching:()=>phase!=='idle',homeReviewPending:()=>homeActive()&&(phase!=='idle'||homeScheduled||!scores.size&&!homeStopped&&candidates().length>0), loadMore:()=>run({continuation:true,homeRun:homeActive()}), pagination, scoreFor, isVisible: listing => !enabled() || showAll || !curationActive() || matches(listing), refresh, stop: () => stop({reset:true}) };
 }

@@ -6,7 +6,7 @@ export function setupMap({ getListings, onSelect, onVisibilityChange = () => {},
   let instance, loading, visible = false, disposed = false;
   const mappable=(listings=getListings())=>listings.filter(item=>item.coordinates||item.serviceAreas);
   let selectForViewport:typeof import('./map/index.ts').listingsForViewport;
-  const discovery = createViewportDiscovery(onDiscover);
+  const discovery = createViewportDiscovery(onDiscover,{regionalCover:true});
   const stats = async () => {
     if (!instance) return;
     const data = await instance.getStorageStats();
@@ -39,7 +39,7 @@ export function setupMap({ getListings, onSelect, onVisibilityChange = () => {},
     const listings = getListings(), located = mappable(listings);
     const inView=selectForViewport(located,instance.viewport());
     instance.setListings(located.length>1000?inView:located);
-    $('map-status').textContent = isDiscoveryLimited() ? 'Map listing limit reached for this session.' : inView.length ? `${inView.length} ${inView.length===1?'listing':'listings'} in this area` : 'No shared listing locations in view yet.';
+    $('map-status').textContent = isDiscoveryLimited() ? 'Map listing limit reached for this session.' : inView.length ? `${inView.length} mapped ${inView.length===1?'listing':'listings'} in view` : 'No shared listing locations in view yet.';
   }
   const theme = () => instance?.setDark(darkAppearance()).catch(() => {});
   const watcher = matchMedia('(prefers-color-scheme: dark)'); watcher.addEventListener('change', theme);

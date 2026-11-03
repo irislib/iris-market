@@ -193,3 +193,15 @@ test('trained and original classifier decisions use separate cache entries', asy
     }
   } finally { client.dispose() }
 })
+
+test('the model chooses the marketplace head from the entire request, independent of English prefixes', async()=>{
+  const client=new FeedFilterClient(),calls=[];
+  client.info={model:'deberta'};
+  client.classify=async(condition,text)=>{calls.push([condition,text]);return{score:text.endsWith('pyörän') ? .9 : .1}};
+  assert.equal(await client.selectSearchHead('bicycle'),false);
+  assert.equal(await client.selectSearchHead('Tarvitsisin kokoontaitettavan pyörän'),true);
+  assert.equal(await client.selectSearchHead('Can you show me'),false);
+  assert.deepEqual(calls.map(([,text])=>text),['Tarvitsisin kokoontaitettavan pyörän','Can you show me']);
+  assert.equal(calls[0][0],calls[1][0]);
+  client.dispose();
+});

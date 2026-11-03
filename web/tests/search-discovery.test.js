@@ -33,3 +33,22 @@ test('replacing the source or disposing rejects late plans from the same query',
   assert.equal(f.plans[0].signal.aborted,true);f.pending[0].resolve(['old']);await tick();assert.equal(f.calls.length,1)
   f.discovery.dispose();assert.equal(f.plans[1].signal.aborted,true);f.pending[1].resolve(['late']);await tick();assert.deepEqual(nextCalls,[['electronics',undefined,'expanded']])
 })
+
+test('a cold search can use signed tags that arrive after submission and the browser model is ready',async()=>{
+  const f=fixture();f.ai.active=true;let ready=false,tags=[]
+  f.ai.canPlanTags=()=>ready;f.client.tagCatalogue.entries=()=>tags
+  f.discovery.update('espresso','expanded');ready=true;f.discovery.update('espresso','expanded');await tick()
+  assert.equal(f.calls.length,1);assert.equal(f.plans.length,0)
+  tags=[{spellings:['coffee']}];f.discovery.update('espresso','expanded');f.discovery.update('espresso','expanded');await tick()
+  assert.equal(f.plans.length,1);f.pending[0].resolve(['coffee']);await tick()
+  assert.deepEqual(f.calls.at(-1),['espresso',['coffee'],'expanded']);f.discovery.dispose()
+})
+
+test('a late topic plan cannot expand a replacement query',async()=>{
+  const f=fixture(),pending=deferred();f.ai.active=true;f.ai.topicPlanning=()=>true;
+  const discovery=createSearchDiscovery({getClient:()=>f.client,getAI:()=>f.ai,planTopics:()=>pending.promise});
+  discovery.update('fruit','expanded');discovery.update('used bicycle','expanded');
+  pending.resolve({terms:['apples'],tags:[]});await tick();
+  assert.deepEqual(f.calls,[['fruit',undefined,'expanded'],['used bicycle',undefined,'expanded']]);
+  discovery.dispose();
+});

@@ -57,7 +57,7 @@ test('map requests respect author/tag filters, have bounded results and reconnec
     assert.equal(query.slice(2).reduce((n,filter)=>n+filter.limit,0),240)
     socket.readyState=3;app.refresh();const next=Socket.instances.at(-1);next.open()
     assert.deepEqual(next.sent.at(-1).slice(2),query.slice(2))
-    for(const bad of [['u*'],['UD9'],Array(32769).fill('u'),['u'.repeat(13)],null])assert.throws(()=>app.setGeohashes(bad),/map search/)
+    for(const bad of [['u*'],['UD9'],Array(65537).fill('u'),['u'.repeat(13)],null])assert.throws(()=>app.setGeohashes(bad),/map search/)
   } finally {app.close()}
 })
 test('empty following filters never widen into map discovery',()=>{
@@ -157,5 +157,30 @@ test('a full browsing feed still admits moved-area pins and can retry a dropped 
     assert(app.listings().some(item=>item.title==='apple'))
     assert.equal(app.records.size,5)
     assert.equal(app.listings().some(item=>item.title==='sold'),false)
+  }finally{app.close()}
+})
+
+
+test('a wide continental map finishes its complete four-character cover within nine simultaneous reads',()=>{
+  const cells=geohashQueryForViewport({west:-134,east:-62,south:23,north:54,zoom:3.6},true)
+  assert(cells.length>32768&&cells.length<=65536)
+  const remaining=new Set(cells),app=client(),socket=Socket.instances[0]
+  try{
+    socket.open();app.setGeohashes(cells)
+    const sent=()=>socket.sent.filter(f=>f[0]==='REQ'&&f[1].startsWith('map-'))
+    assert.equal(sent().length,9)
+    const live=new Set()
+    for(let i=0;i<socket.sent.length;i++){
+      const [type,id,...filters]=socket.sent[i]
+      if(!id.startsWith('map-'))continue
+      if(type==='CLOSE'){live.delete(id);continue}
+      live.add(id);assert(live.size<=9)
+      for(const filter of filters)for(const hash of filter['#g'])remaining.delete(hash)
+      if(filters.some(f=>f['#g'].includes('9y5q')))socket.receive(['EVENT',id,listing('Oklahoma','9y5q')])
+      socket.receive(['EOSE',id])
+    }
+    assert.equal(remaining.size,0);assert(app.listings().some(row=>row.title==='Oklahoma'))
+    app.setGeohashes(['ud9']);const count=sent().length
+    socket.receive(['EOSE',sent()[0][1]]);assert.equal(sent().length,count)
   }finally{app.close()}
 })

@@ -213,7 +213,7 @@ test('typing during preload preserves download and searches latest text after co
   let complete,report,disposed=0;const conditions=[];
   const client={info:null,load(_model,_device,progress){report=progress;return new Promise(resolve=>complete=()=>{this.info={model:'deberta'};resolve(this.info);});},async classify(condition){conditions.push(condition);return{score:.8};},dispose(){disposed++;this.info=null;}};
   const {field,ui}=fixture({client});const run=field('search-run').onclick();
-  const progress=field('ai-options').children.find(node=>node.id==='ai-download-progress');assert.equal(progress.hidden,true);
+  const progress=field('ai-summary').children.find(node=>node.id==='ai-download-progress');assert.equal(progress.hidden,true);
   report('Downloading DeBERTa · 4 / 8 MB · 50%',{loaded:4000000,total:8000000});assert.equal(progress.value,.5);assert.equal(progress.hidden,false);
   field('search').value='chair';field('search').dispatchEvent(new Event('input'));field('search').value='bicycle';field('search').dispatchEvent(new Event('input'));
   assert.equal(disposed,0);assert.equal(ui.query(),'');complete();await run;
@@ -224,7 +224,7 @@ test('explicit Stop cancels an empty-query download without a false error',async
   let rejectLoad,disposed=0;
   const client={info:null,load:()=>new Promise((_,reject)=>rejectLoad=reject),classify:async()=>{throw Error('Must not classify');},dispose(){disposed++;rejectLoad(Error('Stopped'));}};
   const {field,ui}=fixture({client});const run=field('search-run').onclick();assert.equal(field('ai-stop').hidden,false);
-  field('ai-stop').onclick();await run;assert.equal(disposed,1);assert.equal(ui.searching(),false);assert.equal(field('search-run').disabled,false);assert.equal(field('ai-error').textContent,'');assert.equal(field('ai-options').children[0].hidden,true);
+  field('ai-stop').onclick();await run;assert.equal(disposed,1);assert.equal(ui.searching(),false);assert.equal(field('search-run').disabled,false);assert.equal(field('ai-error').textContent,'');assert.equal(field('ai-summary').children[0].hidden,true);
 });
 
 
@@ -724,7 +724,7 @@ test('model and candidate waits are distinct from completed matching activity',a
 
 test('only submitted conversational searches select the trained head', async()=>{
   const heads=[];
-  const client={info:{model:'deberta'},async load(){},async classify(_condition,_text,options){
+  const client={info:{model:'deberta'},async load(){},selectSearchHead:async query=>query==='I need a folding bicycle.',async classify(_condition,_text,options){
     heads.push(options.searchHead);return{score:1};
   },dispose(){}};
   const {ui,field}=fixture({client,homeFeed:{enabled:true,prompt:'I need items for my house'}});

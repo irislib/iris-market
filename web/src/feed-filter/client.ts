@@ -1,4 +1,5 @@
 import type { FeedModelInfo, ClassificationResult, FeedDecision, FilterRequest, FilterResult, ProgressHandler, WorkerResponse } from './types.ts'
+import {isTopicSearch} from '../search-condition.ts'
 import { assetUrl } from '../asset-url.ts'
 import {DecisionCache,decisionCacheKey} from './decision-cache.ts'
 /*! Adapted from Iris client's src/lib/feed-filter/client.ts (MIT, Copyright 2024 Martti Malmi).
@@ -99,6 +100,13 @@ export class FeedFilterClient {
       this.info = Object.freeze({ ...result, model: modelId, revision: FEED_MODELS[modelId].revision })
       return this.info
     })
+  }
+  /** Ask the loaded model once per query whether the user expresses a request.
+   * The decision uses the same local cache as other model inputs. */
+  async selectSearchHead(query:string,signal?:AbortSignal):Promise<boolean>{
+    if(this.info?.model!=='deberta'||!query.trim()||isTopicSearch(query))return false
+    const result=await this.classify('I am looking for this.',query,{signal})
+    return result.score>=.5
   }
   classify(condition: string, listingText: string, { signal, eventId, searchHead = false }: { signal?: AbortSignal; eventId?: string; searchHead?: boolean } = {}) {
     try { validateInput(condition, listingText) } catch (error) { return Promise.reject(error) }

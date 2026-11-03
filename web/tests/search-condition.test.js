@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { searchCondition, listingSearchText, listingSearchTexts, usesTrainedSearchHead } from '../src/search-condition.ts';
+import { searchCondition, listingSearchText, listingSearchTexts } from '../src/search-condition.ts';
 test('ordinary words become topics and longer searches preserve intent',()=>{
  assert.equal(searchCondition('  bicycle  '),'The item being offered is bicycle.');
  assert.equal(searchCondition('used chairs under 100 EUR'),'This listing offers used chairs under 100 EUR.');
@@ -42,12 +42,4 @@ test('real metadata constraints, including zero price, survive long-description 
  const input={side:'offer',title:'Red bicycle',description:'Long description '.repeat(400),category:'transport',location:'Helsinki',price:'80',currency:'EUR'};
  const result=listingSearchText(input);assert(result.length<=2000);for(const field of ['Category: transport','Location: Helsinki','Price: 80 EUR'])assert(result.includes(field));
  assert(listingSearchText({...input,description:'',price:0}).includes('Price: 0 EUR'));assert(listingSearchText({...input,description:'',currency:''}).includes('Price: 80'));assert(!listingSearchText({...input,description:'',currency:''}).includes('EUR'));
-});
-
-test('trained classification is restricted to conversational DeBERTa searches',()=>{
-  for (const query of ['I need a folding table.', 'Where can I find decaf coffee?', 'Can you show me a coat?', 'I’m looking for a plumber'])
-    assert.equal(usesTrainedSearchHead(query,'deberta'),true);
-  for (const query of ['furniture', 'decaf coffee', 'Please Please Me vinyl', 'winter coats?'])
-    assert.equal(usesTrainedSearchHead(query,'deberta'),false);
-  assert.equal(usesTrainedSearchHead('I need new shoes','browser'),false);
 });

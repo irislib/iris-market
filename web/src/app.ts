@@ -25,7 +25,7 @@ import { renderDescription } from './description.ts';
 import { setupAI } from './ai-ui.ts';
 import {loadHomeFeed,saveHomeFeed} from './home-feed.ts';
 import {createSearchDiscovery} from './search-discovery.ts';
-import { setupLongPress } from './long-press.ts';
+import { relatedSearchLabels } from './seen-tags.ts';
 import { rankListings } from './ranking.ts';
 import {setupUserLocation} from './user-location.ts';
 import { setupProfiles, createRelationshipBadge } from './profile-ui.ts';
@@ -57,7 +57,7 @@ function closeDetailAreas(){void detailAreaPreview?.destroy();detailAreaPreview=
 let toastTimer, focusedListing=null, aiFilter, aiCandidates=[], submittedTextQuery='';
 let detailRenderKey='';
 let userLocation:ReturnType<typeof setupUserLocation>;
-const searchDiscovery=createSearchDiscovery({getClient:()=>client,getAI:()=>aiFilter,planTopics:planTopicFilters});
+const searchDiscovery=createSearchDiscovery({getClient:()=>client,getAI:()=>aiFilter,planTopics:planTopicFilters,onPlanChange:updateFilterSummary});
 const load=(key,fallback)=>{try{return JSON.parse(localStorage.getItem(key))??fallback}catch{return fallback}};
 const persist=(key,value)=>{try{localStorage.setItem(key,JSON.stringify(value))}catch{toast('Storage is unavailable')}};
 const savedData=load('market-saved-'+(preview?'preview':'live'),[]);
@@ -147,8 +147,8 @@ function frameRoute(){placeSearch();aiFilter?.viewChanged();const type=currentRo
 function activateRoute(restoreBrowse=false){if(!routeReady)return;userLocation?.closeChooser();currentRoute=parseMarketRoute(location.href);frameRoute();const route=currentRoute;if(route.type==='home'||route.type==='saved'||route.type==='search'){if(restoreBrowse&&retainedBrowse?.href===location.href){$('search').value=retainedBrowse.input;render();return;}retainedBrowse=null;const switchingSaved=savedOnly!==(route.type==='saved');savedOnly=route.type==='saved';$('main').classList.toggle('saved-view',savedOnly);if(switchingSaved)resetShipping();if(switchingSaved&&(feedTags.length||feedAuthors!==null||nearbyFilter))start();if(route.type==='search'){void aiFilter?.submit(route.query);}else{$('search').value='';submittedTextQuery='';aiFilter?.stop();}render();return;}if(route.type==='listing'){const found=listings.find(l=>l.id===route.id)||focusedListing;if(found?.id===route.id)openDetail(found,false);else{closeDetailReviews();closeDetailAreas();focusedListing=null;$('detail-content').replaceChildren(node('h1','Listing'),node('p','This listing hasn’t arrived yet. You can keep browsing.','muted'));}if(!preview&&client?.targetId!==route.id&&detailClient?.targetId!==route.id){detailClient?.close();detailClient=new MarketRelayClient({relays,authors:[],targetId:route.id,maxRecords:8,onChange:rows=>{if(currentRoute.type==='listing'&&currentRoute.id===route.id){const value=rows.find(l=>l.id===route.id);if(value)openDetail(value,false);else if(detailClient?.records.has(route.id))unavailableListing();}}});detailClient.start();}return;}if(route.type==='profile'){void profiles.open(route.pubkey,{navigate:false});return;}if(route.type==='post'){composerUI.open();return;}if(route.type==='wallet'){void walletUI.open();return;}if(route.type==='messages'){if(route.pubkey)void accountUI.openChat(route.pubkey);else accountUI.showInbox();return;}if(route.type==='account'){accountUI.showAccount();return;}if(route.type==='courier'){ordersUI.open(undefined,'deliveries');return;}if(route.type==='orders'){ordersUI.open(route.id,route.id?undefined:'purchases');return;}if(route.type==='missing')$('detail-content').replaceChildren(node('h1','Page not found'),node('p','Check the link or return to Home.','muted'));}
 function pageOpened(href){if(!routeReady)return;navigate(href,{activate:false});}
 function unreadNav(id,count){const button=$(id);let dot=button.querySelector('.nav-unread');if(!dot){dot=node('span',undefined,'nav-unread');dot.setAttribute('aria-hidden','true');button.append(dot);}dot.hidden=count===0;if(id==='orders-tab'){dot.classList.add('nav-unread-count');dot.textContent=count>99?'99+':String(count);}button.setAttribute('aria-label',`${id==='inbox-tab'?'Messages':'Orders'}${count?`, ${count} unread`:''}`);}
-function render(){client?.setBuying(!savedOnly&&side==='request'&&['home','search'].includes(currentRoute.type));void loadShippingDetails();const aiEnabled=!!aiFilter?.enabled(),submitted=aiEnabled?aiFilter.query?.()||'':submittedTextQuery;if(aiEnabled&&submitted)submittedTextQuery=submitted;searchDiscovery.update(submitted,aiEnabled?'expanded':'literal');let result=savedOnly?listings.filter(l=>saved.has(l.id)):listings.filter(l=>!hiddenListings.has(l.id)&&(!photosOnly()||!!l.imageUrl||photoFilter===null&&l.escrow?.trade==='bitcoin_fiat')).filter(l=>(feedAuthors===null||feedAuthors.includes(l.author))&&(!feedNetwork||(graphContext?.rankRelationFor(l.author)||graphContext?.relationFor(l.author))?.distance===1)&&(!feedTags.length||feedTags.some(t=>(l.tags||[l.category]).includes(t)))).filter(l=>(side==='all'||l.side===side)&&(category==='all'||(l.category||'').toLowerCase()===category));const query=(aiFilter?.enabled()?aiFilter.query?.()||'':submittedTextQuery).trim().toLowerCase(),place=locationFilter.toLowerCase(),cell=locationHash(place);
-const literalQuery=aiEnabled?'':query;
+function render(){client?.setBuying(!savedOnly&&side==='request'&&['home','search'].includes(currentRoute.type));void loadShippingDetails();const aiEnabled=!!aiFilter?.enabled(),submitted=aiEnabled?aiFilter.query?.()||'':submittedTextQuery;if(aiEnabled&&submitted)submittedTextQuery=submitted;const aiSelected=aiEnabled&&!aiFilter.showingAll();searchDiscovery.update(submitted,aiSelected?'expanded':'literal');updateFilterSummary();let result=savedOnly?listings.filter(l=>saved.has(l.id)):listings.filter(l=>!hiddenListings.has(l.id)&&(!photosOnly()||!!l.imageUrl||photoFilter===null&&l.escrow?.trade==='bitcoin_fiat')).filter(l=>(feedAuthors===null||feedAuthors.includes(l.author))&&(!feedNetwork||(graphContext?.rankRelationFor(l.author)||graphContext?.relationFor(l.author))?.distance===1)&&(!feedTags.length||feedTags.some(t=>(l.tags||[l.category]).includes(t)))).filter(l=>(side==='all'||l.side===side)&&(category==='all'||(l.category||'').toLowerCase()===category));const query=(aiFilter?.enabled()?aiFilter.query?.()||'':submittedTextQuery).trim().toLowerCase(),place=locationFilter.toLowerCase(),cell=locationHash(place);
+const literalQuery=aiSelected?'':query;
 if(!savedOnly&&(literalQuery||nearbyFilter||place||shipsTo))result=result.filter(l=>
   (!literalQuery||matchesLiteralSearch(listingSearchText(l),literalQuery))
   &&(nearbyFilter?listingMatchesNearby(l,nearbyFilter):cell?mapVisible||l.originalTags?.some(t=>t[0]==='g'&&t.length===2&&decodeGeohash(t[1])?.geohash.startsWith(cell)):(l.location||'').toLowerCase().includes(place))
@@ -206,10 +206,22 @@ document.addEventListener('keydown',e=>{if(e.key==='/'&&!['INPUT','TEXTAREA','SE
 function networkFilterLabel(){return accountUI?.state().ownerPubkey===contextKey?'People I follow':contextKey===DEFAULT_SOCIAL_GRAPH_ROOT?'Sirius Business’s network':nameFor(contextKey)+'’s network';}
 const syncHomePrompt=()=>{$('home-prompt-fields').hidden=!$('home-feed-enabled').checked;};
 $('home-feed-enabled').onchange=syncHomePrompt;
-$('feed-filters').onclick=()=>{const home=aiFilter.homeFeed();$('home-feed-enabled').checked=home.enabled;syncHomePrompt();$('home-feed-prompt').value=home.prompt;$('has-photos').checked=photosOnly();$('location').value=locationFilter;locationInputs.restore(nearbyFilter);$('ships-to').value=shipsTo;$('tag-input').value=feedTags.join(', ');$('audience').value=feedNetwork?'following':'all';$('audience').querySelector('option[value="following"]').textContent=networkFilterLabel();$('filter-error').textContent='';$('filters-dialog').showModal()};
+$('feed-filters').onclick=()=>{const home=aiFilter.homeFeed();$('home-feed-enabled').checked=home.enabled;syncHomePrompt();$('home-feed-prompt').value=home.prompt;$('has-photos').checked=photosOnly();$('location').value=locationFilter;locationInputs.restore(nearbyFilter);$('ships-to').value=shipsTo;$('tag-input').value=feedTags.join(', ');$('audience').value=feedNetwork?'following':'all';$('audience').querySelector('option[value="following"]').textContent=networkFilterLabel();$('filter-error').textContent='';$('filters-dialog').showModal();updateFilterSummary()};
 function feedCells(mapCells:string[]=[]){const hash=locationHash(locationFilter);return mapCells.length?mapCells:hash?[hash]:nearbyFilter?geohashQueryForViewport(nearbyViewport(nearbyFilter)):[];}
 function syncAreaURL(){if(!['home','search'].includes(currentRoute.type))return;const url=new URL(location.href),hash=locationHash(locationFilter);if(hash)url.searchParams.set('g',hash);else url.searchParams.delete('g');if(url.href!==location.href)history.replaceState(history.state,'',url);}
-function updateFilterSummary(){const parts=[];if(photoFilter===true)parts.push('Has photos');if(shipsTo)parts.push('Ships to '+countryName(shipsTo));if(locationFilter)parts.push(locationFilter);if(feedTags.length)parts.push(feedTags.map(t=>'#'+t).join(' '));if(feedNetwork)parts.push(networkFilterLabel());$('filter-summary').hidden=!parts.length;$('filter-summary').textContent=parts.join(' · ');}
+function updateFilterSummary(){
+  const count=[photosOnly(),shipsTo,locationFilter,feedTags.length,feedNetwork].filter(Boolean).length;
+  const label=count ? `Filters (${count})` : 'Filters';
+  if($('feed-filters').textContent!==label)$('feed-filters').textContent=label;
+  if(!$('filters-dialog').open)return;
+  const labels=!preview&&currentRoute.type==='search'&&aiFilter?.enabled()&&!aiFilter.showingAll()&&
+    client?.queryExpansion==='expanded'&&client.queryText===aiFilter.query()
+    ? relatedSearchLabels(client.queryText,client.queryTags,client.queryExtraTerms) : [];
+  const list=$('search-expansion-terms');
+  if(labels.length!==list.children.length||labels.some((term,i)=>list.children[i].textContent!==term))
+    list.replaceChildren(...labels.map(term=>node('li',term)));
+  $('search-expansions').hidden=!labels.length;
+}
 $('reset-feed-filters').onclick=()=>{photoFilter=null;feedTags=[];feedAuthors=null;feedNetwork=false;locationFilter='';nearbyFilter=null;shipsTo='';syncAreaURL();resetShipping();$('filters-dialog').close();updateFilterSummary();start()};
 $('filter-form').onsubmit=e=>{
   e.preventDefault();
@@ -318,16 +330,7 @@ window.addEventListener('popstate',()=>{
   window.scrollTo(0,history.state?.marketScroll||0);
 });
 userLocation=setupUserLocation({onChange:render,isPreview:preview});$('your-location-filters').append(userLocation.createControl());$('your-location-settings').append(userLocation.createControl());
-const disposeAIOptionsGesture=setupLongPress($('search-mode'),()=>{
-  navigate(pageURL('settings',location.href));
-  const model=$('ai-model');
-  const group=model.closest('details');
-  if(group)group.open=true;
-  const label=model.closest('label');
-  if(label)label.hidden=false;
-  model.focus();
-});
-window.addEventListener('pagehide',()=>{disposeAIOptionsGesture();userLocation?.dispose();searchDiscovery.dispose();closeDetailReviews();closeDetailAreas();client?.close();detailClient?.close();courierClient?.close();profiles?.close({notify:false});graphAbort?.abort();rateService?.close();gridUI.dispose()});aiFilter=setupAI({homeFeed:loadHomeFeed(localStorage),isHomeVisible:()=>currentRoute.type==='home'&&!mapVisible&&!document.hidden,onSubmit:query=>{savedOnly=false;navigate(searchURL(query,location.href),{activate:false});},autoPrepare:!preview,getCandidates:()=>aiCandidates,onChange:render,onTextSearch:query=>{submittedTextQuery=query;},fetchMoreCandidates:async()=>{
+window.addEventListener('pagehide',()=>{userLocation?.dispose();searchDiscovery.dispose();closeDetailReviews();closeDetailAreas();client?.close();detailClient?.close();courierClient?.close();profiles?.close({notify:false});graphAbort?.abort();rateService?.close();gridUI.dispose()});aiFilter=setupAI({homeFeed:loadHomeFeed(localStorage),isHomeVisible:()=>currentRoute.type==='home'&&!mapVisible&&!document.hidden,onSubmit:query=>{savedOnly=false;navigate(searchURL(query,location.href),{activate:false});},autoPrepare:!preview,getCandidates:()=>aiCandidates,onChange:render,onTextSearch:query=>{submittedTextQuery=query;},fetchMoreCandidates:async()=>{
   if(preview||savedOnly||!client)return false;
   const active=client;active.openSearchPage();
   const queryPage=active.queryPagination();

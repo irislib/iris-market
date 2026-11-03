@@ -1,3 +1,4 @@
+import {keywordSearches} from './lexical-search.ts'
 import {BITCOIN_KIND,readEscrowOffer} from './escrow-offer.ts';
 import { verifyEvent, type Event } from 'nostr-tools/pure'
 
@@ -18,6 +19,17 @@ export function literalSearchTags(query:string):string[]{
   return [...new Set([...(valid(text)?[text]:[]),...words.filter(word=>valid(word)&&word.length>1&&!/^\d+$/.test(word)&&!stopWords.has(word))])].slice(0,TAG_LIMITS.literalTags)
 }
 interface Tag {spellings:Map<string,Set<string>>;authors:Set<string>}
+
+/** The panel lists extra retrieval terms once, omitting literal query variants. */
+export function relatedSearchLabels(query:string,tags:readonly string[],terms:readonly string[]):string[]{
+  const seen=new Set([...literalSearchTags(query),...keywordSearches(query)].map(normal))
+  const labels:string[]=[]
+  for(const term of [...tags,...terms]){
+    const key=normal(term)
+    if(key&&!seen.has(key)){seen.add(key);labels.push(term)}
+  }
+  return labels
+}
 
 /** Ephemeral, bounded public evidence. No queries, identities or browsing history are persisted. */
 export class SeenTags {

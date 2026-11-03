@@ -57,7 +57,7 @@ interface IdTags {
   'ai-test-status': 'p';
   'ai-options': 'div';
   'ai-progress': 'span';
-  'ai-show-all': 'button';
+  'result-view': 'select';
   'ai-stop': 'button';
   'ai-summary': 'div';
   'ai-summary-text': 'span';
@@ -86,7 +86,8 @@ interface IdTags {
   'feed-filters': 'button';
   'filter-error': 'p';
   'filter-form': 'form';
-  'filter-summary': 'div';
+  'search-expansions': 'section';
+  'search-expansion-terms': 'ul';
   'filters-dialog': 'dialog';
   'graph-context': 'button';
   'grid-pagination': 'div';

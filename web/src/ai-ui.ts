@@ -12,14 +12,15 @@ interface SearchListing {id:string;author?:string;eventId?:string;title:string;d
 interface AIOptions {getCandidates:()=>SearchListing[];onChange:()=>void;onTextSearch?:(query:string)=>void;onSubmit?:(query:string)=>void;fetchMoreCandidates?:()=>Promise<boolean>;client?:Pick<FeedFilterClient,'info'|'load'|'classify'|'dispose'>&{pin?:()=>()=>void;selectSearchHead?:FeedFilterClient['selectSearchHead'];startSearchWorker?:FeedFilterClient['startSearchWorker']};browserClient?:BrowserFeedFilterClient;hasWebGPU?:()=>boolean;autoPrepare?:boolean;storage?:Pick<Storage,'getItem'|'setItem'>;saveData?:()=>boolean;homeFeed?:HomeFeedPreferences;isHomeVisible?:()=>boolean}
 interface SourceRequest {epoch:number;done:boolean;more?:boolean;error?:unknown}
 export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetchMoreCandidates, client = new FeedFilterClient(), browserClient=new BrowserFeedFilterClient(),hasWebGPU=()=>!!globalThis.navigator&&'gpu' in globalThis.navigator,autoPrepare=true,storage:providedStorage,saveData=()=>!!(globalThis.navigator as Navigator&{connection?:{saveData?:boolean}})?.connection?.saveData,homeFeed,isHomeVisible=()=>true }:AIOptions) {
-  let scores = new Map(), showAll = false, phase:'idle'|'loading'|'searching'='idle', generation = 0, submittedQuery='', paused=false, waitingCandidates=false;
+  let scores = new Map(), phase:'idle'|'loading'|'searching'='idle', generation = 0, submittedQuery='', paused=false, waitingCandidates=false;
   let home=homeFeed?homeFeedPreferences(homeFeed):{enabled:false,prompt:''},homeContext='',homeStopped=false,homeScheduled=false,homeReviewLimit=240,homeWasVisible=isHomeVisible(),browserAvailable=false;
   const homeRequested=()=>enabled()&&home.enabled&&!submittedQuery&&isHomeVisible();
   const homeActive=()=>homeRequested()&&!!(runtime().info||homeContext||preparation||phase==='loading');
-  const curationActive=()=>!!submittedQuery||homeActive();
+  const curationActive=()=>!!submittedQuery||homeActive()||showAll&&homeRequested();
   let storage=providedStorage;try{storage??=globalThis.localStorage;}catch{}
   const readSetting=(key:string)=>{try{return storage?.getItem(key);}catch{return null;}};
   const writeSetting=(key:string,value:string)=>{try{storage?.setItem(key,value);}catch{}};
+  let showAll=readSetting('market-result-view')==='all';
   let preference=readSetting(AI_MODE_STORAGE_KEY),preferredModel=readSetting(AI_MODEL_STORAGE_KEY),textSubmitted=false,closed=false;
   let preparation:{model:string;runtime:typeof client|BrowserFeedFilterClient;promise:Promise<unknown>}|undefined,prepareGeneration=0,downloadFraction:number|undefined;
   const runtime=()=>$('ai-model').value==='browser'?browserClient:client;
@@ -55,9 +56,9 @@ export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetch
 
     $('ai-summary').hidden = !active || (!curationActive() && !busy);
     const activity = `${homeActive()?'For you · ':''}${matchLabel} · ${homeActive()?reviewedCount(candidates):scores.size} checked`;
-    $('ai-summary-text').textContent = showAll ? 'Showing all listings' : phase==='loading' ? `${$('ai-progress').textContent || 'Loading model…'} · ${activity}` : `${waitingCandidates&&busy?'Waiting for listings · ':paused&&!sourceError?'Search paused · ':''}${activity}`;
-    $('ai-show-all').textContent = showAll ? 'Use AI matches' : 'Show all';
-    $('ai-show-all').hidden = !curationActive()||(!hidden&&!showAll&&!$('ai-error').textContent);
+    $('ai-summary-text').textContent = showAll ? (submittedQuery?'All matching listings':'All listings') : phase==='loading' ? `${$('ai-progress').textContent || 'Loading model…'} · ${activity}` : `${waitingCandidates&&busy?'Waiting for listings · ':paused&&!sourceError?'Search paused · ':''}${activity}`;
+    $('result-view').value=showAll?'all':'ai';
+    $('result-view').hidden=!curationActive();
     $('ai-stop').hidden = !busy;
     $('ai-model').disabled = busy;
     $('ai-threshold').disabled = ['qwen35','browser'].includes($('ai-model').value);
@@ -66,10 +67,9 @@ export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetch
     $('search-run').textContent = 'Search';
     $('search-run').setAttribute('aria-busy',String(phase==='loading'));
     const preparing=!!preparation||phase==='loading';
-    $('search-mode').setAttribute('data-loading',String(preparing));$('search-mode').setAttribute('data-indeterminate',String(preparing&&downloadFraction===undefined));
-    $('search-mode').setAttribute('aria-busy',String(preparing));$('search-mode').style?.setProperty('--ai-download',String(downloadFraction??0));
-    $('search-mode').title=preparing?`Preparing AI${downloadFraction===undefined?'':` · ${Math.round(downloadFraction*100)}%`}`:active?'Turn off AI search':'Turn on AI search';
-    progress.hidden=phase!=='loading'||downloadFraction===undefined;
+    $('search-mode').setAttribute('aria-busy',String(preparing));
+    $('search-mode').textContent=active?'Disable local AI':'Enable local AI';
+    progress.hidden=!preparing||downloadFraction===undefined;
     if(active&&!busy&&!$('ai-error').textContent){
       $('ai-progress').textContent = needsCPU() ? 'Qwen is unavailable in this browser. Use the smaller CPU model.' : submittedQuery&&!candidates.length&&!sourceError ? 'Refresh listings or clear filters to search.' : '';
     }
@@ -84,7 +84,7 @@ export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetch
     if(homeScheduled||closed||!homeRequested()||homeStopped||showAll||phase!=='idle'||activeRun||testBusy||$('search').value.trim()||reviewedCount(candidates())>=homeReviewLimit||matchCount()>=targetMatches||!candidates().some(l=>!scores.has(keyFor(l))))return;
     if(!runtime().info&&(matchCount()>0||!autoPrepare||saveData()||$('ai-model').value==='browser'&&!browserAvailable))return;
     homeScheduled=true;
-    queueMicrotask(()=>{homeScheduled=false;if(!closed&&homeRequested()&&!homeStopped&&phase==='idle'&&!activeRun&&!$('search').value.trim())void run({homeRun:true,automatic:true});});
+    queueMicrotask(()=>{homeScheduled=false;if(!closed&&!showAll&&homeRequested()&&!homeStopped&&phase==='idle'&&!activeRun&&!$('search').value.trim())void run({homeRun:true,automatic:true});});
   }
   function prepareModel():Promise<unknown> {
     const selected=runtime(),model=$('ai-model').value;
@@ -129,7 +129,7 @@ export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetch
     homeStopped=!reset;
     sourceError=null;sourceErrorVisible=false;
     generation++;if(!finishCurrent)runController?.abort();runController=null;activeRun=null;sourceEpoch++;wakeCandidates?.();if(unload){prepareGeneration++;preparation=undefined;downloadFraction=undefined;client.dispose();browserClient.dispose();}phase='idle';waitingCandidates=false;paused=!reset;progress.hidden=true;$('ai-progress').textContent='';
-    if(reset){scores.clear();submittedQuery='';homeContext='';homeReviewLimit=240;showAll=false;sourceExhausted=false;targetMatches=24;$('ai-error').textContent='';}
+    if(reset){scores.clear();submittedQuery='';homeContext='';homeReviewLimit=240;sourceExhausted=false;targetMatches=24;$('ai-error').textContent='';}
     refresh();onChange();
   }
   function run({continuation=false,homeRun=false,automatic=false}={}):Promise<void> {
@@ -148,6 +148,12 @@ export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetch
   }
   async function executeRun({continuation=false,homeRun=false,automatic=false}={}) {
     if (!enabled()) { textSubmitted=true;onTextSearch?.($('search').value.trim()); onChange(); return; }
+    if(showAll){
+      const query=homeRun?'':$('search').value.trim();
+      if(submittedQuery!==query){scores.clear();sourceExhausted=false;targetMatches=24;}
+      submittedQuery=query;
+      refresh();onChange();return;
+    }
     if(phase==='loading'||continuation&&phase!=='idle')return;
     if(continuation&&!submittedQuery&&!homeRun)return;
     if(needsCPU()){$('ai-model').value='deberta';stop();return;}
@@ -162,7 +168,7 @@ export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetch
     sourceError=null;sourceErrorVisible=false;
     paused=false;waitingCandidates=false;
     homeStopped=false;
-    if(!preserve){sourceEpoch++;submittedQuery=homeRun?'':$('search').value.trim();homeContext=homeRun?home.prompt:'';homeReviewLimit=240;scores.clear();showAll=false;sourceExhausted=false;targetMatches=24;}
+    if(!preserve){sourceEpoch++;submittedQuery=homeRun?'':$('search').value.trim();homeContext=homeRun?home.prompt:'';homeReviewLimit=240;scores.clear();sourceExhausted=false;targetMatches=24;}
     else if(!retrySource&&!automatic){targetMatches=matchCount()+24;if(homeRun)homeReviewLimit=reviewedCount(candidates())+240;}
     $('ai-error').textContent='';
     phase=selected.info?'searching':'loading';onChange();
@@ -308,12 +314,18 @@ export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetch
         }
       }
     } catch (error) {
-      if (current === generation) { paused=true;homeStopped=true;selected.dispose(); $('ai-error').textContent = `${error.message || 'Search failed'}. Show all listings or switch to Text to continue browsing.`; }
+      if (current === generation) { paused=true;homeStopped=true;selected.dispose(); $('ai-error').textContent = `${error.message || 'Search failed'}. Choose All results to continue browsing.`; }
     } finally { extraWorker?.dispose();releaseModel();if(runController===controller)runController=null;if (current === generation) { phase='idle';waitingCandidates=false;$('ai-progress').textContent='';refresh();onChange(); } }
   }
   $('search-mode').onclick = () => {
     const active=!enabled();preference=active?'on':'off';writeSetting(AI_MODE_STORAGE_KEY,preference);setEnabled(active);
-    if(active)return run();stop({reset:true});
+    if(active){
+      refresh();onChange();
+      if(!showAll)return prepareModel().catch(error=>{$('ai-error').textContent=error.message||'Could not prepare local AI.';refresh();});
+    }else{
+      if(submittedQuery)onTextSearch?.(submittedQuery);
+      stop({reset:true});
+    }
   };
   // Editing waits for Submit; clearing is an immediate cancellation/reset.
   $('search').addEventListener('input',()=>{
@@ -322,7 +334,7 @@ export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetch
   });
   $('search').addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); run(); } });
   const activateBrowser=(event:Event)=>{
-    if(!event.isTrusted||!globalThis.navigator?.userActivation?.isActive||!enabled()||$('ai-model').value!=='browser'||browserClient.info||preparation||closed)return;
+    if(!event.isTrusted||!globalThis.navigator?.userActivation?.isActive||showAll||!enabled()||$('ai-model').value!=='browser'||browserClient.info||preparation||closed)return;
     void prepareModel().catch(error=>{if(!closed&&enabled()){$('ai-error').textContent=error.message||'Could not prepare browser AI.';refresh();}});
   };
   $('search').addEventListener('click',activateBrowser);$('search').addEventListener('keydown',activateBrowser);
@@ -335,11 +347,13 @@ export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetch
   };
   $('ai-stop').onclick = () => stop();
   $('ai-unload').onclick = () => {cancelTest();preference='off';writeSetting(AI_MODE_STORAGE_KEY,preference);setEnabled(false);stop({reset:true});};
-  $('ai-show-all').onclick = () => {
-    showAll=!showAll;
-    if(homeRequested()&&showAll&&phase!=='idle'){stop({unload:false});return;}
-    if(!showAll&&homeRequested())homeStopped=false;
+  $('result-view').onchange = () => {
+    showAll=$('result-view').value==='all';
+    writeSetting('market-result-view',showAll?'all':'ai');
+    if(showAll){$('ai-error').textContent='';stop({unload:false});return;}
+    homeStopped=false;
     refresh();onChange();
+    if(submittedQuery||homeRequested())return run({continuation:true,homeRun:!submittedQuery});
   };
   window.addEventListener('pagehide', () => {cancelTest();testObserver?.disconnect();closed=true;generation++;runController?.abort();runController=null;activeRun=null;sourceEpoch++;prepareGeneration++;wakeCandidates?.();client.dispose();browserClient.dispose();});
   const testSnapshot=()=>JSON.stringify([$('ai-model').value,$('ai-threshold').value,$('ai-test-query').value,$('ai-test-title').value,$('ai-test-description').value]);
@@ -393,7 +407,7 @@ export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetch
       if(preferredModel==='browser')$('ai-model').value='browser';
       if(preferredModel==='browser'&&available==='unavailable')$('ai-error').textContent='Browser AI is unavailable here. Reload to retry or choose DeBERTa.';
     }
-    if(!autoPrepare||testRequested||preference==='off'||phase!=='idle'||preferredModel==='browser'&&available==='unavailable')return;
+    if(showAll||!autoPrepare||testRequested||preference==='off'||phase!=='idle'||preferredModel==='browser'&&available==='unavailable')return;
     if(!runtime().info&&(saveData()||$('ai-model').value==='browser'&&available!=='available'))return;
     try{await prepareModel();if(!closed&&!testRequested&&preference!=='off'&&!textSubmitted){preference='on';writeSetting(AI_MODE_STORAGE_KEY,preference);setEnabled(true);refresh();onChange();}}
     catch{/* Background preparation is optional. Explicit Search can retry without blocking Browse. */}

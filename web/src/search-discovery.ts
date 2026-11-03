@@ -11,7 +11,7 @@ interface DiscoveryAI {
 }
 type TopicPlan=(query:string,tags:readonly string[],signal:AbortSignal)=>Promise<{tags:string[];terms:string[]}>
 /** Coordinates only submitted searches. Retrieval failures never change AI/model/result state. */
-export function createSearchDiscovery({getClient,getAI,planTopics}:{planTopics?:TopicPlan;getClient:()=>DiscoveryClient|null|undefined;getAI:()=>DiscoveryAI|null|undefined}) {
+export function createSearchDiscovery({getClient,getAI,planTopics,onPlanChange}:{onPlanChange?:()=>void;planTopics?:TopicPlan;getClient:()=>DiscoveryClient|null|undefined;getAI:()=>DiscoveryAI|null|undefined}) {
   let current:{client:DiscoveryClient;query:string;expansion:SearchTagExpansion;planned:boolean;topicStage:number}|undefined
   let controller=new AbortController()
   function reset(){controller.abort();controller=new AbortController();current=undefined}
@@ -33,8 +33,10 @@ export function createSearchDiscovery({getClient,getAI,planTopics}:{planTopics?:
       if(stage<=search.topicStage)return
       search.topicStage=stage
       void planTopics(query,tags,signal).then(plan=>{
-        if(live()&&ai.topicPlanning()&&search.topicStage===stage&&(plan.tags.length||plan.terms.length))
+        if(live()&&ai.topicPlanning()&&search.topicStage===stage&&(plan.tags.length||plan.terms.length)){
           client.searchTags(query,plan.tags,expansion,plan.terms)
+          onPlanChange?.()
+        }
       }).catch(()=>{/* The literal retrieval already runs. */})
       return
     }
@@ -45,7 +47,10 @@ export function createSearchDiscovery({getClient,getAI,planTopics}:{planTopics?:
     // Run the optional planner once both exist without restarting relay history.
     search.planned=true
     void Promise.resolve().then(()=>signal.aborted?[]:ai.planTags(query,tags,signal)).then(selected=>{
-      if(live()&&ai.canPlanTags?.()!==false&&selected.length)client.searchTags(query,selected,expansion)
+      if(live()&&ai.canPlanTags?.()!==false&&selected.length){
+        client.searchTags(query,selected,expansion)
+        onPlanChange?.()
+      }
     }).catch(()=>{/* Optional tag planning must not unload the model or clear confirmed results. */})
   }
   return{update,reset,dispose:reset}

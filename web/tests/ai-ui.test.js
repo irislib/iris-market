@@ -12,6 +12,7 @@ class Element extends EventTarget {
   removeAttribute(name){this.attributes.delete(name);}
   focus(){this.focused=true;}
 }
+function setView(field,value){const select=field('result-view');select.value=value;return select.onchange();}
 const bicycle={id:'bicycle',title:'Bicycle',description:'City bicycle',side:'offer',category:'transport'};
 function fixture({rows=[bicycle],query='',gpu=true,client:provided,fetchMoreCandidates,onTextSearch,autoPrepare=false,mode='ai',storage,saveData,browserClient,homeFeed,isHomeVisible,onSubmit,onRender=()=>{}}={}){
   const elements=new Map(),calls=[];
@@ -97,7 +98,7 @@ test('home review has a CPU budget, explicit continuation and a lasting Stop',as
   await ui.loadMore();assert.equal(reviewed,250);
   field('ai-stop').onclick();setRows([...rows,{id:'later',title:'Late listing'}]);
   await new Promise(resolve=>setTimeout(resolve,10));assert.equal(reviewed,250,'Polling cannot restart a stopped home pass');
-  field('ai-show-all').onclick();assert.equal(ui.isVisible({id:'later'}),true);
+  setView(field, 'all');assert.equal(ui.isVisible({id:'later'}),true);
   field('search-mode').value='text';ui.stop();
 });
 
@@ -125,7 +126,7 @@ test('model failures leave direct candidates accessible through Show all',async(
   const row={...bicycle,eventId:'first'};
   const client={info:null,async load(){throw Error('Model unavailable');},async classify(){throw Error('Unexpected inference');},dispose(){this.info=null;}};
   const {field,ui,setRows}=fixture({rows:[row],query:'bicycle',client});await field('search-run').onclick();
-  assert.match(field('ai-error').textContent,/Model unavailable/);assert.equal(ui.isVisible(row),false);assert.equal(ui.scoreFor(row),undefined);field('ai-show-all').onclick();assert.equal(ui.isVisible(row),true);field('ai-show-all').onclick();
+  assert.match(field('ai-error').textContent,/Model unavailable/);assert.equal(ui.isVisible(row),false);assert.equal(ui.scoreFor(row),undefined);setView(field, 'all');assert.equal(ui.isVisible(row),true);await setView(field, 'ai');
   const updated={...row,eventId:'second',title:'Desk',description:''};setRows([updated]);
   assert.equal(ui.isVisible(updated),false);assert.equal(ui.pagination().matches,0);
 });
@@ -203,10 +204,10 @@ test('clearing while classification is pending rejects its late result',async()=
 test('model failures keep unknowns hidden and offer explicit Show all',async()=>{
   const client={info:null,load:async()=>{throw Error('Download unavailable');},classify:async()=>({score:0}),dispose(){this.info=null;}};
   const {field,ui}=fixture({query:'a bicycle',client});await field('search-run').onclick();
-  assert.match(field('ai-error').textContent,/Download unavailable/);assert.match(field('ai-error').textContent,/Show all listings/);
+  assert.match(field('ai-error').textContent,/Download unavailable/);assert.match(field('ai-error').textContent,/All results/);
   assert.equal(ui.pagination().paused,true);
-  assert.equal(field('search-run').disabled,false);assert.equal(ui.isVisible(bicycle),false);assert.equal(field('ai-show-all').hidden,false);
-  field('ai-show-all').onclick();assert.equal(ui.isVisible(bicycle),true);
+  assert.equal(field('search-run').disabled,false);assert.equal(ui.isVisible(bicycle),false);assert.equal(field('result-view').hidden,false);
+  setView(field, 'all');assert.equal(ui.isVisible(bicycle),true);
 });
 
 test('typing during preload preserves download and searches latest text after completion',async()=>{
@@ -309,7 +310,7 @@ test('a late source failure after a full match window is handled on continuation
   source.reject(Error('Remaining listings unavailable'));await Promise.resolve();
   await ui.loadMore();assert.equal(fetches,1);assert.equal(ui.pagination().paused,true);assert.equal(field('ai-error').textContent,'');assert.equal(ui.pagination().error,'');assert.equal(field('ai-progress').textContent,'');assert(client.info,'a source error must not unload the model');
   assert.equal(field('ai-summary-text').textContent,'24 matches · 24 checked');
-  field('ai-show-all').onclick();assert.equal(field('ai-summary-text').textContent,'Showing all listings');
+  setView(field, 'all');assert.equal(field('ai-summary-text').textContent,'All matching listings');
 });
 
 test('a new query ignores stale exhaustion and reviews the final arriving page',async()=>{
@@ -361,14 +362,14 @@ test('topic matching can recover from vague title evidence using the description
 
 const memoryStorage=values=>{const data=new Map(Object.entries(values||{}));return{getItem:key=>data.get(key)??null,setItem:(key,value)=>data.set(key,value)};};
 
-test('background preparation shows circular progress, enables available AI and never submits typed text',async()=>{
+test('background preparation reports progress, enables available AI and never submits typed text',async()=>{
   let finish,report;const calls=[];
   const client={info:null,load(model,_device,progress){calls.push('load');report=progress;return new Promise(resolve=>finish=()=>{this.info={model};resolve(this.info);});},async classify(){calls.push('classify');return{score:.9};},dispose(){}};
   const {ui,field}=fixture({mode:'text',autoPrepare:true,client});await until(()=>!!finish);
-  assert.equal(field('search-mode').attributes.get('data-loading'),'true');assert.equal(field('search-run').disabled,false);
-  report('Downloading…',{loaded:40,total:100});assert.equal(field('search-mode').styles.get('--ai-download'),'0.4');assert.equal(field('search-mode').attributes.get('data-indeterminate'),'false');
+  assert.equal(field('search-mode').attributes.get('aria-busy'),'true');assert.equal(field('search-run').disabled,false);
+  report('Downloading…',{loaded:40,total:100});assert.equal(field('ai-summary').children[0].value,.4);
   field('search').value='bicycle';field('search').dispatchEvent(new Event('input'));assert.deepEqual(calls,['load']);finish();await ui.ready;
-  assert.equal(ui.enabled(),true);assert.equal(ui.query(),'');assert.equal(field('search-mode').attributes.get('data-loading'),'false');assert.deepEqual(calls,['load']);
+  assert.equal(ui.enabled(),true);assert.equal(ui.query(),'');assert.equal(field('search-mode').attributes.get('aria-busy'),'false');assert.deepEqual(calls,['load']);
   await field('search-run').onclick();assert.deepEqual(calls,['load','classify','classify']);
 });
 
@@ -431,7 +432,7 @@ test('relevance scores expose only current submitted query/model/revision decisi
   const {ui,field}=fixture({query:'a bicycle',rows:[row],client});assert.equal(ui.scoreFor(row),undefined);await field('search-run').onclick();
   assert.equal(ui.scoreFor(row),.83);assert.equal(ui.scoreFor({...row,eventId:'b'.repeat(64)}),undefined);
   field('search').value='unsubmitted edit';field('search').dispatchEvent(new Event('input'));assert.equal(ui.query(),'a bicycle');assert.equal(ui.scoreFor(row),.83);
-  field('ai-show-all').onclick();assert.equal(ui.scoreFor(row),undefined);field('ai-show-all').onclick();assert.equal(ui.scoreFor(row),.83);
+  setView(field, 'all');assert.equal(ui.scoreFor(row),undefined);setView(field, 'ai');assert.equal(ui.scoreFor(row),.83);
   field('ai-error').textContent='Search failed';assert.equal(ui.scoreFor(row),undefined);field('ai-error').textContent='';
   field('ai-model').onchange();assert.equal(ui.scoreFor(row),undefined);assert.equal(ui.query(),'');
   field('search-mode').onclick();assert.equal(ui.scoreFor(row),undefined);
@@ -499,7 +500,7 @@ test('an actual classification failure still disposes the model and reports an A
   const client={info:{model:'deberta'},load:async()=>{},classify:async()=>{throw Error('Inference failed');},dispose(){disposals++;this.info=null;}};
   const {field,ui}=fixture({query:'a bicycle',client});await field('search-run').onclick();
   assert.equal(disposals,1);assert.equal(client.info,null);assert.equal(ui.pagination().paused,true);
-  assert.match(field('ai-error').textContent,/Inference failed.*Show all/);
+  assert.match(field('ai-error').textContent,/Inference failed.*All results/);
 });
 
 test('automatic enabling and a user model switch survive a failed Browser load and refresh',async()=>{
@@ -859,4 +860,25 @@ test('suggested Home reviews across sellers and counts only the current side, ev
   await until(()=>ui.pagination().reviewed===1);
   assert.equal(field('ai-summary-text').textContent,'For you · 1 match · 1 checked');
   field('search-mode').value='text';ui.stop();
+});
+
+test('All results survives queries and reloads and AI selected resumes the submitted query',async()=>{
+  const storage=memoryStorage({[AI_MODE_STORAGE_KEY]:'on'});
+  const first=fixture({storage,query:'bicycle'});
+  await first.ui.submit('bicycle');
+  await setView(first.field,'all');
+  await first.ui.submit('garden');
+  assert.equal(first.ui.showingAll(),true);
+  assert.equal(first.ui.query(),'garden');
+  const next=fixture({storage,mode:'text',autoPrepare:true});
+  await next.ui.ready;
+  await next.ui.submit('garden');
+  assert.equal(next.field('result-view').value,'all');
+  assert.equal(next.calls.length,0);
+  next.field('search').value='unsubmitted edit';
+  await setView(next.field,'ai');
+  assert.equal(next.ui.query(),'garden');
+  assert.equal(next.field('search').value,'unsubmitted edit');
+  assert(next.calls.some(call=>call[0]==='load'));
+  assert.equal(storage.getItem('market-result-view'),'ai');
 });

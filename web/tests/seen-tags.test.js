@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { finalizeEvent } from 'nostr-tools/pure'
-import { SeenTags, TAG_LIMITS, literalSearchTags } from '../src/seen-tags.ts'
+import { SeenTags, TAG_LIMITS, literalSearchTags, relatedSearchLabels } from '../src/seen-tags.ts'
 import { MarketRelayClient } from '../src/market.ts'
 
 const now=1800000000,key=new Uint8Array(32).fill(8),second=new Uint8Array(32).fill(9)
@@ -229,4 +229,8 @@ test('literal relay spellings match only the normalized query and stay frozen un
     tags.observe(event(['t_shirt'],{id:'other-format'}),now)
     assert.deepEqual(tags.selectLiteral('t shirt'),['t shirt','shirt','T-Shirt','t_shirt'])
   }finally{feed.close()}
+})
+
+test('discovery labels omit literal variations and combine actual extra tags and terms',()=>{
+  assert.deepEqual(relatedSearchLabels('City bike',['City-Bike','bike','Commuter','city'],['commuter','cycling']),['Commuter','cycling'])
 })

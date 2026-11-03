@@ -58,7 +58,7 @@ cargo build --locked -p iris-market
 
 ### App updates
 
-Native source includes `hashtree-updater` 0.2.89 and an **App updates** section in Settings. macOS, Android and packaged Linux clients can check automatically once a day on launch/resume and check manually at any time. The preference persists locally. Checks run separately from marketplace operations and work without signing in; Preview remains offline. These update checks ship in alpha.6.
+Since alpha.6, **Settings → App updates** lets macOS, Android and packaged Linux users check manually or enable a daily check on launch or resume. The preference persists locally. Checks work without signing in and run separately from marketplace operations. Preview stays offline. The native source now uses `hashtree-updater` 0.3.0 to read releases encrypted with either legacy or versioned Hashtree keys.
 
 Discovery verifies signed announcements for the established `releases/iris-market` Hashtree tree. Downloads verify content hashes and retain the exact release selected by the check. Saved signed announcements prevent older relay responses from replacing a previously observed root. An unavailable or inconclusive channel shows an error, never an “up to date” result. No account keys, private inboxes or listing indexes participate. Only compatible artifacts are offered, and download/install always requires a user action.
 

@@ -7,7 +7,8 @@ export interface RateSnapshot { rates: Readonly<Record<string, ExchangeRate>>; s
 export interface RateFetchOptions { fetchImpl?: typeof fetch; signal?: AbortSignal; now?: () => number }
 export interface RateQueryOptions { relays?: string[]; sources?: string[]; cache?: string; localEcho?: boolean; signal?: AbortSignal; deadline?: number }
 export type RateQuery = (filters: Filter[], options: RateQueryOptions) => Promise<{events: NostrEvent[]}>
-export interface RatesOptions extends RateFetchOptions { getRelays?: () => string[]; onChange?: (state: RateSnapshot) => void; query?: RateQuery; WebSocketImpl?: typeof WebSocket; currencies?: readonly string[] }
+type RateStorage = Pick<Storage, 'getItem' | 'setItem'>
+export interface RatesOptions extends RateFetchOptions { getRelays?: () => string[]; onChange?: (state: RateSnapshot) => void; query?: RateQuery; WebSocketImpl?: typeof WebSocket; currencies?: readonly string[]; storage?: RateStorage }
 export interface PriceOptions { preferredCurrency?: string; rates?: RateSnapshot; locale?: string | string[]; now?: number }
 export interface PriceListing { price: string | number; currency: string }
 
@@ -36,6 +37,8 @@ const encoder = new TextEncoder()
 const seconds = () => Math.floor(Date.now() / 1000)
 const decimal = /^[+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/
 const unitRates = Object.freeze({ BTC: 1, SATS: SATS_PER_BTC })
+const rateCacheKey = 'market-exchange-rates-v1'
+const maxCacheLength = 256 * 1024
 
 export function normalizeCurrency(value) {
   if (typeof value !== 'string') return ''
@@ -54,7 +57,40 @@ function positive(value) {
   return number > 0 && number <= 1e18 ? number : null
 }
 function fresh(record, now) { return record && now - record.updatedAt <= RATE_POLICY.freshSeconds && record.updatedAt <= now + 60 }
-function usable(record, now) { return record && positive(record.value) !== null && Number.isSafeInteger(record.updatedAt) && record.updatedAt <= now + 60 && now - record.updatedAt <= RATE_POLICY.maxAgeSeconds }
+function usable(record, now) { return record && positive(record.value) !== null && Number.isSafeInteger(record.updatedAt) && record.updatedAt > 0 && record.updatedAt <= now + 60 }
+
+function browserRateStorage(): RateStorage | undefined {
+  try { return typeof window === 'undefined' ? undefined : window.localStorage } catch { return undefined }
+}
+
+function loadRates(storage: RateStorage | undefined, at: number) {
+  const rates = new Map<string, ExchangeRate>()
+  try {
+    const raw = storage?.getItem(rateCacheKey)
+    if (!raw || raw.length > maxCacheLength) return rates
+    const records = JSON.parse(raw)
+    if (!records || typeof records !== 'object' || Array.isArray(records)) return rates
+    const entries = Object.entries<ExchangeRate>(records)
+    if (entries.length > RATE_POLICY.maxRates) return rates
+    for (const [code, record] of entries) {
+      if (!code || normalizeCurrency(code) !== code || code in unitRates || !usable(record, at) || typeof record.value !== 'number') continue
+      const { value, source, updatedAt, eventId } = record
+      if (source === 'Coinbase' && eventId === undefined) rates.set(code, Object.freeze({ value, source, updatedAt }))
+      if (source === 'Snort' && typeof eventId === 'string' && /^[a-f0-9]{64}$/.test(eventId)) rates.set(code, Object.freeze({ value, source, updatedAt, eventId }))
+    }
+  } catch { /* Storage may be disabled or contain an interrupted or older write. */ }
+  return rates
+}
+
+function preferRate(next: ExchangeRate, current: ExchangeRate | undefined, at: number) {
+  if (!current) return true
+  if (next.source !== current.source) {
+    if (next.source === 'Snort' && fresh(next, at)) return true
+    if (current.source === 'Snort' && fresh(current, at)) return false
+  }
+  if (next.updatedAt !== current.updatedAt) return next.updatedAt > current.updatedAt
+  return next.source === 'Snort' && (current.source !== 'Snort' || next.eventId < current.eventId)
+}
 
 /** expectedPublisher exists for deterministic protocol tests; production always uses SNORT_RATES.pubkey. */
 export function parseSnortRateEvent(raw: NostrEvent, { now = seconds(), expectedPublisher = SNORT_RATES.pubkey }: {now?: number; expectedPublisher?: string} = {}) {
@@ -126,13 +162,32 @@ export async function fetchCoinbaseRates({ fetchImpl = globalThis.fetch, signal,
   } finally { clearTimeout(timer); signal?.removeEventListener('abort', abort) }
 }
 
-/** No secrets, publishing, user relay changes, or persistent rate tracking. */
-export function setupRates({ getRelays = () => [], onChange = () => {}, fetchImpl = globalThis.fetch, query, WebSocketImpl = globalThis.WebSocket, now = seconds, currencies = CURRENCIES }: RatesOptions = {}) {
+/** Restore public display quotes before starting the background refresh. */
+export function setupRates({ getRelays = () => [], onChange = () => {}, fetchImpl = globalThis.fetch, query, WebSocketImpl = globalThis.WebSocket, now = seconds, currencies = CURRENCIES, storage = browserRateStorage() }: RatesOptions = {}) {
   const ownedTransport = query ? null : createPrivateTransport(getRelays, { WebSocketImpl })
   const queryEvents: RateQuery = query || ((filters, options) => ownedTransport.query(filters, options))
   const requested = [...new Set(currencies.map(normalizeCurrency).filter(code => /^[A-Z]{3}$/.test(code) && code !== 'BTC'))].slice(0, 32)
-  const values = new Map<string, ExchangeRate>()
+  const values = loadRates(storage, now())
   let inflight = null, active = null, closed = false, error = null
+  function accept(entries: Iterable<[string, ExchangeRate]>) {
+    const at = now()
+    let changed = false
+    for (const [code, rate] of entries) {
+      if (!preferRate(rate, values.get(code), at)) continue
+      values.set(code, rate)
+      changed = true
+    }
+    if (!changed) return
+    // Another tab may have refreshed other currencies while this request was pending.
+    for (const [code, rate] of loadRates(storage, at)) {
+      if (preferRate(rate, values.get(code), at)) values.set(code, rate)
+    }
+    if (values.size > RATE_POLICY.maxRates) {
+      const oldest = [...values].sort((a, b) => a[1].updatedAt - b[1].updatedAt)
+      for (const [code] of oldest.slice(0, values.size - RATE_POLICY.maxRates)) values.delete(code)
+    }
+    try { storage?.setItem(rateCacheKey, JSON.stringify(Object.fromEntries(values))) } catch { /* In-memory quotes still work. */ }
+  }
   function snapshot() {
     const at = now(), rates: Record<string, ExchangeRate> = Object.create(null)
     for (const [code, rate] of values) if (usable(rate, at)) rates[code] = rate
@@ -148,24 +203,24 @@ export function setupRates({ getRelays = () => [], onChange = () => {}, fetchImp
       try {
         const result = await queryEvents([{ kinds: [SNORT_RATES.kind], authors: [SNORT_RATES.pubkey], '#d': requested.map(code => `BTC${code}`), since: now() - RATE_POLICY.maxAgeSeconds, limit: RATE_POLICY.maxNostrEvents }], { relays: getRelays(), sources: [], cache: 'network-only', localEcho: false, signal: active.signal, deadline: Date.now() + RATE_POLICY.nostrTimeoutMs })
         if (result.events.length > RATE_POLICY.maxNostrEvents) throw new Error('Rate response limit reached.')
+        if (closed) return snapshot()
+        const quotes: [string, ExchangeRate][] = []
         for (const event of result.events) {
           const rate = parseSnortRateEvent(event, { now: now() })
           if (!rate || !requested.includes(rate.currency)) continue
-          const previous = values.get(rate.currency)
-          if (!previous || fresh(rate, now()) || !fresh(previous, now())) {
-            if (previous?.source === 'Snort' && (previous.updatedAt > rate.updatedAt || previous.updatedAt === rate.updatedAt && previous.eventId <= rate.eventId)) continue
-            values.set(rate.currency, rate)
-          }
+          quotes.push([rate.currency, rate])
         }
+        accept(quotes)
       } catch { nostrFailed = true }
       if (closed) return snapshot()
       const missing = requested.some(code => !fresh(values.get(code), now()) || values.get(code)?.source === 'Coinbase' && now() - values.get(code).updatedAt >= RATE_POLICY.refreshMs / 1000)
       if (missing || !values.size) {
         try {
           const fallback = await fetchCoinbaseRates({ fetchImpl, signal: active.signal, now })
-          for (const [code, rate] of Object.entries(fallback)) if (values.get(code)?.source !== 'Snort' || !fresh(values.get(code), now())) values.set(code, rate)
+          if (closed) return snapshot()
+          accept(Object.entries(fallback))
           error = null
-        } catch { error = 'Live rates unavailable. Original prices and recent saved estimates remain available.' }
+        } catch { error = 'Live rates unavailable. Original prices and saved estimates remain available.' }
       } else error = nostrFailed && !Object.values(snapshot().rates).some(rate => fresh(rate, now())) ? 'Live rates unavailable.' : null
       if (!closed) onChange(snapshot())
       return snapshot()
@@ -224,7 +279,8 @@ export function formatWalletAmount(sats: string, { preferredCurrency = DEFAULT_C
   const currency = normalizeCurrency(preferredCurrency);
   if (currency === 'SATS') return '';
   const converted = convert(sats, 'SATS', currency, rates, { now });
-  return converted ? displayAmount(converted.amount, currency, locale, !converted.approximate) : '';
+  if (!converted) return '';
+  return displayAmount(converted.amount, currency, locale, !converted.approximate) + (converted.stale ? ' · older rate' : '');
 }
 
 export function formatPrice(listing: PriceListing, { preferredCurrency = DEFAULT_CURRENCY, rates, locale, now = seconds() }: PriceOptions = {}) {

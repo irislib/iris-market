@@ -109,8 +109,21 @@ if(['127.0.0.1','localhost'].includes(location.hostname)&&params.has('test-relay
 let preferredCurrency=initialCurrency({saved:load('market-currency',null),locales:navigator.languages});
 let rateService;
 const priceFor=l=>formatPrice(l,{preferredCurrency,rates:rateService?.snapshot()});
-const bitcoinQuote = l => l.escrow?.trade === 'bitcoin_fiat' ? fiatQuoteLabel(l.price,l.currency) : undefined;
-function priceNode(l,className){const quote=bitcoinQuote(l);if(quote)return node('p',quote,className);const info=priceFor(l),price=node('p',undefined,className);price.append(node('span',info.primary));if(info.original&&className==='detail-price')price.append(node('small',info.original+(info.stale?' · Last known rate':''),'original-price'));if(info.source){const note=`${info.source} · ${info.stale?'Last known':'Retrieved'} ${new Date(info.updatedAt*1000).toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'})}`;price.title=note;if(className==='detail-price')price.append(node('small',note,'original-price'));}return price;}
+const bitcoinQuote = listing => listing.escrow?.trade === 'bitcoin_fiat' ? fiatQuoteLabel(listing.price, listing.currency) : undefined;
+function priceNode(listing, className) {
+  const quote = bitcoinQuote(listing);
+  if (quote) return node('p', quote, className);
+  const info = priceFor(listing), price = node('p', undefined, className);
+  const detail = className === 'detail-price';
+  price.append(node('span', info.primary));
+  if (detail && info.original) price.append(node('small', info.original, 'original-price'));
+  if (info.source) {
+    const when = new Intl.DateTimeFormat(undefined, {dateStyle: info.stale ? 'medium' : undefined, timeStyle: 'short'}).format(info.updatedAt * 1000);
+    price.title = `${info.source} · ${info.stale ? 'Last known' : 'Retrieved'} ${when}`;
+    if (detail) price.append(node('small', price.title, 'original-price'));
+  }
+  return price;
+}
 
 const bookmark='<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.8 4.6a5.4 5.4 0 0 0-7.6 0L12 5.8l-1.2-1.2a5.4 5.4 0 0 0-7.6 7.6L12 21l8.8-8.8a5.4 5.4 0 0 0 0-7.6Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>';
 const node = domElement;
@@ -284,6 +297,7 @@ for (const selector of currencySelectors) {
   };
 }
 if(!preview)rateService=setupRates({getRelays:()=>relays,onChange:()=>{render();walletUI?.refreshDisplay();if(focusedListing)openDetail(focusedListing,false)}});
+window.addEventListener('online',()=>{void rateService?.refresh()});
 history.scrollRestoration='manual';
 window.addEventListener('popstate',()=>{
   const fromWorkspace=!['home','search','saved'].includes(currentRoute.type);

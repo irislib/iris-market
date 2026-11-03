@@ -26,7 +26,7 @@ fn locale_currency_initializes_once_and_cached_satoshi_projection_needs_no_netwo
         .unwrap();
     let now = iris_market_core::listing::now();
     let book = RateBook::from_cache(
-        &json!({"rates":{"USD":{"value":100000.0,"source":"Coinbase","updated_at":now-1000}}})
+        &json!({"rates":{"USD":{"value":100000.0,"source":"Coinbase","updated_at":now-7*86400}}})
             .to_string(),
         now,
     )
@@ -39,6 +39,7 @@ fn locale_currency_initializes_once_and_cached_satoshi_projection_needs_no_netwo
     assert_eq!(initial["sats_display_price"]["currency"], "USD");
     assert!((initial["sats_display_price"]["amount"].as_f64().unwrap() - 0.001).abs() < 1e-12);
     assert_eq!(initial["sats_display_price"]["stale"], true);
+    assert_eq!(initial["sats_display_price"]["updated_at"], now - 7 * 86400);
     assert!(
         initial["supported_currencies"]
             .as_array()

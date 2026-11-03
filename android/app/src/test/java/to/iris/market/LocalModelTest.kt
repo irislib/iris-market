@@ -31,6 +31,25 @@ class LocalModelTest {
         assertEquals(0.94, decisions.last().score!!, 0.0)
     }
 
+    @Test fun onlyACompleteScoredJsonDecisionCanBeRecovered() {
+        val bare = """{"show":true,"score":0.84,"reason":"Fits"}"""
+        val fenced = "```json\r\n$bare\r\n```"
+        val expected = LocalModelContract.review(bare, "event")
+        assertEquals(expected, LocalModelContract.review(fenced, "event"))
+        assertEquals(expected, LocalModelContract.review("```\n$bare\n```", "event"))
+        val long = "x".repeat(179) + "🎻" + "y".repeat(20)
+        val clipped = LocalModelContract.review(bare.replace("Fits", long), "event")
+        assertEquals(expected.copy(reason = "x".repeat(179)), clipped)
+        assertEquals(clipped, LocalModelContract.review(fenced.replace("Fits", long), "event"))
+        for (invalid in listOf(
+            "Explanation: $fenced", "$fenced afterward", "$fenced\n$fenced",
+            "```javascript\n$bare\n```", "```json\n$bare\n$bare\n```",
+            fenced.replace("0.84", "\"0.84\""), fenced.replace("true", "\"yes\""),
+            fenced.replace("\"score\":0.84,", ""), fenced.replace("\"reason\":", "\"extra\":1,\"reason\":"),
+            fenced.replace("\"show\"", "show"), fenced.replace("Fits", "x".repeat(1200)),
+        )) assertTrue(invalid.take(30), LocalModelContract.review(invalid, "event").unavailable)
+    }
+
     @Test fun promptIncludesBoundedPublicTags() {
         val listing = Listing("coordinate","author","Parcel service","City delivery", "offer","40","EUR","Helsinki","transport",null,false,false,"active","",null,null,
             tags = List(25) { if (it == 24) "excluded-tag" else "public-tag-$it" })

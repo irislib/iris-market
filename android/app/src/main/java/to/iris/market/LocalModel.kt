@@ -10,6 +10,9 @@ import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
 import com.google.ai.edge.litertlm.SamplerConfig
+import com.google.gson.GsonBuilder
+import com.google.gson.JsonElement
+import com.google.gson.Strictness
 import com.google.gson.JsonObject
 import com.google.gson.JsonParseException
 import com.google.gson.JsonParser
@@ -60,6 +63,11 @@ data class LocalCurationDecision(val eventId: String, val show: Boolean, val rea
 
 internal object LocalModelContract {
     const val MAX_DECISION_CHARS = 1_200
+    private val fence = Regex("""\A```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n```\z""", RegexOption.IGNORE_CASE)
+    private val strictJson = GsonBuilder().setStrictness(Strictness.STRICT).create()
+
+    private fun parseStrict(text: String): JsonElement =
+        requireNotNull(strictJson.fromJson(text, JsonElement::class.java)) { "Expected a JSON decision" }
 
     fun review(text: String, eventId: String): LocalCurationDecision {
         try {
@@ -71,7 +79,12 @@ internal object LocalModelContract {
 
     fun decode(text: String, eventId: String): LocalCurationDecision {
         require(text.length <= MAX_DECISION_CHARS) { "Model response is too long" }
-        val value = JsonParser.parseString(text.trim())
+        val trimmed = text.trim()
+        val fenced = trimmed.startsWith("```")
+        val value = if (fenced) {
+            val body = requireNotNull(fence.matchEntire(trimmed)) { "Unexpected text around decision" }.groupValues[1]
+            parseStrict(body)
+        } else JsonParser.parseString(trimmed)
         require(value.isJsonObject) { "Model response must be an object" }
         val o = value.asJsonObject
         require(o.keySet() == setOf("show", "reason") || o.keySet() == setOf("show", "reason", "score")) { "Unexpected model response" }
@@ -79,12 +92,18 @@ internal object LocalModelContract {
         require(show.isJsonPrimitive && show.asJsonPrimitive.isBoolean) { "Expected a yes/no decision" }
         require(reason.isJsonPrimitive && reason.asJsonPrimitive.isString) { "Expected a short explanation" }
         val explanation = reason.asString
-        require(explanation.toByteArray(Charsets.UTF_8).size <= 720 && explanation.length <= 180) { "Explanation is too long" }
+        val needsShortening = explanation.length > 180 || explanation.toByteArray(Charsets.UTF_8).size > 720
         val score = o.get("score")?.let {
             require(it.isJsonPrimitive && it.asJsonPrimitive.isNumber) { "Expected a relevance score" }
             it.asDouble.also { value -> require(value.isFinite() && value in 0.0..1.0) { "Invalid relevance score" } }
         }
-        return LocalCurationDecision(eventId, show.asBoolean && (score?.let { it >= 0.5 } ?: true), explanation, score)
+        if (fenced || needsShortening) {
+            require(score != null) { "Expected a scored decision" }
+            // Preserve previously supported bare decisions. Recovered answers must be strict, complete JSON.
+            if (needsShortening && !fenced) parseStrict(trimmed)
+        }
+        val displayReason = if (needsShortening) explanation.take(180).dropLastWhile { it.isHighSurrogate() } else explanation
+        return LocalCurationDecision(eventId, show.asBoolean && (score?.let { it >= 0.5 } ?: true), displayReason, score)
     }
 
     fun prompt(interests: String, listing: Listing, sandbox: Boolean = false, homeFeed: Boolean = false): String {

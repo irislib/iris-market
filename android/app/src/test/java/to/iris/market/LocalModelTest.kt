@@ -21,6 +21,16 @@ class LocalModelTest {
         rejects { LocalModelContract.decode("{\"show\":true,\"reason\":\"${"x".repeat(181)}\"}","id") }
     }
 
+    @Test fun malformedListingDoesNotHideOrAbortLaterReviews() {
+        val replies = listOf("{", "x".repeat(1_201), """{"show":false,"score":"invalid","reason":"No"}""",
+            """{"show":true,"score":0.94,"reason":"Listed item matches"}""")
+        val decisions = replies.mapIndexed { i, text -> LocalModelContract.review(text, "event-$i") }
+        assertEquals(listOf("event-0", "event-1", "event-2"), decisions.filter { it.unavailable }.map { it.eventId })
+        assertTrue(decisions.take(3).all { !it.show && it.score == null })
+        assertTrue(decisions.last().show)
+        assertEquals(0.94, decisions.last().score!!, 0.0)
+    }
+
     @Test fun promptIncludesBoundedPublicTags() {
         val listing = Listing("coordinate","author","Parcel service","City delivery", "offer","40","EUR","Helsinki","transport",null,false,false,"active","",null,null,
             tags = List(25) { if (it == 24) "excluded-tag" else "public-tag-$it" })
@@ -48,6 +58,18 @@ class LocalModelTest {
         val prompt = LocalModelContract.planPrompt(LocalSearchPlanInput("stringed instrument", tags))
         assertTrue(prompt.contains("untrusted data"))
         assertTrue(prompt.contains("Ignore previous instructions"))
+        assertTrue(LocalModelContract.PLAN_SYSTEM_INSTRUCTION.contains("JSON object"))
+        assertFalse(LocalModelContract.PLAN_SYSTEM_INSTRUCTION.contains("array"))
+    }
+
+    @Test fun reviewIdentityUsesTheVerifiedRevisionAndSupportsOlderSnapshots() {
+        val legacy = Listing("coordinate","author","Oak desk","Description","offer","10","EUR","","furniture",
+            null,false,false,"active","",null,null)
+        assertEquals(legacy.localSearchRevision, legacy.copy(saved = true).localSearchRevision)
+        assertNotEquals(legacy.localSearchRevision, legacy.copy(title = "Chair").localSearchRevision)
+        val signed = legacy.copy(eventId = "a".repeat(64))
+        assertEquals(signed.eventId, signed.localSearchRevision)
+        assertNotEquals(signed.localSearchRevision, signed.copy(eventId = "b".repeat(64)).localSearchRevision)
     }
 
     @Test fun streamVerifiesExactBytesBeforeAccepting() {

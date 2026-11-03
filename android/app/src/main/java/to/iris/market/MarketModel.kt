@@ -32,12 +32,14 @@ data class Listing(
     val price: String, val currency: String, val location: String, val category: String,
     val imageUrl: String?, val saved: Boolean, val mine: Boolean, val status: String,
     val delivery: String, val relevance: String?, val relevanceShow: Boolean?, val coordinates: List<Double>? = null,
-    val serviceAreas: String? = null, val priceDisplay: PriceDisplay? = null, val expiresAt: Long? = null, val tags: List<String> = emptyList(), val createdAt: Long = 0, val directMatch: Boolean = false, val relevanceScore: Double? = null, val relevanceUnavailable: Boolean = false, val escrow: EscrowOffer? = null
+    val serviceAreas: String? = null, val priceDisplay: PriceDisplay? = null, val expiresAt: Long? = null, val tags: List<String> = emptyList(), val createdAt: Long = 0, val directMatch: Boolean = false, val relevanceScore: Double? = null, val relevanceUnavailable: Boolean = false, val escrow: EscrowOffer? = null,
+    val eventId: String = ""
 ) {
     val isBitcoinOffer: Boolean get() = escrow?.trade == "bitcoin_fiat"
     val reviewAddress: String get() = if(isBitcoinOffer) id else "30402:" + id
     val matchesSearch: Boolean get() = relevanceShow == true
     val localSearchRevision: String get() {
+        if (eventId.isNotEmpty()) return eventId
         val content = (listOf(title, description, side, price, currency, location, category) + tags).joinToString("\u0000")
         val digest = java.security.MessageDigest.getInstance("SHA-256").digest(content.toByteArray(Charsets.UTF_8))
         return "$id|$createdAt|${digest.joinToString("") { "%02x".format(it) }}"
@@ -69,7 +71,8 @@ data class Listing(
             l.optJSONObject("display_price")?.let { d -> PriceDisplay(d.optDouble("amount"),d.optString("currency"),d.optBoolean("approximate"),d.optBoolean("stale")) },
             if(l.has("expires_at")&&!l.isNull("expires_at")) l.getLong("expires_at") else null,
             l.optJSONArray("tags")?.let { a -> (0 until minOf(a.length(),64)).map { a.optString(it) } } ?: emptyList(), l.optLong("created_at"), l.optBoolean("direct_match"),
-            l.optJSONObject("relevance")?.optDouble("score")?.takeIf { it.isFinite() && it in 0.0..1.0 }, l.optJSONObject("relevance")?.optBoolean("unavailable") == true, l.optJSONObject("escrow")?.let { offer -> EscrowOffer(offer.optString("trade"),offer.optLong("sats").takeIf { it > 0 },offer.optString("method")) })
+            l.optJSONObject("relevance")?.optDouble("score")?.takeIf { it.isFinite() && it in 0.0..1.0 }, l.optJSONObject("relevance")?.optBoolean("unavailable") == true, l.optJSONObject("escrow")?.let { offer -> EscrowOffer(offer.optString("trade"),offer.optLong("sats").takeIf { it > 0 },offer.optString("method")) },
+            eventId = l.optional("event_id").orEmpty())
     }
 
 }
@@ -736,10 +739,11 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
         if(browseVisible&&home&&homeStartedContext!=searchContext()){homeStartedContext=searchContext();searchContinuation.start(searchContext())}
         if (!active || working.value || mutableAITest.value.busy || localCurationJob?.isActive == true || !(home&&browseVisible||snapshot.aiSearch&&snapshot.query.isNotBlank()) || !ai.optBoolean("enabled") || snapshot.error != null) return
         if (snapshot.listings.count { it.relevanceShow != null && it.matchesSearch } >= 24) return
-        val candidates = snapshot.listings.filter { it.relevanceShow == null }.map { it.localSearchRevision }
-        if (ai.optString("provider") == "litert") {
-            if (searchContinuation.claim(searchContext(), candidates)) runLocalCuration(checkOnly = false)
-        } else if (searchContinuation.canReview(searchContext(), candidates, batchSize = 12)) ai("curate")
+        val local = ai.optString("provider") == "litert"
+        val candidates = snapshot.listings.asSequence().filter { it.relevanceShow == null }.map { it.localSearchRevision }
+        if (searchContinuation.canReview(searchContext(), candidates.asIterable(), batchSize = if (local) 24 else 12)) {
+            ai("curate")
+        }
     }
     fun ai(type: String) {
         if (remoteCurationRunning || mutableAITest.value.busy) return
@@ -755,19 +759,21 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
             try {
                 withContext(Dispatchers.IO) { mutex.withLock {
                     val app = core ?: error("Not ready")
-                    val settings = JSONObject(MarketSnapshot.parse(app.snapshot()).settings).getJSONObject("ai")
+                    val initial = MarketSnapshot.parse(app.snapshot())
+                    val settings = JSONObject(initial.settings).getJSONObject("ai")
                     check(settings.optString("provider") == provider) { "Provider changed" }
                     val key = secure.get(NativePreferences.keySlot(provider, settings.optString("base_url")))
-                    val initialListings = MarketSnapshot.parse(app.snapshot()).listings
+                    val initialListings = if (type == "curate") initial.listings else emptyList()
                     val hadCandidates = initialListings.any { it.relevanceShow == null }
-                    val before = initialListings.filter { it.relevanceShow != null }.map { it.localSearchRevision }.toSet()
+                    val before = initialListings.asSequence().filter { it.relevanceShow != null }.map { it.localSearchRevision }.toSet()
                     val next = try {
                         if (type == "curate") remoteSnapshotLease = app to generation
                         MarketSnapshot.parse(app.command(JSONObject().put("type", type).put("api_key", key).toString()))
                     } finally { remoteSnapshotLease = null }
                     if (type == "curate" && requestEpoch == aiIntentEpoch && generation == accountGeneration && context == searchContext() && searchGeneration == next.searchGeneration) {
                         // Planning can reorder the selected twelve: count actual decisions, not a guessed prefix.
-                        val reviewed = next.listings.filter { it.relevanceShow != null && it.localSearchRevision !in before }.map { it.localSearchRevision }
+                        val reviewed = next.listings.asSequence().filter { it.relevanceShow != null }
+                            .map { it.localSearchRevision }.filterNot { it in before }.toList()
                         searchContinuation.record(reviewed)
                         if (next.error != null || reviewed.isEmpty() && hadCandidates) searchContinuation.stop()
                     }
@@ -791,12 +797,18 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
         val previous = localCurationJob
         localCurationJob = viewModelScope.launch {
             previous?.join()
-            if (!localModelState.value.available) { alert.value = "Download the on-device model in Settings first."; return@launch }
+            if (!localModelState.value.available) {
+                if (!checkOnly) searchContinuation.stop()
+                alert.value = "Download the on-device model in Settings first."
+                return@launch
+            }
             operationCount += 1; working.value = true
             var batchId: String? = null
             var generation = -1L
             var searchGeneration = 0L
             var planning: LocalSearchPlanInput? = null
+            val context = searchContext()
+            var finished = false
             try {
                 val batch = withContext(Dispatchers.IO) { mutex.withLock {
                     generation = accountGeneration
@@ -809,7 +821,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
                         val app = core ?: error("Not ready")
                         val current = state.value
                         searchGeneration = current.searchGeneration
-                        if (current.searchPlanPending && current.listings.size > 24) {
+                        if (current.searchPlanPending && current.searchPlanTags.isNotEmpty() && current.listings.size > 24) {
                             planning = LocalSearchPlanInput(current.query, current.searchPlanTags)
                             LocalCurationBatch("", current.query, emptyList())
                         } else {
@@ -820,7 +832,10 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
                 } }
                 batchId = batch.id.takeIf { it.isNotEmpty() }
                 if (!checkOnly) searchContinuation.record(batch.candidates.map { it.listing.localSearchRevision })
-                if (!checkOnly && planning == null && batch.candidates.isEmpty()) return@launch
+                if (!checkOnly && planning == null && batch.candidates.isEmpty()) {
+                    finished = true
+                    return@launch
+                }
                 var activeBatch = batch
                 val checkStarted = System.nanoTime()
                 val decisions = withTimeout(270_000) { localModel.classify(batch, planning = planning, onPlan = { terms ->
@@ -840,15 +855,19 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
                         ensureActive()
                         check(accountGeneration == generation) { "Profile changed" }
                         val rows = JSONArray().put(JSONObject().put("event_id", decision.eventId)
-                            .put("show", decision.show).put("reason", decision.reason).apply { decision.score?.let { put("score", it) } })
+                            .put("show", decision.show).put("reason", decision.reason).apply {
+                                if (decision.unavailable) put("unavailable", true)
+                                decision.score?.let { put("score", it) }
+                            })
                         val request = JSONObject().put("type", "apply_local_curation").put("id", activeBatch.id)
                             .put("partial", true).put("decisions", rows)
                         publishSnapshot(MarketSnapshot.parse((core ?: error("Not ready")).command(request.toString())))
                     } }
                 }) }
                 ensureActive()
+                finished = true
                 if (!checkOnly && activeBatch.candidates.isNotEmpty()) batchId = null
-                if (checkOnly) alert.value = if (decisions.map { it.show } == listOf(true,false)) "Search check passed · %.1f s".format((System.nanoTime()-checkStarted)/1_000_000_000.0)
+                if (checkOnly) alert.value = if (decisions.none { it.unavailable } && decisions.map { it.show } == listOf(true,false)) "Search check passed · %.1f s".format((System.nanoTime()-checkStarted)/1_000_000_000.0)
                     else "The model missed the search check. Listings remain visible."
             } catch (e: TimeoutCancellationException) {
                 alert.value = "The model took too long. Listings remain visible."
@@ -857,6 +876,9 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
             catch (_: LinkageError) { alert.value = "This model could not load on this device. Listings remain visible." }
             catch (_: OutOfMemoryError) { alert.value = "Not enough memory for this model. Listings remain visible." }
             finally {
+                // Keep a failed local review paused until an explicit retry, as with other providers.
+                if (isActive && !finished && !checkOnly && generation == accountGeneration &&
+                    searchGeneration == state.value.searchGeneration && context == searchContext()) searchContinuation.stop()
                 val id = batchId
                 try {
                     if (id != null) withContext(NonCancellable + Dispatchers.IO) { mutex.withLock {

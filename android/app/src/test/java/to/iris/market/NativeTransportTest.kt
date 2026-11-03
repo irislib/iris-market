@@ -17,25 +17,30 @@ class NativeTransportTest {
     }
     @Test fun lateArrivalNeedsSubmittedQueryAndStopsOnCancel() {
         val search = NativeSearchContinuation()
-        assertFalse(search.claim("a", listOf("first")))
+        assertFalse(search.canReview("a", listOf("first")))
         search.start("a")
-        assertFalse(search.claim("b", listOf("first")))
-        assertFalse(search.claim("a", emptyList()))
-        assertTrue(search.claim("a", listOf("first|1")))
-        assertFalse(search.claim("a", listOf("first|1")))
-        assertTrue(search.claim("a", listOf("first|2")))
+        assertFalse(search.canReview("b", listOf("first")))
+        assertFalse(search.canReview("a", emptyList()))
+        assertTrue(search.canReview("a", listOf("first|1")))
+        search.record(listOf("first|1"))
+        assertFalse(search.canReview("a", listOf("first|1")))
+        assertTrue(search.canReview("a", listOf("first|2")))
         search.stop()
-        assertFalse(search.claim("a", listOf("late")))
+        assertFalse(search.canReview("a", listOf("late")))
     }
     @Test fun boundedBatchesAndExplicitRestart() {
         val search = NativeSearchContinuation()
         search.start("new")
-        repeat(10) { page -> assertTrue(search.claim("new", (0..<24).map { "$page-$it" })) }
-        assertFalse(search.claim("new", listOf("over-budget")))
+        repeat(10) { page ->
+            val batch = (0..<24).map { "$page-$it" }
+            assertTrue(search.canReview("new", batch))
+            search.record(batch)
+        }
+        assertFalse(search.canReview("new", listOf("over-budget")))
         search.start("a")
         search.record(listOf("already-reviewed"))
-        assertFalse(search.claim("a", listOf("already-reviewed")))
-        assertTrue(search.claim("a", listOf("late-arrival")))
+        assertFalse(search.canReview("a", listOf("already-reviewed")))
+        assertTrue(search.canReview("a", listOf("late-arrival")))
     }
     @Test fun boundedHistoryWindowsResetOnlyForExplicitIntent() {
         val search = NativeSearchContinuation()
@@ -60,8 +65,8 @@ class NativeTransportTest {
         search.record(candidates.take(12))
         assertFalse(search.canReview("remote", candidates, batchSize = 12))
         assertTrue(search.canReview("remote", candidates.drop(12), batchSize = 12))
-        assertTrue(search.claim("remote", candidates.drop(12), batchSize = 12))
-        assertFalse(search.claim("remote", candidates.drop(12), batchSize = 12))
+        search.record(candidates.drop(12).take(12))
+        assertFalse(search.canReview("remote", candidates.drop(12), batchSize = 12))
         assertTrue(search.canReview("remote", candidates.drop(24), batchSize = 12))
         search.stop()
         assertFalse(search.canReview("remote", candidates.drop(24), batchSize = 12))
@@ -86,10 +91,34 @@ class NativeTransportTest {
         search.record((0 until 237).map { "reviewed-$it" })
         assertEquals(3, search.remainingBudget("remote"))
         assertFalse(search.canReview("remote", (0 until 12).map { "late-$it" }, batchSize = 12))
-        assertFalse(search.claim("remote", (0 until 12).map { "late-$it" }, batchSize = 12))
         assertFalse(search.canReview("remote", listOf("last-1", "last-2", "last-3"), batchSize = 12))
-        assertFalse(search.claim("remote", listOf("last-1", "last-2", "last-3"), batchSize = 12))
         assertEquals(3, search.remainingBudget("remote"))
+    }
+
+    @Test fun eligibilityReadsOnlyTheAuthorizedPrefixAndRecordsTheSelectedBatch() {
+        for (batchSize in listOf(12, 24)) {
+            val search = NativeSearchContinuation()
+            var visits = 0
+            val revisions = (0 until 1024).asSequence().map { visits++; "listing-$it" }.asIterable()
+            assertFalse(search.canReview("search", revisions, batchSize))
+            assertEquals(0, visits)
+            search.start("search")
+            assertTrue(search.canReview("search", revisions, batchSize))
+            assertEquals(1, visits)
+
+            // The planner moved different listings to the front. Only their reviews spend the budget.
+            search.record((100 until 100 + batchSize).map { "listing-$it" })
+            assertEquals(240 - batchSize, search.remainingBudget("search"))
+            assertTrue(search.canReview("search", revisions, batchSize))
+            search.record((0 until batchSize).map { "listing-$it" })
+            visits = 0
+            assertFalse(search.canReview("search", revisions, batchSize))
+            assertEquals(batchSize, visits)
+            search.stop()
+            visits = 0
+            assertFalse(search.canReview("search", revisions, batchSize))
+            assertEquals(0, visits)
+        }
     }
 
 }

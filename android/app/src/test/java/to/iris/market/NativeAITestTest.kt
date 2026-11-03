@@ -16,6 +16,15 @@ class NativeAITestTest {
         assertTrue(called);assertFalse(matched)
         assertEquals("No match · On-device · gemma · 42 ms",NativeAITestResult(false,42,"litert","gemma").summary)
     }
+    @Test fun malformedSettingsTestIsAnErrorInsteadOfANegativeMatch() {
+        assertThrows(IllegalStateException::class.java) {
+            runBlocking {
+                NativeAITestRunner.run(NativeAITestInput("violin", "Wooden office desk")) {
+                    listOf(LocalModelContract.review("{", "settings-test"))
+                }
+            }
+        }
+    }
     @Test fun boundedInputsAndStaleQueuedCompletionsCannotReportSuccess() {
         assertNotNull(NativeAITestInput(" ","sample").validationError)
         assertNotNull(NativeAITestInput("é".repeat(501),"sample").validationError)

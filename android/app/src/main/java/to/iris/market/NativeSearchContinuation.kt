@@ -14,18 +14,11 @@ class NativeSearchContinuation {
         historyWindows++
         return true
     }
-    @Synchronized fun canReview(value: String, candidates: List<String>, batchSize: Int = 24): Boolean {
-        if (context != value || attempted.size >= 240 || batchSize <= 0) return false
-        // Core selects a prefix, so skipping attempted entries would claim work it will not receive.
-        val batch = candidates.take(batchSize)
+    @Synchronized fun canReview(value: String, candidates: Iterable<String>, batchSize: Int = 24): Boolean {
         // New arrivals may fill the core batch after this snapshot was read.
-        return batchSize <= remainingBudget(value) && batch.any { it !in attempted }
-    }
-    @Synchronized fun claim(value: String, candidates: List<String>, batchSize: Int = 24): Boolean {
-        if (!canReview(value, candidates, batchSize)) return false
-        val batch = candidates.take(batchSize)
-        if (batch.none { it !in attempted }) return false
-        record(batch)
-        return true
+        if (batchSize <= 0 || remainingBudget(value) < batchSize) return false
+        // Inspect only the prefix the core could receive. Planning can reorder it:
+        // the caller records the actual batch once the core has selected it.
+        return candidates.asSequence().take(batchSize).any { it !in attempted }
     }
 }

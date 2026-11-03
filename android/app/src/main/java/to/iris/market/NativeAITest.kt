@@ -30,6 +30,8 @@ object NativeAITestRunner {
         require(sample.validationError == null)
         val listing=Listing("settings-test","","",sample.listing,"","","","","",null,false,false,"active","",null,null)
         val rows=classify(LocalCurationBatch("settings-test",sample.query,listOf(LocalCurationCandidate("settings-test",listing))))
-        return rows.single().show
+        val result = rows.single()
+        check(!result.unavailable) { "The model returned an invalid decision" }
+        return result.show
     }
 }

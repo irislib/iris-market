@@ -7,7 +7,7 @@ const now = 1800000000
 const secret = generateSecretKey()
 const signed = ({ identifier = 'chair', createdAt = now - 20, status = 'active', extra = [], content = 'A comfortable chair', title = 'Oak lounge chair', tags, key = secret } = {}) => finalizeEvent({
   kind: 30402, created_at: createdAt, content,
-  tags: tags ?? [['d', identifier], ['title', title], ['price', '85', 'EUR'], ['location', 'Helsinki'], ['t', 'Home'], ['market', 'offer'], ['status', status], ...extra],
+  tags: tags ?? [['d', identifier], ['title', title], ['price', '85', 'EUR'], ['location', 'Helsinki'], ['t', 'Home'], ['k', 'sell'], ['status', status], ...extra],
 }, key)
 
 test('verified listings normalise offers, requests, images and categories', () => {
@@ -18,10 +18,19 @@ test('verified listings normalise offers, requests, images and categories', () =
   assert(Object.isFrozen(listing.tags))
   assert.equal(listing.imageUrl, 'https://example.com/chair.jpg')
   assert.equal(listing.id, `${listing.author}:chair`)
-  const request = signed({ tags: [['d', 'help'], ['title', 'Need a bicycle'], ['market', 'request']] })
+  const request = signed({ tags: [['d', 'help'], ['title', 'Need a bicycle'], ['k', 'buy']] })
   assert.equal(parseEvent(request, { now }).side, 'request')
   assert.equal(parseEvent(request, { now }).currency, 'EUR')
 })
+
+test('direction tags take precedence over property requests and ignore unrelated k values', () => {
+  const parse=tags=>parseEvent(signed({tags:[['d','listing'],['title','Listing'],...tags]}),{now}).side;
+  assert.equal(parse([['type','want_buy']]),'request');
+  assert.equal(parse([['type','want_rent']]),'request');
+  assert.equal(parse([['k','sell'],['type','want_buy']]),'offer');
+  assert.equal(parse([['k','software-development'],['k','consulting']]),'offer');
+  assert.throws(()=>parse([['k','buy'],['k','sell']]),/Conflicting/);
+});
 
 test('mutation cannot bypass signature verification through a cached verification Symbol', () => {
   const event = signed()
@@ -523,13 +532,17 @@ test('Buying discovers old requests even when offers fill the feed, without adva
     const [,buy,...filters]=socket.sent[1];
     assert.equal(socket.sent.length,2);
     assert.deepEqual(filters.map(f=>[f.kinds,f['#t'],f['#k'],f['#y']]),[
-      [[30402],['market:request'],undefined,undefined],[[38383],undefined,['buy'],['iris-market']]]);
+      [[30402],undefined,['buy'],undefined],[[38383],undefined,['buy'],['iris-market']]]);
     assert.deepEqual(indexed.at(-1),filters);
-    const request=signed({createdAt:now-100000,tags:[['d','wanted'],['title','Wanted chair'],['t','market:request']]});
+    const request=signed({createdAt:now-100000,tags:[['d','wanted'],['title','Wanted chair'],['k','buy']]});
     socket.frame(['EVENT',buy,request]);socket.frame(['EOSE',buy]);socket.frame(['EOSE',main]);
     assert.deepEqual(client.listings().map(l=>l.side),['offer','request']);
     assert.equal([...client.history.values()][0].initialOldest,now-20);
-    client.setBuying(false);assert.deepEqual(socket.sent.at(-1),['CLOSE',buy]);
+    client.setBuying(true,'transport');
+    assert.deepEqual(socket.sent.at(-2),['CLOSE',buy]);
+    const [,categoryBuy,...categoryFilters]=socket.sent.at(-1);
+    for(const filter of categoryFilters){assert.deepEqual(filter['#t'],['transport']);assert.deepEqual(filter['#k'],['buy']);}
+    client.setBuying(false);assert.deepEqual(socket.sent.at(-1),['CLOSE',categoryBuy]);
     const sold=signed({createdAt:now-10,tags:[...request.tags,['status','sold']]});
     socket.frame(['EVENT',main,sold]);socket.frame(['EVENT',buy,request]);
     assert.deepEqual(client.listings().map(l=>l.side),['offer']);

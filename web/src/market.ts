@@ -37,6 +37,14 @@ function singleton(event: NostrEvent, name: string) {
   return tags[0]?.[1]
 }
 
+// Other clients also use k for unrelated metadata. Only buy and sell set the side.
+function classifiedSide(tags:string[][]):'offer'|'request' {
+  const directions = new Set(tags.filter(([name,value])=>name==='k'&&(value==='buy'||value==='sell')).map(tag=>tag[1]));
+  if (directions.size>1) fail('Conflicting listing directions')
+  if (directions.size) return directions.has('buy')?'request':'offer'
+  return tags.some(([name,value])=>name==='type'&&(value==='want_buy'||value==='want_rent'))?'request':'offer'
+}
+
 /** Verify and normalise a NIP-99 record. Sold/expired records are valid tombstones. */
 export function parseEvent(input: NostrEvent, { now = seconds() } = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) fail('Invalid listing event')
@@ -60,8 +68,7 @@ export function parseEvent(input: NostrEvent, { now = seconds() } = {}) {
   const title = singleton(event, 'title')
   if (typeof title !== 'string' || !title.trim() || length(title) > 160) fail('Invalid listing title')
   if (bytes(event.content) > 12000) fail('Description is too long')
-  const side = quote.side ?? singleton(event, 'market') ?? (event.tags.some(tag=>tag[0]==='t'&&tag[1]==='market:request')?'request':'offer')
-  if (side !== 'offer' && side !== 'request') fail('Invalid listing type')
+  const side = quote.side ?? classifiedSide(event.tags)
   const location = singleton(event, 'location') ?? ''
   const geo = locationFromTags(event.tags)
   const exactPoint = exactListingPoint(event.tags, geo?.geohash ?? null)
@@ -242,6 +249,7 @@ export class MarketRelayClient {
   maxRecords: number
   private browseDiscovery:boolean
   private inventoryCapacity:number
+  private buyingCategory='all'
   private buying=false
   private buyingOverflow=0
   private mapOverflow=0
@@ -567,12 +575,15 @@ export class MarketRelayClient {
 
   private buyingFilters():Filter[] {
     const scope = this.authors === null ? {} : {authors:[...this.authors]}
-    return [{kinds:[LISTING_KIND],'#t':['market:request'],limit:BUYING_RESERVE,...scope},
-      {...bitcoinFilter({kinds:[],limit:BUYING_RESERVE,...scope}),'#k':['buy']}]
+    // Relays combine #k and #t with AND. Tags within #t are alternatives.
+    const topics = this.buyingCategory==='all' ? this.tags : [this.buyingCategory]
+    const filter = {kinds:[LISTING_KIND],'#k':['buy'],...(topics.length?{'#t':[...topics]}:{}),limit:BUYING_RESERVE,...scope}
+    return [filter,bitcoinFilter(filter)]
   }
 
-  setBuying(active:boolean) {
-    if (!this.browseDiscovery || !this.hasInventoryQuery || this.buying === active) return
+  setBuying(active:boolean,category='all') {
+    if (!this.browseDiscovery || !this.hasInventoryQuery || this.buying === active && (!active || this.buyingCategory === category)) return
+    this.buyingCategory = category
     this.buying = active
     if (!this.running) return
     if (active) this.requestIndex(this.buyingFilters(),false)

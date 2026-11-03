@@ -4,8 +4,10 @@ use serde_json::json;
 
 #[test]
 fn explicit_location_publishes_legacy_geohash_prefixes() {
-    let draft: Draft =
-        serde_json::from_value(json!({"title":"Desk","description":"","side":"offer","location":"Pickup area #U60G"})).unwrap();
+    let draft: Draft = serde_json::from_value(
+        json!({"title":"Desk","description":"","side":"offer","location":"Pickup area #U60G"}),
+    )
+    .unwrap();
     let event = listing::build(&Keys::generate(), &draft, "desk", 100, false).unwrap();
     let cells: Vec<_> = event
         .tags
@@ -142,7 +144,7 @@ fn publisher_rejects_invalid_area_geometry_and_oversized_signed_payloads() {
 }
 
 #[test]
-fn indexed_buying_marker_preserves_category_and_legacy_side_authority() {
+fn classified_directions_preserve_topics_and_import_wanted_types() {
     let keys = Keys::generate();
     let draft:Draft=serde_json::from_value(json!({"title":"Wanted bicycle","description":"","side":"request","category":"transport","tags":["bicycle"]})).unwrap();
     let indexed = listing::build(&keys, &draft, "wanted", 100, false).unwrap();
@@ -150,28 +152,44 @@ fn indexed_buying_marker_preserves_category_and_legacy_side_authority() {
     assert_eq!(parsed.side, "request");
     assert_eq!(parsed.category, "transport");
     assert_eq!(parsed.tags, ["transport", "bicycle"]);
-    let marker_only = EventBuilder::new(indexed.kind, indexed.content.clone())
-        .tags(
-            indexed
-                .tags
-                .iter()
-                .filter(|tag| tag.as_slice()[0] != "market")
-                .cloned(),
-        )
-        .custom_created_at(Timestamp::from(100))
-        .sign_with_keys(&keys)
-        .unwrap();
-    assert_eq!(listing::parse(&marker_only, 100).unwrap().side, "request");
-    let explicit_offer = EventBuilder::new(marker_only.kind, marker_only.content.clone())
-        .tags(
-            marker_only
-                .tags
-                .iter()
-                .cloned()
-                .chain([Tag::parse(["market", "offer"]).unwrap()]),
-        )
-        .custom_created_at(Timestamp::from(100))
-        .sign_with_keys(&keys)
-        .unwrap();
-    assert_eq!(listing::parse(&explicit_offer, 100).unwrap().side, "offer");
+    assert!(
+        indexed
+            .tags
+            .iter()
+            .any(|tag| tag.as_slice() == ["k", "buy"])
+    );
+    assert!(!indexed.tags.iter().any(|tag| tag.as_slice()[0] == "market"));
+    let with_tags = |extra: Vec<Tag>| {
+        EventBuilder::new(indexed.kind, indexed.content.clone())
+            .tags(
+                indexed
+                    .tags
+                    .iter()
+                    .filter(|tag| tag.as_slice()[0] != "k")
+                    .cloned()
+                    .chain(extra),
+            )
+            .custom_created_at(Timestamp::from(100))
+            .sign_with_keys(&keys)
+            .unwrap()
+    };
+    for wanted in ["want_buy", "want_rent"] {
+        let request = with_tags(vec![Tag::parse(["type", wanted]).unwrap()]);
+        assert_eq!(listing::parse(&request, 100).unwrap().side, "request");
+    }
+    let sell = with_tags(vec![
+        Tag::parse(["type", "want_buy"]).unwrap(),
+        Tag::parse(["k", "sell"]).unwrap(),
+    ]);
+    assert_eq!(listing::parse(&sell, 100).unwrap().side, "offer");
+    let other = with_tags(vec![
+        Tag::parse(["k", "consulting"]).unwrap(),
+        Tag::parse(["k", "jobs"]).unwrap(),
+    ]);
+    assert_eq!(listing::parse(&other, 100).unwrap().side, "offer");
+    let conflict = with_tags(vec![
+        Tag::parse(["k", "buy"]).unwrap(),
+        Tag::parse(["k", "sell"]).unwrap(),
+    ]);
+    assert!(listing::parse(&conflict, 100).is_err());
 }

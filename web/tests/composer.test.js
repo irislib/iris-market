@@ -78,12 +78,16 @@ test('editing keeps the address, attachment metadata and location while replacin
  for(const tags of [Array.from({length:9},(_,i)=>String(i)),['x'.repeat(61)],['bad\nlabel'],[{}]])assert.throws(()=>listingDraft({...values,tags}));
  });
 
-test('Buying is relay-indexed without exposing its marker as a category',()=>{
- const draft=listingDraft({...values,side:'request'},{identifier:'buying'}),key=generateSecretKey();
- assert(draft.tags.some(tag=>tag[0]==='t'&&tag[1]==='market:request'));
- const indexed={...draft,tags:draft.tags.filter(tag=>tag[0]!=='market')};
- const parsed=parseEvent(finalizeEvent(indexed,key));assert.equal(parsed.side,'request');assert.equal(parsed.category,'home');assert(!parsed.tags.includes('market:request'));
- const explicit=parseEvent(finalizeEvent({...indexed,tags:[...indexed.tags,['market','offer']]},key));assert.equal(explicit.side,'offer');
+test('publishing and editing classifieds signs a single direction and keeps category independent',()=>{
+ const key=generateSecretKey();
+ const draft=listingDraft({...values,side:'request'},{identifier:'buying'});
+ assert.deepEqual(draft.tags.filter(tag=>tag[0]==='k'),[['k','buy']]);
+ assert(!draft.tags.some(tag=>tag[0]==='market'||tag[1]==='market:request'));
+ const parsed=parseEvent(finalizeEvent(draft,key));
+ assert.equal(parsed.side,'request');assert.equal(parsed.category,'home');
+ const edited=revisedListingDraft({...values,side:'offer'},parsed);
+ assert.deepEqual(edited.tags.filter(tag=>tag[0]==='k'),[['k','sell']]);
+ assert.equal(parseEvent(finalizeEvent(edited,key)).side,'offer');
 });
 
 test('the selected public pin includes all prefixes and only exact mode signs the coordinate',()=>{

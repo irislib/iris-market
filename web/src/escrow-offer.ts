@@ -25,7 +25,7 @@ export function offerTags(tags:string[][],offer:EscrowOffer|undefined){
   if(offer.trade==='goods')return {kind:30402,tags:next};
   const val=(k:string)=>tags.find(t=>t[0]===k)?.[1],price=tags.find(t=>t[0]==='price');
   checkEscrowOffer(offer,price?.[1],price?.[2],Number(val('expiration')));
-  return {kind:BITCOIN_KIND,tags:[...next.filter(t=>!['market','price','status'].includes(t[0])),['k',val('market')==='offer'?'sell':'buy'],['s','pending'],['amt',String(offer.sats)],['f',price[2].toUpperCase()],['fa',price[1]],['pm',offer.method==='cash'?'cash in person':'bank transfer'],['premium','0'],['bond','0'],['network','mainnet'],['layer','cashu'],['y','iris-market'],['z','order'],['expires_at',val('expiration')]]};
+  return {kind:BITCOIN_KIND,tags:[...next.filter(t=>!['price','status'].includes(t[0])),['s','pending'],['amt',String(offer.sats)],['f',price[2].toUpperCase()],['fa',price[1]],['pm',offer.method==='cash'?'cash in person':'bank transfer'],['premium','0'],['bond','0'],['network','mainnet'],['layer','cashu'],['y','iris-market'],['z','order'],['expires_at',val('expiration')]]};
 }
 export function readEscrowOffer(kind:number,tags:string[][]){
   function val(name:string){const rows=tags.filter(t=>t[0]===name);if(rows.length!==1||rows[0].length!==2)throw Error('Invalid escrow offer');return rows[0][1];}

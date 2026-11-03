@@ -28,6 +28,7 @@ test('public demo listings validate as signed test-money simulations, expire and
   for(const kind of ['product','ride','delivery']) {
     const event=finalizeEvent(demoListingDraft(kind,createdAt,true),secret),listing=parseEvent(event,{now:createdAt});
     assert.equal(listing.identifier,kind==='product'?'demo-drone-delivery':kind==='ride'?'demo-ride':'demo-courier');
+    assert.deepEqual(event.tags.filter(t=>t[0]==='k'),[['k','sell']]);
     assert.equal(listing.side,'offer');assert.equal(listing.price,kind==='product'?'16':'8');assert.equal(listing.currency,'TESTSAT');
     assert.equal(listing.imageUrl,`https://market.iris.to/demo-${kind==='ride'?'ride':'delivery'}.svg`);
     assert.equal(listing.expiration,createdAt+DEMO_LISTING_LIFETIME);
@@ -44,6 +45,7 @@ test('public demo listings validate as signed test-money simulations, expire and
     assert.equal(records.get(listing.id).eventId,renewed.id);
     assert.equal(visibleListings(records,{now:listing.expiration+1}).length,1);
     const local=demoListingDraft(kind,createdAt);
+    assert.deepEqual(local.tags.filter(t=>t[0]==='k'),[['k','sell']]);
     assert(!local.tags.some(tag=>['expiration','image'].includes(tag[0])));
     assert.match(local.content,/local preview is only available here/);
   }

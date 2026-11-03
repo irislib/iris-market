@@ -221,7 +221,7 @@ fn two_profiles_publish_discover_and_exchange_private_enquiries_over_internet_tr
 }
 
 #[test]
-fn buying_explicitly_backfills_legacy_requests_beyond_latest_three_hundred() {
+fn buying_backfills_typed_requests_beyond_latest_three_hundred() {
     use iris_market_core::listing;
     use nostr::{EventBuilder, Keys, Timestamp};
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -234,31 +234,28 @@ fn buying_explicitly_backfills_legacy_requests_beyond_latest_three_hundred() {
     let seller = Keys::generate();
     let now = listing::now();
     let mut draft:Draft=serde_json::from_value(json!({"title":"Older request","description":"A signed public fixture","side":"request","currency":"EUR"})).unwrap();
-    let indexed = listing::build(&seller, &draft, "legacy-request", now - 400, false).unwrap();
+    let indexed = listing::build(&seller, &draft, "wanted-property", now - 400, false).unwrap();
     assert!(
         indexed
             .tags
             .iter()
-            .any(|tag| tag.as_slice() == ["t", listing::REQUEST_TOPIC])
+            .any(|tag| tag.as_slice() == ["k", "buy"])
     );
-    let legacy = EventBuilder::new(indexed.kind, indexed.content.clone())
+    let property = EventBuilder::new(indexed.kind, indexed.content.clone())
         .tags(
             indexed
                 .tags
                 .iter()
-                .filter(|tag| {
-                    tag.as_slice()
-                        .get(1)
-                        .is_none_or(|value| value != listing::REQUEST_TOPIC)
-                })
-                .cloned(),
+                .filter(|tag| tag.as_slice()[0] != "k")
+                .cloned()
+                .chain([nostr::Tag::parse(["type", "want_buy"]).unwrap()]),
         )
         .custom_created_at(Timestamp::from(now - 400))
         .sign_with_keys(&seller)
         .unwrap();
     draft.side = "offer".into();
     draft.title = "Newer offer".into();
-    let mut events = vec![legacy.clone()];
+    let mut events = vec![property];
     for n in 0..302 {
         events.push(
             listing::build(&seller, &draft, &format!("offer-{n}"), now - 302 + n, false).unwrap(),
@@ -357,11 +354,7 @@ fn buying_explicitly_backfills_legacy_requests_beyond_latest_three_hundred() {
         .flat_map(|frame| frame.as_array().unwrap()[2..].iter())
         .filter(|filter| filter["kinds"] == json!([30402]))
         .collect();
-    assert!(
-        filters
-            .iter()
-            .any(|filter| filter["#t"] == json!([listing::REQUEST_TOPIC]))
-    );
+    assert!(filters.iter().any(|filter| filter["#k"] == json!(["buy"])));
     assert!(filters.iter().any(|filter| filter.get("until").is_some()));
     assert!(
         filters.len() <= 7,

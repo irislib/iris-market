@@ -213,8 +213,8 @@ pub(crate) async fn run(state: Arc<Mutex<State>>, notify: Arc<Notify>, stopped: 
     }
 }
 
-/// An explicit Buying refresh retrieves indexed requests, then a finite legacy
-/// lookback. It never sends a user's search text or imports unsigned fixtures.
+/// An explicit Buying refresh retrieves indexed requests, then a finite lookback
+/// for requests from clients with unindexed type tags. It never sends a user's search text or imports unsigned fixtures.
 async fn backfill_buying(
     bus: &RelayEventBus,
     state: &Arc<Mutex<State>>,
@@ -238,7 +238,8 @@ async fn backfill_buying(
         }
         let mut filter = Filter::new().limit(300);
         if page == 0 {
-            filter = filter.hashtag(listing::REQUEST_TOPIC);
+            filter =
+                filter.custom_tag(nostr::SingleLetterTag::lowercase(nostr::Alphabet::K), "buy");
         }
         if let Some(cursor) = until {
             filter = filter.until(Timestamp::from(cursor));

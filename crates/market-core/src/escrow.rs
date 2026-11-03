@@ -86,13 +86,12 @@ impl Offer {
         let Self::BitcoinFiat { sats, method } = self else {
             return Ok(listing::LISTING_KIND);
         };
-        tags.retain(|t| !matches!(t[0].as_str(), "market" | "price" | "status"));
+        tags.retain(|t| !matches!(t[0].as_str(), "price" | "status"));
         let expires = draft
             .expires_at
             .context("Bitcoin offers need an expiry")?
             .to_string();
         for (k, v) in [
-            ("k", if draft.side == "offer" { "sell" } else { "buy" }),
             ("s", if closed { "canceled" } else { "pending" }),
             ("amt", &sats.to_string()),
             ("f", &draft.currency.to_uppercase()),

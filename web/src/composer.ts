@@ -52,8 +52,7 @@ export function listingDraft(values, { identifier=crypto.randomUUID(), createdAt
   const files=attachments.map(attachment), links=files.map(file=>`${file.isImage?'!':''}[${markdownLabel(file.name)}](${file.url})`);
   const content=[description,...links].filter(Boolean).join('\n\n');
   if(new TextEncoder().encode(content).length>12000)throw new Error('The description is too long. Leave room for attachment links.');
-  const tags=[['d',identifier],['title',title],['market',values.side],['t',values.category],['price',price,currency],['status','active'],['published_at',String(createdAt)]];
-  if(values.side==='request')tags.push(['t','market:request']);
+  const tags=[['d',identifier],['title',title],['k',values.side==='request'?'buy':'sell'],['t',values.category],['price',price,currency],['status','active'],['published_at',String(createdAt)]];
   const labels:unknown[]=Array.isArray(values.tags)?values.tags:String(values.tags||'').split(',');
   const extraTags=[...new Set(labels.map(value=>{if(typeof value!=='string')throw new Error('Choose up to eight short tags.');return value.trim().replace(/^#/, '').toLowerCase();}).filter(Boolean))];
   if(extraTags.length>8||extraTags.some(tag=>Array.from(tag).length>60||/[\u0000-\u001f\u007f]/.test(tag)))throw new Error('Choose up to eight tags, each up to 60 characters.');
@@ -84,6 +83,7 @@ export function revisedListingDraft(values, previous, attachments=[]) {
   draft.tags.find(tag=>tag[0]==='published_at')[1]=String(listingPublishedAt(previous)??previous.createdAt);
   const replaced=new Set(['d','title','market','price','location','status','published_at','expiration','iris-escrow',...(previous.rawEvent?.kind===BITCOIN_KIND?BITCOIN_TAGS:[])]);
   for(const tag of previous.originalTags||[]){
+    if(tag[0]==='k'&&['buy','sell'].includes(tag[1]) || tag[0]==='type'&&['want_buy','want_rent'].includes(tag[1]) || tag[0]==='t'&&tag[1]==='market:request')continue;
     if(Object.hasOwn(values,'pinCoordinates') && (tag[0]==='g' && !['pickup','destination'].includes(tag[2]) || tag[0]==='r' && tag[1]?.startsWith('geo:')))continue;
     if(tag[0]==='g'&&tag.length===2&&values.location!==previous.location&&(locationHash(values.location)||locationHash(previous.location)))continue;
     if(values.category==='transport'&&values.transportType&&tag[0]==='t'&&isTransportTag(tag[1]))continue;

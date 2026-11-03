@@ -29,7 +29,7 @@ pub(crate) fn coordinate(
         _ => format!("{author}:{identifier}"),
     }
 }
-pub const REQUEST_TOPIC: &str = "market:request";
+
 pub fn now() -> u64 {
     Timestamp::now().as_secs()
 }
@@ -44,6 +44,34 @@ fn field(event: &Event, name: &str) -> Result<Option<String>> {
         bail!("Duplicate {name} field");
     }
     Ok(values.first().and_then(|t| t.as_slice().get(1)).cloned())
+}
+
+fn classified_side(event: &Event) -> Result<&'static str> {
+    let mut direction = None;
+    let mut wanted = false;
+    for tag in event.tags.iter() {
+        let parts = tag.as_slice();
+        let Some(value) = parts.get(1).map(String::as_str) else {
+            continue;
+        };
+        match (parts[0].as_str(), value) {
+            ("k", "buy" | "sell") => {
+                if direction.is_some_and(|previous| previous != value) {
+                    bail!("Conflicting listing directions");
+                }
+                direction = Some(value);
+            }
+            ("type", "want_buy" | "want_rent") => wanted = true,
+            _ => {}
+        }
+    }
+    Ok(
+        if direction == Some("buy") || direction.is_none() && wanted {
+            "request"
+        } else {
+            "offer"
+        },
+    )
 }
 
 fn normalized_tag(value: &str) -> Option<String> {
@@ -119,7 +147,10 @@ pub fn build(
         vec!["title".into(), d.title.trim().into()],
         vec!["location".into(), d.location.trim().into()],
         vec!["t".into(), d.category.trim().into()],
-        vec!["market".into(), d.side.clone()],
+        vec![
+            "k".into(),
+            if d.side == "request" { "buy" } else { "sell" }.into(),
+        ],
         vec![
             "status".into(),
             if closed { "sold" } else { "active" }.into(),
@@ -148,11 +179,6 @@ pub fn build(
         {
             tags.push(vec!["t".into(), topic]);
         }
-    }
-    // A portable Nostr #t index alongside the authoritative legacy market field.
-    // The reserved marker is not a user topic and is omitted by normalized_tag.
-    if d.side == "request" {
-        tags.push(vec!["t".into(), REQUEST_TOPIC.into()]);
     }
     if !d.price.is_empty() {
         tags.push(vec![
@@ -229,19 +255,7 @@ pub fn parse(event: &Event, at: u64) -> Result<Listing> {
         escrow,
         title: field(event, "title")?.context("Listing has no title")?,
         description: event.content.clone(),
-        side: field(event, "market")?.unwrap_or_else(|| {
-            if event.tags.iter().any(|tag| {
-                tag.as_slice().first().is_some_and(|name| name == "t")
-                    && tag
-                        .as_slice()
-                        .get(1)
-                        .is_some_and(|value| value == REQUEST_TOPIC)
-            }) {
-                "request".into()
-            } else {
-                "offer".into()
-            }
-        }),
+        side: classified_side(event)?.into(),
         price,
         currency,
         location: field(event, "location")?.unwrap_or_default(),

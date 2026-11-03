@@ -108,6 +108,7 @@ data class MarketSnapshot(
     val profileListings: ProfileListings? = null,
     val localCuration: LocalCurationBatch? = null,
     val searchDiscovery: SearchDiscoveryStatus? = null,
+    val showAllResults: Boolean = false, val relatedSearchTerms: List<String> = emptyList(),
     val searchGeneration: Long = 0, val searchPlanPending: Boolean = false, val searchPlanTags: List<String> = emptyList(),
     val satsDisplayPrice: PriceDisplay? = null,
     val supportedCurrencies: List<String> = emptyList(),
@@ -142,6 +143,8 @@ data class MarketSnapshot(
                 profile = o.optJSONObject("profile")?.let(PublicProfile::parse), graphContextLoaded = o.optBoolean("graph_context_loaded"),
                 profileListings = o.optJSONObject("profile_listings")?.let(ProfileListings::parse),
                 searchDiscovery = o.optJSONObject("search_discovery")?.let { SearchDiscoveryStatus(it.optBoolean("loading"),it.optBoolean("has_more")) },
+                showAllResults = o.optBoolean("show_all_results"),
+                relatedSearchTerms = o.optJSONArray("related_search_terms")?.let { a -> (0 until minOf(a.length(),8)).map { a.getString(it) } }.orEmpty(),
                 searchGeneration = o.optLong("search_generation"), searchPlanPending = o.optBoolean("search_plan_pending"),
                 searchPlanTags = o.optJSONArray("search_plan_tags")?.let { a -> (0 until minOf(a.length(),128)).map { a.getString(it) } } ?: emptyList(),
                 localCuration = o.optJSONObject("local_curation")?.let { batch ->
@@ -236,7 +239,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
     private var homeStartedContext: String? = null
     fun homeFilterActive(): Boolean {
         val ai=JSONObject(state.value.settings).optJSONObject("ai") ?: return false
-        return ai.optString("provider") != CompactSearchFiles.PROVIDER && state.value.query.isBlank() && ai.optBoolean("enabled") && ai.optBoolean("curate_feed") &&
+        return !state.value.showAllResults && ai.optString("provider") != CompactSearchFiles.PROVIDER && state.value.query.isBlank() && ai.optBoolean("enabled") && ai.optBoolean("curate_feed") &&
             NativeAIReadiness.isOn(true,ai.optString("provider"),ai.optString("model"),ai.optString("base_url"),NativeAIReadiness.localReady(localModelState.value.phase),state.value.demo)
     }
     fun setBrowseVisible(value: Boolean) {
@@ -610,40 +613,6 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
             finally { operationCount -= 1; working.value = operationCount > 0 }
         }
     }
-    fun toggleAI(openSettings: () -> Unit) {
-        val ai=JSONObject(state.value.settings).optJSONObject("ai") ?: JSONObject()
-        val action=NativeAIReadiness.tapAction(ai.optBoolean("enabled"),
-            NativeAIReadiness.canEnable(ai.optString("provider"),ai.optString("model"),ai.optString("base_url"),localModelState.value.available,state.value.demo),
-            !state.value.demo&&localModelState.value.available&&NativeAIReadiness.canSelectLocalOnTap(ai.optString("provider"),ai.optString("model"),ai.optString("base_url")))
-        if(action==NativeAITapAction.SETTINGS) { openSettings();return }
-        if(working.value&&action!=NativeAITapAction.OFF) return
-        val epoch=aiIntentGate.advance()
-        if(action==NativeAITapAction.OFF) { disableAI(epoch);return }
-        viewModelScope.launch {
-            operationCount+=1;working.value=true
-            try {
-                withContext(Dispatchers.IO) { mutex.withLock {
-                    val app=core ?: error("Not ready")
-                    val next=aiIntentGate.perform(epoch) {
-                        val current=MarketSnapshot.parse(app.snapshot())
-                        val settings=JSONObject(current.settings)
-                        val selected=settings.getJSONObject("ai")
-                        if(action==NativeAITapAction.LOCAL) {
-                            check(!current.demo&&localModelState.value.available)
-                            selected.put("provider","litert").put("model",LocalModelManifest.ID).put("base_url","")
-                        }
-                        selected.put("enabled",true)
-                        val saved=MarketSnapshot.parse(app.command(JSONObject().put("type","set_settings").put("settings",settings).toString()))
-                        check(saved.error.isNullOrBlank())
-                        MarketSnapshot.parse(app.command(JSONObject().put("type","set_filter").put("query",current.query).put("side",current.side).put("ai_search",true).toString()))
-                    }
-                    if(next!=null) publishSnapshot(next)
-                } }
-            } catch(e:CancellationException){throw e}
-            catch(_:Exception){alert.value="Could not change AI search. Check your AI settings."}
-            finally{operationCount-=1;working.value=operationCount>0}
-        }
-    }
     private fun disableAI(epoch: Long, requestedAI: JSONObject? = null, done: () -> Unit = {}) {
         cancelLocalAI()
         val app=core ?: return
@@ -668,6 +637,15 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
         }
     }
     fun filter(query: String, side: String, aiSearch: Boolean = false) = command(JSONObject().put("type", "set_filter").put("query", query).put("side", side).put("ai_search", aiSearch)) { if (query.isNotBlank()) searchContinuation.start(searchContext()) }
+    fun selectResultView(showAll: Boolean) {
+        val current=state.value
+        val useAI=!showAll && current.query.isNotBlank()
+        command(JSONObject().put("type","set_filter").put("query",current.query).put("side",current.side)
+            .put("ai_search",useAI).put("show_all_results",showAll)) {
+            if(current.query.isNotBlank()) searchContinuation.start(searchContext())
+            if(useAI && state.value.aiSearch) ai("curate")
+        }
+    }
     fun searchAI(query: String, side: String) = command(JSONObject().put("type", "set_filter").put("query", query).put("side", side).put("ai_search", true)) { searchContinuation.start(searchContext()); ai("curate") }
     fun save(id: String) = command(JSONObject().put("type", "save").put("id", id))
     fun action(type: String) = command(JSONObject().put("type", type))

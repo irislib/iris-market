@@ -295,6 +295,8 @@ pub struct Snapshot {
     pub search_discovery: crate::search_discovery::Status,
     pub search_generation: u64,
     pub search_plan_tags: Vec<String>,
+    pub related_search_terms: Vec<String>,
+    pub show_all_results: bool,
     pub search_plan_pending: bool,
     pub exchange_rates: crate::rates::RateSnapshot,
     pub sats_display_price: Option<crate::rates::DisplayPrice>,
@@ -341,6 +343,8 @@ pub enum Command {
         side: String,
         #[serde(default)]
         ai_search: bool,
+        #[serde(default)]
+        show_all_results: Option<bool>,
     },
     SetSort {
         sort: String,

@@ -32,6 +32,51 @@ fn begin(market: &Market) -> Value {
 }
 
 #[test]
+fn result_view_survives_reopen_and_text_search_keeps_its_query() {
+    let dir = tempfile::tempdir().unwrap();
+    let key = Keys::generate().secret_key().to_secret_hex();
+    let open = || Market::open(dir.path(), &key, true).unwrap();
+    let market = open();
+    command(
+        &market,
+        json!({"type":"set_settings","settings":{"relays":[],"ai":{"enabled":true,"provider":"apple","model":"apple-system","curate_feed":true}}}),
+    );
+    let search = |view: bool| json!({"type":"set_filter","query":"camera","side":"all","ai_search":true,"show_all_results":view});
+    let literal = command(&market, search(true));
+    assert_eq!(literal["show_all_results"], true);
+    assert_eq!(literal["ai_search"], false);
+    assert!(literal["listings"].as_array().unwrap().iter().all(|row| {
+        row["title"]
+            .as_str()
+            .unwrap()
+            .to_lowercase()
+            .contains("camera")
+    }));
+    assert!(!literal["listings"].as_array().unwrap().is_empty());
+    drop(market);
+    let market = open();
+    let next = command(
+        &market,
+        json!({"type":"set_filter","query":"another search","side":"all","ai_search":true}),
+    );
+    assert_eq!(next["show_all_results"], true);
+    assert_eq!(next["ai_search"], false);
+    assert_eq!(next["listings"], json!([]));
+    let curated = command(&market, search(false));
+    assert_eq!(curated["ai_search"], true);
+    assert_eq!(curated["query"], "camera");
+    let planned = command(
+        &market,
+        json!({"type":"apply_search_plan","generation":curated["search_generation"],"terms":["CAMERA","photography"]}),
+    );
+    assert_eq!(planned["related_search_terms"], json!(["photography"]));
+    assert_eq!(
+        command(&market, search(true))["related_search_terms"],
+        json!([])
+    );
+}
+
+#[test]
 fn compact_reviews_submitted_searches_and_preserves_home_preferences() {
     let (_dir, market) = setup();
     let home = command(
@@ -375,6 +420,10 @@ fn query_plan_prioritizes_related_items_without_changing_query_or_relevance() {
         json!({"type":"apply_search_plan","generation":state["search_generation"],"terms":["musical instruments"]}),
     );
     assert_eq!(planned["query"], "stringed instrument");
+    assert_eq!(
+        planned["related_search_terms"],
+        json!(["musical instruments"])
+    );
     assert!(
         planned["listings"]
             .as_array()
@@ -429,6 +478,7 @@ fn query_plans_are_bounded_single_use_and_stale_safe() {
             .is_err()
     );
     assert!(changed["search_plan_pending"].as_bool().unwrap());
+    assert_eq!(changed["related_search_terms"], json!([]));
     let literal = command(
         &market,
         json!({"type":"set_filter","query":"camera","side":"all","ai_search":false}),

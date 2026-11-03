@@ -74,6 +74,7 @@ pub(crate) struct State {
     map_cells: Vec<String>,
     search_request: u64,
     search_terms: Vec<String>,
+    show_all_results: bool,
     search_plan_applied: bool,
     search_plan_locked: bool,
     search_discovery: search_discovery::Discovery,
@@ -103,6 +104,7 @@ impl State {
     }
     fn home_curation(&self) -> bool {
         self.settings.ai.enabled
+            && !self.show_all_results
             && self.settings.ai.provider != "compact"
             && self.settings.ai.curate_feed
             && self.query.trim().is_empty()
@@ -245,6 +247,8 @@ impl State {
                 Vec::new()
             },
             search_plan_pending: plan_pending,
+            related_search_terms: search_plan::related_terms(&self.query, &self.search_terms),
+            show_all_results: self.show_all_results,
             exchange_rates: self.rates.snapshot(listing::now()),
             sats_display_price: self.rates.convert(
                 "1",
@@ -558,6 +562,7 @@ impl Market {
             let _ = profiles.ingest_public(event);
         }
         let mut state = State {
+            show_all_results: store.show_all_results()?,
             store,
             owner,
             owner_keys,
@@ -819,17 +824,29 @@ impl Market {
                 query,
                 side,
                 ai_search,
+                show_all_results,
             } => {
                 if query.len() > 300 || !["all", "offer", "request"].contains(&side.as_str()) {
                     bail!("Invalid search");
                 }
                 // Search mode cannot bypass the durable provider opt-in. Native
                 // clients separately gate platform model availability.
-                let ai_search = ai_search && s.settings.ai.enabled && !query.trim().is_empty();
-                if s.query != query || s.ai_search != ai_search || s.side != side {
+                let show_all = show_all_results.unwrap_or(s.show_all_results);
+                let ai_search =
+                    ai_search && !show_all && s.settings.ai.enabled && !query.trim().is_empty();
+                if s.query != query
+                    || s.ai_search != ai_search
+                    || s.side != side
+                    || s.show_all_results != show_all
+                {
+                    if s.show_all_results != show_all {
+                        s.store.change_result_view(show_all)?;
+                        s.show_all_results = show_all;
+                    } else {
+                        s.store.clear_relevance()?;
+                    }
                     s.cancel_remote_ai();
                     s.local_curation = None;
-                    s.store.clear_relevance()?;
                     if side == "request" {
                         s.buying_request += 1;
                         self.notify.notify_waiters();

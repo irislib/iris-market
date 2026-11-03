@@ -49,6 +49,20 @@ pub(crate) fn apply(state: &mut State, generation: u64, terms: Vec<String>) -> R
     Ok(())
 }
 
+pub(crate) fn related_terms(query: &str, terms: &[String]) -> Vec<String> {
+    if terms.is_empty() {
+        return Vec::new();
+    }
+    let query = literal_search::normalize(query);
+    let mut seen: HashSet<String> = query.split_whitespace().map(str::to_owned).collect();
+    seen.insert(query);
+    terms
+        .iter()
+        .filter(|term| seen.insert(literal_search::normalize(term)))
+        .cloned()
+        .collect()
+}
+
 pub(crate) fn prioritize(listings: &mut [Listing], terms: &[String]) {
     if terms.is_empty() {
         return;

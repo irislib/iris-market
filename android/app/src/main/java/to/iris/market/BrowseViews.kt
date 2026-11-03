@@ -1,6 +1,5 @@
 package to.iris.market
 
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -14,10 +13,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.stateDescription
-import androidx.compose.ui.semantics.toggleableState
-import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.state.ToggleableState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -38,8 +33,8 @@ import org.json.JSONObject
 @Composable fun BrowseView(state: MarketSnapshot, model: MarketModel, busy: Boolean,
     selected: (Listing) -> Unit, settings: () -> Unit, photoFilter: Boolean?, changePhotoFilter: (Boolean?) -> Unit) {
     var query by remember { mutableStateOf(state.query) }
-    var showAll by remember { mutableStateOf(false) }
-    LaunchedEffect(state.query, state.side) { showAll = false }
+    val showAll = state.showAllResults
+    var viewMenu by remember { mutableStateOf(false) }
     var showMap by remember { mutableStateOf(false) }
     var sortMenu by remember { mutableStateOf(false) }
     var filtersSheet by remember { mutableStateOf(false) }
@@ -78,13 +73,9 @@ import org.json.JSONObject
                 OutlinedTextField(value = query, onValueChange = { query = it }, placeholder = { Text("Search listings") },
                     leadingIcon = { Icon(Icons.Filled.Search, null, tint = Forest) },
                     trailingIcon = { Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.size(48.dp).combinedClickable(enabled=!busy||ai?.optBoolean("enabled")==true,role=Role.Switch,onClick={showAll=false;model.toggleAI(settings)},onLongClick=settings,onLongClickLabel="Open AI settings")
-                            .semantics { contentDescription="AI search";stateDescription=if(ai?.optBoolean("enabled")==true) { if(NativeAIReadiness.isLocal(ai?.optString("provider"))&&localModel.phase==LocalModelPhase.VERIFYING) "On, checking" else if(aiSearch) "On" else "On, unavailable" } else "Off";toggleableState=if(ai?.optBoolean("enabled")==true) ToggleableState.On else ToggleableState.Off },contentAlignment=Alignment.Center) {
-                            Icon(Icons.Filled.AutoAwesome,null,tint=if(aiSearch) Forest else Muted)
-                        }
                         if(query.isNotBlank()) IconButton(onClick={query="";model.filter("",state.side)},modifier=Modifier.size(36.dp)) { Icon(Icons.Filled.Close,"Clear search") }
                     } },
-                    keyboardOptions=KeyboardOptions(imeAction=ImeAction.Search), keyboardActions=KeyboardActions(onSearch={when(NativeAIReadiness.searchAction(ai?.optBoolean("enabled")==true,aiSearch,busy,localInference,query)) {
+                    keyboardOptions=KeyboardOptions(imeAction=ImeAction.Search), keyboardActions=KeyboardActions(onSearch={when(NativeAIReadiness.searchAction(!showAll&&ai?.optBoolean("enabled")==true,aiSearch,busy,localInference,query)) {
                         NativeAISearchAction.WAIT -> Unit
                         NativeAISearchAction.SETTINGS -> settings()
                         NativeAISearchAction.AI -> model.searchAI(query,state.side)
@@ -119,19 +110,35 @@ import org.json.JSONObject
                                 enabled=true, selected=state.side==value, borderColor=Line, selectedBorderColor=Action))
                     }
                     Spacer(Modifier.weight(1f))
-                    IconButton(onClick={filtersSheet=true}) { Icon(Icons.Filled.FilterAlt,"Filters",tint=Muted) }
+                    TextButton(onClick={filtersSheet=true},modifier=Modifier.testTag("listingFilters")) {
+                        Text(if(wantsPhotos) "Filters (1)" else "Filters")
+                    }
                 }
-                if (canCurate) Surface(color = Mint, shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth().padding(top = 5.dp)) {
+                if (ai?.optBoolean("enabled")==true) Surface(color = Mint, shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth().padding(top = 5.dp)) {
                     Row(Modifier.padding(start = 12.dp, end = 5.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Filled.AutoAwesome, null, Modifier.size(16.dp), tint = Forest)
+                        if(canCurate) Icon(Icons.Filled.AutoAwesome, null, Modifier.size(16.dp), tint = Forest)
                         Spacer(Modifier.width(8.dp))
-                        Text(if (showAll) "All listings" else if (state.error != null) "Search paused" else if (matchCount == 0 && (state.searchDiscovery?.hasMore == true || state.listings.any { it.relevanceShow == null })) "No matches yet" else "$matchCount ${if (matchCount == 1) "match" else "matches"}",
+                        if(canCurate) Text(if (state.error != null) "Search paused" else if (matchCount == 0 && (state.searchDiscovery?.hasMore == true || state.listings.any { it.relevanceShow == null })) "No matches yet" else "$matchCount ${if (matchCount == 1) "match" else "matches"}",
                             Modifier.weight(1f), style = MaterialTheme.typography.labelSmall, color = Forest)
-                        TextButton(onClick = { showAll = !showAll }) { Text(if (showAll) "Show matches" else "Show all") }
+                        if(!canCurate) Spacer(Modifier.weight(1f))
+                        Box {
+                            TextButton(onClick={viewMenu=true},modifier=Modifier.testTag("resultView")) {
+                                Text(if(showAll) "All results" else "AI selected")
+                                Icon(Icons.Filled.ArrowDropDown,null)
+                            }
+                            DropdownMenu(expanded=viewMenu,onDismissRequest={viewMenu=false}) {
+                                listOf(true to "All results", false to "AI selected").forEach { (all,label) ->
+                                    DropdownMenuItem(text={Text(label)},onClick={
+                                        viewMenu=false
+                                        if(!all && !aiSearch) settings() else if(all!=showAll) model.selectResultView(all)
+                                    })
+                                }
+                            }
+                        }
                     }
                 }
                 if (canCurate && state.listings.any { it.relevanceUnavailable }) {
-                    Text("AI couldn’t review ${state.listings.count { it.relevanceUnavailable }} listings. You can find them in Show all.", style=MaterialTheme.typography.bodySmall,color=Muted)
+                    Text("AI couldn’t review ${state.listings.count { it.relevanceUnavailable }} listings. Choose All results to search by text.", style=MaterialTheme.typography.bodySmall,color=Muted)
                 }
                 if (state.error != null) Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
                     Text("Couldn’t complete that action.",color=MaterialTheme.colorScheme.error,style=MaterialTheme.typography.bodySmall,modifier=Modifier.weight(1f))
@@ -144,7 +151,7 @@ import org.json.JSONObject
         }
         if (!showMap && visibleListings.isEmpty()) item(span={GridItemSpan(maxLineSpan)}) {
             EmptyView(if(canCurate && !showAll && state.error != null) "Search paused" else if(searching || canCurate && !showAll && (state.searchDiscovery?.hasMore == true || state.listings.any { it.relevanceShow == null })) "No matches yet" else if(canCurate && !showAll) "No matching listings" else if(query.isBlank()) "No listings yet" else "No matches",
-                if(canCurate && !showAll && state.error != null) "Check your AI settings, then try again." else if(searching) "New matches appear here as they arrive." else if(canCurate && !showAll && (state.searchDiscovery?.hasMore == true || state.listings.any { it.relevanceShow == null })) "Load more to keep searching, or show all listings." else if(canCurate && !showAll) "Show all listings or change your AI settings." else if(query.isBlank()) "Sell something or post what you want to buy." else "Try a different search or clear the filters.",
+                if(canCurate && !showAll && state.error != null) "Check your AI settings, then try again." else if(searching) "New matches appear here as they arrive." else if(canCurate && !showAll && (state.searchDiscovery?.hasMore == true || state.listings.any { it.relevanceShow == null })) "Load more to keep searching, or choose All results." else if(canCurate && !showAll) "Choose All results or change your AI settings." else if(query.isBlank()) "Sell something or post what you want to buy." else "Try a different search or clear the filters.",
                 Icons.Filled.Storefront)
         }
         if(!showMap) items(visibleListings, key={it.id}) { listing -> ListingCard(listing, state.demo, {selected(listing)}, {model.save(listing.id)}) }
@@ -155,10 +162,14 @@ import org.json.JSONObject
     if(filtersSheet) ModalBottomSheet(onDismissRequest={filtersSheet=false}) {
         var homeEnabled by remember { mutableStateOf(ai?.optBoolean("curate_feed",true) ?: true) }
         var homePrompt by remember { mutableStateOf(ai?.optString("interests") ?: "") }
-        Column(Modifier.fillMaxWidth().padding(horizontal=24.dp).padding(bottom=24.dp).testTag("listingFiltersSheet")) {
+        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal=24.dp).padding(bottom=24.dp).testTag("listingFiltersSheet")) {
             Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
                 Text("Filters",style=MaterialTheme.typography.headlineSmall,modifier=Modifier.weight(1f))
                 TextButton(onClick={model.saveHomeFilter(homeEnabled,homePrompt);filtersSheet=false}) { Text("Done") }
+            }
+            if(state.relatedSearchTerms.isNotEmpty()) {
+                Text("Also searched for",style=MaterialTheme.typography.titleSmall)
+                Text(state.relatedSearchTerms.joinToString(" · "),modifier=Modifier.padding(bottom=12.dp))
             }
             if (ai?.optString("provider") == CompactSearchFiles.PROVIDER) {
                 Text("Compact search reviews submitted searches. Home shows all listings.", style=MaterialTheme.typography.bodySmall, color=Muted)
@@ -178,6 +189,7 @@ import org.json.JSONObject
                         modifier=Modifier.semantics { contentDescription="Has photos" }.testTag("hasPhotosFilter"))
                 }
             }
+            TextButton(onClick={filtersSheet=false;settings()}) { Text("AI settings") }
             TextButton(onClick={changePhotoFilter(null)},enabled=photoFilter!=null,modifier=Modifier.testTag("resetPhotoFilter")) {
                 Text("Reset")
             }

@@ -177,18 +177,15 @@ struct MarketRootView: View {
             .onChange(of: store.pushRoute) { _ in openPushRoute() }
     }
     private var desktopSearchBar: DesktopMarketSearchBar {
-        DesktopMarketSearchBar(query: $browseQuery, submit: submitDesktopSearch, openSettings: {
-            desktopNavigation.reset()
-            aiSettings = true
-        })
+        DesktopMarketSearchBar(query: $browseQuery, submit: submitDesktopSearch)
     }
     private func submitDesktopSearch() {
         let reviewing = store.localAIProgress != nil
-        switch NativeAIReadiness.searchAction(intentOn: store.snapshot.settings.ai.enabled, ready: store.aiSearchEnabled, busy: store.busy && !reviewing, inference: false, query: browseQuery) {
+        switch NativeAIReadiness.searchAction(intentOn: store.snapshot.settings.ai.enabled && store.snapshot.showAllResults != true, ready: store.aiSearchEnabled, busy: store.busy && !reviewing, inference: false, query: browseQuery) {
         case .wait: return
         case .settings: desktopNavigation.reset(); aiSettings = true
         case .ai, .text:
-            let useAI = store.snapshot.settings.ai.enabled && !browseQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            let useAI = store.snapshot.settings.ai.enabled && store.snapshot.showAllResults != true && !browseQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             store.filter(query: browseQuery, side: browseSide, aiSearch: useAI) { success in
                 guard success else { return }
                 selected = nil
@@ -235,22 +232,14 @@ struct MarketRootView: View {
 
 #if os(macOS)
 struct DesktopMarketSearchBar: View {
-    @EnvironmentObject private var store: MarketStore
     @Binding var query: String
     let submit: () -> Void
-    let openSettings: () -> Void
     var body: some View {
         HStack(spacing: 12) {
             HStack(spacing: 12) {
                 Image(systemName: "magnifyingglass").font(.system(size: 18)).foregroundStyle(MarketTheme.muted)
                 TextField("Search listings", text: $query).textFieldStyle(.plain).font(.system(size: 16))
                     .accessibilityIdentifier("marketSearch").onSubmit(submit)
-                Button { store.toggleAI(openSettings: openSettings) } label: {
-                    Image(systemName: "sparkles").font(.system(size: 17)).foregroundStyle(store.aiSearchEnabled ? MarketTheme.green : MarketTheme.muted)
-                        .frame(width: 44, height: 44).contentShape(Rectangle())
-                }.buttonStyle(.plain).accessibilityLabel("AI search").accessibilityValue(store.aiSearchStateLabel)
-                    .accessibilityIdentifier("aiSearchToggle").contextMenu { Button("AI settings", action: openSettings) }
-                    .accessibilityAction(named: Text("Open AI settings"), openSettings)
                 if !query.isEmpty {
                     Button { query = ""; submit() } label: {
                         Image(systemName: "xmark.circle.fill").foregroundStyle(MarketTheme.muted).frame(width: 36, height: 44)
@@ -275,7 +264,7 @@ struct BrowseView: View {
     @Binding var selected: MarketListing?
     @Binding var query: String
     @Binding var side: String
-    @State private var showAllMatches = false
+    private var showAllMatches: Bool { store.snapshot.showAllResults == true }
     @State private var showMap = false
     @State private var aiSettings = false
     @State private var filtersPresented = false
@@ -310,20 +299,6 @@ struct BrowseView: View {
                     Image(systemName: "magnifyingglass").font(.system(size: 17)).foregroundStyle(MarketTheme.muted)
                     TextField("Search listings", text: $query, prompt: Text("Search listings").foregroundColor(MarketTheme.muted)).textFieldStyle(.plain).font(.system(size: 14)).submitLabel(.search).accessibilityIdentifier("marketSearch")
                         .onSubmit { submitSearch() }
-                    Image(systemName: "sparkles").foregroundStyle(store.aiSearchEnabled ? MarketTheme.green : MarketTheme.muted)
-                        .frame(width: 36, height: 40).contentShape(Rectangle())
-                        .gesture(LongPressGesture(minimumDuration: 0.5).exclusively(before: TapGesture()).onEnded { value in
-                            switch value {
-                            case .first: aiSettings = true
-                            case .second: showAllMatches = false; store.toggleAI { aiSettings = true }
-                            }
-                        })
-                        .accessibilityElement(children: .ignore).accessibilityAddTraits(.isButton).accessibilityLabel("AI search")
-                        .accessibilityValue(store.aiSearchStateLabel)
-                        .accessibilityHint("Long press to open AI settings")
-                        .accessibilityAction { store.toggleAI { aiSettings = true } }
-                        .accessibilityAction(named: Text("Open AI settings")) { aiSettings = true }
-                        .accessibilityIdentifier("aiSearchToggle")
                     if !query.isEmpty { Button { query = ""; store.filter(query: "", side: side) } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(MarketTheme.muted) }.accessibilityLabel("Clear search") }
                 }.padding(.horizontal, 16).frame(height: 51).background(MarketTheme.surface.opacity(0.82), in: RoundedRectangle(cornerRadius: 16)).overlay(RoundedRectangle(cornerRadius: 16).stroke(MarketTheme.line, lineWidth: 1))
                 #endif
@@ -337,8 +312,8 @@ struct BrowseView: View {
                     filterChip("Selling", value: "offer", symbol: "tag.fill")
                     filterChip("Buying", value: "request", symbol: "hand.wave.fill")
                     Spacer()
-                    Button { filtersPresented = true } label: { Image(systemName: "line.3.horizontal.decrease.circle.fill").font(.system(size: 21)).foregroundStyle(MarketTheme.muted).frame(width: 40, height: 40) }
-                        .accessibilityLabel("Filters").accessibilityValue(wantsPhotos ? "Has photos" : "All listings").accessibilityIdentifier("listingFilters")
+                    Button(wantsPhotos ? "Filters (1)" : "Filters") { filtersPresented = true }
+                        .font(.subheadline).accessibilityIdentifier("listingFilters")
                 }
                 if searching {
                     HStack {
@@ -347,19 +322,24 @@ struct BrowseView: View {
                         Button("Cancel") { store.cancelLocalAI() }.font(.caption)
                     }.accessibilityIdentifier("localAIProgress")
                 }
-                if curationActive {
+                if store.snapshot.settings.ai.enabled {
                     HStack {
-                        Text(store.homeFilterActive ? "For you · \(matchSummary)" : matchSummary)
-                            .font(.system(size: 12)).foregroundStyle(MarketTheme.muted)
+                        if curationActive { Text(store.homeFilterActive ? "For you · \(matchSummary)" : matchSummary)
+                            .font(.system(size: 12)).foregroundStyle(MarketTheme.muted) }
                         Spacer()
-                        Button(showAllMatches ? "Show matches" : "Show all") { showAllMatches.toggle() }
-                            .font(.system(size: 12, weight: .semibold)).accessibilityIdentifier("toggleCuratedView")
+                        Picker("Result view", selection: Binding(get: { showAllMatches }, set: { all in
+                            if !all && !store.aiSearchEnabled { aiSettings = true }
+                            else { store.selectResultView(showAll: all) }
+                        })) {
+                            Text("All results").tag(true)
+                            Text("AI selected").tag(false)
+                        }.pickerStyle(.menu).accessibilityIdentifier("resultView")
                     }
                     if store.searchPaused, let status = store.localAIStatus {
                         Text(status).font(.caption).foregroundStyle(MarketTheme.muted)
                     }
                     if unavailableCount > 0 {
-                        Text("AI couldn’t review \(unavailableCount) \(unavailableCount == 1 ? "listing" : "listings"). You can find them in Show all.")
+                        Text("AI couldn’t review \(unavailableCount) \(unavailableCount == 1 ? "listing" : "listings"). Choose All results to search by text.")
                             .font(.caption).foregroundStyle(MarketTheme.muted).accessibilityIdentifier("unreviewedListings")
                     }
                 }
@@ -378,7 +358,7 @@ struct BrowseView: View {
                 if showMap && !store.demo {
                     MarketMapView(listings: visibleListings, onSelect: { selected = $0 }).frame(height: 440).clipShape(RoundedRectangle(cornerRadius: 20))
                 } else if visibleListings.isEmpty {
-                    MarketEmptyState(symbol: query.isEmpty ? "square.grid.2x2" : "magnifyingglass", title: curationActive ? (store.searchPaused ? "Review paused" : searching || unfinishedSearch ? "No matches yet" : "No matches") : query.isEmpty ? "No listings yet" : "No results", description: curationActive ? "New matches appear as they are reviewed. Show all to browse every listing." : query.isEmpty ? "Sell something or post what you want to buy." : "Try another search or post what you want to buy.")
+                    MarketEmptyState(symbol: query.isEmpty ? "square.grid.2x2" : "magnifyingglass", title: curationActive ? (store.searchPaused ? "Review paused" : searching || unfinishedSearch ? "No matches yet" : "No matches") : query.isEmpty ? "No listings yet" : "No results", description: curationActive ? "New matches appear as they are reviewed. Choose All results to search by text." : query.isEmpty ? "Sell something or post what you want to buy." : "Try another search or post what you want to buy.")
                 } else {
                     LazyVGrid(columns: marketListingColumns, alignment: .leading, spacing: 21) {
                         ForEach(visibleListings) { listing in ListingCard(listing: listing, open: { selected = listing }, save: { store.save(listing) }) }
@@ -395,9 +375,6 @@ struct BrowseView: View {
         }.marketKeyboardDismissal()
             .onAppear { store.setBrowseVisible(true, owner: browseVisibilityID) }
             .onDisappear { store.setBrowseVisible(false, owner: browseVisibilityID) }
-            .onChange(of: store.snapshot.query) { _ in showAllMatches = false }
-            .onChange(of: store.snapshot.side) { _ in showAllMatches = false }
-            .onChange(of: store.snapshot.settings.ai) { _ in showAllMatches = false }
             .refreshable { store.command(["type": "refresh"]) }
             .marketPage(isPresented: $aiSettings) { AISettingsView(settings: store.snapshot.settings).marketSheetScope() }
             .sheet(isPresented: $filtersPresented) {
@@ -407,7 +384,7 @@ struct BrowseView: View {
     }
     private func submitSearch() {
         let homeReview = store.homeFilterActive && store.localAIProgress != nil
-        switch NativeAIReadiness.searchAction(intentOn: store.snapshot.settings.ai.enabled, ready: store.aiSearchEnabled, busy: store.busy && !homeReview, inference: store.localAIProgress != nil && !homeReview, query: query) {
+        switch NativeAIReadiness.searchAction(intentOn: store.snapshot.settings.ai.enabled && store.snapshot.showAllResults != true, ready: store.aiSearchEnabled, busy: store.busy && !homeReview, inference: store.localAIProgress != nil && !homeReview, query: query) {
         case .wait: return
         case .settings: aiSettings = true
         case .ai: if homeReview { store.cancelLocalAI() }; store.searchAI(query: query, side: side)
@@ -432,12 +409,18 @@ private struct ListingFiltersView: View {
     @State var ai: AISettings
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 22) {
+        ScrollView { VStack(alignment: .leading, spacing: 22) {
             HStack {
                 Text("Filters").font(.system(size: 22, weight: .semibold))
                 Spacer()
                 Button("Done") { store.saveHomeFilter(enabled: ai.curateFeed, prompt: ai.interests); dismiss() }.font(.system(size: 16, weight: .semibold))
                     .accessibilityIdentifier("closeListingFilters")
+            }
+            if let terms = store.snapshot.relatedSearchTerms, !terms.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Also searched for").font(.headline)
+                    Text(terms.joined(separator: " · ")).font(.subheadline)
+                }
             }
             Toggle(isOn: $hasPhotos) { Label("Has photos", systemImage: "photo") }
                 .toggleStyle(.switch).padding(16)
@@ -453,10 +436,10 @@ private struct ListingFiltersView: View {
             }
             Button("Reset", action: reset).disabled(!canReset)
                 .accessibilityIdentifier("resetListingFilters")
-        }.padding(24).foregroundStyle(MarketTheme.ink).tint(MarketTheme.action)
+        }.padding(24) }.foregroundStyle(MarketTheme.ink).tint(MarketTheme.action)
             .background(MarketTheme.paper)
         #if os(macOS)
-            .frame(width: 460)
+            .frame(width: 460, height: 460)
         #else
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)

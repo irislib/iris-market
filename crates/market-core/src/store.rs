@@ -316,6 +316,25 @@ impl Store {
         self.db.execute("DELETE FROM preferences WHERE key LIKE 'reviews:%' AND rowid NOT IN (SELECT rowid FROM preferences WHERE key LIKE 'reviews:%' ORDER BY rowid DESC LIMIT 16)",[])?;
         Ok(())
     }
+    pub(crate) fn show_all_results(&self) -> Result<bool> {
+        Ok(self.db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM preferences WHERE key='result_view' AND value='all')",
+            [],
+            |row| row.get(0),
+        )?)
+    }
+
+    pub(crate) fn change_result_view(&mut self, show_all: bool) -> Result<()> {
+        let tx = self.db.transaction()?;
+        tx.execute(
+            "INSERT OR REPLACE INTO preferences VALUES ('result_view', ?1)",
+            [if show_all { "all" } else { "ai" }],
+        )?;
+        tx.execute("DELETE FROM relevance", [])?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn clear_relevance(&self) -> Result<()> {
         self.db.execute("DELETE FROM relevance", [])?;
         Ok(())

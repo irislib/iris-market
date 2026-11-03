@@ -100,6 +100,13 @@ class DesktopTest(unittest.TestCase):
         self.assertEqual(self.get('/missing.js')[0], 404)
         self.assertEqual(self.get('/_headers')[0], 404)
 
+    def test_reopen_search_with_query(self):
+        status, headers, body = self.get('/search?q=BTC')
+        self.assertEqual(status, 200)
+        self.assertEqual(headers['Content-Type'], 'text/html')
+        self.assertEqual(body, b'market')
+        self.assertEqual(self.get('/search/missing?q=BTC')[0], 404)
+
     def test_traversal_and_symlinks(self):
         for path in ('/../secret', '/%2e%2e/secret', '/%2e%2e%2fsecret', '/link'):
             self.assertEqual(self.get(path)[0], 403, path)

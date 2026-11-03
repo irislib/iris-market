@@ -15,7 +15,7 @@ from urllib.parse import unquote, urlsplit
 
 PORT = 45876
 ORIGIN = f'http://127.0.0.1:{PORT}'
-ROUTES = re.compile(r'^/(?:invite|npub1[a-z0-9]+(?:/[^/]+)?|naddr1[a-z0-9]+|post|saved|messages(?:/[^/]+)?|orders(?:/[^/]+)?|wallet|courier|settings(?:/profile)?)?/?$')
+ROUTES = re.compile(r'^/(?:invite|npub1[a-z0-9]+(?:/[^/]+)?|naddr1[a-z0-9]+|post|saved|search|messages(?:/[^/]+)?|orders(?:/[^/]+)?|wallet|courier|settings(?:/profile)?)?/?$')
 
 
 class UpdateClient:

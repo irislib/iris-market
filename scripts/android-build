@@ -14,10 +14,24 @@ for arg in "$@"; do
 done
 if [[ "$offline" == true ]]; then export CARGO_NET_OFFLINE=true; fi
 # Build Android's compact search with the same locked runtime as the web app.
-if [[ ! -x "$root/web/node_modules/.bin/esbuild" ]]; then
+web_stamp="$root/web/node_modules/.iris-android-inputs"
+web_inputs=$(
+  set -e
+  cd "$root/web"
+  python3 - <<'HASH'
+from hashlib import sha256
+from pathlib import Path
+for name in ("package.json", "package-lock.json"):
+    print(sha256(Path(name).read_bytes()).hexdigest(), name, sep="  ")
+HASH
+  node --version
+  npm --version
+)
+if [[ ! -x "$root/web/node_modules/.bin/esbuild" || ! -f "$web_stamp" || "$(cat "$web_stamp")" != "$web_inputs" ]]; then
   npm_flags=()
   if [[ "$offline" == true ]]; then npm_flags+=(--offline); fi
   (cd "$root/web" && npm ci --ignore-scripts --no-audit --no-fund "${npm_flags[@]}")
+  printf '%s\n' "$web_inputs" > "$web_stamp"
 fi
 gradle_network=()
 if [[ "$offline" == true ]]; then gradle_network+=(--offline); fi

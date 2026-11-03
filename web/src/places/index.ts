@@ -1,7 +1,7 @@
 // Adapted from Iris Maps, MIT; see SOURCE.md. Account/worker stores are deliberately excluded.
 import {createAsyncCache} from './asyncCache.ts';
 import {normalizeMapSearchText as normalizeSearchText,matchesMapSearchQuery} from './mapSearchText.ts';
-import {HashTree,fromHex,toHex,type CID,type Hash,type Store} from '@hashtree/core';
+import {HashTree,fromHex,objectKeyFromHex,toHex,type CID,type Hash,type Store} from '@hashtree/core';
 import {SearchIndex,type SearchIndexOptions} from '@hashtree/index';
 import type {SearchAddressPoint,SearchAddressRef,SearchAddressSidecar,SearchResult} from './types.ts';
 const textDecoder=new TextDecoder();
@@ -48,7 +48,7 @@ export function deserializeCid(value: SerializedCid | null | undefined): CID | n
   if (!value?.hash) return null;
   return {
     hash: fromHex(value.hash),
-    ...(value.key ? { key: fromHex(value.key) } : {}),
+    ...(value.key ? { key: objectKeyFromHex(value.key) } : {}),
   };
 }
 

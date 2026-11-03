@@ -47,3 +47,36 @@ test('index term download failures remain observable despite index library error
   const source=createMapPlaceSearchSource(manifest,{store:{async get(){throw failure;},async has(){return false;},async put(){return false;},async delete(){return false;}}});
   await assert.rejects(source.search('Synthetic absent place',8),error=>error===failure);
 });
+
+test('place search reads legacy and versioned encrypted address data', async () => {
+  const {HashTree, MemoryStore, toHex} = await import('@hashtree/core');
+  const {createMapPlaceSearchSource} = await import('../src/places/index.ts');
+  const {default: manifest} = await import('../src/places/manifest.json', {with: {type: 'json'}});
+  const store = new MemoryStore();
+  const source = createMapPlaceSearchSource(manifest, {store});
+  const data = new TextEncoder().encode(JSON.stringify({
+    kind: 'iris-maps-street-address-sidecar', points: [{n: '17', lat: 60.1, lng: 24.9}],
+  }));
+  for (const mode of ['legacy-chk', undefined, 'rnd-v1']) {
+    const writer = new HashTree({store, encryptionMode: mode});
+    const {cid} = await writer.putFile(data);
+    if (mode === 'legacy-chk') assert.equal(cid.key.length, 32);
+    else {
+      assert.equal(cid.key.length, 33);
+      assert.equal(cid.key[0], mode === 'rnd-v1' ? 2 : 1);
+    }
+    const street = {name: 'Test Street', lat: 60, lng: 24, addressRef: {
+      kind: 'street-address-points-v1', cid: {hash: toHex(cid.hash), key: toHex(cid.key)},
+    }};
+    const [address] = await source.resolveAddress(street, '17');
+    assert.deepEqual([address.name, address.lat, address.lng], ['Test Street 17', 60.1, 24.9]);
+  }
+});
+
+test('place catalog rejects malformed and unknown object keys', async () => {
+  const {deserializeCid} = await import('../src/places/index.ts');
+  const hash = 'ab'.repeat(32);
+  for (const key of ['ab'.repeat(32) + '0', 'zz'.repeat(32), 'ff' + 'ab'.repeat(32)]) {
+    assert.throws(() => deserializeCid({hash, key}));
+  }
+});

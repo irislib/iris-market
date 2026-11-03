@@ -119,6 +119,8 @@ pub struct Listing {
     pub side: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub escrow: Option<crate::escrow::Offer>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_order: Option<crate::bitcoin_order::Quote>,
     pub price: String,
     pub currency: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

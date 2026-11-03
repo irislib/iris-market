@@ -33,11 +33,11 @@ data class Listing(
     val imageUrl: String?, val saved: Boolean, val mine: Boolean, val status: String,
     val delivery: String, val relevance: String?, val relevanceShow: Boolean?, val coordinates: List<Double>? = null,
     val serviceAreas: String? = null, val priceDisplay: PriceDisplay? = null, val expiresAt: Long? = null, val tags: List<String> = emptyList(), val createdAt: Long = 0, val directMatch: Boolean = false, val relevanceScore: Double? = null, val relevanceUnavailable: Boolean = false, val escrow: EscrowOffer? = null,
-    val eventId: String = ""
+    val eventId: String = "", val externalOrder: ExternalBitcoinOrder? = null
 ) {
-    val isBitcoinOffer: Boolean get() = escrow?.trade == "bitcoin_fiat"
+    val isBitcoinOffer: Boolean get() = externalOrder != null || escrow?.trade == "bitcoin_fiat"
     val reviewAddress: String get() = if(isBitcoinOffer) id else "30402:" + id
-    val matchesSearch: Boolean get() = relevanceShow == true
+    val matchesSearch: Boolean get() = externalOrder != null || relevanceShow == true
     val localSearchRevision: String get() {
         if (eventId.isNotEmpty()) return eventId
         val content = (listOf(title, description, side, price, currency, location, category) + tags).joinToString("\u0000")
@@ -45,6 +45,7 @@ data class Listing(
         return "$id|$createdAt|${digest.joinToString("") { "%02x".format(it) }}"
     }
     val displayPrice: String get() {
+        externalOrder?.let { return it.amounts.joinToString("–") + " " + currency }
         if(isBitcoinOffer) return "$price $currency"
         if (price.isBlank()) return "Let's talk"
         val amount = priceDisplay?.amount ?: price.toDoubleOrNull() ?: return "$price $currency"
@@ -72,10 +73,14 @@ data class Listing(
             if(l.has("expires_at")&&!l.isNull("expires_at")) l.getLong("expires_at") else null,
             l.optJSONArray("tags")?.let { a -> (0 until minOf(a.length(),64)).map { a.optString(it) } } ?: emptyList(), l.optLong("created_at"), l.optBoolean("direct_match"),
             l.optJSONObject("relevance")?.optDouble("score")?.takeIf { it.isFinite() && it in 0.0..1.0 }, l.optJSONObject("relevance")?.optBoolean("unavailable") == true, l.optJSONObject("escrow")?.let { offer -> EscrowOffer(offer.optString("trade"),offer.optLong("sats").takeIf { it > 0 },offer.optString("method")) },
-            eventId = l.optional("event_id").orEmpty())
+            eventId = l.optional("event_id").orEmpty(), externalOrder = l.optJSONObject("external_order")?.let { q ->
+                val amounts = q.getJSONArray("amounts")
+                ExternalBitcoinOrder(q.getString("platform"), List(amounts.length()) { amounts.getString(it) }, q.getString("methods"), q.getString("link"))
+            })
     }
 
 }
+data class ExternalBitcoinOrder(val platform:String, val amounts:List<String>, val methods:String, val link:String)
 data class EscrowOffer(val trade:String,val sats:Long?,val method:String) {
     val bitcoinTerms: String? get() {
         if(trade!="bitcoin_fiat" || sats==null)return null
@@ -715,7 +720,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
         val snapshot = state.value
         val discovery = snapshot.searchDiscovery ?: return
         if (!active || working.value || mutableAITest.value.busy || localCurationJob?.isActive == true || snapshot.query.isBlank() || snapshot.error != null || discovery.loading || !discovery.hasMore) return
-        val unresolved = snapshot.aiSearch && snapshot.listings.any { it.relevanceShow == null }
+        val unresolved = snapshot.aiSearch && snapshot.listings.any { it.externalOrder == null && it.relevanceShow == null }
         val matches = if (snapshot.aiSearch) snapshot.listings.count { it.matchesSearch } else snapshot.listings.size
         if (!unresolved && matches < 24 && searchContinuation.claimHistory(searchContext())) command(JSONObject().put("type", "continue_search"))
     }
@@ -728,7 +733,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
         if (!active || working.value || mutableAITest.value.busy || localCurationJob?.isActive == true || !(home&&browseVisible||snapshot.aiSearch&&snapshot.query.isNotBlank()) || !ai.optBoolean("enabled") || snapshot.error != null) return
         if (snapshot.listings.count { it.relevanceShow != null && it.matchesSearch } >= 24) return
         val local = NativeAIReadiness.isLocal(ai.optString("provider"))
-        val candidates = snapshot.listings.asSequence().filter { it.relevanceShow == null }.map { it.localSearchRevision }
+        val candidates = snapshot.listings.asSequence().filter { it.externalOrder == null && it.relevanceShow == null }.map { it.localSearchRevision }
         if (searchContinuation.canReview(searchContext(), candidates.asIterable(), batchSize = if (local) 24 else 12)) {
             ai("curate")
         }
@@ -752,7 +757,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
                     check(settings.optString("provider") == provider) { "Provider changed" }
                     val key = secure.get(NativePreferences.keySlot(provider, settings.optString("base_url")))
                     val initialListings = if (type == "curate") initial.listings else emptyList()
-                    val hadCandidates = initialListings.any { it.relevanceShow == null }
+                    val hadCandidates = initialListings.any { it.externalOrder == null && it.relevanceShow == null }
                     val before = initialListings.asSequence().filter { it.relevanceShow != null }.map { it.localSearchRevision }.toSet()
                     val next = try {
                         if (type == "curate") remoteSnapshotLease = app to generation

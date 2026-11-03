@@ -193,7 +193,17 @@ fun MarketAppView(model: MarketModel, appearance: Appearance, changeAppearance: 
         key(state.publicKey,state.demo) { WalletView(model,state,walletToken) {walletOpen=false;walletToken=null} }
     }
     selected?.let { original ->
-        val listing = state.listings.firstOrNull { it.id == original.id } ?: original
+        val latest = state.listings.firstOrNull { it.id == original.id }
+            ?: state.savedListings?.firstOrNull { it.id == original.id }
+            ?: state.profileListings?.listings?.firstOrNull { it.id == original.id }
+        val listing = latest ?: original
+        if (original.externalOrder != null) LaunchedEffect(latest?.id, latest?.expiresAt) {
+            if (latest != null && latest.expiresAt != null) {
+                val seconds = (latest.expiresAt - System.currentTimeMillis()/1000).coerceIn(0,Long.MAX_VALUE/1000)
+                kotlinx.coroutines.delay(seconds * 1000)
+            }
+            selected = null
+        }
         ModalBottomSheet(onDismissRequest = { selected = null }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = Cream) {
             ListingDetail(listing, state.demo, model, busy, person=state.people[listing.author], openProfile={ profileAuthor=it; selected=null }, buy={ reviewListing=listing; selected=null }) { selected = null; tab = 2 }
         }

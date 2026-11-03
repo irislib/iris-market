@@ -123,9 +123,7 @@ class CompactSearchBrowseTest {
                 while(!node.isClickable) node = checkNotNull(node.parent)
                 check(node.performAction(AccessibilityNodeInfo.ACTION_CLICK))
             }
-            clickText("AI selected")
-            waitFor("result view menu") { findNode { it.text?.toString() == "All results" } != null }
-            clickText("All results")
+            clickText("Show all")
             waitFor("literal results for the submitted query") {
                 model.state.value.showAllResults && !model.state.value.aiSearch && model.state.value.query == query
             }

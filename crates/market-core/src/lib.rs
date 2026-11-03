@@ -1,4 +1,5 @@
 pub mod ai;
+mod bitcoin_order;
 pub mod conversation_context;
 pub mod escrow;
 pub mod geo;
@@ -137,7 +138,8 @@ impl State {
         let interests = ranking::saved_interests(&listings);
         listings.retain(|l| {
             (self.side == "all" || l.side == self.side)
-                && (self.ai_search
+                && (l.external_order.is_none() || !query.is_empty())
+                && (self.ai_search && l.external_order.is_none()
                     || query.is_empty()
                     || literal_search::matches_literal_search(
                         &format!(
@@ -991,6 +993,10 @@ impl Market {
                     bail!("Only your own listings can be closed");
                 }
                 let l = listing::parse(&previous, listing::now())?;
+                anyhow::ensure!(
+                    l.external_order.is_none(),
+                    "Only the order coordinator can close this quote"
+                );
                 let identifier = previous.tags.identifier().context("Invalid listing")?;
                 let event = listing::build(
                     s.owner_keys
@@ -1462,6 +1468,12 @@ impl Market {
         }
         if let Some(listing_id) = listing_id {
             let event = s.store.event(listing_id)?;
+            anyhow::ensure!(
+                listing::parse(&event, listing::now())?
+                    .external_order
+                    .is_none(),
+                "The coordinator is not the buyer or seller"
+            );
             if event.pubkey != author {
                 bail!("Listing author does not match");
             }
@@ -1623,7 +1635,9 @@ impl Market {
             let mut listings = listings;
             if !check {
                 s.search_plan_locked = true;
-                listings.retain(|listing| listing.relevance.is_none());
+                listings.retain(|listing| {
+                    listing.external_order.is_none() && listing.relevance.is_none()
+                });
                 search_plan::prioritize(&mut listings, &s.search_terms);
             }
             let candidates = listings

@@ -20,7 +20,7 @@ class MarketFlowsTest {
         val intent = Intent(ApplicationProvider.getApplicationContext(), MainActivity::class.java)
             .putExtra("demo", true).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         activity = ActivityScenario.launch(intent)
-        compose.waitUntil(15_000) { compose.onAllNodesWithContentDescription("Filters").fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(15_000) { compose.onAllNodesWithTag("listingFilters").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithTag("listingFilters").performClick()
         if(compose.onAllNodesWithTag("resetPhotoFilter").filter(isEnabled()).fetchSemanticsNodes().isNotEmpty()) compose.onNodeWithTag("resetPhotoFilter").performClick()
         compose.onNodeWithTag("hasPhotosFilter").assertIsOn().performClick()
@@ -189,8 +189,7 @@ class MarketFlowsTest {
         if(enabled.fetchSemanticsNode().config[androidx.compose.ui.semantics.SemanticsProperties.ToggleableState]!=androidx.compose.ui.state.ToggleableState.On) enabled.performClick()
         compose.onNode(SemanticsMatcher.keyIsDefined(SemanticsActions.Dismiss)).performSemanticsAction(SemanticsActions.Dismiss) { it() }
         compose.onNodeWithTag("resultView").performClick()
-        compose.onNodeWithText("All results").performClick()
-        compose.onNodeWithTag("resultView").assertTextContains("All results")
+        compose.onNodeWithTag("resultView").assertTextContains("Show AI selected")
         val search=compose.onNode(hasSetTextAction())
         search.performTextInput("no-such-preview-listing-783")
         search.performImeAction()

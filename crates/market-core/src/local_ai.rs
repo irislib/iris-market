@@ -48,7 +48,7 @@ pub(crate) fn begin(state: &mut State) -> Result<()> {
         .curation_prompt()
         .context("Enable home-feed filtering or enter an AI search")?;
     let mut listings = state.snapshot()?.listings;
-    listings.retain(|listing| listing.relevance.is_none());
+    listings.retain(|listing| listing.external_order.is_none() && listing.relevance.is_none());
     crate::search_plan::prioritize(&mut listings, &state.search_terms);
     let candidates = listings
         .into_iter()

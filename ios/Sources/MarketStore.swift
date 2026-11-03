@@ -558,7 +558,7 @@ final class MarketStore: ObservableObject {
         guard !busy, !aiTestBusy, localAITask == nil, localAIProgress == nil,
               !snapshot.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               let discovery = snapshot.searchDiscovery, !discovery.loading, discovery.hasMore else { return }
-        let unresolved = snapshot.aiSearch && snapshot.listings.contains { $0.relevance == nil }
+        let unresolved = snapshot.aiSearch && snapshot.listings.contains { $0.externalOrder == nil && $0.relevance == nil }
         let matches = snapshot.aiSearch ? snapshot.listings.filter { $0.matchesSearch }.count : snapshot.listings.count
         if !unresolved && matches < 24 && searchContinuation.claimHistory(searchContext) { command(["type": "continue_search"]) }
     }
@@ -574,7 +574,7 @@ final class MarketStore: ObservableObject {
               curationActive, !homeFilterActive || browseVisible,
               snapshot.listings.filter({ $0.relevance != nil && $0.matchesSearch }).count < 24,
               !searchPaused else { return }
-        let candidates = snapshot.listings.lazy.filter { $0.relevance == nil }.map(\.localSearchRevision)
+        let candidates = snapshot.listings.lazy.filter { $0.externalOrder == nil && $0.relevance == nil }.map(\.localSearchRevision)
         let batchSize = snapshot.settings.ai.provider == "apple" ? 24 : 12
         guard searchContinuation.canReview(searchContext, candidates: candidates, batchSize: batchSize) else { return }
         runAI(type: "curate")
@@ -584,7 +584,7 @@ final class MarketStore: ObservableObject {
         if snapshot.settings.ai.provider == "apple" { runOnDeviceAI(check: type == "check_ai"); return }
         let context = searchContext
         let alreadyReviewed = Set(snapshot.listings.filter { $0.relevance != nil }.map(\.localSearchRevision))
-        let hadCandidates = snapshot.listings.contains { $0.relevance == nil }
+        let hadCandidates = snapshot.listings.contains { $0.externalOrder == nil && $0.relevance == nil }
         do {
             let key = demo ? "" : try SecureStore.read(SecureStore.aiAccount(snapshot.settings.ai)) ?? ""
             let request = UUID()
@@ -611,7 +611,7 @@ final class MarketStore: ObservableObject {
     func continueSearch() {
         searchPaused = false
         searchContinuation.start(searchContext)
-        if curationActive && snapshot.listings.contains(where: { $0.relevance == nil }) {
+        if curationActive && snapshot.listings.contains(where: { $0.externalOrder == nil && $0.relevance == nil }) {
             runAI(type: "curate"); return
         }
         command(["type": "continue_search"]) { [weak self] success in

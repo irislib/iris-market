@@ -945,6 +945,10 @@ impl OrderBook {
         now: u64,
     ) -> Result<String> {
         require(
+            listing.external_order.is_none(),
+            "This public quote cannot be purchased through Iris",
+        )?;
+        require(
             !matches!(
                 listing.escrow,
                 Some(crate::escrow::Offer::BitcoinFiat { .. })

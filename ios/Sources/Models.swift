@@ -74,7 +74,14 @@ struct MarketListing: Decodable, Identifiable, Hashable {
             return "\(sats.formatted()) sats · " + (method == "cash" ? "Cash in person" : "Bank transfer")
         }
     }
-    var isBitcoinOffer: Bool { escrow?.trade == "bitcoin_fiat" }
+    struct ExternalOrder: Decodable, Hashable {
+        let platform: String
+        let amounts: [String]
+        let methods: String
+        let link: String
+    }
+    var externalOrder: ExternalOrder? = nil
+    var isBitcoinOffer: Bool { externalOrder != nil || escrow?.trade == "bitcoin_fiat" }
     var reviewAddress: String { isBitcoinOffer ? id : "30402:" + id }
     var escrow: EscrowOffer? = nil
     let side: String
@@ -95,7 +102,7 @@ struct MarketListing: Decodable, Identifiable, Hashable {
     let displayPrice: MarketDisplayPrice?
     let relevance: Relevance?
     var directMatch: Bool? = nil
-    var matchesSearch: Bool { relevance?.show == true }
+    var matchesSearch: Bool { externalOrder != nil || relevance?.show == true }
     struct Relevance: Decodable, Hashable { let show: Bool; let reason: String; var score: Double? = nil; var unavailable: Bool? = nil }
     var localSearchRevision: String {
         var revision = Hasher()
@@ -104,6 +111,7 @@ struct MarketListing: Decodable, Identifiable, Hashable {
         return "\(id)|\(createdAt)|\(revision.finalize())"
     }
     var formattedPrice: String {
+        if let order = externalOrder { return order.amounts.joined(separator: "–") + " " + currency }
         if isBitcoinOffer { return "\(price) \(currency)" }
         guard !price.isEmpty else { return side == "request" ? "Make an offer" : "Ask for price" }
         guard let amount = displayPrice?.amount ?? Double(price), amount.isFinite else { return "\(price) \(currency)" }

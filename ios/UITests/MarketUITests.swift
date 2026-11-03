@@ -235,15 +235,13 @@ final class MarketUITests: XCTestCase {
         let view = app.buttons["resultView"]
         XCTAssertTrue(view.waitForExistence(timeout: 5))
         view.tap()
-        app.buttons["All results"].tap()
         let search = app.textFields["marketSearch"]
         search.tap(); search.typeText("no-such-preview-listing-783\n")
         XCTAssertTrue(app.staticTexts["No results"].waitForExistence(timeout: 5))
         capture("all-results-text-search")
         app.terminate(); app.launch()
         XCTAssertTrue(app.buttons["resultView"].waitForExistence(timeout: 15))
-        XCTAssertTrue(app.buttons["resultView"].label.contains("All results") ||
-            (app.buttons["resultView"].value as? String) == "All results")
+        XCTAssertEqual(app.buttons["resultView"].label, "Show AI selected")
     }
 
     func testHomePhotosDefaultDoesNotHideSearchOrSavedListings() throws {

@@ -179,6 +179,49 @@ fn filters(request: &Request, store: &crate::store::Store) -> Vec<Filter> {
     }
     result
 }
+fn order_filter() -> Filter {
+    Filter::new()
+        .kind(Kind::Custom(listing::P2P_KIND))
+        .custom_tag(
+            nostr::SingleLetterTag::lowercase(nostr::Alphabet::Z),
+            "order",
+        )
+        .limit(PAGE_SIZE)
+}
+const ORDER_RELAY: &str = "wss://relay.mostro.network";
+
+fn sources(request: &Request, classifieds: &[Filter]) -> Vec<(String, Arc<Vec<Filter>>)> {
+    let latest = order_filter();
+    let pending = latest.clone().custom_tag(
+        nostr::SingleLetterTag::lowercase(nostr::Alphabet::S),
+        "pending",
+    );
+    let orders = Arc::new(vec![pending, latest]);
+    let mut normal = classifieds.to_vec();
+    let bitcoin =
+        crate::literal_search::matches_literal_search("bitcoin btc sats satoshis", &request.query);
+    // Lead with current quotes on Bitcoin searches while preserving regular discovery on other queries.
+    let position = if bitcoin { 0 } else { normal.len() };
+    normal.splice(position..position, orders.iter().cloned());
+    let normal = Arc::new(normal);
+    let mut urls = HashSet::new();
+    let mut sources: Vec<_> = request
+        .relays
+        .iter()
+        .filter(|url| urls.insert(url.trim_end_matches('/')))
+        .map(|url| (url.clone(), normal.clone()))
+        .collect();
+    let defaults = crate::model::Settings::default().relays;
+    if urls.len() == defaults.len()
+        && defaults
+            .iter()
+            .all(|r| urls.contains(r.trim_end_matches('/')))
+    {
+        // Only public order filters go to the additional relay, never the search text.
+        sources.insert(0, (ORDER_RELAY.to_string(), orders));
+    }
+    sources
+}
 fn admit(
     state: &Arc<Mutex<State>>,
     request: &Request,
@@ -395,11 +438,8 @@ pub(crate) async fn run(state: Arc<Mutex<State>>, notify: Arc<Notify>, stopped: 
         let budget = Arc::new(Mutex::new(Budget::default()));
         let slots = Arc::new(Semaphore::new(2));
         let mut jobs = tokio::task::JoinSet::new();
-        let mut started = HashSet::new();
-        for relay in &request.relays {
-            if !started.insert(relay) {
-                continue;
-            }
+        let sources = sources(&request, &branches);
+        for (relay, branches) in &sources {
             jobs.spawn(relay_window(
                 state.clone(),
                 request.clone(),
@@ -415,7 +455,7 @@ pub(crate) async fn run(state: Arc<Mutex<State>>, notify: Arc<Notify>, stopped: 
         let mut s = state.lock().unwrap();
         if request.current(&s) {
             s.search_discovery.status.loading = false;
-            s.search_discovery.status.has_more = request.relays.iter().any(|relay| {
+            s.search_discovery.status.has_more = sources.iter().any(|(relay, branches)| {
                 branches.iter().any(|filter| {
                     s.search_discovery
                         .cursors
@@ -431,6 +471,35 @@ pub(crate) async fn run(state: Arc<Mutex<State>>, notify: Arc<Notify>, stopped: 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn bitcoin_order_sources_preserve_relay_scope_and_private_query() {
+        let mut request = Request {
+            generation: 1,
+            attempt: 1,
+            query: "bitcoin".into(),
+            relays: crate::model::Settings::default().relays,
+            terms: vec![],
+        };
+        let regular = vec![
+            Filter::new()
+                .kind(Kind::Custom(listing::LISTING_KIND))
+                .search("bitcoin"),
+        ];
+        let plan = sources(&request, &regular);
+        let (_, orders) = plan.iter().find(|(url, _)| url == ORDER_RELAY).unwrap();
+        assert_eq!(orders.len(), 2);
+        assert!(orders.iter().all(|f| f.search.is_none() && serde_json::to_value(f).unwrap()["#z"][0]=="order"));
+        assert_eq!(
+            serde_json::to_value(&orders[0]).unwrap()["#s"][0],
+            "pending"
+        );
+        request.relays = vec!["wss://custom.example".into()];
+        let plan = sources(&request, &regular);
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].0, "wss://custom.example");
+        assert!(plan[0].1.contains(&regular[0]) && plan[0].1.contains(&order_filter()));
+    }
+
     #[test]
     fn relay_filters_add_verified_spellings_and_forget_replaced_tags() {
         let dir = tempfile::tempdir().unwrap();

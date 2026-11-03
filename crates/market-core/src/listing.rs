@@ -226,6 +226,13 @@ pub fn parse(event: &Event, at: u64) -> Result<Listing> {
     if identifier.is_empty() || identifier.len() > 160 {
         bail!("Invalid listing identifier");
     }
+    if event.kind.as_u16() == P2P_KIND
+        && field(event, "z")?.as_deref() == Some("order")
+        && field(event, "y")?.as_deref() != Some("iris-market")
+        && !event.tags.iter().any(|t| t.as_slice()[0] == "iris-escrow")
+    {
+        return crate::bitcoin_order::parse(event, &identifier);
+    }
     let price_tag = event
         .tags
         .iter()
@@ -300,6 +307,7 @@ pub fn parse(event: &Event, at: u64) -> Result<Listing> {
         search_text_cache: Default::default(),
         id: coordinate(event.pubkey, &identifier, draft.escrow),
         escrow: draft.escrow,
+        external_order: None,
         author: event.pubkey.to_hex(),
         title: draft.title,
         description: draft.description,

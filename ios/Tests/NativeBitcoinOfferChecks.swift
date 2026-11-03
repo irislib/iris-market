@@ -21,6 +21,12 @@ import Foundation
         item["side"] = "offer"
         let sell = try listing()
         precondition(sell.formattedPrice == "2.00 EUR" && sell.escrow?.bitcoinTerms == "8 sats · Cash in person")
+        item["escrow"] = nil
+        item["external_order"] = ["platform":"example", "methods":"SEPA", "amounts":["100","250"], "link":"https://market.iris.to/naddr1example"]
+        let quote = try listing()
+        precondition(quote.externalOrder?.methods == "SEPA" && quote.formattedPrice == "100–250 EUR")
+        precondition(quote.isBitcoinOffer && quote.matchesSearch && quote.escrow == nil)
+        item["external_order"] = nil
         item["id"] = "maker:camera"
         item["escrow"] = ["trade": "goods"]
         let goods = try listing()

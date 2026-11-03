@@ -102,6 +102,15 @@ private val DarkColors = darkColorScheme(
 }
 
 @Composable fun ListingArt(listing: Listing, demo: Boolean, modifier: Modifier = Modifier) {
+    if(listing.externalOrder!=null) {
+        Box(modifier.background(MaterialTheme.colorScheme.surfaceContainerLow), contentAlignment=Alignment.Center) {
+            Column(horizontalAlignment=Alignment.CenterHorizontally) {
+                Text("₿",fontSize=24.sp,fontWeight=FontWeight.Bold)
+                Text(listing.externalOrder.platform,style=MaterialTheme.typography.bodySmall,maxLines=1)
+            }
+        }
+        return
+    }
     val photo by produceState<Bitmap?>(null, listing.imageUrl, demo) {
         value = null
         if (!demo && listing.imageUrl != null) value = withContext(Dispatchers.IO) { loadPhoto(listing.imageUrl) }

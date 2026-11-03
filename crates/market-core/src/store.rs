@@ -361,6 +361,10 @@ impl Store {
         contact: Option<&Event>,
     ) -> Result<bool> {
         let parsed = listing::parse(event, at)?;
+        anyhow::ensure!(
+            !outgoing || parsed.external_order.is_none(),
+            "External Bitcoin quotes are read-only"
+        );
         let tx = self.db.transaction()?;
         let previous: Option<(u64, String)> = tx
             .query_row(

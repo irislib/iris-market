@@ -16,7 +16,13 @@ struct ListingDetailView: View {
     @State private var authorProfile = false
     @State private var reviewOrder = false
     @State private var orderRequested = false
-    private var current: MarketListing { store.snapshot.listings.first(where: { $0.id == listing.id }) ?? listing }
+    private var latest: MarketListing? {
+        store.snapshot.listings.first { $0.id == listing.id }
+            ?? store.snapshot.savedListings?.first { $0.id == listing.id }
+            ?? store.snapshot.profileListings?.listings.first { $0.id == listing.id }
+    }
+    private var current: MarketListing { latest ?? listing }
+    private var quoteAvailable: Bool { listing.externalOrder == nil || latest != nil }
     private func closeListing() {
         #if os(macOS)
         if let onDesktopBack { onDesktopBack(); return }
@@ -30,10 +36,10 @@ struct ListingDetailView: View {
                     #if os(macOS)
                     HStack(spacing: 12) { MarketPageBackButton(action: onDesktopBack); desktopSearch }
                     #endif
-                    Group {
+                    if current.externalOrder == nil { Group {
                         if let raw = current.imageUrl, let url = URL(string: raw) { AsyncImage(url: url) { phase in if let image = phase.image { image.resizable().scaledToFill() } else { ListingPlaceholder(category: current.category) } } }
                         else { ListingPlaceholder(category: current.category) }
-                    }.frame(height: 285).clipped().clipShape(RoundedRectangle(cornerRadius: 28))
+                    }.frame(height: 285).clipped().clipShape(RoundedRectangle(cornerRadius: 28)) }
                     HStack { Text(current.isBitcoinOffer ? (current.side == "request" ? "BUYING BITCOIN" : "SELLING BITCOIN") : (current.side == "request" ? "BUYING" : current.category.uppercased())).font(.system(size: 10, weight: .bold)).tracking(1.5).foregroundStyle(MarketTheme.green); Spacer(); Text(current.delivery == "queued" ? "Waiting to send" : current.delivery == "failed" ? "Not sent" : "").font(.caption).foregroundStyle(MarketTheme.muted) }
                     Text(current.title).font(.system(size: 32, weight: .medium)).tracking(-0.7).foregroundStyle(MarketTheme.ink)
                     HStack { Text(current.formattedPrice).font(.system(size: 28, weight: .semibold)); Spacer(); Label(current.location.isEmpty ? "Anywhere" : current.location, systemImage: "mappin.circle.fill").font(.system(size: 13)).foregroundStyle(MarketTheme.muted) }.foregroundStyle(MarketTheme.ink)
@@ -41,19 +47,23 @@ struct ListingDetailView: View {
                     TimelineView(.periodic(from: expiryClockStart, by: 60)) { context in
                         Text(NativeListingExpiry.detail(deadline: current.expiresAt, now: Int64(context.date.timeIntervalSince1970))).font(.system(size: 13)).foregroundStyle(MarketTheme.muted).accessibilityIdentifier("listingExpiryDetail")
                     }
-                    Button { authorProfile = true } label: {
+                    if let quote = current.externalOrder { Text(quote.platform).font(.subheadline).foregroundStyle(MarketTheme.muted) }
+                    else { Button { authorProfile = true } label: {
                         UserRow(person: store.snapshot.people[current.author] ?? .unnamed(current.author))
-                    }.accessibilityIdentifier("listingAuthor")
+                    }.accessibilityIdentifier("listingAuthor") }
                     Rectangle().fill(MarketTheme.line).frame(height: 1)
-                    Text((try? AttributedString(markdown: current.description, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(current.description)).font(.system(size: 16)).lineSpacing(6).foregroundStyle(MarketTheme.ink.opacity(0.90))
-                    ReviewsView(target: current.reviewAddress, product: true)
+                    if current.externalOrder != nil { Text(verbatim: current.description).textSelection(.enabled) }
+                    else { Text((try? AttributedString(markdown: current.description, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(current.description)).font(.system(size: 16)).lineSpacing(6).foregroundStyle(MarketTheme.ink.opacity(0.90))
+                    ReviewsView(target: current.reviewAddress, product: true) }
                     if let relevance = current.relevance { Label(relevance.reason, systemImage: "sparkles").font(.system(size: 13)).foregroundStyle(MarketTheme.green).padding(15).frame(maxWidth: .infinity, alignment: .leading).background(MarketTheme.mint.opacity(0.4), in: RoundedRectangle(cornerRadius: 16)) }
                     MarketInlineError()
                     if store.snapshot.settings.escrowUi && current.escrow != nil && !current.mine && !store.demo {
                         Button { showEscrow = true } label: { Label("Arrange escrow", systemImage:"lock.shield.fill") }
                             .disabled(!store.snapshot.messagingReady)
                     }
-                    if current.mine {
+                    if let quote = current.externalOrder {
+                        Button("Copy link") { MarketPlatform.copyToClipboard(quote.link) }
+                    } else if current.mine {
                         Button { store.command(["type": "close", "id": current.id]) { if $0 { closeListing() } } } label: { Text("Mark as unavailable") }.buttonStyle(PrimaryButton())
                     } else if current.side == "offer" && !current.isBitcoinOffer {
                         Button { reviewOrder = true } label: { Label(NativeTransportType.classify(current.tags ?? [])?.requestLabel ?? "Buy", systemImage: NativeTransportType.classify(current.tags ?? []) == nil ? "bag.fill" : "car.fill") }
@@ -75,6 +85,13 @@ struct ListingDetailView: View {
                 #if os(macOS)
                 .navigationBarBackButtonHidden(true)
                 #endif
+                .onChange(of: quoteAvailable) { available in if !available { closeListing() } }
+                .task(id: current.expiresAt) {
+                    guard current.externalOrder != nil, let deadline = current.expiresAt else { return }
+                    let delay = Double(deadline) - Date().timeIntervalSince1970
+                    if delay > 0 { try? await Task.sleep(for: .seconds(min(delay, 86400 * 365))) }
+                    if !Task.isCancelled && Double(deadline) <= Date().timeIntervalSince1970 { closeListing() }
+                }
                 .marketPage(isPresented: $showEscrow) { MarketplaceEscrowView(listingID:current.id).marketSheetScope() }
                 .marketPage(isPresented: $authorProfile) { AuthorProfileView(author: current.author).marketSheetScope() }.navigationTitle("Listing").marketInlineTitle()
                 .toolbar { ToolbarItem(placement: .cancellationAction) { MarketDoneButton { closeListing() } }; ToolbarItem(placement: .confirmationAction) { Button { store.save(current) } label: { Image(systemName: current.saved ? "heart.fill" : "heart") }.accessibilityLabel("Save listing") } }

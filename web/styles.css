@@ -104,3 +104,5 @@ dialog { color:var(--ink); background:var(--bg); border:1px solid var(--line); b
 [data-escrow-trades] { display:flex; flex-wrap:wrap; gap:8px; margin-block:12px; }
 
 .header-currency{justify-content:space-between}.header-currency select{width:auto;color:inherit;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:4px}
+
+.saved-view :is(.search-row,.filter-row,.categories,#filter-summary,#feed-filters,#clear-filters){display:none}

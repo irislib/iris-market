@@ -2,9 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { searchCondition, listingSearchText, listingSearchTexts, usesTrainedSearchHead } from '../src/search-condition.ts';
 test('ordinary words become topics and longer searches preserve intent',()=>{
- assert.equal(searchCondition('  bicycle  '),'This text is about bicycle.');
+ assert.equal(searchCondition('  bicycle  '),'The item being offered is bicycle.');
  assert.equal(searchCondition('used chairs under 100 EUR'),'This listing offers used chairs under 100 EUR.');
- assert.equal(searchCondition('huonekalu'),'This text is about huonekalu.');
+ assert.equal(searchCondition('huonekalu'),'The item being offered is huonekalu.');
 });
 test('the classifier receives bounded plain listing data and offer/request direction',()=>{
  const result=listingSearchText({side:'request',title:'Camera',description:'Looking for one',category:'Tech',location:'Helsinki',price:'100',currency:'EUR'});
@@ -27,7 +27,7 @@ test('only DeBERTa compound queries use the evaluated concrete proposition; topi
     assert.equal(searchCondition(query,'deberta'),`This listing offers ${query}.`);
     for(const model of ['browser','qwen35'])assert.equal(searchCondition(query,model),`This listing matches this search: ${query}`);
   }
-  for(const query of ['apples','food','huonekalu','USB-C'])for(const model of ['deberta','browser','qwen35'])assert.equal(searchCondition(query,model),`This text is about ${query}.`);
+  for(const query of ['apples','food','huonekalu','USB-C'])for(const model of ['deberta','browser','qwen35'])assert.equal(searchCondition(query,model),model==='deberta'?`The item being offered is ${query}.`:`This text is about ${query}.`);
   assert.equal(searchCondition('  Red bicycle, under 100 EUR?!  ','deberta'),'This listing offers Red bicycle, under 100 EUR?!.');
 });
 

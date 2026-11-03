@@ -70,5 +70,5 @@ test('pending writes are serialized and new decisions are retained for the next 
 test('condition hashes isolate the compound-query fix without invalidating existing single-word decisions',()=>{
   const fixed=searchCondition('fresh apples','deberta'),old=searchCondition('fresh apples','browser');
   assert.notEqual(decisionCacheKey({...scope,condition:fixed}),decisionCacheKey({...scope,condition:old}));
-  assert.equal(decisionCacheKey({...scope,condition:searchCondition('apples','deberta')}),decisionCacheKey({...scope,condition:'This text is about apples.'}));
+  assert.equal(decisionCacheKey({...scope,condition:searchCondition('apples','deberta')}),decisionCacheKey({...scope,condition:'The item being offered is apples.'}));
 });

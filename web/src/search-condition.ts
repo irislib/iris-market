@@ -7,7 +7,7 @@ export function usesTrainedSearchHead(query: string, model: string): boolean {
 }
 export function searchCondition(value,model='deberta') {
   const query = String(value ?? '').trim().slice(0, 500);
-  if(isTopicSearch(query))return `This text is about ${query}.`;
+  if(isTopicSearch(query))return model==='deberta'?`The item being offered is ${query}.`:`This text is about ${query}.`;
   // NLI needs a concrete proposition, rather than a statement about a search.
   // Keep the query intact; this is the same template for every subject.
   return model==='deberta'?`This listing offers ${query}.`:`This listing matches this search: ${query}`;

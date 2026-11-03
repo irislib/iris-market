@@ -26,7 +26,7 @@ This is a development prototype. The browser includes an optional Cashu wallet; 
 
 Web: [market.iris.to](https://market.iris.to) · [App builds and CLI](https://getmarket.iris.to). Source: [GitHub](https://github.com/irislib/iris-market). Hashtree source: [iris-market](https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/iris-market).
 
-Windows currently uses the [web app](https://market.iris.to/) or the [x64 CLI download](https://github.com/irislib/iris-market/releases/download/v0.1.4-alpha.8/iris-market-v0.1.4-alpha.8-cli-x86_64-pc-windows-msvc.zip). The Windows CLI requires the [Microsoft Visual C++ v14 x64 runtime](https://aka.ms/vc14/vc_redist.x64.exe). A native Windows GUI is not implemented; Windows PWA installation and runtime have not been manually verified.
+Windows currently uses the [web app](https://market.iris.to/) or the [x64 CLI download](https://github.com/irislib/iris-market/releases/download/v0.1.4-alpha.9/iris-market-v0.1.4-alpha.9-cli-x86_64-pc-windows-msvc.zip). The Windows CLI requires the [Microsoft Visual C++ v14 x64 runtime](https://aka.ms/vc14/vc_redist.x64.exe). A native Windows GUI is not implemented; Windows PWA installation and runtime have not been manually verified.
 
 The browser feed below uses real public listings. Native alpha builds share the same visual direction and use platform system fonts.
 
@@ -354,6 +354,12 @@ Native release diagnostics remap source paths to `/source/iris-market`, Cargo in
 
 Acceptance includes actual fresh-native Rust→JS order interoperability and an iOS UI order journey using an isolated local relay. Seller/courier native screens were additionally exercised with an isolated UI harness. Native profile grids load signed author listings independently from Browse, with bounded load-more queries; this was exercised on an actual iOS simulator. Current native source includes opt-in private live-location sending only while the order view is active in the foreground. Leaving, covering or backgrounding the view stops sharing; the sender coalesces updates and expires them after two minutes instead of queuing a location history. Foreground sharing is included in alpha.2/build 13; real-device GPS-sharing acceptance remains pending. Current wallet acceptance limits are described in Cashu wallet above. Native Transport is available from the header and Profile, with Find work, My jobs and My service, explicit service topics, next-stop directions, and normal private order actions. Native local and selected remote AI apply each decision as it finishes and can review newly arriving results for the submitted search, within a 240-candidate budget. Remaining work retains the same query and signed-revision checks; Stop, leaving the search, or backgrounding ends that continuation.
 
+### Release 0.1.4 alpha 9
+
+Android build **20** adds an optional 96 MB Compact search download. It runs the web search classifier locally. Gemma also supports Home curation and now reuses its engine for consecutive search batches. The Linux desktop packages include the browser improvements to map discovery, multiword retrieval and returning to results. [Release downloads](https://github.com/irislib/iris-market/releases/tag/v0.1.4-alpha.9)
+
+All nine artifacts and both release metadata files were verified by downloading them from GitHub and Hashtree. The notarized Mac app passed foreground and inactive CPU checks with 326 public listings. Apple processed iOS 0.1.4 (20) for the existing internal TestFlight group.
+
 ### Release 0.1.4 alpha 8
 
 [v0.1.4-alpha.8](https://github.com/irislib/iris-market/releases/tag/v0.1.4-alpha.8) includes native build **19**. Home ordering uses social graph distance, known followers, listing novelty and optional AI relevance. Settings includes separate opt-ins for private matching and escrow. Private matches can use public listings or pending private entries, with both people’s consent required for a private introduction. iOS 0.1.4 (19) is available to the existing internal TestFlight group.
@@ -383,7 +389,7 @@ This release contains continuous, cancellable online AI search on iOS, macOS and
 The release owner integrates and commits the accepted source before building. `native-alpha.py` rejects a dirty checkout, uses checksum-verified inputs, generates bindings from that same core, and keeps candidates in a new staging directory. On the accepted commit:
 
 ```sh
-python3 scripts/alpha-release.py plan --tag v0.1.4-alpha.8
+python3 scripts/alpha-release.py plan --tag v0.1.4-alpha.9
 python3 scripts/release-build-inputs.py --check
 python3 scripts/android-release-inputs.py --check
 python3 scripts/test_alpha_release.py -v
@@ -402,7 +408,7 @@ node scripts/publish-alpha.mjs --help
 
 ### Linux desktop
 
-`linux/iris_market.py` runs the bundled browser client in a persistent WebKitGTK window. It uses system Python 3.10+, GTK 3, PyGObject and WebKitGTK 4.1 API (WebKit 2.42+); it does not bundle these runtimes. Linux x64 is the release target. Download the [Debian package](https://github.com/irislib/iris-market/releases/download/v0.1.4-alpha.8/iris-market-v0.1.4-alpha.8-linux-x64.deb) or [portable archive](https://github.com/irislib/iris-market/releases/download/v0.1.4-alpha.8/iris-market-v0.1.4-alpha.8-linux-x64.tar.gz). Browser accounts, encrypted local storage, transport workspaces and optional CPU/WASM AI use the same web implementation; this is not a separate Rust-native Linux interface.
+`linux/iris_market.py` runs the bundled browser client in a persistent WebKitGTK window. It uses system Python 3.10+, GTK 3, PyGObject and WebKitGTK 4.1 API (WebKit 2.42+); it does not bundle these runtimes. Linux x64 is the release target. Download the [Debian package](https://github.com/irislib/iris-market/releases/download/v0.1.4-alpha.9/iris-market-v0.1.4-alpha.9-linux-x64.deb) or [portable archive](https://github.com/irislib/iris-market/releases/download/v0.1.4-alpha.9/iris-market-v0.1.4-alpha.9-linux-x64.tar.gz). Browser accounts, encrypted local storage, transport workspaces and optional CPU/WASM AI use the same web implementation; this is not a separate Rust-native Linux interface.
 
 The GUI was verified on Ubuntu 26.04 x64 with Python 3.14.4, PyGObject 3.56.2, GTK 3.24.52 and WebKitGTK 2.52.6. The launcher uses one WASM compiler thread and disables WebKit’s optimizing WASM tier for this process, retaining baseline WASM and JavaScript JITs. This avoids excessive memory use while preparing the pinned AI runtime; explicit launcher environment overrides are preserved. System libraries are not bundled or pinned by the package, so identical application assets do not guarantee identical behavior or memory use across distributions and WebKit versions.
 
@@ -416,7 +422,7 @@ cd ..
 python3 linux/iris_market.py --assets web/dist
 ```
 
-The release owner packages only the accepted source and reviewed web assets with `scripts/linux-package.py --tag v0.1.4-alpha.8 --version 0.1.4~alpha.8 --arch amd64 --updater <accepted-linux-cli> --updater-sha256 <accepted-cli-sha256> --output <new-output-directory>`. The `.deb` declares its system dependencies; the portable archive needs those same dependencies installed. A dirty-source preview package is never accepted as a release candidate.
+The release owner packages only the accepted source and reviewed web assets with `scripts/linux-package.py --tag v0.1.4-alpha.9 --version 0.1.4~alpha.9 --arch amd64 --updater <accepted-linux-cli> --updater-sha256 <accepted-cli-sha256> --output <new-output-directory>`. The `.deb` declares its system dependencies; the portable archive needs those same dependencies installed. A dirty-source preview package is never accepted as a release candidate.
 
 ## Protocol and privacy
 
@@ -504,7 +510,7 @@ Receipt and reaction records use Iris Chat's existing private inner kinds: 15 fo
 
 ### Platform coverage
 
-This describes alpha.8/build 19. Linux bundles the accepted browser interface. Windows uses the browser/PWA or CLI.
+This describes alpha.9/build 20. Linux bundles the accepted browser interface. Windows uses the browser/PWA or CLI.
 
 | Area | Browser / Linux interface | iOS / macOS / Android source |
 | --- | --- | --- |

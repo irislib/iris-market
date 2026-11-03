@@ -453,14 +453,9 @@ fn token_decision(value: &Value, ollama: bool) -> Option<Relevance> {
             no += logprob.exp();
         }
     }
-    // The generated answer must have probability mass in the supplied top-k.
-    // Permit the rounding error of token probabilities reported as float32.
-    let emitted = if answer.eq_ignore_ascii_case("yes") {
-        yes
-    } else {
-        no
-    };
-    if emitted == 0.0 || yes + no > 1.00001 {
+    // A token omitted from top-k has unknown mass. Its absence cannot establish
+    // a certain match or rejection. Allow for float32 probability rounding.
+    if yes == 0.0 || no == 0.0 || yes + no > 1.00001 {
         return None;
     }
     let score = yes / (yes + SEARCH_YES_ODDS * no);
@@ -642,6 +637,7 @@ mod tests {
             assert_eq!(token_decision(&response, true).unwrap().show, expected);
         }
         for invalid in [
+            json!([{"token":"Yes","logprob":0.05_f64.ln()}]),
             json!([{"token":"No","logprob":0.0}]),
             json!([{"token":"Yes","logprob":0.0},{"token":"No","logprob":0.0}]),
             json!([{"token":"Yes","logprob":0.1}]),

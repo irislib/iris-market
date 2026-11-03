@@ -3,6 +3,13 @@ import { assetUrl } from '../asset-url.ts'
 // Payload from pinned onnxruntime-web 1.31.0-dev.20260914-8d85527a0.
 // Gzip keeps the static deployment below its per-file limit; verify unpacked bytes.
 export interface RuntimeIntegritySpec { byteLength: number; sha256: string; maxCompressedBytes: number }
+export const CPU_RUNTIME = Object.freeze({
+  wasm: 'ort-wasm-simd-threaded.wasm.gz',
+  mjs: 'ort-wasm-simd-threaded.mjs',
+  byteLength: 14264838,
+  sha256: '06ba057753da3847e4c24f02d91ab133455b0817c69a44993a9a53a2146df9e3',
+  maxCompressedBytes: 5000000,
+})
 export const RUNTIME = Object.freeze({
   wasm: 'ort-wasm-simd-threaded.asyncify.wasm.gz',
   mjs: 'ort-wasm-simd-threaded.asyncify.mjs',
@@ -43,8 +50,8 @@ export async function verifyRuntimeResponse(response: Response, spec: RuntimeInt
   return binary
 }
 
-export async function loadRuntimeBinary(onProgress: ProgressHandler = () => {}, { baseURI, fetchImpl = globalThis.fetch }: { baseURI?: string; fetchImpl?: typeof fetch } = {}) {
+export async function loadRuntimeBinary(onProgress: ProgressHandler = () => {}, { baseURI, fetchImpl = globalThis.fetch, runtime = RUNTIME }: { baseURI?: string; fetchImpl?: typeof fetch; runtime?: RuntimeIntegritySpec & { wasm: string } } = {}) {
   onProgress('Loading local runtime…')
-  const response = await fetchImpl(assetUrl(RUNTIME.wasm, baseURI))
-  return verifyRuntimeResponse(response)
+  const response = await fetchImpl(assetUrl(runtime.wasm, baseURI))
+  return verifyRuntimeResponse(response, runtime)
 }

@@ -4,7 +4,7 @@ import { resolve, relative, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
 import { GRAPH_BOOTSTRAP } from '../src/graph-bootstrap.ts';
-import { RUNTIME } from '../src/feed-filter/runtime.ts';
+import { CPU_RUNTIME, RUNTIME } from '../src/feed-filter/runtime.ts';
 import { buildPwa } from './pwa-build.mjs';
 import { DEFAULT_RELAYS } from '../src/market.ts';
 
@@ -110,17 +110,19 @@ for (const [name, source, entry] of [['web', root, 'src/app.ts'], ['site', resol
     results.push(await build({ absWorkingDir: root, entryPoints: [resolve(root, 'src/native-map.ts')], bundle: true, minify: true, format: 'esm', target: 'es2022', outfile: resolve(dest, 'native-map.js'), legalComments: 'eof', metafile: true }));
     results.push(await build({ absWorkingDir: root, entryPoints: [resolve(root, 'src/nostr.worker.ts')], define: {'import.meta.env.VITE_TEST_MODE': 'false', 'import.meta.env.VITE_TEST_BOOTSTRAP_PUBKEY': 'undefined'}, bundle: true, minify: true, format: 'esm', platform: 'browser', target: 'es2022', outfile: resolve(dest, 'nostr.worker.js'), legalComments: 'eof', metafile: true }));
     results.push(await build({ absWorkingDir: root, entryPoints: [resolve(root, 'src/feed-filter/worker.ts')], bundle: true, minify: true, format: 'esm', platform: 'browser', target: 'es2022', outfile: resolve(dest, 'feed-filter.worker.js'), legalComments: 'eof', metafile: true }));
-    const rawName = RUNTIME.wasm.replace(/\.gz$/, '');
-    const binary = await readFile(resolve(root, 'node_modules/onnxruntime-web/dist', rawName));
-    if (binary.byteLength !== RUNTIME.byteLength || hash(binary) !== RUNTIME.sha256) throw new Error('The installed ONNX runtime does not match the pinned payload.');
-    // Node emits gzip with a zero timestamp and no source filename, keeping this deterministic.
-    const compressed = gzipSync(binary, { level: 9 });
-    if (compressed.readUInt32LE(4) !== 0 || compressed.length > RUNTIME.maxCompressedBytes) throw new Error('Unexpected gzip runtime size or metadata.');
-    await writeFile(resolve(dest, RUNTIME.wasm), compressed);
-    await copyFile(resolve(root, 'node_modules/onnxruntime-web/dist', RUNTIME.mjs), resolve(dest, RUNTIME.mjs));
-    // Retire only this superseded generated file; preserve all other outputs.
-    await rm(resolve(dest, rawName), { force: true });
-    console.log(`runtime: ${binary.length} → ${compressed.length} bytes; SHA256 ${RUNTIME.sha256}`);
+    for (const runtime of [CPU_RUNTIME, RUNTIME]) {
+      const rawName = runtime.wasm.replace(/\.gz$/, '');
+      const binary = await readFile(resolve(root, 'node_modules/onnxruntime-web/dist', rawName));
+      if (binary.byteLength !== runtime.byteLength || hash(binary) !== runtime.sha256) throw new Error('The installed ONNX runtime does not match the pinned payload.');
+      // Node emits gzip with a zero timestamp and no source filename, keeping this deterministic.
+      const compressed = gzipSync(binary, { level: 9 });
+      if (compressed.readUInt32LE(4) !== 0 || compressed.length > runtime.maxCompressedBytes) throw new Error('Unexpected gzip runtime size or metadata.');
+      await writeFile(resolve(dest, runtime.wasm), compressed);
+      await copyFile(resolve(root, 'node_modules/onnxruntime-web/dist', runtime.mjs), resolve(dest, runtime.mjs));
+      // Retire only this superseded generated file; preserve all other outputs.
+      await rm(resolve(dest, rawName), { force: true });
+      console.log(`runtime: ${binary.length} → ${compressed.length} bytes; SHA256 ${runtime.sha256}`);
+    }
   }
   await writeNotices(dest, results, name === 'web');
   // NIP-11 capability checks use HTTPS on the configured default relay hosts.

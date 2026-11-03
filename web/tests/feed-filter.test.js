@@ -22,6 +22,20 @@ async function load(client, model = 'deberta') {
   return worker
 }
 
+test('switching between CPU and GPU creates a worker for the new runtime', async () => {
+  const client = make()
+  try {
+    const cpu = await load(client)
+    assert.equal(await load(client), cpu)
+    const gpu = await load(client, 'qwen35')
+    assert.equal(cpu.terminated, true)
+    assert.notEqual(gpu, cpu)
+    const restored = await load(client)
+    assert.equal(gpu.terminated, true)
+    assert.notEqual(restored, gpu)
+  } finally { client.dispose() }
+})
+
 test('CPU filtering is the default while both pinned models remain available for diagnostics', () => {
   assert.equal(DEFAULT_FEED_MODEL, 'deberta')
   assert.equal(FEED_MODELS[DEFAULT_FEED_MODEL].requiresWebGPU, false)

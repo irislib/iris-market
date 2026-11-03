@@ -94,6 +94,11 @@ export class FeedFilterClient {
   load(modelId: string, device = 'auto', onProgress?: ProgressHandler) {
     try { validateModel(modelId, device) } catch (error) { return Promise.reject(error) }
     return this.exclusive(async () => {
+      const backend = device === 'auto' ? (FEED_MODELS[modelId].requiresWebGPU ? 'webgpu' : 'wasm') : device
+      if (this.info && this.info.device !== backend) {
+        this.worker?.terminate()
+        this.worker = null
+      }
       this.info = null; const generation=this.generation
       const result = await this.request({ type: 'load', model: modelId, device }, onProgress, 600000)
       if(generation!==this.generation)throw new Error('Local filter stopped.')

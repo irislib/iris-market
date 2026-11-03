@@ -6,7 +6,7 @@ import { assetUrl } from '../asset-url.ts'
 import { AutoTokenizer, AutoModelForCausalLM, AutoModelForSequenceClassification, env } from '@huggingface/transformers'
 import { FEED_MODELS, MAX_LISTING_LENGTH, validateModel, validateInput } from './models.ts'
 import { createPinnedModelFetch } from './assets.ts'
-import { RUNTIME, loadRuntimeBinary } from './runtime.ts'
+import { CPU_RUNTIME, RUNTIME, loadRuntimeBinary } from './runtime.ts'
 import { SEARCH_MODEL_FILE, withSearchHead } from './search-head.ts'
 import { marketplaceEntailmentScore } from './scoring.ts'
 
@@ -14,9 +14,6 @@ env.allowLocalModels = false
 env.cacheKey = 'iris-market-local-filter-v1'
 // Use the shipped same-origin WASM module directly, avoiding a generated blob module.
 env.useWasmCache = false
-env.backends.onnx.wasm.wasmPaths = {
-  mjs: assetUrl(RUNTIME.mjs),
-}
 env.backends.onnx.wasm.numThreads = 1
 env.backends.onnx.wasm.proxy = false
 let report: ProgressHandler = () => {}
@@ -25,9 +22,12 @@ const fetchPinned = createPinnedModelFetch(env.fetch, {
   readCache: async request => (await globalThis.caches?.open(env.cacheKey))?.match(request),
 })
 env.fetch = withSearchHead(fetchPinned, async url => (await globalThis.caches?.open(env.cacheKey))?.match(url))
+// ONNX Runtime initializes once per worker. The client replaces the worker when the backend changes.
 let runtimePromise: Promise<Uint8Array<ArrayBuffer>>
-async function ensureRuntime() {
-  if (!runtimePromise) runtimePromise = loadRuntimeBinary(message => report(message)).catch(error => { runtimePromise = undefined; throw error })
+async function ensureRuntime(device: 'wasm' | 'webgpu') {
+  const runtime = device === 'wasm' ? CPU_RUNTIME : RUNTIME
+  env.backends.onnx.wasm.wasmPaths = { mjs: assetUrl(runtime.mjs) }
+  if (!runtimePromise) runtimePromise = loadRuntimeBinary(message => report(message), { runtime }).catch(error => { runtimePromise = undefined; throw error })
   env.backends.onnx.wasm.wasmBinary = await runtimePromise
 }
 let tokenizer, model, info: FeedModelInfo, loadedKey = ''
@@ -52,7 +52,7 @@ export async function loadModel(id: string, requested: string, progress: Progres
   if (device === 'wasm' && spec.requiresWebGPU) throw new Error('This model needs WebGPU. Select DeBERTa for CPU filtering.')
   progress(`Loading ${spec.label} on ${device === 'webgpu' ? 'WebGPU' : 'CPU'}…`)
   try {
-    await ensureRuntime()
+    await ensureRuntime(device)
     tokenizer = await AutoTokenizer.from_pretrained(spec.repo, { revision: spec.revision })
     const loader = id === 'deberta' ? AutoModelForSequenceClassification : AutoModelForCausalLM
     model = await loader.from_pretrained(spec.repo, { revision: spec.revision, dtype: spec.dtype, device, ...(id === 'deberta' ? {model_file_name: SEARCH_MODEL_FILE} : {}) })

@@ -1,6 +1,9 @@
 package to.iris.market
 
 import android.app.Application
+import android.system.Os
+import android.system.OsConstants
+import android.system.StructTimespec
 import com.google.ai.edge.litertlm.Backend
 import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.ConversationConfig
@@ -157,11 +160,55 @@ class LocalModel(application: Application, private val scope: CoroutineScope) {
     private var download: Job? = null
     @Volatile private var connection: HttpURLConnection? = null
 
+    private data class ModelFile(val device: Long, val inode: Long, val bytes: Long,
+        val modified: StructTimespec, val changed: StructTimespec)
+    private val engines = LocalEngineSession(scope,
+        fileIdentity = {
+            try {
+                val stat = Os.lstat(file.absolutePath)
+                check(OsConstants.S_ISREG(stat.st_mode) && stat.st_size == LocalModelManifest.BYTES) { "Model file changed" }
+                ModelFile(stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtim, stat.st_ctim)
+            } catch (e: Exception) {
+                mutable.value = LocalModelState(error = "Installed model is unavailable. Download it again.")
+                throw e
+            }
+        },
+        verify = {
+            mutable.value = LocalModelState(LocalModelPhase.VERIFYING)
+            try { verifyFile() }
+            catch (e: CancellationException) { throw e }
+            catch (e: Exception) {
+                mutable.value = LocalModelState(error = "Installed model failed verification. Download it again.")
+                throw e
+            }
+        },
+        create = {
+            mutable.value = LocalModelState(LocalModelPhase.LOADING)
+            Engine(EngineConfig(modelPath = file.absolutePath, backend = Backend.CPU(numOfThreads = 2),
+                maxNumTokens = 2048, cacheDir = ":nocache"))
+        },
+        initialize = { it.initialize() },
+        afterUse = {
+            if (mutable.value.phase in setOf(LocalModelPhase.VERIFYING, LocalModelPhase.LOADING, LocalModelPhase.REVIEWING)) {
+                mutable.value = LocalModelState(if (file.length() == LocalModelManifest.BYTES) LocalModelPhase.DOWNLOADED else LocalModelPhase.ABSENT)
+            }
+        })
+    fun stop() { engines.invalidate() }
+
+    private suspend fun verifyFile() {
+        val context = currentCoroutineContext()
+        file.inputStream().use { input ->
+            LocalModelContract.copyVerified(input, null, LocalModelManifest.BYTES, LocalModelManifest.SHA256) { context.ensureActive() }
+        }
+    }
+
     suspend fun verifyInstalled(): Boolean = withContext(Dispatchers.IO) {
-        if (!file.isFile) return@withContext false
         mutable.value = LocalModelState(LocalModelPhase.VERIFYING)
+        engines.invalidate().join()
+        mutable.value = LocalModelState(LocalModelPhase.VERIFYING)
+        if (!file.isFile) { mutable.value = LocalModelState(); return@withContext false }
         try {
-            file.inputStream().use { input -> LocalModelContract.copyVerified(input, null, LocalModelManifest.BYTES, LocalModelManifest.SHA256) { ensureActive() } }
+            verifyFile()
             mutable.value = LocalModelState(LocalModelPhase.DOWNLOADED, LocalModelManifest.BYTES)
             true
         } catch (e: CancellationException) { mutable.value = LocalModelState(); throw e }
@@ -171,8 +218,10 @@ class LocalModel(application: Application, private val scope: CoroutineScope) {
     fun download() {
         if (state.value.busy || state.value.available || download?.isCompleted == false) return
         mutable.value = LocalModelState(LocalModelPhase.DOWNLOADING)
+        val closed = engines.invalidate()
         download = scope.launch(Dispatchers.IO) {
             try {
+                closed.join()
                 check(directory.isDirectory || directory.mkdirs())
                 check(!partial.exists() || partial.delete())
                 if (file.exists() && file.length() != LocalModelManifest.BYTES) check(file.delete())
@@ -215,31 +264,24 @@ class LocalModel(application: Application, private val scope: CoroutineScope) {
     fun delete() {
         if (state.value.busy) return
         mutable.value = LocalModelState(LocalModelPhase.DELETING)
+        val closed = engines.invalidate()
         scope.launch(Dispatchers.IO) {
+            closed.join()
             val deleted = (!file.exists() || file.delete()) && (!partial.exists() || partial.delete())
             mutable.value = if (deleted) LocalModelState() else LocalModelState(LocalModelPhase.DOWNLOADED, error = "Could not remove the model. Try again.")
         }
     }
 
-    suspend fun classify(batch: LocalCurationBatch, sandbox: Boolean = false,
+    suspend fun classify(batch: LocalCurationBatch, sandbox: Boolean = false, run: Long? = null,
         planning: LocalSearchPlanInput? = null,
         onPlan: suspend (List<String>) -> LocalCurationBatch = { batch },
         onDecision: suspend (LocalCurationDecision) -> Unit = {}): List<LocalCurationDecision> {
+        // Capture before dispatch so a stopped or replaced file cannot be reopened by a queued call.
+        val submitted = engines.revision
         check(state.value.available) { "Download the on-device model in Settings first." }
         require(batch.candidates.size <= 24)
         return withContext(Dispatchers.IO) {
-            mutable.value = LocalModelState(LocalModelPhase.VERIFYING)
-            var engine: Engine? = null
-            try {
-                file.inputStream().use { input ->
-                    LocalModelContract.copyVerified(input, null, LocalModelManifest.BYTES, LocalModelManifest.SHA256) { ensureActive() }
-                }
-                mutable.value = LocalModelState(LocalModelPhase.LOADING)
-                val activeEngine = Engine(EngineConfig(modelPath = file.absolutePath, backend = Backend.CPU(numOfThreads = 2),
-                    maxNumTokens = 2048, cacheDir = ":nocache"))
-                engine = activeEngine
-                activeEngine.initialize()
-                ensureActive()
+            engines.use(run, submitted) { activeEngine ->
                 val activeBatch = if (planning == null) batch else {
                     val terms = try { withTimeout(8_000) {
                         val conversation = activeEngine.createConversation(ConversationConfig(
@@ -289,9 +331,6 @@ class LocalModel(application: Application, private val scope: CoroutineScope) {
                         }
                     }
                 }
-            } finally {
-                engine?.let { runCatching { it.close() } }
-                mutable.value = LocalModelState(if (file.length() == LocalModelManifest.BYTES) LocalModelPhase.DOWNLOADED else LocalModelPhase.ABSENT)
             }
         }
     }

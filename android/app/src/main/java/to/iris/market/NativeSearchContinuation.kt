@@ -3,9 +3,11 @@ package to.iris.market
 /** Only a submitted search authorizes late-arrival review; stop clears that authority. */
 class NativeSearchContinuation {
     private var context: String? = null
+    private var run = 0L
+    @Synchronized fun runFor(value: String): Long? = run.takeIf { context == value }
     private val attempted = mutableSetOf<String>()
     private var historyWindows = 0
-    @Synchronized fun start(value: String) { context = value; attempted.clear(); historyWindows = 0 }
+    @Synchronized fun start(value: String) { run++; context = value; attempted.clear(); historyWindows = 0 }
     @Synchronized fun stop() { context = null; attempted.clear(); historyWindows = 0 }
     @Synchronized fun record(values: List<String>) { attempted.addAll(values.take((240 - attempted.size).coerceAtLeast(0))) }
     @Synchronized fun remainingBudget(value: String): Int = if (context == value) (240 - attempted.size).coerceAtLeast(0) else 0

@@ -279,15 +279,17 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
     fun cancelLocalModelDownload() = localModel.cancelDownload()
     fun deleteLocalModel() { if (!state.value.demo) localModel.delete() }
     fun continueSearch() {
+        localModel.stop()
         searchContinuation.start(searchContext())
         command(JSONObject().put("type", "continue_search")) { if (state.value.aiSearch || homeFilterActive()) ai("curate") }
     }
     fun cancelSearch() {
+        localModel.stop()
         searchContinuation.stop()
         val app = core ?: return
         viewModelScope.launch(Dispatchers.IO) { runCatching { app.command("{\"type\":\"cancel_search\"}") } }
     }
-    fun cancelLocalAI() { cancelSearch(); searchContinuation.stop(); localCurationJob?.cancel() }
+    fun cancelLocalAI() { cancelSearch(); localCurationJob?.cancel() }
 
     init {
         viewModelScope.launch(Dispatchers.IO) {
@@ -307,6 +309,8 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
         }
     }
     private fun openSavedAccount() {
+        localModel.stop()
+        localCurationJob?.cancel()
         pushAccountReady=false
         invalidateAITest()
         dismissProfileSetup()
@@ -808,6 +812,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
             var searchGeneration = 0L
             var planning: LocalSearchPlanInput? = null
             val context = searchContext()
+            val run = if (checkOnly) null else searchContinuation.runFor(context)
             var finished = false
             try {
                 val batch = withContext(Dispatchers.IO) { mutex.withLock {
@@ -838,7 +843,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
                 }
                 var activeBatch = batch
                 val checkStarted = System.nanoTime()
-                val decisions = withTimeout(270_000) { localModel.classify(batch, planning = planning, onPlan = { terms ->
+                val decisions = withTimeout(270_000) { localModel.classify(batch, run = run, planning = planning, onPlan = { terms ->
                     withContext(Dispatchers.IO) { mutex.withLock {
                         ensureActive()
                         check(accountGeneration == generation && state.value.searchGeneration == searchGeneration) { "Search changed" }
@@ -866,6 +871,9 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
                 }) }
                 ensureActive()
                 finished = true
+                if (run != null && (searchContinuation.remainingBudget(context) < 24 || state.value.listings.count { it.matchesSearch } >= 24)) {
+                    localModel.stop()
+                }
                 if (!checkOnly && activeBatch.candidates.isNotEmpty()) batchId = null
                 if (checkOnly) alert.value = if (decisions.none { it.unavailable } && decisions.map { it.show } == listOf(true,false)) "Search check passed · %.1f s".format((System.nanoTime()-checkStarted)/1_000_000_000.0)
                     else "The model missed the search check. Listings remain visible."
@@ -877,7 +885,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
             catch (_: OutOfMemoryError) { alert.value = "Not enough memory for this model. Listings remain visible." }
             finally {
                 // Keep a failed local review paused until an explicit retry, as with other providers.
-                if (isActive && !finished && !checkOnly && generation == accountGeneration &&
+                if (isActive && !finished && run != null && searchContinuation.runFor(context) == run && generation == accountGeneration &&
                     searchGeneration == state.value.searchGeneration && context == searchContext()) searchContinuation.stop()
                 val id = batchId
                 try {
@@ -968,6 +976,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
         }}
     }
     override fun onCleared() {
+        localModel.stop()
         NativePushBridge.detach(this)
         invalidateAITest()
         val app=core

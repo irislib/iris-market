@@ -91,7 +91,16 @@ export class FeedFilterClient {
       catch { this.dispose('Could not send work to the local model.') }
     })
   }
-  load(modelId: string, device = 'auto', onProgress?: ProgressHandler) {
+  /** An auxiliary CPU worker belongs to one search and shares its decision cache. */
+  startSearchWorker(): FeedFilterClient | null {
+    const device = globalThis.navigator as Navigator & {deviceMemory?:number}
+    if (this.info?.model !== 'deberta' || this.info.device !== 'wasm' ||
+        !(device?.deviceMemory >= 8 && device.hardwareConcurrency >= 8)) return null
+    const other = new FeedFilterClient({WorkerImpl:this.Worker, workerUrl:this.workerUrl, decisionCache:this.cache})
+    void other.load('deberta','wasm',undefined,true).catch(() => other.dispose())
+    return other
+  }
+  load(modelId: string, device = 'auto', onProgress?: ProgressHandler, cacheOnly=false) {
     try { validateModel(modelId, device) } catch (error) { return Promise.reject(error) }
     return this.exclusive(async () => {
       const backend = device === 'auto' ? (FEED_MODELS[modelId].requiresWebGPU ? 'webgpu' : 'wasm') : device
@@ -100,7 +109,7 @@ export class FeedFilterClient {
         this.worker = null
       }
       this.info = null; const generation=this.generation
-      const result = await this.request({ type: 'load', model: modelId, device }, onProgress, 600000)
+      const result = await this.request({ type: 'load', model: modelId, device, ...(cacheOnly && {cacheOnly}) }, onProgress, 600000)
       if(generation!==this.generation)throw new Error('Local filter stopped.')
       this.info = Object.freeze({ ...result, model: modelId, revision: FEED_MODELS[modelId].revision })
       return this.info

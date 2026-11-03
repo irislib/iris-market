@@ -11,6 +11,6 @@ export interface FeedModelInfo {
 }
 export interface ClassificationResult { score: number; milliseconds: number; inputTokens: number; truncated: boolean }
 export interface FeedDecision extends ClassificationResult { show: boolean }
-export type FilterRequest = { type: 'load'; model: string; device: string } | { type: 'classify'; condition: string; content: string; searchHead?: boolean }
+export type FilterRequest = { type: 'load'; model: string; device: string; cacheOnly?: boolean } | { type: 'classify'; condition: string; content: string; searchHead?: boolean }
 export type FilterResult = FeedModelInfo | ClassificationResult
 export interface WorkerResponse { id: number; progress?: string; progressDetails?: DownloadProgress; error?: string; result?: FilterResult }

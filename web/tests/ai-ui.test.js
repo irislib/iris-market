@@ -17,7 +17,7 @@ function fixture({rows=[bicycle],query='',gpu=true,client:provided,fetchMoreCand
   const elements=new Map(),calls=[];
   const field=id=>{if(!elements.has(id))elements.set(id,new Element());return elements.get(id);};
   globalThis.document={querySelector:selector=>field(selector.slice(1)),createElement:()=>new Element()};globalThis.window=new EventTarget();
-  field('search-mode').value=mode;field('search').value=query;field('ai-model').value='deberta';field('ai-threshold').value='0.5';
+  field('search-mode').value=mode;field('search').value=query;field('ai-model').value='deberta';field('ai-threshold').value='0.5';field('ai-threshold').options=['0.5','0.3','0.1'].map(value=>({value}));
   const client=provided??{info:null,async load(model,device,progress){calls.push(['load',model,device]);progress('Downloading model…');this.info={model,device};return this.info;},async classify(condition,text){calls.push(['classify',condition,text]);return{score:.8};},dispose(){calls.push(['dispose']);this.info=null;}};
   const ui=setupAI({getCandidates:()=>rows,onChange:()=>{onRender();ui.refresh();},client,hasWebGPU:()=>gpu,fetchMoreCandidates,onTextSearch,autoPrepare,storage,saveData,browserClient,homeFeed,isHomeVisible,onSubmit});ui.refresh();
   return{ui,client,calls,field,setRows(value){rows=value;ui.refresh();}};
@@ -754,4 +754,60 @@ test('a productive sparse search reaches beyond 1,000 and pauses after a dry bat
   await ui.loadMore();
   assert.equal(ui.pagination().matches,3);
   assert.equal(ui.pagination().reviewed,1800);
+});
+
+test('large uncached searches review independent revisions concurrently and stop at the page target',async()=>{
+  const rows=Array.from({length:40},(_,i)=>({id:String(i),eventId:'rev-'+i,title:'Listing '+i}));
+  const ids=[],checkedByExtra=[];
+  let active=0,peak=0,released=0;
+  const classify=async (_condition,_text,{eventId})=>{
+    peak=Math.max(peak,++active);ids.push(eventId);
+    await new Promise(resolve=>setImmediate(resolve));active--;
+    // A single irrelevant listing shifts the pair boundary past the target.
+    return {score:eventId==='rev-0'?.001:.8,cached:false};
+  };
+  const extra={info:{model:'deberta'},classify(...args){checkedByExtra.push(args[2].eventId);return classify(...args);},dispose(){released++;}};
+  const client={info:{model:'deberta'},classify,startSearchWorker:()=>extra,dispose(){}};
+  const {ui}=fixture({rows,client});
+  await ui.submit('meat');
+  assert.equal(peak,2);assert(checkedByExtra.length>0);assert.equal(released,1);
+  assert.equal(ui.pagination().matches,24);assert.equal(ui.pagination().reviewed,25);
+  assert.deepEqual(new Set(ids),new Set(rows.slice(0,25).map(item=>item.eventId)));
+  assert.equal(ids.length,49);assert.equal(ui.scoreFor(rows[0]),undefined);
+});
+
+test('failed auxiliary inference retries the listing on the main worker',async()=>{
+  let failures=0;
+  const rows=Array.from({length:27},(_,i)=>({id:String(i),title:'Listing '+i}));
+  const extra={info:{model:'deberta'},classify(){failures++;throw Error('Worker lost');},dispose(){}};
+  const client={info:{model:'deberta'},classify:async()=>({score:.8}),startSearchWorker:()=>extra,dispose(){}};
+  const {ui,field}=fixture({rows,client});
+  await ui.submit('meat');assert.equal(failures,1);assert.equal(ui.pagination().matches,24);
+  assert.equal(field('ai-error').textContent,'');
+});
+
+test('cache hits never start a second model and changing strictness reveals every eligible score',async()=>{
+  let starts=0,calls=0;
+  const rows=Array.from({length:32},(_,i)=>({id:String(i),eventId:String(i),title:'Listing '+i}));
+  const client={info:{model:'deberta'},async classify(condition,_text,{eventId}){
+    calls++;return {score:condition.startsWith('This item')?(eventId==='0'?.04:.001):1,cached:true};
+  },startSearchWorker(){starts++;},dispose(){}};
+  const {ui,field}=fixture({rows,client});await ui.submit('meat');
+  assert.equal(starts,0);assert.equal(calls,33);assert.equal(ui.pagination().matches,0);
+  field('ai-threshold').value='0.1';field('ai-threshold').onchange();
+  assert.equal(calls,33);assert.equal(ui.pagination().matches,1);assert.equal(ui.scoreFor(rows[0]),.2);
+});
+
+test('cancelling parallel review releases its worker and discards both pending revisions',async()=>{
+  const rows=Array.from({length:32},(_,i)=>({id:String(i),eventId:String(i),title:'Listing '+i}));
+  let unblock,started,disposed=0;
+  const ready=new Promise(resolve=>{started=resolve;});
+  const extra={info:{model:'deberta'},classify:async(_condition,_text,{signal})=>{
+    started(signal);return new Promise(resolve=>{unblock=()=>resolve({score:.9});});
+  },dispose(){disposed++;}};
+  const client={info:{model:'deberta'},async classify(){return {score:.9};},startSearchWorker:()=>extra,dispose(){}};
+  const {ui}=fixture({rows,client});
+  const run=ui.submit('meat'),signal=await ready;
+  ui.stop();assert(signal.aborted);unblock();await run;
+  assert.equal(disposed,1);assert.equal(ui.query(),'');assert.equal(ui.pagination().reviewed,0);
 });

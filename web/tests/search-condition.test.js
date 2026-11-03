@@ -56,3 +56,17 @@ test('real metadata constraints, including zero price, survive long-description 
  const result=listingSearchText(input);assert(result.length<=2000);for(const field of ['Category: transport','Location: Helsinki','Price: 80 EUR'])assert(result.includes(field));
  assert(listingSearchText({...input,description:'',price:0}).includes('Price: 0 EUR'));assert(listingSearchText({...input,description:'',currency:''}).includes('Price: 80'));assert(!listingSearchText({...input,description:'',currency:''}).includes('EUR'));
 });
+
+test('skip a topic detail only when its best possible score is below every selectable cutoff',async()=>{
+  const run=async(first,second,minimum=.1,query='meat')=>{
+    let calls=0;
+    const result=await scoreSearchListing({title:'Example'},query,'deberta',async()=>({score:++calls===1?first:second,cached:true}),undefined,minimum);
+    return {...result,calls};
+  };
+  assert.deepEqual(await run(.009,1),{score:null,cached:true,calls:1});
+  assert.deepEqual(await run(.01,1),{score:.1,cached:true,calls:2});
+  assert.deepEqual(await run(.04,1),{score:.2,cached:true,calls:2});
+  assert.deepEqual(await run(.009,.5,0),{score:Math.sqrt(.009*.5),cached:true,calls:2});
+  assert.deepEqual(await run(.009,.5,.1,'fresh meat'),{score:.009,cached:true,calls:1});
+  await assert.rejects(run(-1,1),/invalid decision/);
+});

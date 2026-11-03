@@ -8,7 +8,7 @@ const $=byId;
 const keyFor = listing => listing.eventId || listing.id;
 export const AI_MODE_STORAGE_KEY='market-ai-mode-v1',AI_MODEL_STORAGE_KEY='market-ai-model-v1';
 interface SearchListing {id:string;eventId?:string;title:string;description?:string;side?:string;category?:string;location?:string;tags?:string[];price?:string|number;currency?:string}
-interface AIOptions {getCandidates:()=>SearchListing[];onChange:()=>void;onTextSearch?:(query:string)=>void;onSubmit?:(query:string)=>void;fetchMoreCandidates?:()=>Promise<boolean>;client?:Pick<FeedFilterClient,'info'|'load'|'classify'|'dispose'>&{pin?:()=>()=>void;selectSearchHead?:FeedFilterClient['selectSearchHead']};browserClient?:BrowserFeedFilterClient;hasWebGPU?:()=>boolean;autoPrepare?:boolean;storage?:Pick<Storage,'getItem'|'setItem'>;saveData?:()=>boolean;homeFeed?:HomeFeedPreferences;isHomeVisible?:()=>boolean}
+interface AIOptions {getCandidates:()=>SearchListing[];onChange:()=>void;onTextSearch?:(query:string)=>void;onSubmit?:(query:string)=>void;fetchMoreCandidates?:()=>Promise<boolean>;client?:Pick<FeedFilterClient,'info'|'load'|'classify'|'dispose'>&{pin?:()=>()=>void;selectSearchHead?:FeedFilterClient['selectSearchHead'];startSearchWorker?:FeedFilterClient['startSearchWorker']};browserClient?:BrowserFeedFilterClient;hasWebGPU?:()=>boolean;autoPrepare?:boolean;storage?:Pick<Storage,'getItem'|'setItem'>;saveData?:()=>boolean;homeFeed?:HomeFeedPreferences;isHomeVisible?:()=>boolean}
 interface SourceRequest {epoch:number;done:boolean;more?:boolean;error?:unknown}
 export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetchMoreCandidates, client = new FeedFilterClient(), browserClient=new BrowserFeedFilterClient(),hasWebGPU=()=>!!globalThis.navigator&&'gpu' in globalThis.navigator,autoPrepare=true,storage:providedStorage,saveData=()=>!!(globalThis.navigator as Navigator&{connection?:{saveData?:boolean}})?.connection?.saveData,homeFeed,isHomeVisible=()=>true }:AIOptions) {
   let scores = new Map(), showAll = false, phase:'idle'|'loading'|'searching'='idle', generation = 0, submittedQuery='', paused=false, waitingCandidates=false;
@@ -44,7 +44,7 @@ export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetch
   const threshold = () => ['qwen35','browser'].includes($('ai-model').value) ? .5 : Number($('ai-threshold').value);
   const needsCPU = () => $('ai-model').value === 'qwen35' && !hasWebGPU();
   const candidates=getCandidates;
-  const matches=(listing:SearchListing)=>scores.has(keyFor(listing))&&scores.get(keyFor(listing))>=threshold();
+  const matches=(listing:SearchListing)=>(scores.get(keyFor(listing))??-1)>=threshold();
   const matchCount=(rows=candidates())=>rows.reduce((count,item)=>count+Number(matches(item)),0);
   const refresh = () => {
     const candidates = getCandidates(), active = enabled(), busy=phase!=='idle';
@@ -165,6 +165,7 @@ export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetch
     $('ai-error').textContent='';
     phase=selected.info?'searching':'loading';onChange();
     if(selected.info&&!submittedQuery&&!homeRun){phase='idle';refresh();releaseModel();if(runController===controller)runController=null;return;}
+    let extraWorker:FeedFilterClient|null=null;
     try {
       if (!selected.info) {
         phase='loading';progress.removeAttribute('value');$('ai-progress').textContent='Loading model…';refresh();
@@ -180,6 +181,25 @@ export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetch
       const searchHead=!homeRun&&'selectSearchHead' in selected&&!!(await selected.selectSearchHead?.(query,controller.signal));
       if(current!==generation)return;
       const conditions=homeRun?homeFeedConditions(home.prompt,model):[];
+      // Use the broadest selectable cutoff so changing strictness never needs a rescan.
+      const cutoffs=Array.from($('ai-threshold').options??[],option=>Number(option.value));
+      const broadestCutoff=cutoffs.length?Math.min(...cutoffs):0;
+      const review=async (item:SearchListing,worker:Pick<FeedFilterClient,'classify'>|BrowserFeedFilterClient)=>{
+        const classify=(condition:string,text:string)=>worker.classify(condition,text,{eventId:item.eventId,signal:controller.signal,searchHead});
+        if(!homeRun)return scoreSearchListing(item,query,model,classify,controller.signal,broadestCutoff);
+        const text=listingSearchText(item);
+        let score=1;
+        for(const {condition,exclude} of conditions){
+          controller.signal.throwIfAborted();
+          const result=await classify(condition,text);
+          if(current!==generation)break;
+          if(!Number.isFinite(result.score))throw new Error('The model returned an invalid decision');
+          score=Math.min(score,exclude?1-result.score:result.score);
+          if(score<threshold())break;
+        }
+        return {score,cached:false};
+      };
+      let uncached=0,attemptedWorker=false;
       let sourceRequests=0,unpainted=0,painted=false,lastPaint=performance.now();
       phase='searching';refresh();
       let reviewRows:SearchListing[]|undefined,position=0,visibleMatches=0,lastThreshold=threshold();
@@ -223,24 +243,33 @@ export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetch
         }
         if(waitingCandidates){waitingCandidates=false;refresh();}
         $('ai-progress').textContent = homeRun?'Choosing listings…':'Searching…';
-        const classify=(condition:string,text:string)=>selected.classify(condition,text,{eventId:item.eventId,signal:controller.signal,searchHead});
-        let score=1;
-        if(homeRun){
-          const text=listingSearchText(item);
-          for(const {condition,exclude} of conditions){
-            const result=await classify(condition,text);
-            if(current!==generation)return;
-            if(!Number.isFinite(result.score))throw new Error('The model returned an invalid decision');
-            score=Math.min(score,exclude?1-result.score:result.score);
-            if(score<threshold())break;
-          }
-        }else{
-          ({score}=await scoreSearchListing(item,query,model,classify,controller.signal));
-          if(current!==generation)return;
+        if(!attemptedWorker&&!homeRun&&uncached>=4&&rows.length-position>=16){
+          attemptedWorker=true;
+          if(!saveData()&&'startSearchWorker' in selected)extraWorker=selected.startSearchWorker?.()??null;
         }
-        scores.set(keyFor(item),score);position++;unpainted++;
-        if(score>=threshold()){visibleMatches++;sourceRequests=0;}
-        if(!painted||unpainted>=16||performance.now()-lastPaint>=12){
+        const next=rows[position+1];
+        const pair=extraWorker?.info&&next&&keyFor(next)!==keyFor(item)&&!scores.has(keyFor(next))
+          &&visibleMatches+1<targetMatches&&scores.size+1<reviewBoundary;
+        const batch=pair?[item,next]:[item];
+        const results=await Promise.all(batch.map(async (listing,index)=>{
+          if(index===0)return review(listing,selected);
+          try{return await review(listing,extraWorker);}
+          catch(error){
+            // Auxiliary failure must not lose a candidate. Retry on the main worker.
+            if(current!==generation||controller.signal.aborted)throw error;
+            extraWorker.dispose();extraWorker=null;
+            return review(listing,selected);
+          }
+        }));
+        if(current!==generation)return;
+        const before=visibleMatches;
+        for(const [index,{score,cached}] of results.entries()){
+          scores.set(keyFor(batch[index]),score);
+          if(!cached)uncached++;
+          if(score!==null&&score>=threshold()){visibleMatches++;sourceRequests=0;}
+        }
+        position+=batch.length;unpainted+=batch.length;
+        if(!painted||before===0&&visibleMatches>0||unpainted>=16||performance.now()-lastPaint>=100){
           onChange();painted=true;unpainted=0;lastPaint=performance.now();
           // Cached decisions can otherwise keep resolving in one microtask
           // chain, starving paint, input, Stop and a replacement query.
@@ -249,7 +278,7 @@ export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetch
       }
     } catch (error) {
       if (current === generation) { paused=true;homeStopped=true;selected.dispose(); $('ai-error').textContent = `${error.message || 'Search failed'}. Show all listings or switch to Text to continue browsing.`; }
-    } finally { releaseModel();if(runController===controller)runController=null;if (current === generation) { phase='idle';waitingCandidates=false;$('ai-progress').textContent='';refresh();onChange(); } }
+    } finally { extraWorker?.dispose();releaseModel();if(runController===controller)runController=null;if (current === generation) { phase='idle';waitingCandidates=false;$('ai-progress').textContent='';refresh();onChange(); } }
   }
   $('search-mode').onclick = () => {
     const active=!enabled();preference=active?'on':'off';writeSetting(AI_MODE_STORAGE_KEY,preference);setEnabled(active);

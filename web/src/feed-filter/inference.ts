@@ -17,11 +17,17 @@ env.useWasmCache = false
 env.backends.onnx.wasm.numThreads = 1
 env.backends.onnx.wasm.proxy = false
 let report: ProgressHandler = () => {}
-const fetchPinned = createPinnedModelFetch(env.fetch, {
+const upstreamFetch = env.fetch
+const readCached = async (request:RequestInfo | URL) => (await globalThis.caches?.open(env.cacheKey))?.match(request)
+let cachedModelOnly = false
+const fetchPinned = createPinnedModelFetch(async (request,init) => {
+  if (cachedModelOnly) return await readCached(request) ?? new Response(null,{status:404})
+  return upstreamFetch(request,init)
+}, {
   onProgress: (message,details) => report(message,details),
-  readCache: async request => (await globalThis.caches?.open(env.cacheKey))?.match(request),
+  readCache: readCached,
 })
-env.fetch = withSearchHead(fetchPinned, async url => (await globalThis.caches?.open(env.cacheKey))?.match(url))
+env.fetch = withSearchHead(fetchPinned, readCached)
 // ONNX Runtime initializes once per worker. The client replaces the worker when the backend changes.
 let runtimePromise: Promise<Uint8Array<ArrayBuffer>>
 async function ensureRuntime(device: 'wasm' | 'webgpu') {
@@ -36,9 +42,10 @@ export async function disposeModel() {
   tokenizer = model = info = undefined; loadedKey = ''
   await previous?.dispose()
 }
-export async function loadModel(id: string, requested: string, progress: ProgressHandler = () => {}): Promise<FeedModelInfo> {
+export async function loadModel(id: string, requested: string, progress: ProgressHandler = () => {}, cacheOnly=false): Promise<FeedModelInfo> {
   validateModel(id, requested)
   report = progress
+  cachedModelOnly = cacheOnly
   const key = `${id}:${requested}`
   if (info && loadedKey === key) return { ...info, loadMilliseconds: 0 }
   await disposeModel()

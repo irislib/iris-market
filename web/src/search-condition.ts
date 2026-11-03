@@ -49,15 +49,17 @@ export function listingSearchEvidence(listing,query:string,model='deberta') {
 }
 
 export async function scoreSearchListing(listing,query:string,model:string,
-  classify:(condition:string,text:string)=>Promise<{score:number;cached?:boolean}>,signal?:AbortSignal) {
+  classify:(condition:string,text:string)=>Promise<{score:number;cached?:boolean}>,signal?:AbortSignal,minimumScore=0) {
   const evidence=listingSearchEvidence(listing,query,model);
   let product=1,cached=true;
-  for(const {condition,text} of evidence){
+  for(const [index,{condition,text}] of evidence.entries()){
     signal?.throwIfAborted();
     const result=await classify(condition,text);
     if(!Number.isFinite(result.score)||result.score<0||result.score>1)throw Error('The model returned an invalid decision');
     product*=result.score;
     cached&&=!!result.cached;
+    // The second score is at most 1. Even that cannot rescue this listing.
+    if(index===0&&evidence.length===2&&Math.sqrt(product)<minimumScore)return {score:null,cached};
   }
   return {score:evidence.length===1?product:Math.sqrt(product),cached};
 }

@@ -33,6 +33,13 @@ test('a new search suppresses an older load error while results are pending',t=>
   assert.equal(status.textContent,'');
   assert.equal(button.textContent,'Loading…');
 });
+test('an unfinished literal search owns the empty state until a reply confirms the result',t=>{
+  const remote={hasMore:true,loading:true,error:'Older history timed out',emptyPending:'Searching listings…',emptyError:'Search incomplete.'};
+  const {status,button,view}=streamingGrid(t,async()=>{},()=>remote);
+  view.update([],'anime');assert.equal(view.ownsEmptyState(),true);assert.equal(status.textContent,'Searching listings…');
+  remote.loading=false;view.update([],'anime');assert.equal(view.ownsEmptyState(),true);assert.equal(status.textContent,'Search incomplete.');assert.equal(button.textContent,'Try again');
+  remote.error='';remote.hasMore=false;view.update([],'anime');assert.equal(view.ownsEmptyState(),false);
+});
 test('the next window displays every arriving match before loading finishes',async t=>{
   let finish,requests=0;
   const {grid,button,view}=streamingGrid(t,()=>{requests++;return new Promise(resolve=>{finish=resolve;});});

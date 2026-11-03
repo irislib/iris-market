@@ -262,3 +262,14 @@ test('late phrase filters get a connected relay even when their round-robin rela
  assert(selected.history.has(connected));assert.equal(selected.history.size,2);
  assert.equal(feed.queryPlans.find(p=>p.search===q),original);assert.equal(feed.queryRequestBudget,budget);
 });
+
+test('a literal search can fetch signed topic results after the general inventory fills',async()=>{
+  const anime=signed('anime','Anime art book',['anime']);
+  const feed=new MarketRelayClient({relays:[],now:()=>now,maxRecords:1,browseDiscovery:true,indexSearch:true,
+    indexQuery:async filters=>({events:filters[0].search==='anime'?[anime]:[],complete:true})}).start();
+  try{
+    feed.acceptListing(feed.parseIncoming(fixtures[0]));
+    feed.searchTags('anime',[],'literal');await feed.loadQueryCandidates();
+    assert(feed.listings().some(item=>item.identifier==='anime'));
+  }finally{feed.close()}
+});

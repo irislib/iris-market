@@ -169,7 +169,7 @@ const orderSearch=currentRoute.type==='search'&&matchesLiteralSearch('bitcoin bt
 const orderState=bitcoinOrders.state(),notice=$('order-status');
 notice.hidden=!orderSearch||orders.some(l=>l.side===side)||orderState==='ready'||preview;
 $('order-status-text').textContent=orderState==='unavailable'?'Bitcoin order relays are unavailable.':orderState==='delayed'?'Waiting for Bitcoin order relays…':'Looking for Bitcoin orders…';
-$('order-retry').hidden=orderState!=='unavailable'&&orderState!=='delayed';$('empty').hidden=result.length!==0||!notice.hidden||!!aiFilter?.searching?.()||shippingBusy;const noBuyRequests=!savedOnly&&side==='request'&&!aiCandidates.length;$('empty-title').textContent=noBuyRequests?'No buy requests found':savedOnly?'No saved listings':aiFilter?.homeActive()?'No matches yet':query||place||shipsTo||side!=='offer'||feedNetwork||feedTags.length?'No matches':'No listings yet';$('empty-description').textContent=noBuyRequests?(query||place||shipsTo||feedNetwork||feedTags.length||photoFilter===true?'Try clearing your filters.':'Requests appear here when someone posts what they want to buy.'):savedOnly?'Tap a heart to save a listing.':aiFilter?.homeActive()?'Change your home preferences in Filters, or choose Show all.':query||place||shipsTo||side!=='offer'||feedNetwork||feedTags.length?'Try another search or clear your filters.':'Refresh to check for new listings.';$('clear-filters').hidden=!(query||place||shipsTo||side!=='offer'||feedNetwork||feedTags.length);$('browse-tab').classList.toggle('active',currentRoute.type==='home'||currentRoute.type==='search');$('saved-tab').classList.toggle('active',currentRoute.type==='saved');aiFilter?.refresh();}
+$('order-retry').hidden=orderState!=='unavailable'&&orderState!=='delayed';$('empty').hidden=result.length!==0||gridUI.ownsEmptyState()||!notice.hidden||!!aiFilter?.searching?.()||shippingBusy;const noBuyRequests=!savedOnly&&side==='request'&&!aiCandidates.length;$('empty-title').textContent=noBuyRequests?'No buy requests found':savedOnly?'No saved listings':aiFilter?.homeActive()?'No matches yet':query||place||shipsTo||side!=='offer'||feedNetwork||feedTags.length?(query&&client?.pagination().hasMore?'No matches so far':'No matches'):'No listings yet';$('empty-description').textContent=noBuyRequests?(query||place||shipsTo||feedNetwork||feedTags.length||photoFilter===true?'Try clearing your filters.':'Requests appear here when someone posts what they want to buy.'):savedOnly?'Tap a heart to save a listing.':aiFilter?.homeActive()?'Change your home preferences in Filters, or choose Show all.':query||place||shipsTo||side!=='offer'||feedNetwork||feedTags.length?'Try another search or clear your filters.':'Refresh to check for new listings.';$('clear-filters').hidden=!(query||place||shipsTo||side!=='offer'||feedNetwork||feedTags.length);$('browse-tab').classList.toggle('active',currentRoute.type==='home'||currentRoute.type==='search');$('saved-tab').classList.toggle('active',currentRoute.type==='saved');aiFilter?.refresh();}
 const escrowTrade=setupEscrowTrade({account:()=>accountUI,wallet:()=>walletUI,isPreview:()=>preview,lookup:async (id,latest)=>{
   const known=client?.records.get(id)??detailClient?.records.get(id)??listings.find(l=>l.id===id);
   if(known&&!latest)return known;
@@ -290,8 +290,22 @@ async function loadGraph(){
 const curatedGrid=()=>aiFilter?.enabled()&&(aiFilter.query()||aiFilter.homeActive())&&!aiFilter.showingAll();
 const gridUI=setupListingGrid({grid:$('listings'),controls:$('grid-pagination'),button:$('load-more'),status:$('grid-progress'),makeCard:card,
   cardKey:l=>JSON.stringify([l.eventId||l.id,priceFor(l).primary,saved.has(l.id),hiddenListings.has(l.id),graphContext?.relationFor(l.author),readImageSettings()]),
-  olderState:()=>{const remote=preview||savedOnly?{hasMore:false}:client?.pagination?.()||{hasMore:false};return curatedGrid()?aiFilter.pagination(remote.hasMore):remote;},
-  loadOlder:async()=>{try{if(curatedGrid()){await aiFilter.loadMore();}else await client?.loadOlder?.();}catch{}render()}});
+  olderState:()=>{
+    if(preview||savedOnly||!client)return {hasMore:false};
+    const general=client.pagination();
+    if(curatedGrid())return aiFilter.pagination(general.hasMore);
+    if(currentRoute.type!=='search'||!client.queryText)return general;
+    const targeted=client.queryPagination();
+    return {hasMore:targeted.hasMore||general.hasMore,loading:targeted.loading||general.loading,
+      error:targeted.answered?'':targeted.error||general.error,emptyError:'Search incomplete. Some listing sources didn’t finish.',emptyPending:'Searching listings…'};
+  },
+  loadOlder:async()=>{
+    try {
+      if(curatedGrid())await aiFilter.loadMore();
+      else if(currentRoute.type==='search'&&client?.queryText)await client.loadMoreSearchResults();
+      else await client?.loadOlder();
+    }catch{/* The feed keeps its retry state. */}finally{render()}
+  }});
 refreshHiddenCount();$('restore-hidden').onclick=()=>{try{hiddenListings.clear();refreshHiddenCount();render();refreshProfileListings();toast('Listings restored');}catch{toast('Could not save this preference.');}};
 const imageSettings=readImageSettings();$('image-proxy-enabled').checked=imageSettings.useProxy;$('image-proxy-url').value=imageSettings.url;
 $('image-settings-form').onsubmit=e=>{e.preventDefault();try{saveImageSettings({...readImageSettings(),useProxy:$('image-proxy-enabled').checked,url:$('image-proxy-url').value});$('image-settings-error').textContent='';refreshPeople();render();if(focusedListing)openDetail(focusedListing,false);toast('Image settings saved')}catch(error){$('image-settings-error').textContent=error.message}};

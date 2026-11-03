@@ -34,6 +34,7 @@ export function setupListingGrid({grid, controls, button, status, makeCard, card
     return below < 0 ? grid.children.length : below;
   }
   const pagination = () => olderState?.() || {hasMore:false};
+  let ownsEmptyState = false;
   function paint() {
     if (disposed) return;
     const shown = windowed.update(items, viewKey, mixSellers), next = new Map();
@@ -48,12 +49,13 @@ export function setupListingGrid({grid, controls, button, status, makeCard, card
     rendered = next;
     const remote = pagination(), localMore = shown.length < items.length;
     const hasMore = localMore || remote.hasMore;
-    controls.hidden = !visible || !hasMore && !loading && !remote.error && !shown.length;
+    controls.hidden = !visible || !hasMore && !loading && !remote.loading && !remote.error && !shown.length;
     button.hidden = !hasMore && !remote.error;
     button.disabled = loading || Boolean(remote.loading);
+    ownsEmptyState = !shown.length && Boolean(remote.loading || remote.error);
     const emptyFailure = Boolean(remote.error) && !shown.length && !loading && !remote.loading;
     button.textContent = loading || remote.loading ? 'Loading…' : emptyFailure ? 'Try again' : 'Load more';
-    status.textContent = shown.length ? `${shown.length} ${shown.length===1?'listing':'listings'} shown` : emptyFailure ? 'Could not load listings.' : '';
+    status.textContent = shown.length ? `${shown.length} ${shown.length===1?'listing':'listings'} shown` : emptyFailure ? remote.emptyError || 'Could not load listings.' : (loading || remote.loading) ? remote.emptyPending || '' : '';
     grid.setAttribute('aria-busy', String(loading || Boolean(remote.loading)));
     // Two automatic batches, then explicit loading keeps the footer reachable.
     observer?.unobserve(controls);
@@ -89,6 +91,7 @@ export function setupListingGrid({grid, controls, button, status, makeCard, card
       if (mix && scrolled && visible) windowed.pin(browsedCount());
       items=next;viewKey=key;mixSellers=mix;paint();
     },
+    ownsEmptyState: () => ownsEmptyState,
     pin() { windowed.pin(browsedCount()); },
     setVisible(value) { visible = value; paint(); },
     reset() {loadGeneration++; loading = false; automatic = 0; scrolled = false; windowed.reset(); },

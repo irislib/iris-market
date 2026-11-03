@@ -71,7 +71,7 @@ export function setupAI({ getCandidates, getOrderCount=()=>0, onChange, onTextSe
     $('search-mode').textContent=active?'Disable local AI':'Enable local AI';
     progress.hidden=!preparing||downloadFraction===undefined;
     if(active&&!busy&&!$('ai-error').textContent){
-      $('ai-progress').textContent = needsCPU() ? 'Qwen is unavailable in this browser. Use the smaller CPU model.' : submittedQuery&&!candidates.length&&!sourceError ? 'Refresh listings or clear filters to search.' : '';
+      $('ai-progress').textContent = needsCPU() ? 'Qwen is unavailable in this browser. Use the smaller CPU model.' : '';
     }
     $('ai-progress').hidden=busy||!$('ai-progress').textContent;
     $('ai-options').hidden=!active||($('ai-progress').hidden&&!$('ai-error').textContent);

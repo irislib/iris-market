@@ -187,11 +187,11 @@ export interface MarketFilter {
 }
 export interface MarketPagination { loading: boolean; exhausted: boolean; limited: boolean; hasMore: boolean; error: string; added: number; records: number }
 export interface MarketStatus { state: 'closed' | 'empty' | 'live' | 'connecting' | 'offline'; connected: number; total: number; message: string }
-interface RelayHistory { initialOldest: number | null; cursor: number | null; started: boolean; exhausted: boolean; limited: boolean; requests: number; rankedLimit?:number; pager?: HistoryCursor }
+interface RelayHistory { initialOldest: number | null; cursor: number | null; started: boolean; exhausted: boolean; limited: boolean; requests: number; answered?:boolean; rankedLimit?:number; pager?: HistoryCursor }
 interface HistoryPage { error?: string; limited?: boolean; count?: number; oldest?: number | null }
 interface HistoryOptions {bitcoin?:boolean;search?:string; tags?:readonly string[];signal?:AbortSignal;pageSize?:number;maxRequests?:number;rounds?:number;timeoutMs?:number;budget?:{bytes:number;max:number};requestBudget?:{count:number;max:number};observe?:(event:NostrVerifiedEvent)=>void }
 interface QueryTagPlan {search?:string;tags:readonly string[];history:Map<string,RelayHistory>;indexHistory:RelayHistory}
-export interface QueryCandidates {loading:boolean;added:number;hasMore:boolean;error:string;limited:boolean}
+export interface QueryCandidates {answered:boolean;loading:boolean;added:number;hasMore:boolean;error:string;limited:boolean}
 interface RelayConnection {
   url: string; attempt: number; socket: WebSocket | null; failed: boolean; ready: boolean; subscription: string
   initialOldest?: number | null
@@ -472,15 +472,23 @@ export class MarketRelayClient {
   private get inventoryFull(){return this.records.size>=this.inventoryCapacity+this.mapOverflow+this.buyingOverflow}
   get mapDiscoveryLimited(){return this.inventoryFull&&(!this.browseDiscovery||this.mapOverflow>=MAP_RECORD_RESERVE)}
   openSearchPage(){
-    if(this.browseDiscovery&&this.queryText&&this.queryExpansion==='expanded'&&this.inventoryFull)
+    if(this.browseDiscovery&&this.queryText&&this.inventoryFull)
       this.inventoryCapacity=Math.min(SEARCH_RECORD_LIMIT,this.inventoryCapacity+HISTORY_PAGE_SIZE)
+  }
+
+  loadMoreSearchResults() {
+    this.openSearchPage()
+    const current = this.queryPagination()
+    // Retry keyword sources as well as tags, including sources which timed out on the first pass.
+    if (!current.loading && (current.error || this.pageError)) this.applyQueryTags(this.queryTags,true)
+    return Promise.all([this.loadQueryCandidates(),this.loadOlder()])
   }
 
   queryPagination():QueryCandidates {
     const histories=this.queryPlans.flatMap(plan=>[...plan.history.values(),plan.indexHistory])
     const full=this.inventoryFull||this.queryBudget.bytes>=this.queryBudget.max||this.queryRequestBudget.count>=this.queryRequestBudget.max
     const limited=full||histories.some(item=>item.limited)
-    return{loading:!!this.queryPromise,added:this.queryAdded,error:this.queryError,limited,
+    return{answered:histories.some(item=>item.answered),loading:!!this.queryPromise,added:this.queryAdded,error:this.queryError,limited,
       hasMore:!!this.queryPlans.length&&this.hasInventoryQuery&&!full&&histories.some(item=>!item.exhausted&&!item.limited)}
   }
 
@@ -542,6 +550,7 @@ export class MarketRelayClient {
           seen.add(listing.eventId);oldest=Math.min(oldest??listing.createdAt,listing.createdAt);count++;this.acceptListing(listing)
         }catch{/* Invalid index records are not candidates. */}
       }
+      if(count)history.answered=true;
       if(search){this.finishRankedPage(history,limit,count);return{}}
       if(oldest!==null&&oldest<until)history.cursor=oldest
       else if(count>=limit){history.limited=true;return{limited:true}}
@@ -876,6 +885,7 @@ export class MarketRelayClient {
     options.requestBudget.count++;history.started=true;history.requests++
     const limit=history.rankedLimit??80
     const page=await this.readHistory(url,this.now(),limit,{...options,search,tags:[]})
+    if(!options.signal.aborted&&!page.error&&!page.limited)history.answered=true
     if(!options.signal.aborted&&!page.limited)this.finishRankedPage(history,limit,page.count??0)
     return page.limited?{limited:true}:{}
   }
@@ -910,6 +920,7 @@ export class MarketRelayClient {
       })
       const outcome = pager.finishPage(request.token, page.error || page.limited ? 'partial' : 'complete')
       if (page.error || page.limited) return page
+      history.answered=true
       if (outcome.status === 'exhausted') { history.exhausted = true; return {} }
       if (outcome.status === 'limited') { history.limited = true; return {limited:true} }
       if (outcome.oldest !== undefined && outcome.oldest < until) { history.cursor = outcome.oldest; return {} }

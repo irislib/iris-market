@@ -7,14 +7,15 @@
     "node": ">=22.18"
   },
   "scripts": {
-    "build": "npm run check && node scripts/build.mjs",
+    "build": "npm run check && vite build && vite build --mode downloads",
     "test": "node --test tests/*.test.js",
-    "dev": "node scripts/serve.mjs",
+    "dev": "vite",
     "demo:transport": "node scripts/demo/server.ts",
     "demo:public": "node scripts/demo/public-server.ts",
     "demo:public-service": "node scripts/demo/service.ts --public",
     "demo:service": "node scripts/demo/service.ts",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "preview": "node scripts/serve.mjs"
   },
   "dependencies": {
     "@cashu/cashu-ts": "4.13.0",
@@ -40,6 +41,7 @@
   "devDependencies": {
     "esbuild": "0.25.12",
     "typescript": "5.9.3",
+    "vite": "7.3.7",
     "wrangler": "4.154.0"
   },
   "overrides": {

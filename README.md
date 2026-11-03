@@ -75,7 +75,7 @@ Use `--app` to select the native app instead of the CLI archive. `--current-vers
 
 ### Browser and download page
 
-Requires Node.js 22 or newer; the tested version is pinned in `.nvmrc` (26.12.0). `web/package-lock.json` pins the browser, build and deployment dependencies. The browser and download page build together:
+Requires Node.js 22 or newer; the tested version is pinned in `.nvmrc` (26.12.0). `web/package-lock.json` pins the browser, build and deployment dependencies. Vite serves the TypeScript marketplace and downloads page during development. The production build type-checks both and writes their static bundles.
 
 ```sh
 cd web
@@ -85,7 +85,7 @@ npm run build
 npm run dev
 ```
 
-The development server stays running at `http://127.0.0.1:4173`; rebuild after source changes and reload to see them. It disables its own service worker so development reloads cannot get stuck on an older offline bundle. Set `MARKET_PWA_TEST=1` on a separate port to test the production offline lifecycle. On the local browser, add `?preview=1` for sample listings without relay connections. To serve the download page instead, run `MARKET_SITE=downloads PORT=4174 npm run dev`. The build writes `web/dist` and `site/dist`; it also packages the native map shell, MapLibre workers, local AI worker, compressed WASM runtime and third-party notices. It includes no model weights or map archive. All npm inputs, including Hashtree and social-graph release tarballs, have integrity hashes in the lockfile. The build verifies the exact unpacked ONNX runtime hash before compression.
+Run `npm run dev` to open the Vite development server at `http://127.0.0.1:4173`. It serves TypeScript directly, reloads source changes, and disables offline caching. After a production build, run `MARKET_PWA_TEST=1 PORT=4175 npm run preview` to test the built app and its offline lifecycle. On the local browser, add `?preview=1` for sample listings without relay connections. To serve the download page instead, run `MARKET_SITE=downloads PORT=4174 npm run dev`. The build writes `web/dist` and `site/dist`; it also packages the native map shell, MapLibre workers, local AI worker, compressed WASM runtime and third-party notices. It includes no model weights or map archive. All npm inputs, including Hashtree and social-graph release tarballs, have integrity hashes in the lockfile. The build verifies the exact unpacked ONNX runtime hash before compression.
 
 The checked-in Cloudflare configurations target the domains above. With an authorised hosting account, deploy the built assets from `web` with the lockfile-installed Wrangler binary:
 

@@ -1,17 +1,10 @@
 import {build} from 'esbuild'
-import {copyFile,readFile,writeFile} from 'node:fs/promises'
-import {resolve,relative,sep} from 'node:path'
+import {readFile,writeFile} from 'node:fs/promises'
+import {resolve} from 'node:path'
 import {createHash} from 'node:crypto'
 
 /** Add only outputs of this exact build, never stale directory contents. */
-export async function buildPwa({root,dest,results}) {
-  const pwaFiles=['manifest.webmanifest',...['180','192','512','1024'].map(size=>`pwa-icon-${size}.png`)]
-  for(const file of pwaFiles)await copyFile(resolve(root,file),resolve(dest,file))
-  const paths=new Set(['index.html','styles.css','profiles.css','account.css','wallet.css','orders.css','notifications.css','maplibre-gl.css','theme-init.js','icon.svg','social-graph.bin',...pwaFiles,'maplibre-gl-worker.mjs','maplibre-gl-shared.mjs'])
-  for(const result of results)for(const output of Object.keys(result.metafile.outputs)){
-    const path=relative(dest,resolve(root,output)).split(sep).join('/')
-    if(!path.startsWith('../')&&!path.endsWith('.map'))paths.add(path)
-  }
+export async function buildPwa({root,dest,paths}) {
   const digest=bytes=>createHash('sha256').update(bytes).digest('hex'),assets=[]
   for(const path of [...paths].sort()){
     const bytes=await readFile(resolve(dest,path));assets.push({path,bytes:bytes.length,sha256:digest(bytes)})

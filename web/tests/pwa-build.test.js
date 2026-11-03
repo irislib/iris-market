@@ -9,14 +9,14 @@ import {buildPwa} from '../scripts/pwa-build.mjs'
 test('release builder includes current hashed chunks only and changes revision with release bytes',async()=>{
   const root=resolve(import.meta.dirname,'..'),dest=await mkdtemp(join(tmpdir(),'market-pwa-test-'))
   try{
-    for(const name of ['index.html','styles.css','profiles.css','account.css','wallet.css','orders.css','notifications.css','maplibre-gl.css','theme-init.js','icon.svg','social-graph.bin','maplibre-gl-worker.mjs','maplibre-gl-shared.mjs'])await writeFile(join(dest,name),name==='index.html'?'<!doctype html><title>Market</title>':'asset')
+    await writeFile(join(dest,'index.html'),'<!doctype html><title>Market</title>')
     await mkdir(join(dest,'chunks'))
     await writeFile(join(dest,'app.js'),'import "./chunks/current.js"')
     await writeFile(join(dest,'chunks/current.js'),'export const current=true')
     await writeFile(join(dest,'chunks/stale.js'),'old release')
     await writeFile(join(dest,'private-response.json'),'private')
-    const results=[{metafile:{outputs:{[join(dest,'app.js')]:{},[join(dest,'chunks/current.js')]:{}}}}]
-    const first=await buildPwa({root,dest,results}),same=await buildPwa({root,dest,results})
+    const paths=['index.html','app.js','chunks/current.js']
+    const first=await buildPwa({root,dest,paths}),same=await buildPwa({root,dest,paths})
     assert.equal(first.revision,same.revision);assert(first.bytes<24*1024*1024);assert(first.assets<=256)
     const sw=await readFile(join(dest,'sw.js'),'utf8')
     assert(sw.includes('chunks/current.js'));assert(!sw.includes('chunks/stale.js'));assert(!sw.includes('private-response.json'))
@@ -31,6 +31,6 @@ test('release builder includes current hashed chunks only and changes revision w
     handlers.get('fetch')({request:{url:'https://market.example/mount/settings/profile',mode:'navigate',method:'GET'},respondWith:promise=>{response=promise}})
     assert.match(await(await response).text(),/<title>Market/)
     await writeFile(join(dest,'chunks/current.js'),'export const current="updated"')
-    const changed=await buildPwa({root,dest,results});assert.notEqual(changed.revision,first.revision)
+    const changed=await buildPwa({root,dest,paths});assert.notEqual(changed.revision,first.revision)
   }finally{await rm(dest,{recursive:true,force:true})}
 })

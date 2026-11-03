@@ -1,6 +1,15 @@
-// Generate labeled model inputs with the same text projection used in the web app.
+// Reproduce the original marketplace-head training inputs. Topic approval in the app
+// now uses separate, corroborating evidence after the classifier has been trained.
 import {readFileSync} from 'node:fs';
-import {searchCondition,listingSearchTexts} from '../src/search-condition.ts';
+import {searchCondition,listingSearchText,isTopicSearch} from '../src/search-condition.ts';
+function listingSearchTexts(listing,query) {
+  if(!isTopicSearch(query))return [listingSearchText(listing)];
+  const title=String(listing.title??'').slice(0,500);
+  const tags=(listing.tags||[listing.category]).filter(value=>typeof value==='string').slice(0,16).join(', ');
+  const overview=`${title}\nCategories: ${tags}\n${String(listing.description??'').slice(0,650)}`.slice(0,2000);
+  return [...new Set([title,overview].filter(Boolean))];
+}
+
 const rows=[
 ['meat','Grass-fed beef steaks','Boneless pork chops','Steak knife set','Wooden desk'],
 ['furniture','Oak dining table','Leather sofa','Furniture polish spray','Fresh strawberries'],

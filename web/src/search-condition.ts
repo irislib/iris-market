@@ -1,3 +1,5 @@
+import {matchesSingleTermSearch} from './lexical-search.ts';
+
 // A bare word is a topic; longer searches retain the user's full intent.
 export const isTopicSearch = value => /^[\p{L}\p{N}_-]+$/u.test(String(value ?? '').trim());
 export function searchCondition(value,model='deberta') {
@@ -21,12 +23,41 @@ export function listingSearchText(listing) {
   const description=String(listing.description??'').trim().slice(0,Math.max(0,2000-fixed.length-1));
   return [heading,description,...metadata].filter(Boolean).join('\n').slice(0,2000);
 }
-/** Short topic evidence keeps marketing copy from drowning out the actual item.
- * Compound requests always retain the full description, price and location. */
-export function listingSearchTexts(listing,query,model='deberta') {
-  if(model!=='deberta'||!isTopicSearch(query))return [listingSearchText(listing)];
-  const title=String(listing.title??'').slice(0,500);
-  const tags=(listing.tags||[listing.category]).filter(value=>typeof value==='string').slice(0,16).join(', ');
-  const overview=`${title}\nCategories: ${tags}\n${String(listing.description??'').slice(0,650)}`.slice(0,2000);
-  return [...new Set([title,overview].filter(Boolean))];
+
+/** A short title can entail an unrelated topic on its own, especially when
+ * the model doesn't understand the language. Corroborate product identity
+ * against what the listing actually offers or requests. */
+export function listingSearchEvidence(listing,query:string,model='deberta') {
+  const topic=query.trim().slice(0,500);
+  if(model!=='deberta'||!isTopicSearch(topic))
+    return [{condition:searchCondition(topic,model),text:listingSearchText(listing)}];
+
+  const title=String(listing.title??'').trim().slice(0,500);
+  const description=String(listing.description??'').trim().slice(0,350);
+  const tags=(listing.tags?.length?listing.tags:[listing.category])
+    .filter(tag=>typeof tag==='string'&&tag.trim()).slice(0,16).map(tag=>tag.trim().slice(0,60));
+  const category=tags.length?` Category: ${tags.join(', ')}.`:'';
+  const wanted=listing.side==='request';
+  const heading=`${wanted?'Item wanted':'Item for sale'}: ${title||description}.`;
+  const identity=tags.some(tag=>matchesSingleTermSearch(tag,topic))
+    ?`The item being ${wanted?'requested':'offered'} is ${topic}.`:`This item is ${topic}.`;
+  return [
+    {condition:identity,text:heading+category},
+    {condition:`This listing ${wanted?'requests':'offers'} ${topic}.`,
+      text:heading+(title&&description?' '+description:'')+category},
+  ];
+}
+
+export async function scoreSearchListing(listing,query:string,model:string,
+  classify:(condition:string,text:string)=>Promise<{score:number;cached?:boolean}>,signal?:AbortSignal) {
+  const evidence=listingSearchEvidence(listing,query,model);
+  let product=1,cached=true;
+  for(const {condition,text} of evidence){
+    signal?.throwIfAborted();
+    const result=await classify(condition,text);
+    if(!Number.isFinite(result.score)||result.score<0||result.score>1)throw Error('The model returned an invalid decision');
+    product*=result.score;
+    cached&&=!!result.cached;
+  }
+  return {score:evidence.length===1?product:Math.sqrt(product),cached};
 }

@@ -2,7 +2,7 @@ import { byId, element } from './dom.ts';
 import { FeedFilterClient } from './feed-filter/client.ts';
 import {BrowserFeedFilterClient} from './feed-filter/browser-client.ts';
 import {planBrowserTags} from './feed-filter/browser-tags.ts';
-import { searchCondition, listingSearchText, listingSearchTexts } from './search-condition.ts';
+import { listingSearchText, scoreSearchListing } from './search-condition.ts';
 import {homeFeedConditions,homeFeedPreferences,type HomeFeedPreferences} from './home-feed.ts';
 const $=byId;
 const keyFor = listing => listing.eventId || listing.id;
@@ -179,7 +179,7 @@ export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetch
       const model=$('ai-model').value;
       const searchHead=!homeRun&&'selectSearchHead' in selected&&!!(await selected.selectSearchHead?.(query,controller.signal));
       if(current!==generation)return;
-      const conditions=homeRun?homeFeedConditions(home.prompt,model):[{condition:searchCondition(query,model),exclude:false}];
+      const conditions=homeRun?homeFeedConditions(home.prompt,model):[];
       let sourceRequests=0,unpainted=0,painted=false,lastPaint=performance.now();
       phase='searching';refresh();
       let reviewRows:SearchListing[]|undefined,position=0,visibleMatches=0,lastThreshold=threshold();
@@ -223,18 +223,20 @@ export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetch
         }
         if(waitingCandidates){waitingCandidates=false;refresh();}
         $('ai-progress').textContent = homeRun?'Choosing listings…':'Searching…';
-        let score=0;
-        for(const text of homeRun?[listingSearchText(item)]:listingSearchTexts(item,query,$('ai-model').value)){
-          let evidence=1;
+        const classify=(condition:string,text:string)=>selected.classify(condition,text,{eventId:item.eventId,signal:controller.signal,searchHead});
+        let score=1;
+        if(homeRun){
+          const text=listingSearchText(item);
           for(const {condition,exclude} of conditions){
-            const result=await selected.classify(condition,text,{eventId:item.eventId,signal:controller.signal,searchHead});
+            const result=await classify(condition,text);
             if(current!==generation)return;
             if(!Number.isFinite(result.score))throw new Error('The model returned an invalid decision');
-            evidence=Math.min(evidence,exclude?1-result.score:result.score);
-            if(evidence<threshold())break;
+            score=Math.min(score,exclude?1-result.score:result.score);
+            if(score<threshold())break;
           }
-          score=Math.max(score,evidence);
-          if(score>=threshold())break;
+        }else{
+          ({score}=await scoreSearchListing(item,query,model,classify,controller.signal));
+          if(current!==generation)return;
         }
         scores.set(keyFor(item),score);position++;unpainted++;
         if(score>=threshold()){visibleMatches++;sourceRequests=0;}
@@ -306,13 +308,8 @@ export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetch
       testOwnsLoad=false;$('ai-test-progress').hidden=true;$('ai-test-status').textContent='Testing example…';
       const searchHead='selectSearchHead' in selected&&!!(await selected.selectSearchHead?.(query,controller.signal));
       if(!current())return;
-      let score=0,cached=true;
-      for(const text of listingSearchTexts({title,description,side:'offer'},query,model)){
-        const result=await selected.classify(searchCondition(query,model),text,{signal:controller.signal,searchHead});
-        if(!current())return;
-        if(!Number.isFinite(result.score)||result.score<0||result.score>1)throw Error('The model returned an invalid decision.');
-        cached&&=!!result.cached;score=Math.max(score,result.score);if(score>=cutoff)break;
-      }
+      const {score,cached}=await scoreSearchListing({title,description,side:'offer'},query,model,
+        (condition,text)=>selected.classify(condition,text,{signal:controller.signal,searchHead}),controller.signal);
       if(!current())return;
       const label=model==='browser'?'Browser model':model==='deberta'?'DeBERTa':model==='qwen35'?'Qwen 3.5':selected.info.model;
       $('ai-test-status').textContent=`${score>=cutoff?'Match':'No match'} · ${label} · ${Math.round(performance.now()-started)} ms${cached?' · cached':''}`;

@@ -42,7 +42,7 @@ test('AI can reject direct title, description, category and tag candidates',asyn
     {id:'location',title:'Item',location:'Bicycle'},
     {id:'substring',title:'Bicycles'},
   ];
-  let finish;const client={info:null,load(){return new Promise(resolve=>finish=()=>{this.info={model:'deberta'};resolve(this.info);});},async classify(_query,text){return{score:text==='City bike'?.9:.05};},dispose(){this.info=null;}};
+  let finish;const client={info:null,load(){return new Promise(resolve=>finish=()=>{this.info={model:'deberta'};resolve(this.info);});},async classify(_query,text){return{score:text.includes('City bike')?.9:.05};},dispose(){this.info=null;}};
   const {field,ui}=fixture({rows,query:'bicycle',client});const run=field('search-run').onclick();
   assert.deepEqual(rows.filter(ui.isVisible).map(row=>row.id),[]);
   assert.equal(ui.pagination().matches,0);assert.equal(ui.scoreFor(rows[0]),undefined);
@@ -134,9 +134,9 @@ test('direct candidates require bounded AI review and keep their real scores',as
   const rows=Array.from({length:53},(_,i)=>({...bicycle,id:`direct-${i}`}));let classified=0;
   const client={info:{model:'deberta'},async load(){},async classify(){classified++;return{score:.8};},dispose(){this.info=null;}};
   const {field,ui}=fixture({rows,query:'bicycle',client});await field('search-run').onclick();
-  assert.equal(rows.filter(ui.isVisible).length,24);assert.equal(classified,24);assert.equal(ui.pagination().reviewed,24);
-  await ui.loadMore();assert.equal(classified,48);assert.equal(ui.scoreFor(rows[47]),.8);
-  await ui.loadMore();assert.equal(classified,53);assert.equal(ui.pagination().hasMore,false);
+  assert.equal(rows.filter(ui.isVisible).length,24);assert.equal(classified,48);assert.equal(ui.pagination().reviewed,24);
+  await ui.loadMore();assert.equal(classified,96);assert.equal(ui.scoreFor(rows[47]),.8);
+  await ui.loadMore();assert.equal(classified,106);assert.equal(ui.pagination().hasMore,false);
 });
 
 test('empty AI search explicitly loads the model without classifying any listing',async()=>{
@@ -161,7 +161,7 @@ test('no candidates allows explicit preload, then becomes searchable when listin
   await field('search-run').onclick();assert.equal(calls.filter(call=>call[0]==='classify').length,0);
   assert.equal(field('search-run').disabled,false);assert.doesNotMatch(field('ai-progress').textContent,/ready/i);
   setRows([bicycle]);assert.equal(field('search-run').disabled,false);assert.equal(field('search-run').textContent,'Search');
-  await field('search-run').onclick();assert.equal(calls.filter(call=>call[0]==='load').length,1);assert.equal(calls.filter(call=>call[0]==='classify').length,1);
+  await field('search-run').onclick();assert.equal(calls.filter(call=>call[0]==='load').length,1);assert.equal(calls.filter(call=>call[0]==='classify').length,2);
 });
 
 test('unsupported WebGPU offers an explicit CPU model choice before downloading',async()=>{
@@ -217,7 +217,7 @@ test('typing during preload preserves download and searches latest text after co
   report('Downloading DeBERTa · 4 / 8 MB · 50%',{loaded:4000000,total:8000000});assert.equal(progress.value,.5);assert.equal(progress.hidden,false);
   field('search').value='chair';field('search').dispatchEvent(new Event('input'));field('search').value='bicycle';field('search').dispatchEvent(new Event('input'));
   assert.equal(disposed,0);assert.equal(ui.query(),'');complete();await run;
-  assert.equal(conditions.length,1);assert.match(conditions[0],/bicycle/);assert.doesNotMatch(conditions[0],/chair/);assert.equal(ui.query(),'bicycle');assert.equal(progress.hidden,true);assert.doesNotMatch(field('ai-progress').textContent,/ready/i);
+  assert.equal(conditions.length,2);assert(conditions.every(condition=>condition.includes('bicycle')));assert.doesNotMatch(conditions[0],/chair/);assert.equal(ui.query(),'bicycle');assert.equal(progress.hidden,true);assert.doesNotMatch(field('ai-progress').textContent,/ready/i);
 });
 
 test('explicit Stop cancels an empty-query download without a false error',async()=>{
@@ -293,7 +293,7 @@ test('Stop settles a source wait immediately and its late failure cannot change 
   field('ai-stop').onclick();await until(()=>stopped);
   assert.equal(field('ai-summary-text').textContent,'Search paused · 0 matches · 0 checked');
   field('search').value='chair';const next=field('search-run').onclick();
-  setRows([{...bicycle,id:'chair',title:'Chair'}]);await until(()=>texts.length===1);
+  setRows([{...bicycle,id:'chair',title:'Chair'}]);await until(()=>texts.length>=1);
   assert.match(texts[0],/chair/);assert.equal(fetches,1,'a new query shares the outstanding source operation');
   source.reject(Error('Old relay failed'));await Promise.all([old,next]);
   assert.equal(fetches,2);assert.equal(field('ai-error').textContent,'');assert.equal(ui.query(),'chair');assert.equal(ui.pagination().matches,1);
@@ -323,7 +323,7 @@ test('a new query ignores stale exhaustion and reviews the final arriving page',
   harness.field('search').value='chair';const next=harness.field('search-run').onclick();await until(()=>oldFinished);
   assert.equal(fetches,1);source.resolve(false);await Promise.all([old,next]);
   assert.equal(fetches,2,'stale exhaustion does not suppress the new query source');
-  assert.equal(conditions.length,1);assert.match(conditions[0],/chair/);
+  assert.equal(conditions.length,2);assert(conditions.every(condition=>condition.includes('chair')));
   assert.equal(harness.ui.pagination().matches,1);assert.equal(harness.ui.pagination().hasMore,false);
 });
 
@@ -354,8 +354,8 @@ test('text mode commits only on Enter or Search, never while typing',async()=>{
 
 
 test('topic matching can recover from vague title evidence using the description',async()=>{
- const texts=[];const client={info:{model:'deberta'},load:async()=>{},async classify(condition,text){texts.push(text);return{score:text.includes('Categories:')?.9:.1};},dispose(){this.info=null;}};
- const {field,ui}=fixture({query:'electronics',client});await field('search-run').onclick();
+ const texts=[];const client={info:{model:'deberta'},load:async()=>{},async classify(condition,text){texts.push(text);return{score:text.includes('City bicycle')?.9:.35};},dispose(){this.info=null;}};
+ const {field,ui}=fixture({query:'cycling',client});await field('search-run').onclick();
  assert.equal(texts.length,2);assert.equal(ui.isVisible(bicycle),true);
 });
 
@@ -369,7 +369,7 @@ test('background preparation shows circular progress, enables available AI and n
   report('Downloading…',{loaded:40,total:100});assert.equal(field('search-mode').styles.get('--ai-download'),'0.4');assert.equal(field('search-mode').attributes.get('data-indeterminate'),'false');
   field('search').value='bicycle';field('search').dispatchEvent(new Event('input'));assert.deepEqual(calls,['load']);finish();await ui.ready;
   assert.equal(ui.enabled(),true);assert.equal(ui.query(),'');assert.equal(field('search-mode').attributes.get('data-loading'),'false');assert.deepEqual(calls,['load']);
-  await field('search-run').onclick();assert.deepEqual(calls,['load','classify']);
+  await field('search-run').onclick();assert.deepEqual(calls,['load','classify','classify']);
 });
 
 test('explicit enabled and disabled choices survive refresh, with off preventing any automatic model load',async()=>{
@@ -423,7 +423,7 @@ test('only trusted search activation can prepare a selected downloadable browser
 
 test('classification passes the exact signed listing revision to the pinned decision cache',async()=>{
   const options=[],client={info:{model:'deberta'},async load(){},async classify(_condition,_text,value){options.push(value);return{score:.9};},dispose(){}};
-  const {field}=fixture({query:'bicycle',rows:[{...bicycle,eventId:'a'.repeat(64)}],client});await field('search-run').onclick();assert.deepEqual(options.map(value=>value.eventId),['a'.repeat(64)]);assert(options[0].signal instanceof AbortSignal);
+  const {field}=fixture({query:'bicycle',rows:[{...bicycle,eventId:'a'.repeat(64)}],client});await field('search-run').onclick();assert.deepEqual(options.map(value=>value.eventId),['a'.repeat(64),'a'.repeat(64)]);assert(options[0].signal instanceof AbortSignal);
 });
 
 test('relevance scores expose only current submitted query/model/revision decisions',async()=>{
@@ -625,7 +625,7 @@ test('editing test inputs aborts inference and suppresses stale results without 
 test('settings test is mutually exclusive with feed inference and repeated Search cannot alter its sandbox',async()=>{
   let finish,signal,calls=0;
   const client={info:{model:'deberta'},async load(){},classify(_condition,_text,options){calls++;signal=options.signal;return new Promise(resolve=>finish=resolve);},dispose(){this.info=null;}};
-  const {field,ui}=fixture({query:'main feed',client});example(field);const testRun=field('ai-test-run').onclick();await until(()=>!!finish);
+  const {field,ui}=fixture({query:'main feed',client});example(field,{query:'city bicycle'});const testRun=field('ai-test-run').onclick();await until(()=>!!finish);
   await field('search-run').onclick();assert.equal(calls,1);assert.equal(ui.query(),'');finish({score:.8});await testRun;
   const feedRun=field('search-run').onclick();await until(()=>calls===2);await field('ai-test-run').onclick();assert.match(field('ai-test-status').textContent,/Stop the current search/);assert.equal(calls,2);finish({score:.8});await feedRun;assert(!signal.aborted);
 });
@@ -731,7 +731,7 @@ test('only submitted conversational searches select the trained head', async()=>
   for(const [query,trained] of [['',false],['bicycle',false],['folding bicycle',false],['I need a folding bicycle.',true]]){
     heads.length=0;
     await ui.submit(query);
-    assert.deepEqual(heads,[trained]);
+    assert.deepEqual(heads,query==='bicycle'?[false,false]:[trained]);
   }
   field('search-mode').value='text';ui.stop();
 });
@@ -741,10 +741,9 @@ test('a productive sparse search reaches beyond 1,000 and pauses after a dry bat
     id:String(i),eventId:String(i),title:[900,1120,1650].includes(i)?'Orchard fruit':'Desk',
   }));
   const checked=new Set();
-  const client={info:{},async classify(_,text,{eventId}){
-    // Single-word search can also review the listing's description.
-    if(!text.includes('\n')){assert(!checked.has(eventId));checked.add(eventId);}
-    return {score:text==='Orchard fruit'?.9:.01};
+  const client={info:{},async classify(condition,text,{eventId}){
+    if(condition==='This item is fruit.'){assert(!checked.has(eventId));checked.add(eventId);}
+    return {score:text.includes('Orchard fruit')?.9:.01};
   },dispose(){}};
   const {ui}=fixture({rows,query:'fruit',client});
   await ui.submit('fruit');

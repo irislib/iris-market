@@ -1,6 +1,6 @@
 import {FeedFilterClient} from '../../web/src/feed-filter/client.ts'
 import {DecisionCache} from '../../web/src/feed-filter/decision-cache.ts'
-import {listingSearchTexts,searchCondition} from '../../web/src/search-condition.ts'
+import {scoreSearchListing} from '../../web/src/search-condition.ts'
 import {planTopicFilters} from '../../web/src/semantic-discovery.ts'
 
 const client=new FeedFilterClient({workerUrl:'/worker.js',decisionCache:new DecisionCache({store:null})})
@@ -15,12 +15,8 @@ async function request(action:string,input:any){
   if(action!=='review')throw Error('Unknown operation')
   const query=input.query
   if(query!==lastQuery){searchHead=await client.selectSearchHead(query);lastQuery=query}
-  let score=0
-  for(const text of listingSearchTexts(input.listing,query,'deberta')){
-    const result=await client.classify(searchCondition(query,'deberta'),text,{searchHead})
-    score=Math.max(score,result.score)
-    if(score>=.5)break
-  }
+  const {score}=await scoreSearchListing(input.listing,query,'deberta',
+    (condition,text)=>client.classify(condition,text,{searchHead}))
   return {score,show:score>=.5}
 }
 declare const IrisSearch:{ready():void;complete(id:number,json:string):void}

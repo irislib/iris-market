@@ -811,3 +811,33 @@ test('cancelling parallel review releases its worker and discards both pending r
   ui.stop();assert(signal.aborted);unblock();await run;
   assert.equal(disposed,1);assert.equal(ui.query(),'');assert.equal(ui.pagination().reviewed,0);
 });
+
+test('the Home worker pair honors the review limit and stays idle for cached passes',async()=>{
+  const rows=Array.from({length:250},(_,i)=>({id:String(i),title:'Listing '+i}));
+  for(const cached of [false,true]){
+    let starts=0,active=0,peak=0;
+    const classify=async()=>{peak=Math.max(peak,++active);await new Promise(resolve=>setImmediate(resolve));active--;return {score:.01,cached};};
+    const client={info:{model:'deberta'},classify,dispose(){},startSearchWorker(){starts++;return {info:{model:'deberta'},classify,dispose(){}};}};
+    const {ui}=fixture({rows,client,homeFeed:{enabled:true,prompt:'Handmade bowls'}});await ui.submit('');
+    assert.equal(ui.pagination().reviewed,240);assert.equal(ui.pagination().matches,0);
+    assert.equal(starts,cached?0:1);assert.equal(peak,cached?1:2);
+  }
+});
+
+test('a relaxed Home cutoff completes deferred conditions before showing a listing',async()=>{
+  const {DEFAULT_HOME_FEED_PROMPT}=await import('../src/home-feed.ts');
+  const rows=[{id:'drug',title:'Example product',tags:['category']},{id:'ordinary',title:'Ordinary item'}];
+  const calls=[];
+  const client={info:{model:'deberta'},dispose(){},async classify(condition,text){
+    calls.push([condition,text]);
+    if(condition.includes('useful item'))return {score:.4};
+    if(condition.includes('prescription medicines')&&text==='Example product\ncategory')return {score:.95};
+    if(condition==='This product is a drug.')return {score:.99};
+    return {score:0};
+  }};
+  const {ui,field}=fixture({rows,client,homeFeed:{enabled:true,prompt:DEFAULT_HOME_FEED_PROMPT}});
+  await ui.submit('');assert.equal(calls.length,2);assert.equal(ui.pagination().matches,0);
+  field('ai-threshold').value='.3';field('ai-threshold').onchange();await ui.submit('');
+  assert.deepEqual(rows.filter(ui.isVisible).map(r=>r.id),['ordinary']);assert.equal(ui.scoreFor(rows[1]),.4);
+  assert(calls.some(([q,t])=>q==='This product is a drug.'&&t==='Example product\ncategory'));
+});

@@ -66,6 +66,7 @@ export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCI
   const stopFollowers=()=>{followersController?.abort();followersController=undefined;followersGeneration++;followersLoading=false}
   const knownPeople=()=>{const excluded=new Set(followers?.excludedKnownFollowers??[]);return (currentData?.followedByKnown??[]).filter(person=>!excluded.has(person.pubkey));};
   const followerPeople=()=>knownFirstFollowers(knownPeople(),followers?.items);
+  const openFollowersTab=()=>{followersTab?.click();followersTab?.focus();};
   const followerLabel=()=>followers||followerPeople().length?`Followers ${followerPeople().length}`:'Followers';
   const renderFollowers=()=>{
     if(followersTab)followersTab.textContent=followerLabel();
@@ -81,7 +82,7 @@ export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCI
     const owner=currentKey,run=generation,request=++followersGeneration,abort=new AbortController();followersController=abort;followersLoading=true;followersError='';renderFollowers()
     try{const value=await loadFollowers(owner,{relays:getRelays(),signal:abort.signal});if(run!==generation||request!==followersGeneration||abort.signal.aborted||destroyed)return;followers=value;if(currentData){currentData={...currentData,relation:excludeKnownFollowers(currentData.relation,value.excludedKnownFollowers)};if(followDistanceNote){followDistanceNote.hidden=currentData.relation.distance===null;followDistanceNote.textContent=currentData.relation.distance===null?'':`Follow distance: ${currentData.relation.distance}`;}}}
     catch(error){if(run!==generation||request!==followersGeneration||abort.signal.aborted||destroyed)return;followersError='Could not load followers.'}
-    finally{if(run===generation&&request===followersGeneration&&!destroyed){followersLoading=false;followersController=undefined;if(currentData){identityHost.replaceChildren();renderIdentity(currentData.profile,currentData.relation);}renderFollowers()}}
+    finally{if(run===generation&&request===followersGeneration&&!destroyed){followersLoading=false;followersController=undefined;identityHost.replaceChildren();renderIdentity(currentData?.profile??readProfileMetadata(owner,{relays:getRelays()}),currentData?.relation);renderFollowers()}}
   }
   const renderSections=(data?:ProfileData)=>{
     const tabs=element('div',undefined,'profile-tabs')
@@ -89,7 +90,6 @@ export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCI
     const views:ProfileView[]=[{id:'listings',label:'Listings'},{id:'reviews',label:'Reviews'},...connectionViews(data)]
     const select=(view:ProfileView,button:HTMLButtonElement)=>{
       selectedView=view.id
-      if(view.id!=='followers')stopFollowers()
       for(const tab of tabs.children){tab.setAttribute('aria-selected',String(tab===button));(tab as HTMLElement).tabIndex=tab===button?0:-1}
       panel.setAttribute('aria-labelledby',button.id)
       if(view.id==='listings'){
@@ -110,7 +110,7 @@ export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCI
     }
     for(const view of views){
       const tab=element('button',view.label);tab.id=`profile-tab-${view.id}`;tab.setAttribute('role','tab');tab.setAttribute('aria-controls',panel.id)
-      tab.onclick=()=>{select(view,tab);if(view.id==='followers')void requestFollowers()}
+      tab.onclick=()=>{select(view,tab);if(view.id==='followers'&&!followersError)void requestFollowers()}
       if(view.id==='reviews')reviewTab=tab
       if(view.id==='followers')followersTab=tab
       tab.onkeydown=event=>{
@@ -134,7 +134,7 @@ export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCI
     const list = element('div', undefined, 'profile-people')
     if (!people.length) { list.append(element('p', emptyText, 'muted small')); return list }
     for (const person of people) {
-      const button = createUserRow(person.pubkey, { size:34, className:'profile-person', onClick:() => open(person.pubkey) })
+      const button = createUserRow(person.pubkey, { size:34, className:'profile-person', href:profileURL(person.pubkey,location.href),onClick:() => open(person.pubkey) })
       list.append(button)
     }
     return list
@@ -152,15 +152,15 @@ export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCI
     heading.append(reviewSummaryButton)
     identity.append(back, createAvatar(profile.pubkey, {size:76}), heading)
     identityHost.append(identity)
-    const known=knownFirstFollowers(knownPeople());
-    if(known.length){
-      const row=element('div',undefined,'profile-followed-by');row.setAttribute('aria-label','Known followers from loaded public follow lists');
-      row.append(element('span','Followed by'));
-      for(const [index,person] of known.slice(0,3).entries()){
+    const observed=followerPeople();
+    if(observed.length){
+      const row=element('div',undefined,'profile-followed-by');row.setAttribute('aria-label','Followers from observed public follow lists');
+      const label=element('button','Followed by','text-button');label.type='button';label.onclick=openFollowersTab;row.append(label);
+      for(const [index,person] of observed.slice(0,3).entries()){
         if(index)row.append(element('span',',','profile-followed-separator'));
-        row.append(createUserRow(person.pubkey,{size:20,className:'profile-followed-person',onClick:()=>void open(person.pubkey)}));
+        row.append(createUserRow(person.pubkey,{size:20,className:'profile-followed-person',href:profileURL(person.pubkey,location.href),onClick:()=>void open(person.pubkey)}));
       }
-      if(known.length>3){const others=element('button',`and ${known.length-3} ${known.length===4?'other':'others'}`,'text-button');others.type='button';others.onclick=()=>followersTab?.click();row.append(others);}
+      if(observed.length>3){const others=element('button',`and ${observed.length-3} ${observed.length===4?'other':'others'}`,'text-button');others.type='button';others.onclick=openFollowersTab;row.append(others);}
       identityHost.append(row);
     }
     if (profile.about) identityHost.append(element('p', profile.about, 'profile-about'))
@@ -241,6 +241,7 @@ export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCI
     reviews=setupProfileReviews({target:key,query:queryReviews,getAccount:getReviewAccount,publish:publishReview,preview:isPreview(),onSignIn:onReviewSignIn,onProfile:pubkey=>void open(pubkey),onSummary:value=>{if(run===generation&&reviewSummaryButton)reviewSummaryButton.textContent=value.label}})
     const displayed=renderCached(key)
     if (isPreview()) { status.textContent = 'Profiles are available in live mode.'; return }
+    void requestFollowers()
     status.textContent = displayed ? 'Loading connections…' : 'Loading profile…'
     // Metadata is useful immediately, even while graph discovery is pending.
     // Updating only the identity keeps listing cards and active forms mounted.
@@ -252,7 +253,7 @@ export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCI
     try {
       const data = await loadProfileData(key, { relays: getRelays(), contextPubkey: getContext() || DEFAULT_SOCIAL_GRAPH_ROOT, signal: controller.signal })
       if (run !== generation || destroyed) return
-      currentData={...data,profile:readProfileMetadata(key,{relays:getRelays()})};render(currentData)
+      currentData={...data,profile:readProfileMetadata(key,{relays:getRelays()}),relation:excludeKnownFollowers(data.relation,followers?.excludedKnownFollowers)};render(currentData)
     } catch (error) { if (run === generation && error.name !== 'AbortError') status.textContent = error.message || 'Could not load this profile.' }
   }
   return { open, openReviews(pubkey:string){void open(pubkey);reviewTab?.click()}, close, refreshReviews(){reviews?.refresh()}, destroy() { destroyed = true; close(); container.replaceChildren(); if(!page)container.remove() } }

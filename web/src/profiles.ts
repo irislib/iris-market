@@ -405,15 +405,40 @@ export async function loadProfile(pubkey: string, options: CurationOptions = {})
 /** Explicit Followers action only. Known connections never perform an inbound scan. */
 export async function loadProfileFollowers(pubkey:string, options:CurationOptions={}) {
   const target=normalizePublicKey(pubkey),relays=options.relays||DEFAULT_RELAYS,now=options.now||seconds,store=storeFor(relays);
-  const query=async(filters:ProfileFilter[])=>{const result=await queryProfileRecords(filters,{...options,relays,now});ingest(store,result.events,now());return result.events;};
-  const inbound=await query([{kinds:[3],'#p':[target],limit:PROFILE_LIMITS.inbound}]);
+  const servers=validateRelays(relays),timeoutMs=options.timeoutMs??PROFILE_LIMITS.timeoutMs;
+  if(!servers.length)throw new Error('Profile servers are unavailable');
+  if(!Number.isInteger(timeoutMs)||timeoutMs<1||timeoutMs>10000)throw new Error('Invalid profile lookup timeout');
+  const query=async(filter:ProfileFilter & {limit:number})=>{
+    let events:NostrEvent[];
+    if(options.WebSocketImpl&&!options.runtime){
+      events=(await queryProfileRecords([filter],{...options,relays,now})).events;
+    }else{
+      // A bounded history read reports each relay's completion at the deadline.
+      // A live subscription can still be waiting on a slower relay at that point.
+      const report=await (options.runtime??getPublicRuntime(servers)).query([filter],{
+        relays:servers,cache:'network-only',deadline:Date.now()+timeoutMs,
+        limit:filter.limit,signal:options.signal,
+      });
+      events=[];let bytes=0;
+      for(const raw of report.events.slice(0,PROFILE_LIMITS.queryEvents)){
+        bytes+=encoder.encode(JSON.stringify(raw)).length;
+        if(bytes>PROFILE_LIMITS.queryBytes||events.length>=filter.limit)break;
+        try{const event=verifyProfileRecord(raw,{now:now()});if(matches(event,filter))events.push(event);}catch{/* Ignore invalid public records. */}
+      }
+      if(!events.length&&!report.sources.some(source=>source.complete&&servers.includes(source.id)))
+        throw new Error('No server completed the public follower lookup.');
+    }
+    ingest(store,events,now());return events;
+  };
+  const inbound=await query({kinds:[3],'#p':[target],limit:PROFILE_LIMITS.inbound});
   const candidates=[...new Set(inbound.filter(event=>event.pubkey!==target&&event.tags.some(tag=>tag[0]==='p'&&tag[1]===target)).map(event=>event.pubkey))].sort().slice(0,PROFILE_LIMITS.inbound);
   // Refresh without #p: an older follow must not survive a later unfollow.
-  const refreshed=candidates.length?await query([{kinds:[3],authors:candidates,limit:candidates.length}]):[];
+  const refreshed=candidates.length?await query({kinds:[3],authors:candidates,limit:candidates.length}):[];
   const authors=new Set(refreshed.map(event=>event.pubkey));
+  if(candidates.length&&!authors.size)throw new Error('Could not confirm the latest public follow lists.');
   const followers=candidates.filter(key=>authors.has(key)&&store.follows.get(key)?.follows?.includes(target));
   const warnings:string[]=[];
-  if(followers.length)try{await query([{kinds:[0],authors:followers,limit:followers.length}]);}catch(error){if(error.name==='AbortError')throw error;warnings.push('Some names are unavailable.');}
+  if(followers.length)try{await query({kinds:[0],authors:followers,limit:followers.length});}catch(error){if(error.name==='AbortError')throw error;warnings.push('Some names are unavailable.');}
   if(options.signal?.aborted)throw abortError();
   return {items:followers.map(key=>person(store,key)),excludedKnownFollowers:[...authors].filter(key=>!store.follows.get(key)?.follows?.includes(target)),observedCount:followers.length,complete:false as const,loaded:true as const,warnings};
 }

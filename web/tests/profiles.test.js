@@ -316,3 +316,19 @@ test('explicit exclusions reduce second-hop trust but preserve root/direct indic
   for(const distance of [0,1]){const direct=excludeKnownFollowers({...relation,distance,badge:'following'},keys.slice(1,13));assert.equal(direct.distance,distance);assert.equal(direct.badge,'following');assert.equal(direct.description,'Previous evidence');}
   assert.equal(relation.knownFollowerCount,12,'the source graph projection is not mutated');
 });
+
+test('anonymous follower history accepts a finished relay, verifies current lists, and keeps an unconfirmed lookup unknown',async()=>{
+  const relays=['wss://slow.example/','wss://complete.example/'];
+  const complete={id:relays[1],complete:true},incomplete={id:relays[0],complete:false};
+  const call=async(query)=>loadProfileFollowers(keys[2],{runtime:{query},relays,now:()=>now});
+  const empty=await call(async()=>({events:[],sources:[incomplete,complete]}));
+  assert.equal(empty.observedCount,0);
+  await assert.rejects(call(async()=>({events:[],sources:[incomplete,{id:'local-cache',complete:true}]})),/No server completed/);
+  const hits=[];
+  const result=await call(async([filter],options)=>{
+    hits.push(filter);assert.equal(options.cache,'network-only');assert.deepEqual(options.relays,relays);assert(options.deadline>Date.now());
+    const events=filter['#p']?[follows(1,[keys[2]]),follows(3,[keys[2]]),{...follows(4,[keys[2]]),sig:'0'.repeat(128)}]:filter.kinds[0]===3?[follows(1,[keys[2]]),follows(3,[],now+1)]:[];
+    return {events,sources:[incomplete,complete]};
+  });
+  assert.equal(hits.length,3);assert.deepEqual(result.items.map(p=>p.pubkey),[keys[1]]);assert.deepEqual(result.excludedKnownFollowers,[keys[3]]);
+});

@@ -32,16 +32,25 @@ export function createAvatar(key, { size = 28 } = {}) {
 export function createUserName(key) {
   const label = document.createElement('span'); label.className = 'user-name'; label.dataset.personName = key; label.textContent = nameFor(key); return label;
 }
-export function createUserRow(key, { onClick, size = 28, className = '' }: {onClick?:(event:MouseEvent)=>void;size?:number;className?:string} = {}) {
-  const row = document.createElement(onClick ? 'button' : 'span'); row.className = `user-row ${className}`.trim(); row.dataset.person = key;
+export function createUserRow(key, { onClick, href, size = 28, className = '' }: {onClick?:(event:MouseEvent)=>void;href?:string;size?:number;className?:string} = {}) {
+  const row = href ? document.createElement('a') : document.createElement(onClick ? 'button' : 'span');
+  if(href)(row as HTMLAnchorElement).href=href;
+  row.className = `user-row ${className}`.trim(); row.dataset.person = key;
   row.append(createAvatar(key, {size}), createUserName(key)); paintRelationship(row);
-  if (onClick) { row.onclick = onClick; row.setAttribute('aria-label', `View profile: ${nameFor(key)}`); }
+  if (onClick) {
+    row.onclick=event=>{
+      if(href && (event.button!==0||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey))return;
+      if(href)event.preventDefault();
+      onClick(event);
+    };
+    row.setAttribute('aria-label', `View profile: ${nameFor(key)}`);
+  }
   warmProfiles([key]); return row;
 }
 export function refreshPeople() {
   for (const image of document.querySelectorAll<HTMLImageElement>('[data-person-avatar]')) paintAvatar(image, personFor(image.dataset.personAvatar));
   for (const label of document.querySelectorAll<HTMLElement>('[data-person-name]')) label.textContent = nameFor(label.dataset.personName);
-  for (const row of document.querySelectorAll<HTMLButtonElement>('button[data-person]')) row.setAttribute('aria-label', `View profile: ${nameFor(row.dataset.person)}`);
+  for (const row of document.querySelectorAll<HTMLButtonElement>('button[data-person],a[data-person]')) row.setAttribute('aria-label', `View profile: ${nameFor(row.dataset.person)}`);
   for (const row of document.querySelectorAll<HTMLElement>('.user-row[data-person]')) paintRelationship(row);
 }
 function paintRelationship(row:HTMLElement) {

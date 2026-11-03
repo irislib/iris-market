@@ -19,7 +19,6 @@ export class ListingWindow {
 export function setupListingGrid({grid, controls, button, status, makeCard, cardKey, olderState, loadOlder}) {
   const windowed = new ListingWindow();
   let items = [], viewKey, rendered = new Map(), automatic = 0, loading = false, loadGeneration = 0, disposed = false, visible = true, scrolled = false;
-  let ordinaryHome=false, holdingHome=false;
   const pagination = () => olderState?.() || {hasMore:false};
   function paint() {
     if (disposed) return;
@@ -71,24 +70,13 @@ export function setupListingGrid({grid, controls, button, status, makeCard, card
   window.addEventListener('scroll', pinOnScroll, {passive:true});
   button.onclick = () => void more(true);
   return {
-    update(next, key, home?:{ordinary:boolean; pending:boolean; candidates:typeof items}) {
-      if (viewKey !== key) { loadGeneration++; loading = false; automatic = 0; scrolled = false; windowed.reset(); ordinaryHome=false; }
-      // Keep the first displayed page while an automatic Home review gathers its replacement.
-      // Reconcile against current candidates so withdrawn or filtered listings leave immediately.
-      holdingHome=ordinaryHome&&!!home?.pending&&next.length<Math.min(windowed.ids.length,windowed.pageSize);
-      if(holdingHome){
-        const eligible=new Map(home.candidates.map(item=>[item.id,item]));
-        items=windowed.ids.flatMap(id=>eligible.has(id)?[eligible.get(id)]:[]);
-      }else{
-        items=next;
-        ordinaryHome=!!home?.ordinary;
-      }
-      viewKey=key;paint();
+    update(next, key) {
+      if (viewKey !== key) { loadGeneration++; loading = false; automatic = 0; scrolled = false; windowed.reset(); }
+      items=next;viewKey=key;paint();
     },
-    holdingHome:()=>holdingHome,
     pin() { windowed.pin(); },
     setVisible(value) { visible = value; paint(); },
-    reset() { ordinaryHome=false;holdingHome=false;loadGeneration++; loading = false; automatic = 0; scrolled = false; windowed.reset(); },
+    reset() {loadGeneration++; loading = false; automatic = 0; scrolled = false; windowed.reset(); },
     dispose() { disposed = true; loadGeneration++; observer?.disconnect(); window.removeEventListener('scroll', pinOnScroll); },
   };
 }

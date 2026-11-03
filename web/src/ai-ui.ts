@@ -3,7 +3,7 @@ import { FeedFilterClient } from './feed-filter/client.ts';
 import {BrowserFeedFilterClient} from './feed-filter/browser-client.ts';
 import {planBrowserTags} from './feed-filter/browser-tags.ts';
 import { listingSearchText, scoreSearchListing } from './search-condition.ts';
-import {homeFeedConditions,homeFeedPreferences,type HomeFeedPreferences} from './home-feed.ts';
+import {homeFeedConditions,homeProductText,homeFeedPreferences,type HomeFeedPreferences} from './home-feed.ts';
 const $=byId;
 const keyFor = listing => listing.eventId || listing.id;
 export const AI_MODE_STORAGE_KEY='market-ai-mode-v1',AI_MODEL_STORAGE_KEY='market-ai-model-v1';
@@ -14,7 +14,7 @@ export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetch
   let scores = new Map(), showAll = false, phase:'idle'|'loading'|'searching'='idle', generation = 0, submittedQuery='', paused=false, waitingCandidates=false;
   let home=homeFeed?homeFeedPreferences(homeFeed):{enabled:false,prompt:''},homeContext='',homeStopped=false,homeScheduled=false,homeReviewLimit=240,homeWasVisible=isHomeVisible(),browserAvailable=false;
   const homeRequested=()=>enabled()&&home.enabled&&!submittedQuery&&isHomeVisible();
-  const homeActive=()=>homeRequested()&&!!(runtime().info||homeContext||phase==='loading');
+  const homeActive=()=>homeRequested()&&!!(runtime().info||homeContext||preparation||phase==='loading');
   const curationActive=()=>!!submittedQuery||homeActive();
   let storage=providedStorage;try{storage??=globalThis.localStorage;}catch{}
   const readSetting=(key:string)=>{try{return storage?.getItem(key);}catch{return null;}};
@@ -44,7 +44,7 @@ export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetch
   const threshold = () => ['qwen35','browser'].includes($('ai-model').value) ? .5 : Number($('ai-threshold').value);
   const needsCPU = () => $('ai-model').value === 'qwen35' && !hasWebGPU();
   const candidates=getCandidates;
-  const matches=(listing:SearchListing)=>(scores.get(keyFor(listing))??-1)>=threshold();
+  const matches=(listing:SearchListing)=>{const score=scores.get(keyFor(listing));return typeof score==='number'&&score>=threshold();};
   const matchCount=(rows=candidates())=>rows.reduce((count,item)=>count+Number(matches(item)),0);
   const refresh = () => {
     const candidates = getCandidates(), active = enabled(), busy=phase!=='idle';
@@ -188,16 +188,32 @@ export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetch
         const classify=(condition:string,text:string)=>worker.classify(condition,text,{eventId:item.eventId,signal:controller.signal,searchHead});
         if(!homeRun)return scoreSearchListing(item,query,model,classify,controller.signal,broadestCutoff);
         const text=listingSearchText(item);
-        let score=1;
-        for(const {condition,exclude} of conditions){
+        let score=1,cached=true;
+        for(const [index,{condition,exclude,productConfirmation}] of conditions.entries()){
           controller.signal.throwIfAborted();
-          const result=await classify(condition,text);
+          const input=productConfirmation?homeProductText(item):text;
+          const result=await classify(condition,input);
           if(current!==generation)break;
+          cached&&=!!result.cached;
           if(!Number.isFinite(result.score))throw new Error('The model returned an invalid decision');
-          score=Math.min(score,exclude?1-result.score:result.score);
-          if(score<threshold())break;
+          let evidence=result.score;
+          // A product name can sound medical out of context. Require agreement
+          // before this additional exclusion can lower the full-listing score.
+          if(productConfirmation&&evidence>1-score){
+            const confirmation=await classify(productConfirmation,input);
+            if(current!==generation)break;
+            if(!Number.isFinite(confirmation.score))throw new Error('The model returned an invalid decision');
+            cached&&=!!confirmation.cached;
+            evidence=Math.min(evidence,confirmation.score);
+          }
+          score=Math.min(score,exclude?1-evidence:evidence);
+          if(score<threshold()&&index+1<conditions.length){
+            // Remaining conditions can only lower this score. Resume from the
+            // decision cache if the reader later asks for a broad enough feed.
+            return {score:score<broadestCutoff?null:{upperBound:score},cached};
+          }
         }
-        return {score,cached:false};
+        return {score,cached};
       };
       let uncached=0,attemptedWorker=false;
       let sourceRequests=0,unpainted=0,painted=false,lastPaint=performance.now();
@@ -243,13 +259,13 @@ export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetch
         }
         if(waitingCandidates){waitingCandidates=false;refresh();}
         $('ai-progress').textContent = homeRun?'Choosing listings…':'Searching…';
-        if(!attemptedWorker&&!homeRun&&uncached>=4&&rows.length-position>=16){
+        if(!attemptedWorker&&uncached>=4&&rows.length-position>=16){
           attemptedWorker=true;
           if(!saveData()&&'startSearchWorker' in selected)extraWorker=selected.startSearchWorker?.()??null;
         }
         const next=rows[position+1];
         const pair=extraWorker?.info&&next&&keyFor(next)!==keyFor(item)&&!scores.has(keyFor(next))
-          &&visibleMatches+1<targetMatches&&scores.size+1<reviewBoundary;
+          &&visibleMatches+1<targetMatches&&scores.size+1<(homeRun?homeReviewLimit:reviewBoundary);
         const batch=pair?[item,next]:[item];
         const results=await Promise.all(batch.map(async (listing,index)=>{
           if(index===0)return review(listing,selected);
@@ -264,9 +280,13 @@ export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetch
         if(current!==generation)return;
         const before=visibleMatches;
         for(const [index,{score,cached}] of results.entries()){
+          if(score&&typeof score==='object'&&score.upperBound>=threshold()){
+            reviewRows=undefined;
+            continue;
+          }
           scores.set(keyFor(batch[index]),score);
           if(!cached)uncached++;
-          if(score!==null&&score>=threshold()){visibleMatches++;sourceRequests=0;}
+          if(typeof score==='number'&&score>=threshold()){visibleMatches++;sourceRequests=0;}
         }
         position+=batch.length;unpainted+=batch.length;
         if(!painted||before===0&&visibleMatches>0||unpainted>=16||performance.now()-lastPaint>=100){
@@ -297,7 +317,11 @@ export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetch
   $('search').addEventListener('click',activateBrowser);$('search').addEventListener('keydown',activateBrowser);
   $('search-run').onclick = () => run();
   $('ai-model').onchange = () => {cancelTest();preferredModel=$('ai-model').value;writeSetting(AI_MODEL_STORAGE_KEY,preferredModel);preference=enabled()?'on':'off';writeSetting(AI_MODE_STORAGE_KEY,preference);stop({reset:true});};
-  $('ai-threshold').onchange = () => {cancelTest(); refresh(); onChange(); };
+  $('ai-threshold').onchange = () => {
+    const cutoff=threshold();
+    for(const [id,score] of scores)if(score&&typeof score==='object'&&score.upperBound>=cutoff)scores.delete(id);
+    cancelTest();refresh();onChange();
+  };
   $('ai-stop').onclick = () => stop();
   $('ai-unload').onclick = () => {cancelTest();preference='off';writeSetting(AI_MODE_STORAGE_KEY,preference);setEnabled(false);stop({reset:true});};
   $('ai-show-all').onclick = () => {
@@ -371,5 +395,5 @@ export function setupAI({ getCandidates, onChange, onTextSearch, onSubmit, fetch
   const planTags=(query:string,tags:readonly string[],signal?:AbortSignal)=>{const epoch=generation;return planBrowserTags(query,tags,{info:enabled()&&$('ai-model').value==='browser'?browserClient.info:null,signal,isCurrent:()=>!closed&&generation===epoch&&enabled()&&$('ai-model').value==='browser'&&submittedQuery===query});};
   function viewChanged(){const visible=isHomeVisible();if(!visible&&homeContext&&!homeStopped){stop({unload:false,finishCurrent:true});paused=false;}if(visible&&!homeWasVisible)homeStopped=false;homeWasVisible=visible;refresh();}
   document.addEventListener?.('visibilitychange',viewChanged);
-  return { ready,planTags,topicPlanning:()=>$('ai-model').value==='deberta',canPlanTags:()=>runtime()===browserClient&&!!browserClient.info,enabled,homeActive,showingAll:()=>showAll,viewChanged,submit:(query:string)=>{$('search').value=query;return run();},homeFeed:()=>({...home}),setHomeFeed:(value:HomeFeedPreferences)=>{home=homeFeedPreferences(value);if(submittedQuery){refresh();onChange();}else stop({reset:true,unload:false});},query:()=>submittedQuery, searching:()=>phase!=='idle',homeReviewPending:()=>homeActive()&&(phase!=='idle'||homeScheduled||!scores.size&&!homeStopped&&candidates().length>0), loadMore:()=>run({continuation:true,homeRun:homeActive()}), pagination, scoreFor, isVisible: listing => !enabled() || showAll || !curationActive() || matches(listing), refresh, stop: () => stop({reset:true}) };
+  return { ready,planTags,topicPlanning:()=>$('ai-model').value==='deberta',canPlanTags:()=>runtime()===browserClient&&!!browserClient.info,enabled,homeActive,showingAll:()=>showAll,viewChanged,submit:(query:string)=>{$('search').value=query;return run();},homeFeed:()=>({...home}),setHomeFeed:(value:HomeFeedPreferences)=>{home=homeFeedPreferences(value);if(submittedQuery){refresh();onChange();}else stop({reset:true,unload:false});},query:()=>submittedQuery, searching:()=>phase!=='idle',loadMore:()=>run({continuation:true,homeRun:homeActive()}), pagination, scoreFor, isVisible: listing => !enabled() || showAll || !curationActive() || matches(listing), refresh, stop: () => stop({reset:true}) };
 }

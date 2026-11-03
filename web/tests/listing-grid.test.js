@@ -146,15 +146,11 @@ test('a short initial feed cannot pin rankings or load history until the reader 
   view.dispose();
 });
 
-test('Home keeps eligible cards mounted until a curated page is ready and releases them on a filter change', t=>{
-  const {grid,view}=streamingGrid(t,async()=>{},()=>({hasMore:false}))
-  const rows=items(8);view.update(rows,'home',{ordinary:true,pending:false,candidates:rows})
-  const retained=grid.children[1]
-  view.update([],'home',{ordinary:false,pending:true,candidates:rows.slice(1)})
-  assert.equal(grid.children.length,7);assert.equal(grid.children[0],retained)
-  view.update(rows.slice(2,4),'home',{ordinary:false,pending:false,candidates:rows})
-  assert.deepEqual(grid.children.map(n=>n.dataset.listingId),rows.slice(2,4).map(row=>row.id))
-  view.update(rows,'home',{ordinary:true,pending:false,candidates:rows})
-  view.update([],'other filter',{ordinary:false,pending:true,candidates:rows})
-  assert.equal(grid.children.length,0)
+test('enabling For You immediately replaces ordinary cards with approved listings', t=>{
+  const {grid,view}=streamingGrid(t,async()=>{},()=>({hasMore:false}));
+  const rows=items(8);view.update(rows,'listings');view.pin();
+  view.update([],'for-you');assert.equal(grid.children.length,0);
+  view.update(rows.slice(2,3),'for-you');
+  assert.deepEqual(grid.children.map(n=>n.dataset.listingId),[rows[2].id]);
+  view.update(rows,'listings');assert.equal(grid.children.length,8);
 })

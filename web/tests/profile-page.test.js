@@ -9,7 +9,7 @@ class Element {
   setAttribute(name,value){this.attributes.set(name,String(value));}
   querySelectorAll(selector){return this.children.flatMap(child=>[...(selector==='[data-person-relationship]'&&'personRelationship'in child.dataset?[child]:[]),...child.querySelectorAll(selector)]);}
   remove(){if(this.parent)this.parent.children=this.parent.children.filter(child=>child!==this);}
-  click(){return this.onclick?.();}
+  click(){return this.onclick?.({button:0,preventDefault(){}});}
   focus(){this.focused=true;}
 }
 const elements=[];
@@ -58,16 +58,16 @@ test('metadata arrivals update the open identity without waiting for graph repli
   await pending;profiles.destroy();
 });
 
-test('inbound followers start only on explicit selection and stale work cannot cross profiles',async()=>{
+test('a profile preloads its follower summary once and stale work cannot cross profiles',async()=>{
   const page=new Element('main'),requests=[];
   const profiles=setupProfiles({page,getRelays:()=>relays,getContext:()=>keys[0],loadFollowers:(key,{signal})=>new Promise(resolve=>requests.push({key,signal,resolve}))});
   const first=profiles.open(keys[0],{navigate:false});await new Promise(resolve=>setImmediate(resolve));
-  assert.equal(requests.length,0,'opening a profile cannot crawl inbound follow lists');
+  assert.equal(requests.length,1,'the summary starts one bounded lookup');
   find(page,'Followers').click();await new Promise(resolve=>setImmediate(resolve));assert.equal(requests.length,1);
   find(page,'Followers').click();await new Promise(resolve=>setImmediate(resolve));assert.equal(requests.length,1,'repeated clicks share the pending lookup');
   const stale=requests[0],second=profiles.open(keys[1],{navigate:false});await new Promise(resolve=>setImmediate(resolve));assert.equal(stale.signal.aborted,true);
   stale.resolve({items:[],observedCount:0,complete:false,loaded:true,warnings:[]});await new Promise(resolve=>setImmediate(resolve));
-  assert(find(page,'Bob'));assert(find(page,'Followers'));assert(!find(page,'Followers 0'));assert.equal(requests.length,1);
+  assert(find(page,'Bob'));assert(find(page,'Followers'));assert(!find(page,'Followers 0'));assert.equal(requests.length,2);
   profiles.close();await Promise.all([first,second]);profiles.destroy();
 });
 
@@ -123,7 +123,7 @@ test('known followers replace Known tab and appear first with a max-three linked
   const page=new Element('main'),requests=[],known=[keys[2],keys[1],keys[3],keys[4]];
   const profiles=setupProfiles({page,getRelays:()=>relays,loadProfileData:async()=>graphProfile(keys[0],known),loadFollowers:(key,{signal})=>new Promise(resolve=>requests.push({key,signal,resolve}))});
   await profiles.open(keys[0],{navigate:false});
-  assert(!all(page).some(node=>node.id==='profile-tab-known'));assert.equal(requests.length,0);
+  assert(!all(page).some(node=>node.id==='profile-tab-known'));assert.equal(requests.length,1);
   const summary=all(page).find(node=>node.className==='profile-followed-by');assert(summary);
   assert.deepEqual(summary.children.filter(node=>node.dataset.person).map(node=>node.dataset.person),known.slice(0,3));
   assert(find(summary,'Followed by'));assert(find(summary,'Carol'));assert(find(summary,'Bob'));assert(find(summary,'Dave'));assert(!find(summary,'Eve'));
@@ -133,7 +133,8 @@ test('known followers replace Known tab and appear first with a max-three linked
   requests[0].resolve({items:[{pubkey:keys[5]},{pubkey:keys[1]},{pubkey:keys[4]}],observedCount:3,complete:false,loaded:true,warnings:[]});await new Promise(resolve=>setImmediate(resolve));
   list=all(page).find(node=>node.className==='profile-people');assert.deepEqual(list.children.map(node=>node.dataset.person),[...known,keys[5]]);assert(find(page,'Followers 5'));
   find(page,'Followers 5').click();assert.equal(requests.length,1,'loaded follower pages are reused');
-  const currentSummary=all(page).find(node=>node.className==='profile-followed-by');currentSummary.children.find(node=>node.dataset.person===keys[2]).click();assert(find(page,'Carol'),'known names open profiles via the existing person action');profiles.destroy();
+  const currentSummary=all(page).find(node=>node.className==='profile-followed-by');assert(find(currentSummary,'and 2 others'));
+  const named=currentSummary.children.find(node=>node.dataset.person===keys[2]);assert.equal(named.tag,'a');assert.equal(named.href,profileURL(keys[2],location.href));named.click();assert(find(page,'Carol'),'known names open profiles via the existing person action');profiles.destroy();
 });
 test('failed inbound lookup retains graph-known followers and retry can exclude superseded signed evidence',async()=>{
   const page=new Element('main');let calls=0;
@@ -142,7 +143,7 @@ test('failed inbound lookup retains graph-known followers and retry can exclude 
   assert(find(page,'Could not load followers.'));assert(find(page,'Followers 2'));assert.equal(all(page).find(node=>node.className==='profile-people').children.length,2);
   find(page,'Try again').click();await new Promise(resolve=>setImmediate(resolve));
   assert.deepEqual(all(page).find(node=>node.className==='profile-people').children.map(node=>node.dataset.person),[keys[2],keys[3]]);assert(find(page,'Followers 2'));
-  const summary=all(page).find(node=>node.className==='profile-followed-by');assert.deepEqual(summary.children.filter(node=>node.dataset.person).map(node=>node.dataset.person),[keys[2]]);profiles.destroy();
+  const summary=all(page).find(node=>node.className==='profile-followed-by');assert.deepEqual(summary.children.filter(node=>node.dataset.person).map(node=>node.dataset.person),[keys[2],keys[3]]);profiles.destroy();
 });
 test('unknown follower coverage has no fabricated count or empty followed-by row',async()=>{
   const page=new Element('main');let resolveFollowers;
@@ -152,10 +153,11 @@ test('unknown follower coverage has no fabricated count or empty followed-by row
 });
 
 test('explicitly superseded second-hop followers clear the current stale badge and follow-distance note',async()=>{
-  const page=new Element('main');
-  const profiles=setupProfiles({page,getRelays:()=>relays,loadProfileData:async()=>graphProfile(keys[0],[keys[1]]),loadFollowers:async()=>({items:[],excludedKnownFollowers:[keys[1]],observedCount:0,loaded:true,complete:false,warnings:[]})});
+  const page=new Element('main');let resolveFollowers;
+  const profiles=setupProfiles({page,getRelays:()=>relays,loadProfileData:async()=>graphProfile(keys[0],[keys[1]]),loadFollowers:()=>new Promise(resolve=>{resolveFollowers=resolve})});
   await profiles.open(keys[0],{navigate:false});assert(all(page).some(node=>node.className==='relationship-badge relationship-friend'));
-  find(page,'Followers 1').click();await new Promise(resolve=>setImmediate(resolve));
+  find(page,'Followed by').click();assert.equal(find(page,'Followers 1').attributes.get('aria-selected'),'true');
+  resolveFollowers({items:[],excludedKnownFollowers:[keys[1]],observedCount:0,loaded:true,complete:false,warnings:[]});await new Promise(resolve=>setImmediate(resolve));
   assert(!all(page).some(node=>node.className==='profile-followed-by'));
   assert(!all(page).some(node=>node.className==='relationship-badge relationship-friend'),'the open identity must not retain a second-hop badge after every known path explicitly unfollows');
   assert(!all(page).some(node=>node.textContent==='Follow distance: 2'&&!node.hidden));profiles.destroy();

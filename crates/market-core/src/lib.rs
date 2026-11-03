@@ -1695,9 +1695,10 @@ impl Market {
             bail!("Type what you are looking for in the search field");
         }
         let mut count = 0;
+        let mut reviews = ai::ReviewBatch::default();
         for (l, event_id) in candidates {
             let result = runtime.block_on(async {
-                tokio::select! { biased; _ = cancel.notified() => None, result = ai::classify(&settings, key, &l) => Some(result) }
+                tokio::select! { biased; _ = cancel.notified() => None, result = reviews.classify(&settings, key, &l) => Some(result) }
             });
             let Some(result) = result else {
                 return Ok(());

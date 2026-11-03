@@ -23,6 +23,16 @@ test('an empty failed feed offers a concise retry, and arriving listings immedia
   view.update([],'profile');assert.equal(button.textContent,'Try again');assert.equal(status.textContent,'Could not load listings.');
   view.update(items(1),'profile');assert.equal(button.textContent,'Load more');assert.equal(status.textContent,'1 listing shown');
 });
+test('a new search suppresses an older load error while results are pending',t=>{
+  const remote={hasMore:true,error:'Offline',loading:false};
+  const {status,button,view}=streamingGrid(t,async()=>{},()=>remote);
+  view.update([],'food');
+  assert.equal(status.textContent,'Could not load listings.');
+  remote.loading=true;
+  view.update([],'medicine');
+  assert.equal(status.textContent,'');
+  assert.equal(button.textContent,'Loading…');
+});
 test('the next window displays every arriving match before loading finishes',async t=>{
   let finish,requests=0;
   const {grid,button,view}=streamingGrid(t,()=>{requests++;return new Promise(resolve=>{finish=resolve;});});

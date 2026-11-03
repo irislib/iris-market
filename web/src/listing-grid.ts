@@ -37,7 +37,7 @@ export function setupListingGrid({grid, controls, button, status, makeCard, card
     controls.hidden = !visible || !hasMore && !loading && !remote.error && !shown.length;
     button.hidden = !hasMore && !remote.error;
     button.disabled = loading || Boolean(remote.loading);
-    const emptyFailure = Boolean(remote.error) && !shown.length;
+    const emptyFailure = Boolean(remote.error) && !shown.length && !loading && !remote.loading;
     button.textContent = loading || remote.loading ? 'Loading…' : emptyFailure ? 'Try again' : 'Load more';
     status.textContent = shown.length ? `${shown.length} ${shown.length===1?'listing':'listings'} shown` : emptyFailure ? 'Could not load listings.' : '';
     grid.setAttribute('aria-busy', String(loading || Boolean(remote.loading)));

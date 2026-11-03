@@ -212,10 +212,11 @@ async function loadGraph(){
   const active=graphAbort;
   try{const result=await loadCurationContext({relays,contextPubkey:contextKey,targetAuthors:listings.map(item=>item.author),signal:active.signal});if(active!==graphAbort)return;graphContext=result;rootChoice.observe(result);if(result.contextPubkey!==contextKey)return;$('curation-status').textContent=result.coverage.rootLoaded?`${result.coverage.directFollows} follows · ${result.coverage.bootstrap?'snapshot + live updates':'partial network'}`:'Connections unavailable';render();}catch(error){if(error.name!=='AbortError')$('curation-status').textContent='Connections unavailable';}
 }
+const curatedGrid=()=>aiFilter?.enabled()&&(aiFilter.query()||aiFilter.homeActive())&&!aiFilter.showingAll();
 const gridUI=setupListingGrid({grid:$('listings'),controls:$('grid-pagination'),button:$('load-more'),status:$('grid-progress'),makeCard:card,
   cardKey:l=>JSON.stringify([l.eventId||l.id,priceFor(l).primary,saved.has(l.id),hiddenListings.has(l.id),graphContext?.relationFor(l.author),readImageSettings()]),
-  olderState:()=>{const remote=preview||savedOnly?{hasMore:false}:client?.pagination?.()||{hasMore:false};const ai=aiFilter?.enabled()&&aiFilter.query?.()?aiFilter.pagination?.():null;return ai?{...remote,hasMore:ai.hasMore||remote.hasMore,loading:ai.loading||remote.loading,error:ai.error||remote.error,paused:ai.paused}:remote;},
-  loadOlder:async()=>{try{if(aiFilter?.enabled()&&aiFilter.query?.()){await aiFilter.loadMore();}else await client?.loadOlder?.();}catch{}render()}});
+  olderState:()=>{const remote=preview||savedOnly?{hasMore:false}:client?.pagination?.()||{hasMore:false};return curatedGrid()?aiFilter.pagination(remote.hasMore):remote;},
+  loadOlder:async()=>{try{if(curatedGrid()){await aiFilter.loadMore();}else await client?.loadOlder?.();}catch{}render()}});
 refreshHiddenCount();$('restore-hidden').onclick=()=>{try{hiddenListings.clear();refreshHiddenCount();render();refreshProfileListings();toast('Listings restored');}catch{toast('Could not save this preference.');}};
 const imageSettings=readImageSettings();$('image-proxy-enabled').checked=imageSettings.useProxy;$('image-proxy-url').value=imageSettings.url;
 $('image-settings-form').onsubmit=e=>{e.preventDefault();try{saveImageSettings({...readImageSettings(),useProxy:$('image-proxy-enabled').checked,url:$('image-proxy-url').value});$('image-settings-error').textContent='';refreshPeople();render();if(focusedListing)openDetail(focusedListing,false);toast('Image settings saved')}catch(error){$('image-settings-error').textContent=error.message}};
@@ -294,6 +295,6 @@ window.addEventListener('pagehide',()=>{disposeAIOptionsGesture();userLocation?.
   if(!ordinary&&!active.pagination().hasMore)return false;
   const page=await (ordinary||active.loadOlder());
   if(active!==client)return false;
-  if(page.error)return false;
+  if(page.error)throw new Error('Could not fetch older listings.');
   return page.added>0||page.hasMore;
 }});routeReady=true;start();activateRoute();loadGraph();

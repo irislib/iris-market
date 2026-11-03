@@ -72,6 +72,23 @@ test('home preferences filter locally without becoming a search or a relay reque
   field('search-mode').value='text';ui.stop();
 });
 
+test('For you continues reviewing older inventory when the reader loads more',async()=>{
+  let fetched=0;
+  const rows=[bicycle];
+  const {ui,field}=fixture({rows,homeFeed:{enabled:true,prompt:'Useful things'},fetchMoreCandidates:async()=>{
+    fetched++;
+    rows.push({id:'desk',title:'Desk'});
+    return false;
+  }});
+  await ui.submit('');
+  assert.equal(fetched,0);
+  await ui.loadMore();
+  assert.equal(fetched,1);
+  assert.equal(ui.pagination().matches,2);
+  assert.equal(ui.pagination().hasMore,false);
+  field('search-mode').value='text';ui.stop();
+});
+
 test('home review has a CPU budget, explicit continuation and a lasting Stop',async()=>{
   let reviewed=0;const rows=Array.from({length:250},(_,id)=>({id:String(id),title:'Item'}));
   const client={info:{model:'deberta'},async load(){},async classify(){reviewed++;return{score:.1};},dispose(){}};

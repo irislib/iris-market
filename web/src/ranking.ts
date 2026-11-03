@@ -41,6 +41,27 @@ function lexical(listing:RankableListing,terms:string[]){
   const phrase=(` ${title.join(' ')} `).includes(` ${terms.join(' ')} `)?1:0
   return Math.min(1,.65*coverage(titleSet)+.2*coverage(tags)+.1*coverage(body)+.25*phrase)
 }
+// Verified events and their tag arrays are immutable. Cache only their text
+// match for the active query; graph, freshness and AI scores can still change.
+let lexicalQuery = ''
+let lexicalScores = new WeakMap<RankableListing, number>()
+function lexicalScorer(terms:string[]) {
+  const key = terms.join(' ')
+  if (key !== lexicalQuery) {
+    lexicalQuery = key
+    lexicalScores = new WeakMap()
+  }
+  if (!terms.length) return () => 0
+  const scores = lexicalScores
+  return (listing:RankableListing) => {
+    if (!Object.isFrozen(listing) || !Object.isFrozen(listing.tags)) return lexical(listing, terms)
+    const known = scores.get(listing)
+    if (known !== undefined) return known
+    const score = lexical(listing, terms)
+    scores.set(listing, score)
+    return score
+  }
+}
 interface Scored<T>{listing:T;score:number;time:number;id:string}
 interface AuthorQueue<T>{items:Scored<T>[];index:number;shown:number;score:number}
 const byBase=<T>(a:Scored<T>,b:Scored<T>)=>b.score-a.score||b.time-a.time||compare(a.id,b.id)
@@ -55,6 +76,7 @@ export function rankListings<T extends RankableListing>(listings:T[],{relationFo
   for(const listing of examples){const category=text(listing.category,80);if(category&&category!=='other')counts.set(category,Math.min(8,(counts.get(category)||0)+1))}
   const interests=new Map([...counts].sort((a,b)=>b[1]-a[1]||compare(a[0],b[0])).slice(0,32))
   const terms=[...new Set(words(query,500).filter(term=>!stopWords.has(term)))].slice(0,16)
+  const textScore = lexicalScorer(terms)
   const remainder:T[]=[]
   const rows:Scored<T>[]=[]
   const relations=new Map<string,RankingRelation|null>(),authors=new Map<string,Scored<T>[]>()
@@ -65,7 +87,7 @@ export function rankListings<T extends RankableListing>(listings:T[],{relationFo
     const graph=(steps===0||steps===1?2.5:steps===2?1.5:steps===3?.75:0)+Math.min(1.25,Math.log2(1+Math.max(0,finite(relation?.knownFollowerCount)))/4)
     const time=finite(listing.createdAt),freshness=time>0?2.5*Math.pow(.5,Math.max(0,finite(now)-time)/(14*DAY)):0
     const interest=Math.min(1.5,Math.log2(1+(interests.get(text(listing.category,80))||0))*.5)
-    const literal=lexical(listing,terms)
+    const literal=textScore(listing)
     let ai:number|null|undefined;try{ai=aiScoreFor(listing)}catch{/* Inference failures must leave ordinary ranking usable. */}
     const relevance=typeof ai==='number'&&Number.isFinite(ai)&&ai>=0&&ai<=1?(terms.length?.85*ai+.15*literal:ai):literal
     const score=(sort==='social'?8*relevance+16*graph:home?homeFeed.ranking.relevanceWeight*relevance+homeFeed.ranking.graphWeight*graph:32*relevance+graph)+freshness+interest+nearby(listing,location)

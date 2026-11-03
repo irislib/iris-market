@@ -88,3 +88,22 @@ test('Home puts a distinct offer before a duplicate title from another seller',(
   assert.deepEqual(rankListings(listings,{now}).map(l=>l.id),['a','c','b']);
   assert.deepEqual(rankListings(listings,{now,sort:'newest'}).map(l=>l.id),['a','b','c']);
 });
+
+test('repeated ranking respects the current query, listing revision and mutable tags',()=>{
+  const desk=Object.freeze(item('desk','alice',{title:'Oak desk',tags:Object.freeze(['work'])}));
+  const lamp=Object.freeze(item('lamp','bob',{title:'Desk lamp',tags:Object.freeze(['lighting'])}));
+  const rows=[desk,lamp];
+  const first=(listings,query)=>rankListings(listings,{now,query})[0].id;
+  assert.equal(first(rows,'oak'),'desk');
+  assert.equal(first(rows,'lighting'),'lamp');
+  assert.equal(first(rows,'oak'),'desk');
+  const revised=Object.freeze({...desk,title:'Table'});
+  assert.equal(first([revised,Object.freeze({...lamp,title:'Oak lamp'})],'oak'),'lamp');
+
+  const tags=['lamp'];
+  const editable=Object.freeze(item('a','anne',{title:'Table',tags}));
+  const tagged=Object.freeze(item('b','ben',{title:'Table',tags:Object.freeze(['lamp'])}));
+  assert.equal(first([editable,tagged],'lamp'),'a');
+  tags.pop();
+  assert.equal(first([editable,tagged],'lamp'),'b');
+});

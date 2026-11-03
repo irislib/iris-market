@@ -52,10 +52,10 @@ export function setupListingGrid({grid, controls, button, status, makeCard, card
     controls.hidden = !visible || !hasMore && !loading && !remote.loading && !remote.error && !shown.length;
     button.hidden = !hasMore && !remote.error;
     button.disabled = loading || Boolean(remote.loading);
-    ownsEmptyState = !shown.length && Boolean(remote.loading || remote.error);
+    ownsEmptyState = !shown.length && Boolean(remote.loading || remote.error || remote.hasMore && remote.emptyMore);
     const emptyFailure = Boolean(remote.error) && !shown.length && !loading && !remote.loading;
     button.textContent = loading || remote.loading ? 'Loading…' : emptyFailure ? 'Try again' : 'Load more';
-    status.textContent = shown.length ? `${shown.length} ${shown.length===1?'listing':'listings'} shown` : emptyFailure ? remote.emptyError || 'Could not load listings.' : (loading || remote.loading) ? remote.emptyPending || '' : '';
+    status.textContent = shown.length ? `${shown.length} ${shown.length===1?'listing':'listings'} shown` : emptyFailure ? remote.emptyError || 'Could not load listings.' : (loading || remote.loading) ? remote.emptyPending || '' : remote.hasMore ? remote.emptyMore || '' : '';
     grid.setAttribute('aria-busy', String(loading || Boolean(remote.loading)));
     // Two automatic batches, then explicit loading keeps the footer reachable.
     observer?.unobserve(controls);

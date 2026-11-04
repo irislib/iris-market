@@ -197,6 +197,6 @@ export function setupAccount({getMatchListings=()=>[],renderEscrowTrades=()=>{},
   window.addEventListener('pagehide',()=>{if(readFrame!==undefined)cancelAnimationFrame(readFrame);window.removeEventListener('resize',scheduleSeen);$('chat-messages').removeEventListener('scroll',scheduleSeen);receiptSettings.remove();document.removeEventListener('visibilitychange',refreshUnread);document.removeEventListener('close',uncovered,true);window.removeEventListener('focus',refreshUnread);controller?.abort();messaging.destroy();});
   const api={ messaging, restored, state:()=>state, showAccount, showInbox, openChat, composeMessage, hideInbox:()=>inbox.hide(), closeAccount:()=>account.hide(), hideAccount:()=>account.hide(), onReady:listener=>readyListeners.add(listener), onState:listener=>{stateListeners.add(listener);return()=>stateListeners.delete(listener)} };
   setupMarketplaceFlags(api);
-  setupPrivateMatches(api,getMatchListings);
+  setupPrivateMatches(api,getMatchListings,inbox);
   return api;
 }

@@ -922,6 +922,12 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
     }
     fun markMessagesRead(messageIDs:List<String>,onComplete:(Boolean)->Unit) = submit(JSONObject().put("type","mark_messages_read").put("message_ids",JSONArray(messageIDs.take(256))),{onComplete(true)},{onComplete(false)})
     fun setActivePushContext(peerID:String?,threadID:String?) {activePushPeerID=peerID;activePushThreadID=threadID}
+    fun openConversation(peer: String, onOpen: () -> Unit) {
+        command(JSONObject().put("type", "contact").put("author", peer)) {
+            onOpen()
+            mutablePushRoute.value = NativePushRoute(peer)
+        }
+    }
     fun consumePushRoute(){mutablePushRoute.value=null}
     fun suppressPush(route:NativePushRoute?):Boolean {
         if(!active || route==null || activePushPeerID!=route.peerID)return false

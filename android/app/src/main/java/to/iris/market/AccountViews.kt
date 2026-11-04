@@ -126,6 +126,7 @@ private fun inboxContextTitle(context:MessageContext?,state:MarketSnapshot):Stri
         Row(Modifier.padding(top=15.dp,bottom=8.dp).fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
             Text("Inbox",style=MaterialTheme.typography.headlineMedium)
         }
+        PrivateMatchesLink(state, model, busy)
         Row(horizontalArrangement=Arrangement.spacedBy(8.dp),modifier=Modifier.padding(top=8.dp)) {
             listOf(true to "Threads",false to "People").forEach { (threads,label) -> FilterChip(selected=groupByThreads==threads,onClick={groupByThreads=threads;preferences.edit().putBoolean("message-threads",threads).apply()},label={Text(label)}) }
         }

@@ -384,6 +384,17 @@ final class MarketStore: ObservableObject {
         filter(query: query, side: side, aiSearch: true) { success in if success { self.searchContinuation.start(self.searchContext); self.runAI(type: "curate") } }
     }
     func save(_ listing: MarketListing) { command(["type": "save", "id": listing.id]) }
+    func merchantNotice(listingID: String, send: Bool) async throws -> String {
+        try Task.checkCancellation()
+        guard let app, !demo else { throw CancellationError() }
+        let generation = accountGeneration
+        let value = try await Task.detached(priority: .utility) {
+            try app.merchantNotice(listingId: listingID, send: send)
+        }.value
+        try Task.checkCancellation()
+        guard generation == accountGeneration else { throw CancellationError() }
+        return value
+    }
     func loadReviews(target: String, product: Bool, refresh: Bool) async throws -> [MarketReview] {
         guard let app else { return [] }
         let generation = accountGeneration

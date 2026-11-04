@@ -169,6 +169,8 @@ struct PendingContactMessage {
 struct PrivateState {
     #[serde(default)]
     controls: controls::Controls,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    merchant_notices: BTreeMap<PublicKey, crate::merchant_notice::Notice>,
     #[serde(default)]
     last_message_ms: u64,
     conversations: BTreeMap<String, Conversation>,
@@ -312,6 +314,44 @@ impl Messaging {
         } else {
             Err("This device needs account approval before messaging".into())
         }
+    }
+
+    pub(crate) fn knows_merchant_chat(&self, merchant: PublicKey) -> bool {
+        self.engine.has_usable_direct_session_for_owner(merchant)
+            || self
+                .state
+                .authorization_heads
+                .get(&merchant.to_hex())
+                .is_some_and(|heads| {
+                    heads.len() > 1
+                        || heads.iter().any(|e| {
+                            iris_chat_protocol::AppKeys::from_event(e)
+                                .is_ok_and(|keys| !keys.get_all_devices().is_empty())
+                        })
+                })
+    }
+
+    pub(crate) fn merchant_notices(&self) -> &BTreeMap<PublicKey, crate::merchant_notice::Notice> {
+        &self.state.merchant_notices
+    }
+
+    pub(crate) fn save_merchant_notice(
+        &mut self,
+        merchant: PublicKey,
+        notice: crate::merchant_notice::Notice,
+    ) -> MessagingResult<()> {
+        self.transaction(|this| {
+            this.state
+                .merchant_notices
+                .retain(|_, row| row.until > now());
+            if this.state.merchant_notices.len() >= 128
+                && !this.state.merchant_notices.contains_key(&merchant)
+            {
+                return Err("Too many recent seller notifications".into());
+            }
+            this.state.merchant_notices.insert(merchant, notice);
+            Ok(())
+        })
     }
 
     /// The returned link is a private capability; never publish it as a listing

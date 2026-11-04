@@ -536,6 +536,14 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
         check(generation == accountGeneration)
         return List(rows.length()) { rows.getJSONObject(it) }
     }
+    internal suspend fun merchantNotice(listingId: String, send: Boolean): String {
+        val generation = accountGeneration
+        val app = core ?: error("App is opening")
+        check(!preview)
+        val result = withContext(Dispatchers.IO) { app.merchantNotice(listingId, send) }
+        check(generation == accountGeneration)
+        return result
+    }
     internal suspend fun loadReviews(target:String,product:Boolean,refresh:Boolean):List<MarketReview> {
         val generation=accountGeneration;val app=core ?: return emptyList()
         val raw=withContext(Dispatchers.IO){app.reviews(target,product,refresh)}

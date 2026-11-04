@@ -78,6 +78,31 @@ pub async fn fetch_authorization_complete(
     relays: &[String],
     owner: PublicKey,
 ) -> Result<Vec<Event>> {
+    let filter = Filter::new()
+        .author(owner)
+        .kind(Kind::from(iris_chat_protocol::APP_KEYS_EVENT_KIND as u16))
+        .limit(1024);
+    let (events, complete, incomplete) = fetch_owner_events(relays, filter).await?;
+    let mut index = VerifiedAppKeysIndex::default();
+    for event in events
+        .into_iter()
+        .filter(|event| event.pubkey == owner && iris_chat_protocol::is_app_keys_event(event))
+    {
+        index.ingest(event, crate::listing::now())?;
+    }
+    let heads = index.events_for_owner(owner);
+    ensure!(
+        complete > 0 && (!incomplete || !heads.is_empty()),
+        "Could not check device authorization; try again"
+    );
+    Ok(heads)
+}
+
+/// Isolated, unsigned discovery. Return EOSE coverage separately from the records.
+pub(crate) async fn fetch_owner_events(
+    relays: &[String],
+    filter: Filter,
+) -> Result<(Vec<Event>, usize, bool)> {
     use nostr::{RelayMessage, SubscriptionId};
     use nostr_sdk::prelude::RelayNotification;
     use nostr_sdk::{Client, SubscribeOptions};
@@ -87,6 +112,7 @@ pub async fn fetch_authorization_complete(
     for url in relays {
         let client = client.clone();
         let url = url.clone();
+        let filter = filter.clone();
         jobs.spawn(async move {
             let mut events = Vec::new();
             let mut exceeded = false;
@@ -97,14 +123,7 @@ pub async fn fetch_authorization_complete(
                 relay.connect();
                 let subscription = SubscriptionId::generate();
                 relay
-                    .subscribe_with_id(
-                        subscription.clone(),
-                        Filter::new()
-                            .author(owner)
-                            .kind(Kind::from(iris_chat_protocol::APP_KEYS_EVENT_KIND as u16))
-                            .limit(1024),
-                        SubscribeOptions::default(),
-                    )
+                    .subscribe_with_id(subscription.clone(), filter, SubscribeOptions::default())
                     .await?;
                 loop {
                     match notifications.recv().await? {
@@ -163,19 +182,7 @@ pub async fn fetch_authorization_complete(
     }
     client.shutdown().await;
     ensure!(!exceeded, "Device list is too large");
-    let mut index = VerifiedAppKeysIndex::default();
-    for event in events
-        .into_iter()
-        .filter(|event| event.pubkey == owner && iris_chat_protocol::is_app_keys_event(event))
-    {
-        index.ingest(event, crate::listing::now())?;
-    }
-    let heads = index.events_for_owner(owner);
-    ensure!(
-        complete > 0 && (!incomplete || !heads.is_empty()),
-        "Could not check device authorization; try again"
-    );
-    Ok(heads)
+    Ok((events, complete, incomplete))
 }
 
 pub async fn register_device(

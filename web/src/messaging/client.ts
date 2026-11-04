@@ -11,7 +11,7 @@ import { REVIEW_KIND, parseReview, validateReviewDraft } from '../reviews.ts';
 import {validateShippingOptionEvent} from '../shipping.ts';
 import {COLLECTION_KIND, checkCollectionRevision, parseCollection, rememberAcceptedCollection, validateCollectionDraft} from '../collections.ts';
 import { finalizeEvent, generateSecretKey, getEventHash, getPublicKey, nip19 } from 'nostr-tools';
-import { AppKeys, Invite, NdrRuntime, createPersistentNostrOutbox, hasMetadataPrivacyVersion } from 'nostr-double-ratchet';
+import { AppKeys, Invite, NdrRuntime, hasExistingSessionWithRecipient, createPersistentNostrOutbox, hasMetadataPrivacyVersion } from 'nostr-double-ratchet';
 import { createVault } from './vault.ts';
 import { createPrivateTransport, verifiedPrivateEvent } from './transport.ts';
 import { RemoteSigner } from './remote-signer.ts';
@@ -524,6 +524,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
   };
   return {
     state,
+    knowsMerchantChat: (key:string) => !!runtime?.getKnownAppKeysSnapshots().some(s => s.ownerPubkey === key && s.appKeys.getAllDevices().length) || hasExistingSessionWithRecipient(runtime?.getSessionUserRecords(),key),
     privateMatchView:()=>matches?.view()??null,
     async privateMatch(action:MatchAction,listing?:Parameters<typeof matches.action>[1]){
       requireReady();

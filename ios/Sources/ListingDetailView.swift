@@ -81,6 +81,10 @@ struct ListingDetailView: View {
                         Text(store.demo ? "Private enquiries are unavailable in preview mode." : "Your conversation stays private.").font(.system(size: 12)).foregroundStyle(MarketTheme.muted).multilineTextAlignment(.center).frame(maxWidth: .infinity)
                         Button("Connect with an invitation instead") { invitation = true }.font(.system(size: 12)).frame(maxWidth: .infinity)
                     }
+                    if !store.demo && !current.mine && current.externalOrder == nil && current.side == "offer" {
+                        MerchantNoticeButton(listingID: current.id)
+                            .id([current.id, store.snapshot.publicKey])
+                    }
                 }.padding(23)
             }.background(MarketTheme.paper)
                 #if os(macOS)
@@ -267,5 +271,41 @@ extension View {
         #else
         marketSheetScope()
         #endif
+    }
+}
+
+private struct MerchantNoticeButton: View {
+    @EnvironmentObject private var store: MarketStore
+    let listingID: String
+    @State private var status = ""
+    @State private var requested = false
+    @State private var problem = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if status == "available" || status == "no-inbox" {
+                Button("Notify seller anonymously") { requested = true }
+                    .disabled(requested || status == "no-inbox").accessibilityIdentifier("merchantNotice")
+                Text(status == "no-inbox" ? "This seller hasn’t published an inbox for anonymous notices." : "Sends “Someone wants to buy from you on market.iris.to. Open Iris Market to set up private messaging.”")
+            } else if status == "queued" {
+                Text("Anonymous notice queued.")
+            } else if status == "sent" {
+                Text("Notice accepted by the seller’s inbox relay.")
+            }
+            if problem { Text("Could not save the notice. Try again.") }
+        }
+        .font(.footnote)
+        .task(id: requested) {
+            do {
+                if requested { problem = false }
+                status = try await store.merchantNotice(listingID: listingID, send: requested)
+                while status == "queued" {
+                    try await Task.sleep(for: .seconds(2))
+                    status = try await store.merchantNotice(listingID: listingID, send: false)
+                }
+            } catch {
+                if requested && !Task.isCancelled { requested = false; problem = true }
+            }
+        }
     }
 }

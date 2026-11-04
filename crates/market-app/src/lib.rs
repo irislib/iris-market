@@ -100,6 +100,9 @@ impl MarketApp {
             .map_err(error)?,
         }))
     }
+    pub fn merchant_notice(&self, listing_id: String, send: bool) -> Result<String, MarketError> {
+        self.inner.merchant_notice(&listing_id, send).map_err(error)
+    }
     pub fn escrow_provider(&self, key: String) -> Result<String, MarketError> {
         self.inner.escrow_provider(&key).map_err(error)
     }

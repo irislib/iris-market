@@ -303,8 +303,41 @@ private fun rememberListLayout(): MutableState<Boolean> {
         if(!listing.mine && !demo && listing.side=="offer" && !listing.isBitcoinOffer) TextButton(enabled=!busy,onClick={
             model.command(JSONObject().put("type","contact").put("author",listing.author).put("listing_id",listing.id),inbox)
         },modifier=Modifier.fillMaxWidth()) { Text("Message") }
+        if (!demo && !listing.mine && listing.externalOrder == null && listing.side == "offer")
+            key(listing.id, model.state.value.publicKey) { MerchantNoticeButton(listing.id, model) }
         if(!listing.mine && !demo && listing.escrow!=null && (listing.isBitcoinOffer || listing.side=="request") && JSONObject(model.state.value.settings).optBoolean("escrow_ui"))
             OutlinedButton(onClick={showEscrow=true},modifier=Modifier.fillMaxWidth()){Text("Arrange escrow")}
         if(listing.mine && !demo && listing.externalOrder==null) TextButton(enabled=!busy,onClick={model.command(JSONObject().put("type","close").put("id",listing.id))}) { Text("Close listing") }
     }
+}
+
+@Composable
+private fun MerchantNoticeButton(listingId: String, model: MarketModel) {
+    var status by remember { mutableStateOf("") }
+    var requested by remember { mutableStateOf(false) }
+    var problem by remember { mutableStateOf(false) }
+    LaunchedEffect(requested) {
+        try {
+            status = model.merchantNotice(listingId, requested)
+            while (status == "queued") {
+                delay(2000)
+                status = model.merchantNotice(listingId, false)
+            }
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            if (requested) { requested = false; problem = true }
+        }
+    }
+    when (status) {
+        "available", "no-inbox" -> {
+            OutlinedButton(onClick = { problem = false; requested = true }, enabled = !requested && status == "available",
+                modifier = Modifier.fillMaxWidth().testTag("merchantNotice")) { Text("Notify seller anonymously") }
+            Text(if (status == "no-inbox") "This seller hasn’t published an inbox for anonymous notices." else "Sends “Someone wants to buy from you on market.iris.to. Open Iris Market to set up private messaging.”",
+                color = Muted, style = MaterialTheme.typography.bodySmall)
+        }
+        "queued" -> Text("Anonymous notice queued.", color = Muted)
+        "sent" -> Text("Notice accepted by the seller’s inbox relay.", color = Muted)
+    }
+    if (problem) Text("Could not save the notice. Try again.", color = MaterialTheme.colorScheme.error)
 }

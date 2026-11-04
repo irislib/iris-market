@@ -9,6 +9,7 @@ pub mod image_proxy;
 pub mod listing;
 pub mod literal_search;
 pub mod local_ai;
+mod merchant_notice;
 pub mod messaging;
 pub mod mobile_push;
 pub mod model;
@@ -632,6 +633,11 @@ impl Market {
                 state.clone(),
                 notify.clone(),
                 stopped.clone(),
+            ));
+            runtime.spawn(merchant_notice::deliver_pending(
+                state.clone(),
+                stopped.clone(),
+                notify.clone(),
             ));
             runtime.spawn(network::run_private(
                 state.clone(),

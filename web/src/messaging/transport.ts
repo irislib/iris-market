@@ -1,6 +1,6 @@
 import { matchFilters, verifyEvent } from 'nostr-tools';
 import type { Event, Filter, VerifiedEvent } from 'nostr-tools';
-export interface TransportOptions {signal?:AbortSignal;relays?:string[];deadline?:number;timeoutMs?:number;sources?:unknown[];cache?:string;localEcho?:boolean;requireAck?:boolean;queue?:boolean;onAccepted?:(receipt:PublishReceipt)=>void}
+export interface TransportOptions {waitForAll?:boolean;signal?:AbortSignal;relays?:string[];deadline?:number;timeoutMs?:number;sources?:unknown[];cache?:string;localEcho?:boolean;requireAck?:boolean;queue?:boolean;onAccepted?:(receipt:PublishReceipt)=>void}
 export interface QueryResult {events:VerifiedEvent[];complete:boolean;sources?:{id:string;complete:boolean}[]}
 export interface PublishReceipt {remoteAccepted:boolean;pending?:boolean;sentWithoutAck?:boolean;sources?:{id:string;accepted:boolean}[]}
 interface RelayState {id:string;complete:boolean;socket:WebSocket|null;timer:ReturnType<typeof setTimeout>|null;tries:number}
@@ -37,7 +37,7 @@ function validateFilters(filters) {
   if (!Array.isArray(filters) || !filters.length || filters.length > 8) throw new Error('Invalid message request.');
   for (const filter of filters) {
     // Public authorization and contact discovery must use one author's scope.
-    if (filter.kinds?.some(kind => [37368, 30078].includes(kind)) &&
+    if (filter.kinds?.some(kind => [37368, 30078, 10050].includes(kind)) &&
         (filter.authors?.length !== 1 || !hex.test(filter.authors[0]) || filter['#p'])) {
       throw new Error('Contact discovery requires one author.');
     }
@@ -213,7 +213,7 @@ export function createPrivateTransport(getRelays:()=>string[], { WebSocketImpl =
             },
             onEose: states => {
               if (states.every(state => state.complete)) finish();
-              else if (!grace) grace = setTimeout(() => finish(), 500);
+              else if (!options.waitForAll && !grace) grace = setTimeout(() => finish(), 500);
             },
           }, false);
           timer = setTimeout(() => finish(), Math.max(1, Math.min(10_000, (options.deadline ?? Date.now() + 6000) - Date.now())));

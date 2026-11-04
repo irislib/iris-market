@@ -109,6 +109,7 @@ struct VerifiedListings {
     verifications: usize,
 }
 struct VerifiedListing {
+    kind: nostr::Kind,
     listing: Listing,
     // The UI uses normalized topics. Nostr filters require the exact signed spelling.
     relay_tags: Vec<String>,
@@ -139,6 +140,7 @@ impl VerifiedListings {
             .cloned()
             .collect();
         let listing = Arc::new(VerifiedListing {
+            kind: event.kind,
             listing,
             relay_tags,
         });
@@ -160,9 +162,12 @@ impl VerifiedListings {
     }
 }
 
+mod collections;
+
 pub struct Store {
     db: Connection,
     verified_listings: RefCell<VerifiedListings>,
+    verified_collections: RefCell<HashMap<String, collections::VerifiedCollection>>,
 }
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
@@ -173,8 +178,10 @@ impl Store {
             CREATE TABLE IF NOT EXISTS outbox (event_id TEXT PRIMARY KEY, raw TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS relevance (coordinate TEXT PRIMARY KEY, event_id TEXT NOT NULL, value TEXT NOT NULL);")?;
+        collections::schema(&db)?;
         Ok(Self {
             db,
+            verified_collections: RefCell::default(),
             verified_listings: RefCell::default(),
         })
     }

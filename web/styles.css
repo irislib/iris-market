@@ -155,3 +155,17 @@ button[data-alternate-label]::after { content:attr(data-alternate-label); visibi
 .order-terms{display:grid;grid-template-columns:auto minmax(0,1fr);gap:.5rem 1rem;margin:1rem 0}
 .order-terms dt{color:var(--muted)}
 .order-terms dd{margin:0;overflow-wrap:anywhere}
+
+.match-inbox-link { margin: 0 0 12px; }
+.match-dialog { padding: 22px; width: min(30rem, calc(100% - 2rem)); max-height: 85vh; overflow: auto; }
+.match-switch { display: flex; gap: 4px; margin: 12px 0; }
+.match-switch button { flex: 1; padding: 9px; border-radius: 20px; background: var(--soft); }
+.match-switch button[aria-pressed="true"] { background: var(--ink); color: var(--surface); }
+.match-compose, .match-card { padding: 14px 0; border-top: 1px solid var(--line); }
+.match-compose summary { cursor: pointer; font-weight: 600; }
+.match-compose select[hidden] { display: none; }
+.match-compose input, .match-compose textarea, .match-compose select { display: block; width: 100%; margin: 8px 0; }
+.match-card { overflow-wrap: anywhere; }
+.match-card p { margin: 4px 0 10px; }
+.match-card .button + .button { margin-left: 4px; }
+.match-card .match-card { margin-top: 12px; padding-left: 12px; border-left: 2px solid var(--line); }

@@ -47,3 +47,30 @@
 .profile-followed-by .profile-followed-person { gap:4px;color:var(--ink);max-width:180px; }
 .profile-followed-by .profile-followed-person:hover .user-name { text-decoration:underline; }
 .profile-followed-by .text-button { font-size:inherit; }
+
+.collection-header, .collection-toggle { display:flex; align-items:center; justify-content:space-between; gap:16px; }
+.collection-header { margin-bottom:16px; }
+.collection-header h2 { font-size:21px; }
+.collection-header .button,.collection-form .button { padding:10px 16px; font-size:14px; }
+.collection-shelf { border-block-start:1px solid var(--line); padding-block:6px 12px; }
+.collection-toggle { width:100%; padding:12px 0; text-align:left; }
+.collection-toggle strong { overflow-wrap:anywhere; font-size:17px; }
+.collection-toggle span { flex:none; }
+.collection-toggle::after { content:'⌄'; color:var(--muted); }
+.collection-toggle[aria-expanded=true]::after { transform:rotate(180deg); }
+.collection-toggle strong { flex:1; }
+.collection-edit { margin-bottom:12px; }
+.collection-shelf .listing-grid { margin-top:12px; }
+.collection-form { display:grid; max-width:640px; gap:12px; margin:4px 0 22px; padding:18px; border-radius:14px; border:1px solid var(--line); background:var(--surface); }
+.collection-form>label { display:grid; gap:6px; font-size:14px; font-weight:600; }
+.collection-form input:not([type=checkbox]) { width:100%; min-width:0; padding:10px; background:var(--bg); color:var(--ink); border-radius:8px; border:1px solid var(--line); }
+.collection-sources { display:flex; flex-wrap:wrap; gap:4px; }
+.collection-source { font-size:13px; color:var(--muted); padding:7px 10px; border-radius:7px; }
+.collection-source[aria-pressed=true] { background:var(--soft); color:var(--ink); }
+.collection-choices { max-height:245px; overflow:auto; display:grid; }
+.collection-choices label { display:flex; align-items:center; gap:10px; padding:9px 4px; cursor:pointer; overflow-wrap:anywhere; }
+.collection-choices small { display:block; margin-top:2px; }
+.collection-choices input { flex:none; accent-color:var(--accent); }
+.collection-form .profile-actions { margin:0; }
+.collection-form .error:empty,.profile-collections>[role=status]:empty { display:none; }
+.profile-collections>[role=status]:not(:empty) { margin-top:12px; }

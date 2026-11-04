@@ -20,6 +20,7 @@ struct ListingDetailView: View {
         store.snapshot.listings.first { $0.id == listing.id }
             ?? store.snapshot.savedListings?.first { $0.id == listing.id }
             ?? store.snapshot.profileListings?.listings.first { $0.id == listing.id }
+            ?? store.snapshot.profileListings?.collections?.lazy.flatMap(\.members).compactMap(\.listing).first { $0.id == listing.id }
     }
     private var current: MarketListing { latest ?? listing }
     private var quoteAvailable: Bool { listing.externalOrder == nil || latest != nil }

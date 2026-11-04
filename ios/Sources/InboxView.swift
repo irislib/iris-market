@@ -43,6 +43,7 @@ struct InboxView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 23) {
                 HStack(alignment: .firstTextBaseline) { Text("Inbox").font(.system(size: 30, weight: .medium)).tracking(-1); Spacer(); Button { showInvitation = true } label: { Image(systemName: "square.and.pencil").font(.system(size: 20)) }.accessibilityLabel("Connect with an invitation") }
+                PrivateMatchesLink().id(store.snapshot.publicKey)
                 EscrowInboxCards()
                 Picker("Group conversations", selection: $grouping) { Text("Threads").tag("threads"); Text("People").tag("people") }.pickerStyle(.segmented)
                 if store.snapshot.conversations.isEmpty {

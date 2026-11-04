@@ -9,6 +9,7 @@ import { invitationBase } from '../asset-url.ts';
 import { validateUploadAuthorization } from '../upload-auth.ts';
 import { REVIEW_KIND, parseReview, validateReviewDraft } from '../reviews.ts';
 import {validateShippingOptionEvent} from '../shipping.ts';
+import {COLLECTION_KIND, checkCollectionRevision, parseCollection, rememberAcceptedCollection, validateCollectionDraft} from '../collections.ts';
 import { finalizeEvent, generateSecretKey, getEventHash, getPublicKey, nip19 } from 'nostr-tools';
 import { AppKeys, Invite, NdrRuntime, createPersistentNostrOutbox, hasMetadataPrivacyVersion } from 'nostr-double-ratchet';
 import { createVault } from './vault.ts';
@@ -26,7 +27,7 @@ import type { DeliveryPlace, OrderListing, OrderPatch, OrderRequestOptions, Orde
 type AccountMode='local'|'extension'|'linked';
 interface AccountRecord {owner:string;mode:AccountMode;deviceSecret:number[];ownerSecret?:number[];proof?:VerifiedEvent;installed?:boolean;freshOwner?:boolean;displayName?:string;profileEvent?:VerifiedEvent}
 export interface ChatMessage {id:string;text:string;mine:boolean;createdAt:number;createdAtMs?:number;expiresAt?:number;delivery:'queued'|'sent'|'delivered'|'seen'|'received';reactions?:ReactionSummary[];_chat?:ChatControlMeta;orderId?:string;context?:MessageContext;system?:boolean}
-export interface MessagingState {tradeSteps:ReturnType<ReturnType<typeof createMarketTrades>["rows"]>;receiptPreferences:ReceiptPreferences;status:string;error:string;password:boolean;ownerPubkey?:string;devicePubkey?:string;displayName?:string;pendingPublic:number;chatStatus:string;profileEvent?:VerifiedEvent;pendingListings:VerifiedEvent[];pendingReviews:VerifiedEvent[];orders:OrderView[];canSend:boolean;canSign:boolean;mode?:AccountMode;needsLogin:boolean;devices:{pubkey:string;current:boolean}[];conversations:{pubkey:string;messages:ChatMessage[]}[]}
+export interface MessagingState {tradeSteps:ReturnType<ReturnType<typeof createMarketTrades>["rows"]>;receiptPreferences:ReceiptPreferences;status:string;error:string;password:boolean;ownerPubkey?:string;devicePubkey?:string;displayName?:string;pendingPublic:number;chatStatus:string;profileEvent?:VerifiedEvent;pendingListings:VerifiedEvent[];pendingReviews:VerifiedEvent[];pendingCollections:VerifiedEvent[];orders:OrderView[];canSend:boolean;canSign:boolean;mode?:AccountMode;needsLogin:boolean;devices:{pubkey:string;current:boolean}[];conversations:{pubkey:string;messages:ChatMessage[]}[]}
 type AccountSigner=(event:UnsignedEvent)=>Event|Promise<Event>;
 interface BrowserSigner {getPublicKey():Promise<string>;signEvent:AccountSigner}
 interface MessagingOptions {developerMint?:string;getRelays?:()=>string[];onChange?:(state:MessagingState)=>void;vault?:Vault;transportFactory?:()=>PrivateTransport;extension?:()=>BrowserSigner|undefined}
@@ -40,6 +41,7 @@ const DEVICE_PREFIX = 'v1/device-manager/';
 const now = () => Math.floor(Date.now() / 1000);
 function publicAccountEvent(event:VerifiedEvent):boolean {
   if([0,3,30402,38383].includes(event.kind))return true;
+  if(event.kind===COLLECTION_KIND){try{parseCollection(event);return true;}catch{return false;}}
   if(event.kind===30406){try{validateShippingOptionEvent(event);return true;}catch{return false;}}
   if(event.kind!==REVIEW_KIND)return false;
   try{parseReview(event);return true;}catch{return false;}
@@ -81,6 +83,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
   let account:AccountRecord,runtime:NdrRuntime,transport:PrivateTransport,outbox:ReturnType<typeof createPersistentNostrOutbox>,ownerSecret:Uint8Array,signer:AccountSigner,controller:AbortController,postingRemote:RemoteSigner,postingTransport:PrivateTransport,generation = 0;
   let status = 'signed-out', error = '', authorizationChecked = false, savedStatus;
   let chatStatus = 'connecting', activation, syncing, syncingProfile, retryTimer, enrollmentSigner, enrollmentRemote;
+  const collectionWrites=new Set<string>();
   let publicQueue = new Map<string,VerifiedEvent>(), profilePatch:{name:string;picture?:string};
   let conversations = new Map<string,ChatMessage[]>();
   let matches:ReturnType<typeof createMatchBook>,syncingMatches:Promise<void>;
@@ -96,6 +99,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
     displayName: profilePatch?.name ?? account?.displayName, pendingPublic: publicQueue.size + (profilePatch ? 1 : 0), chatStatus,
     profileEvent: account?.profileEvent ? structuredClone(account.profileEvent) : undefined,
     pendingListings: [...publicQueue.values()].filter(event => [30402,38383].includes(event.kind)).map(event => structuredClone(event)),
+    pendingCollections: [...publicQueue.values()].filter(event => event.kind === COLLECTION_KIND).map(event => structuredClone(event)),
     pendingReviews: [...publicQueue.values()].filter(event => event.kind === REVIEW_KIND).map(event => structuredClone(event)),
     orders: orders?.state() ?? [],
     canSend: canSend(),
@@ -117,6 +121,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
   const signing = async draft => {
     if (!signer || !account) throw new Error('Approve this action with your account signer.');
     if (draft.kind === 24242) validateUploadAuthorization(draft,undefined);
+    if (draft.kind === COLLECTION_KIND) validateCollectionDraft(draft,account.owner);
     if (draft.kind === REVIEW_KIND) validateReviewDraft(draft,account.owner);
     const expected = { ...draft, pubkey: account.owner, tags: draft.tags.map(tag => [...tag]) };
     const attempt = generation;
@@ -343,6 +348,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
   async function acceptPublic(event:VerifiedEvent,attempt:number) {
     check(attempt);if(!publicQueue.has(event.id))return;
     if (event.kind===0 && (!account.profileEvent || event.created_at>=account.profileEvent.created_at)) {account.profileEvent=event;account.displayName=JSON.parse(event.content).display_name||JSON.parse(event.content).name;await vault.put('market/account',account);}
+    if(event.kind===COLLECTION_KIND)rememberAcceptedCollection(event);
     await vault.del(`market/public/${event.id}`);check(attempt);publicQueue.delete(event.id);notify();
   }
   async function syncPublic() {
@@ -595,7 +601,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
       const channel = transportFactory();
       let remote;
       remote = new RemoteSigner({ runtime: channel, relays: getRelays(), bunkerLink, signal, onConnectionLink, onAuthUrl,
-        permissions: ['sign_event:0', 'sign_event:3', 'sign_event:30402', 'sign_event:38383', 'sign_event:30406', 'sign_event:7368', 'sign_event:24242'], timeoutMs: 15 * 60_000,
+        permissions: ['sign_event:0', 'sign_event:3', 'sign_event:30402', 'sign_event:38383', 'sign_event:30405', 'sign_event:30406', 'sign_event:7368', 'sign_event:24242'], timeoutMs: 15 * 60_000,
         onClose: () => {
           channel.close();
           if (postingRemote === remote) { postingRemote = postingTransport = undefined; signer = undefined; notify(); }
@@ -688,7 +694,20 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
       if(events.some(event=>!event||event.pubkey!==account.owner||!publicAccountEvent(event)))throw new Error('Invalid public account event.');
       return queuePublicEvents(events);
     },
-    async publishEvent(draft) { return this.publishSignedEvent(await signing(draft)); },
+    async publishEvent(draft, previousCollectionId?:string|null) {
+      if(draft.kind!==COLLECTION_KIND || previousCollectionId===undefined)return this.publishSignedEvent(await signing(draft));
+      requireReady();
+      const key=account.owner+':'+draft.tags.find(tag=>tag[0]==='d')?.[1];
+      if(collectionWrites.has(key))throw Error('This collection is already being updated.');
+      collectionWrites.add(key);
+      const checkRevision=()=>checkCollectionRevision(draft,account.owner,[...publicQueue.values()].filter(event=>event.kind===COLLECTION_KIND),previousCollectionId);
+      try {
+        checkRevision();
+        const event=await signing(draft);
+        checkRevision();
+        return await this.publishSignedEvent(event);
+      }finally{collectionWrites.delete(key);}
+    },
     async updateProfile({ name, picture }:{name?:string;picture?:string} = {}) {
       requireReady();
       if (typeof name !== 'string' || !name.trim() || name.length > 80) throw new Error('Choose a name of up to 80 characters.');

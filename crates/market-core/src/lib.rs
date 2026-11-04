@@ -1,5 +1,6 @@
 pub mod ai;
 mod bitcoin_order;
+pub mod collections;
 pub mod conversation_context;
 pub mod escrow;
 pub mod geo;
@@ -761,6 +762,15 @@ impl Market {
             }
             Command::AcceptInvite { invite } => return self.accept_invite(&invite),
             Command::DiscoverEscrowProviders => return self.discover_escrow_providers(),
+            Command::OpenCollection { author, identifier } => {
+                let runtime = self.runtime.lock().unwrap();
+                return profile_listings::open_collection(
+                    runtime.as_ref().context("App has closed")?,
+                    self.state.clone(),
+                    author,
+                    identifier,
+                );
+            }
             Command::LoadProfile { author } => return self.load_profile(Some(author)),
             Command::LoadProfileFollowers { author } => {
                 return self.load_profile_followers(&author);
@@ -959,6 +969,18 @@ impl Market {
                 }
                 s.profile_name_required = false;
                 s.status = "Profile saved".into();
+                self.notify.notify_waiters();
+            }
+            Command::SaveCollection {
+                identifier,
+                previous_event_id,
+                title,
+                listing_ids,
+            } => {
+                collections::save(&mut s, identifier, previous_event_id, &title, &listing_ids)?;
+                if let Some(feed) = &s.profile_listings {
+                    feed.collection_changed();
+                }
                 self.notify.notify_waiters();
             }
             Command::Publish { draft } => {
@@ -1318,6 +1340,7 @@ impl Market {
             Command::Contact { .. }
             | Command::AcceptInvite { .. }
             | Command::DiscoverEscrowProviders
+            | Command::OpenCollection { .. }
             | Command::LoadProfile { .. }
             | Command::LoadContext
             | Command::LoadProfileFollowers { .. }
@@ -1803,9 +1826,20 @@ impl Market {
     }
     pub fn ingest_event(&self, event: &nostr::Event) -> Result<bool> {
         let mut s = self.state.lock().unwrap();
-        let changed = s.store.ingest(event, listing::now(), false)?;
+        let changed = match event.kind.as_u16() {
+            collections::KIND => s
+                .store
+                .ingest_collection(event, listing::now(), false, None)?,
+            5 => s.store.ingest_collection_deletion(event, listing::now())?,
+            _ => s.store.ingest(event, listing::now(), false)?,
+        };
         if changed {
             s.revision += 1;
+            if matches!(event.kind.as_u16(), collections::KIND | 5)
+                && let Some(feed) = &s.profile_listings
+            {
+                feed.collection_changed();
+            }
         }
         Ok(changed)
     }

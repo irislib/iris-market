@@ -41,11 +41,23 @@ struct AuthorProfileView: View {
                         if !known.isEmpty {
                             KnownFollowersLine(people: Array(known.prefix(3)), total: max(known.count, profile.person.connection.followedByFriends), open: { history.append(author); switchAuthor($0) }, showFollowers: { selectFollowers() })
                         }
-                        HStack(spacing: 18) {
+                        ProfileInlineLayout(spacing: 14) {
+                            connectionControl("Listings", count: nil, value: "listings")
+                            connectionControl("Collections", count: nil, value: "collections")
                             connectionControl("Following", count: profile.followingCount, value: "following")
                             connectionControl("Followers", count: profile.followersLoaded == true ? orderedFollowers(profile).count : nil, value: "followers")
                         }
-                        if let selection {
+                        if selection == "collections" {
+                            let feed = store.snapshot.profileListings.flatMap { $0.author == author ? $0 : nil }
+                            ProfileCollectionsView(
+                                feed: feed, snapshot: store.snapshot, author: author, open: { selectedListing = $0 },
+                                saveItem: { store.save($0) }, select: openCollection, retry: { store.command(["type": "load_profile", "author": author]) },
+                                more: loadMore, publish: { request, done in
+                                    guard store.snapshot.publicKey == author, store.snapshot.canSign, !store.demo else { done(false); return }
+                                    store.command(request, completion: done)
+                                }
+                            ).id(author + store.snapshot.publicKey)
+                        } else if let selection {
                             if !store.demo && !profile.loading && (!profile.graphContextLoaded || profile.error != nil) {
                                 HStack {
                                     Text("Some connections are unavailable.").font(.caption).foregroundStyle(MarketTheme.muted)
@@ -76,7 +88,7 @@ struct AuthorProfileView: View {
                                 Button("Load more") { loadMore() }.frame(maxWidth: .infinity).disabled(feed?.loading == true).accessibilityIdentifier("profileLoadMore")
                             }
                         }
-                        ReviewsView(target: author)
+                        if selection != "collections" { ReviewsView(target: author) }
                     } else { UserRow(person: .unnamed(author)) }
                 }.padding(23)
             }.background(MarketTheme.paper).navigationTitle("Profile").marketInlineTitle()
@@ -98,7 +110,14 @@ struct AuthorProfileView: View {
         let byAuthor = Dictionary(people.map { ($0.author, $0) }, uniquingKeysWith: { first, _ in first })
         return NativeProfileConnections.ordered(known: profile.followedByKnown.map(\.author), followers: profile.followers.map(\.author)).compactMap { byAuthor[$0] }
     }
+    private func openCollection(_ id: String?) {
+        guard store.snapshot.profileListings?.author == author else { return }
+        var request: [String: Any] = ["type": "open_collection", "author": author]
+        if let id { request["identifier"] = id }
+        store.command(request)
+    }
     private func selectFollowers() {
+        if selection == "collections" { openCollection(nil) }
         selection = "followers"
         if profile?.followersLoaded != true, profile?.followersLoading != true { loadFollowers() }
     }
@@ -107,16 +126,18 @@ struct AuthorProfileView: View {
     private func switchAuthor(_ next: String) { cancelFollowers(); selection = nil; author = next }
     private func loadMore() { store.command(["type": "load_more_profile_listings", "author": author]) }
     private func connectionControl(_ label: String, count: Int?, value: String) -> some View {
-        Button {
-            let next = selection == value ? nil : value
+        let selected = selection == value || (selection == nil && value == "listings")
+        return Button {
+            let next = selected || value == "listings" ? nil : value
             if selection == "followers" && next != "followers" { cancelFollowers() }
+            if selection == "collections" && next != "collections" { openCollection(nil) }
             selection = next
             if next == "followers", profile?.followersLoaded != true, profile?.followersLoading != true { loadFollowers() }
         } label: {
             HStack(spacing: 4) { if let count { Text("\(count)").fontWeight(.semibold) }; Text(label) }
-                .font(.caption).foregroundStyle(selection == value ? MarketTheme.green : MarketTheme.muted)
+                .font(.caption).foregroundStyle(selected ? MarketTheme.green : MarketTheme.muted)
         }.buttonStyle(.plain).accessibilityIdentifier("profile\(label)")
-            .accessibilityAddTraits(selection == value ? .isSelected : [])
+            .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
 }

@@ -147,7 +147,7 @@ struct ConversationView: View {
         })
     }
     @State private var orderID: String?
-    private var current: MarketConversation { store.snapshot.conversations.first(where: { $0.id == conversation.id }) ?? conversation }
+    private var current: MarketConversation { store.snapshot.conversations.first(where: { $0.id == conversation.id }) ?? MarketConversation(id:conversation.id, name:conversation.name, messages:[]) }
     private var visibleMessages: [MarketMessage] { threadKey == "*" ? current.messages : current.messages.filter { $0.threadKey == threadKey } }
     private var incomingIDs: [String] { visibleMessages.filter { !$0.mine && viewportIncoming.contains($0.id) }.map(\.id) }
     var body: some View {
@@ -161,6 +161,9 @@ struct ConversationView: View {
                     ScrollView {
                         LazyVStack(spacing: 13) {
                             Label("Private conversation", systemImage: "lock.fill").font(.system(size: 11)).foregroundStyle(MarketTheme.muted).padding(.vertical, 15)
+                            if !current.messages.isEmpty && current.messages.allSatisfy({$0.id.hasPrefix("notice-")}) {
+                                Text("New chat messages use your Market profile.").font(.caption).foregroundStyle(MarketTheme.muted)
+                            } else { ChatTimerControl(peer:conversation.id) }
                             if context?.orderId == nil {
                                 EscrowInboxCards(peer: conversation.id, listing: context?.listing)
                             }
@@ -232,6 +235,7 @@ struct ConversationView: View {
             if message.createdAt > 0 { Text(Date(timeIntervalSince1970: Double(message.createdAt)), style: .time) }
             if message.mine { Text(NativeMessagePresentation.delivery(message.delivery)) }
             Spacer(minLength: 4)
+            if message.id.hasPrefix("notice-") { Text("Anonymous notice") } else {
             Button { reactionMessageID = message.id } label: { Image(systemName: "face.smiling") }
                 .buttonStyle(.plain).accessibilityLabel("React to message").disabled(store.demo || store.busy)
                 .popover(isPresented: Binding(get: { reactionMessageID == message.id }, set: { if !$0 { reactionMessageID = nil } })) {
@@ -241,6 +245,7 @@ struct ConversationView: View {
                         }
                     }.padding(20)
                 }
+            }
         }.font(.system(size: 10)).foregroundStyle(MarketTheme.muted)
     }
     private func clearActiveContext() {

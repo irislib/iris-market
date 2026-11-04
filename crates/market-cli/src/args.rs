@@ -1,4 +1,5 @@
 use anyhow::{Result, bail};
+use iris_market_core::messaging::Retention;
 use std::path::PathBuf;
 
 pub const HELP: &str = "Iris Market
@@ -20,6 +21,17 @@ pub const HELP: &str = "Iris Market
   iris-market order-update <profile> <order-id> <patch.json|-> [--wait 0]
   iris-market order-archive <profile> <order-id>
   iris-market order-restore <profile> <order-id>
+  iris-market settings <profile> [retention [follow|keep|expire <seconds>]]
+  iris-market timer <profile> <peer-id> [off|<seconds>]
+  iris-market inbox <profile> [peer-id] [--wait 0]
+  iris-market notify-seller <profile> <listing-id> [--wait 5]
+  iris-market notice-status <profile> <listing-id> [--wait 0]
+  iris-market saved <profile>
+  iris-market listing <profile> <listing-id> [--wait 5]
+  iris-market profile <profile> <author-id> [--wait 5]
+  iris-market reviews <profile> <author-id|listing-id> [--wait 0]
+  iris-market review <profile> <author-id> <review.json|->
+  iris-market private-matches <profile>
   iris-market snapshot <profile> [--wait 0]
   iris-market preview <isolated-directory>
   iris-market command <profile> '<JSON>' [--wait 2]
@@ -45,20 +57,79 @@ Preview and help never connect to the network. Use -- before dash-prefixed text.
 pub enum Mode {
     Preview,
     Snapshot,
-    Search { query: String, side: String },
-    Publish { source: String },
-    Save { id: String },
-    Close { id: String },
-    Contact { id: String, author: String },
+    Settings {
+        retention_only: bool,
+        policy: Option<Retention>,
+    },
+    Timer {
+        peer: String,
+        set: Option<Option<u32>>,
+    },
+    Inbox {
+        peer: Option<String>,
+    },
+    Notice {
+        id: String,
+        send: bool,
+    },
+    Saved,
+    Reviews {
+        target: String,
+        product: bool,
+    },
+    PrivateMatches,
+    WriteReview {
+        target: String,
+        source: String,
+    },
+    Listing {
+        id: String,
+    },
+    Profile {
+        author: String,
+    },
+    Search {
+        query: String,
+        side: String,
+    },
+    Publish {
+        source: String,
+    },
+    Save {
+        id: String,
+    },
+    Close {
+        id: String,
+    },
+    Contact {
+        id: String,
+        author: String,
+    },
     Invite,
-    Accept { source: String },
-    Send { peer: String, text: String },
+    Accept {
+        source: String,
+    },
+    Send {
+        peer: String,
+        text: String,
+    },
     FriendPosts,
     Orders,
-    OrderRequest { id: String, source: Option<String> },
-    OrderUpdate { id: String, source: String },
-    OrderArchive { id: String, archived: bool },
-    Command { request: String },
+    OrderRequest {
+        id: String,
+        source: Option<String>,
+    },
+    OrderUpdate {
+        id: String,
+        source: String,
+    },
+    OrderArchive {
+        id: String,
+        archived: bool,
+    },
+    Command {
+        request: String,
+    },
     Serve,
     Mcp,
 }
@@ -139,6 +210,17 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Invocation> {
     }
     if ![
         "preview",
+        "settings",
+        "timer",
+        "inbox",
+        "notify-seller",
+        "notice-status",
+        "saved",
+        "listing",
+        "profile",
+        "reviews",
+        "review",
+        "private-matches",
         "snapshot",
         "search",
         "publish",
@@ -218,9 +300,12 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Invocation> {
     }
     let count = positional.len();
     let expected = match command {
-        "search" => 1..=2,
+        "settings" => 1..=4,
+        "inbox" | "search" => 1..=2,
+        "timer" => 2..=3,
+        "notify-seller" | "notice-status" | "listing" | "profile" | "reviews" => 2..=2,
         "publish" | "save" | "close" | "contact" | "accept" | "command" => 2..=2,
-        "send" => 3..=3,
+        "send" | "review" => 3..=3,
         "order-request" => 2..=3,
         "order-update" => 3..=3,
         "order-archive" | "order-restore" => 2..=2,
@@ -235,6 +320,97 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Invocation> {
     let dir = PathBuf::from(&positional[0]);
     let argument = || positional[1].clone();
     let mode = match command {
+        "settings" => {
+            let args = &positional[1..];
+            let policy = match args
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .as_slice()
+            {
+                [] | ["retention"] => None,
+                ["retention", "follow"] => Some(Retention::Follow),
+                ["retention", "keep"] => Some(Retention::Keep),
+                ["retention", "expire", value] => Some(Retention::Expire {
+                    seconds: duration(value)?,
+                }),
+                _ => bail!("Use settings <profile> retention [follow|keep|expire <seconds>]"),
+            };
+            Mode::Settings {
+                retention_only: !args.is_empty(),
+                policy,
+            }
+        }
+        "timer" => {
+            if !public_key(&argument()) {
+                bail!("Supply the peer ID from the conversation");
+            }
+            Mode::Timer {
+                peer: argument(),
+                set: positional
+                    .get(2)
+                    .map(|s| {
+                        if s == "off" {
+                            Ok(None)
+                        } else {
+                            duration(s).map(Some)
+                        }
+                    })
+                    .transpose()?,
+            }
+        }
+        "inbox" => {
+            let peer = positional.get(1).cloned();
+            if peer.as_ref().is_some_and(|p| !public_key(p)) {
+                bail!("Supply the peer ID from the conversation");
+            }
+            Mode::Inbox { peer }
+        }
+        "notify-seller" | "notice-status" => {
+            listing_author(&argument())?;
+            Mode::Notice {
+                id: argument(),
+                send: command == "notify-seller",
+            }
+        }
+        "reviews" | "review" => {
+            let input = argument();
+            let product = !public_key(&input);
+            if command == "review" && product {
+                bail!("Choose the profile public key to review");
+            }
+            let target = if product {
+                let id = input.strip_prefix("30402:").unwrap_or(&input);
+                listing_author(id)?;
+                if id.starts_with("38383:") {
+                    id.into()
+                } else {
+                    format!("30402:{id}")
+                }
+            } else {
+                input
+            };
+            if command == "review" {
+                Mode::WriteReview {
+                    target,
+                    source: positional[2].clone(),
+                }
+            } else {
+                Mode::Reviews { target, product }
+            }
+        }
+        "private-matches" => Mode::PrivateMatches,
+        "saved" => Mode::Saved,
+        "listing" => {
+            listing_author(&argument())?;
+            Mode::Listing { id: argument() }
+        }
+        "profile" => {
+            if !public_key(&argument()) {
+                bail!("Supply a profile public key");
+            }
+            Mode::Profile { author: argument() }
+        }
         "preview" => Mode::Preview,
         "snapshot" => Mode::Snapshot,
         "search" => {
@@ -301,7 +477,15 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Invocation> {
     };
     let default_wait = match &mode {
         Mode::Preview | Mode::Snapshot | Mode::Invite | Mode::Serve | Mode::Mcp => 0,
-        Mode::FriendPosts => 0,
+        Mode::WriteReview { .. }
+        | Mode::Reviews { .. }
+        | Mode::PrivateMatches
+        | Mode::FriendPosts
+        | Mode::Settings { .. }
+        | Mode::Timer { .. }
+        | Mode::Inbox { .. }
+        | Mode::Saved
+        | Mode::Notice { send: false, .. } => 0,
         Mode::Command { .. } => 2,
         Mode::Orders
         | Mode::OrderRequest { .. }
@@ -314,6 +498,14 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Invocation> {
         mode,
         wait: wait.unwrap_or(default_wait),
     })
+}
+
+fn duration(value: &str) -> Result<u32> {
+    value
+        .parse::<u32>()
+        .ok()
+        .filter(|n| *n > 0)
+        .ok_or_else(|| anyhow::anyhow!("Choose a positive whole number of seconds"))
 }
 
 #[cfg(test)]

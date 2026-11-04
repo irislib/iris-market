@@ -18,13 +18,24 @@ use std::{
 };
 use tokio::sync::Notify;
 
-const MESSAGE: &str = "Someone wants to buy from you on market.iris.to. Open Iris Market to set up private messaging.";
+pub(crate) const MESSAGE: &str = "Someone wants to buy from you on market.iris.to. Open Iris Market to set up private messaging.";
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct Notice {
+    #[serde(default)]
+    pub(crate) recorded: bool,
     pub until: u64,
     status: String,
     event: Option<Event>,
+}
+
+impl Notice {
+    pub(crate) fn needs_history(&self) -> bool {
+        self.status == "sent" && !self.recorded
+    }
+    pub(crate) fn created(&self) -> u64 {
+        self.until.saturating_sub(86400)
+    }
 }
 
 fn eligible_listing(state: &State, id: &str) -> Result<PublicKey> {
@@ -216,6 +227,7 @@ impl Market {
         chat.save_merchant_notice(
             merchant,
             Notice {
+                recorded: false,
                 until: listing::now() + 86400,
                 status: "queued".into(),
                 event: Some(event),
@@ -296,7 +308,9 @@ pub(crate) async fn deliver_pending(
                 {
                     row.status = status.into();
                     row.event = None;
-                    let _ = chat.save_merchant_notice(merchant, row);
+                    if chat.save_merchant_notice(merchant, row).is_ok() {
+                        s.revision += 1;
+                    }
                 }
             }
         }

@@ -8,7 +8,7 @@ export function canNotifySeller(listing:(MarketListing & {externalOrder?:unknown
     && (!listing.expiration || listing.expiration > Date.now()/1000) && listing.author !== owner;
 }
 
-export function sellerNoticeControl(merchant:string, notices:ReturnType<typeof merchantNotices>, stillEligible:()=>boolean) {
+export function sellerNoticeControl(merchant:string, notices:Pick<ReturnType<typeof merchantNotices>,'status'|'queue'>, stillEligible:()=>boolean) {
   const root = element('div', undefined, 'seller-notice');
   const button = element('button','Notify seller anonymously','button secondary');
   const copy = element('p','Sends “'+noticeMessage+'”','small muted');
@@ -21,10 +21,11 @@ export function sellerNoticeControl(merchant:string, notices:ReturnType<typeof m
   function show(state:string) {
     revision++;
     root.hidden = state === 'unavailable';
-    button.hidden = !['available','no-inbox'].includes(state);
+    button.hidden = !['available','no-inbox','locked'].includes(state);
     button.disabled = state !== 'available';
     copy.hidden = state !== 'available';
-    feedback.textContent = state === 'sent' ? 'Notice accepted by the seller’s inbox relay.' : state === 'no-inbox' ? 'This seller hasn’t published an inbox for anonymous notices.' : state === 'queued' ? 'Anonymous notice queued.' : '';
+    if(state==='queued')setTimeout(()=>{if(root.isConnected)void notices.status(merchant).then(show).catch(()=>{});},2000);
+    feedback.textContent = state === 'sent' ? 'Notice accepted by the seller’s inbox relay.' : state === 'locked' ? 'Unlock your profile to save a notice in its private history.' : state === 'no-inbox' ? 'This seller hasn’t published an inbox for anonymous notices.' : state === 'queued' ? 'Anonymous notice queued.' : '';
   }
   const initial = revision;
   void notices.status(merchant).then(s => {if (revision === initial) show(s);}).catch(()=>{});

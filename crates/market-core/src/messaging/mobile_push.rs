@@ -395,6 +395,18 @@ fn resolve_inner(
         if let Some(resolution) = cached
             .iter()
             .find(|r| r.notification_id == event.id.to_hex())
+            && resolution
+                .peer_id
+                .as_ref()
+                .zip(resolution.message_id.as_ref())
+                .is_some_and(|(peer, id)| {
+                    state.conversations.get(peer).is_some_and(|c| {
+                        c.messages.iter().any(|m| {
+                            m.id == *id
+                                && state.retention.visible(m.created_at, m.expires_at, now())
+                        })
+                    })
+                })
             && permitted(resolution, &policy)
         {
             resolutions.push((
@@ -511,6 +523,13 @@ fn message_resolution(
         || (inner.pubkey != message.sender && Some(inner.pubkey) != message.sender_device)
         || inner.content.len() > MAX_MESSAGE_BYTES
     {
+        return None;
+    }
+    if !state.retention.visible(
+        inner.created_at.as_secs(),
+        inner.tags.expiration().map(|t| t.as_secs()),
+        now(),
+    ) {
         return None;
     }
     let id = inner.id?.to_hex();

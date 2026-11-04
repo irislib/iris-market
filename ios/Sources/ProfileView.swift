@@ -90,6 +90,7 @@ struct AISettingsView: View {
     var body: some View {
         MarketNavigationContainer {
             Form {
+                Section("Messages") { ChatTimerControl() }
                 Section {
                     Toggle("AI search", isOn: $settings.ai.enabled).accessibilityIdentifier("enableAI")
                     if !local && NativeAIReadiness.canSelectLocalOnTap(provider: settings.ai.provider, model: settings.ai.model, endpoint: settings.ai.baseUrl), let reason = store.appleAIUnavailableReason {

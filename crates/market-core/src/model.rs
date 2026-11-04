@@ -286,6 +286,7 @@ pub struct Message {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Conversation {
+    pub timer_seconds: Option<u64>,
     pub id: String,
     pub name: String,
     pub messages: Vec<Message>,
@@ -293,6 +294,7 @@ pub struct Conversation {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Snapshot {
+    pub chat_retention: crate::messaging::Retention,
     pub private_matching: Option<serde_json::Value>,
     pub search_discovery: crate::search_discovery::Status,
     pub search_generation: u64,
@@ -454,6 +456,13 @@ pub enum Command {
     },
     MarkNotificationsPresented {
         event_ids: Vec<String>,
+    },
+    SetChatRetention {
+        policy: crate::messaging::Retention,
+    },
+    SetChatTimer {
+        peer_id: String,
+        seconds: Option<u32>,
     },
     SendMessage {
         peer_id: String,

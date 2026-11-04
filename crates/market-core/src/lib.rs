@@ -123,6 +123,14 @@ impl State {
             .then(|| self.settings.ai.home_feed_prompt())
     }
     fn snapshot(&mut self) -> Result<Snapshot> {
+        // Guest profiles do not run the NDR retry loop, but their local inbox
+        // must still erase expired notice history when it is opened.
+        if self.profile_name_required
+            && let Some(chat) = self.messaging.as_mut()
+            && chat.expire_history().map_err(anyhow::Error::msg)?
+        {
+            self.revision += 1;
+        }
         self.profiles.refresh_public_cache();
         if let Some(profile) = self.profile.as_mut() {
             let mut refreshed = self.profiles.profile(&profile.person.author);
@@ -242,6 +250,11 @@ impl State {
         }
         let plan_pending = self.ai_search && !self.search_plan_applied && !self.search_plan_locked;
         Ok(Snapshot {
+            chat_retention: self
+                .messaging
+                .as_ref()
+                .map(|m| m.retention())
+                .unwrap_or_default(),
             private_matching: self.messaging.as_ref().and_then(|m| m.matching_view()),
             search_discovery: self.search_discovery.status(),
             search_generation: self.search_request,
@@ -304,6 +317,7 @@ impl State {
                     m.conversations()
                         .into_iter()
                         .map(|c| Conversation {
+                            timer_seconds: m.chat_timer(&c.id),
                             name: self.profiles.person(&c.id).name,
                             id: c.id,
                             messages: c
@@ -1155,6 +1169,25 @@ impl Market {
                         .mark_notifications_presented(&event_ids)
                         .map_err(anyhow::Error::msg)?;
                 }
+            }
+            Command::SetChatRetention { policy } => {
+                s.messaging
+                    .as_mut()
+                    .context("Private storage unavailable")?
+                    .set_retention(policy)
+                    .map_err(anyhow::Error::msg)?;
+            }
+            Command::SetChatTimer { peer_id, seconds } => {
+                anyhow::ensure!(
+                    !s.demo && !s.profile_name_required,
+                    "Set up private messaging first"
+                );
+                s.messaging
+                    .as_mut()
+                    .context("Private messaging unavailable")?
+                    .set_chat_timer(&peer_id, seconds)
+                    .map_err(anyhow::Error::msg)?;
+                self.notify.notify_waiters();
             }
             Command::SendMessage {
                 peer_id,

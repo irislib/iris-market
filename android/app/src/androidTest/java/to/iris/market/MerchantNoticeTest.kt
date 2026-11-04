@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.ui.Modifier
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.lifecycle.ViewModel
@@ -56,13 +57,15 @@ class MerchantNoticeTest {
             }
             model
         }
+        val settingsOpen=mutableStateOf(false)
         try {
             compose.setContent {
                 val snapshot by model.state.collectAsState()
                 val listing = snapshot.listings.firstOrNull { it.id == id }
                 MarketTheme(false) {
                     Box(Modifier.fillMaxSize().systemBarsPadding()) {
-                        if (listing != null) ListingDetail(listing, false, model, false, null, {}, {}, {})
+                        if(settingsOpen.value) SettingsView(snapshot,model,false) { settingsOpen.value=false }
+                        else if (listing != null) ListingDetail(listing, false, model, false, null, {}, {}, {})
                     }
                 }
             }
@@ -75,10 +78,27 @@ class MerchantNoticeTest {
                 val file = File(app.getExternalFilesDir(null), "merchant-notice.png")
                 file.outputStream().use { check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
             } finally { bitmap.recycle() }
+            check(model.state.value.conversations.none {c->c.messages.any {it.id.startsWith("notice-")}})
             button.performClick()
             compose.waitUntil(30_000) {
                 compose.onAllNodesWithText("Notice accepted by the seller’s inbox relay.").fetchSemanticsNodes().isNotEmpty()
             }
+            compose.waitUntil(30_000) { model.state.value.conversations.flatMap {it.messages}.count {it.id.startsWith("notice-")} == 1 }
+            compose.runOnUiThread {settingsOpen.value=true}
+            compose.onNodeWithText("Message retention").performClick()
+            compose.onNodeWithTag("chatTimerMode").performClick()
+            compose.onNodeWithText("Delete all messages on this device after…").performClick()
+            compose.onNodeWithTag("chatTimerDuration").performTextReplacement("75")
+            compose.onNodeWithTag("chatTimerUnit").performClick()
+            compose.onNodeWithText("seconds").performClick()
+            compose.waitForIdle()
+            val settingsImage=checkNotNull(instrumentation.uiAutomation.takeScreenshot())
+            try {
+                File(app.getExternalFilesDir(null),"chat-retention.png").outputStream().use {check(settingsImage.compress(Bitmap.CompressFormat.PNG,100,it))}
+            } finally {settingsImage.recycle()}
+            compose.onNodeWithTag("chatTimerSave").performClick()
+            compose.waitUntil(10_000) {model.state.value.chatRetention==LocalChatRetention("expire",75)}
+            compose.onNodeWithText("Delete all messages on this device after 75 seconds").assertExists()
         } finally {
             compose.activityRule.scenario.close()
             root.deleteRecursively()

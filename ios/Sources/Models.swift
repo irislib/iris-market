@@ -3,6 +3,7 @@ import Foundation
 struct SearchDiscoveryStatus: Decodable { let loading: Bool; let hasMore: Bool }
 
 struct MarketSnapshot: Decodable {
+    var chatRetention: MarketRetention? = nil
     var publicKey: String = ""
     var canSign = false
     var privateMatching: PrivateMatchInbox?
@@ -239,6 +240,7 @@ struct AISettings: Codable, Equatable {
     var curateFeed = false
 }
 struct MarketConversation: Decodable, Identifiable, Hashable {
+    var timerSeconds: Int64? = nil
     let id: String
     let name: String
     let messages: [MarketMessage]

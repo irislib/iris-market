@@ -199,6 +199,10 @@ private fun inboxContextTitle(context:MessageContext?,state:MarketSnapshot):Stri
         }
         context?.orderId?.let { id -> TextButton(onClick={openOrder(id)}) { Text(contextTitle) } }
         if(context?.listing!=null)Text(contextTitle,color=Muted,style=MaterialTheme.typography.bodySmall,modifier=Modifier.padding(vertical=8.dp))
+        val chatMessages = escrowState.conversations.firstOrNull { it.id == c.id }?.messages.orEmpty()
+        if (chatMessages.isNotEmpty() && chatMessages.all { it.id.startsWith("notice-") }) {
+            Text("New chat messages use your Market profile.",color=Muted,style=MaterialTheme.typography.bodySmall)
+        } else { ChatTimerControl(escrowState,model,c.id) }
         LazyColumn(Modifier.weight(1f).fillMaxWidth(),state=listState,contentPadding=PaddingValues(vertical=18.dp),verticalArrangement=Arrangement.spacedBy(10.dp)) {
             if(context?.orderId==null && escrowState.escrowInvites.isNotEmpty())item { EscrowCardsView(escrowState,model,c.id,context?.listing) }
             items(c.messages,key={it.id}) { m ->
@@ -211,7 +215,7 @@ private fun inboxContextTitle(context:MessageContext?,state:MarketSnapshot):Stri
                             Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(6.dp)) {
                                 if(m.createdAt>0)Text(java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT).format(java.util.Date(m.createdAt*1000)),style=MaterialTheme.typography.labelSmall)
                                 if(m.mine)Text(messageDeliveryLabel(m.delivery),style=MaterialTheme.typography.labelSmall)
-                                Box {
+                                if(m.id.startsWith("notice-")) Text("Anonymous notice",style=MaterialTheme.typography.labelSmall) else Box {
                                     IconButton(onClick={reactionTarget=m.id},enabled=!busy,modifier=Modifier.size(28.dp)){Icon(Icons.Filled.AddReaction,"React to message",Modifier.size(16.dp))}
                                     DropdownMenu(expanded=reactionTarget==m.id,onDismissRequest={reactionTarget=null}){messageEmoji.forEach {emoji->DropdownMenuItem(text={Text(emoji)},onClick={react(m.id,emoji)})}}
                                 }

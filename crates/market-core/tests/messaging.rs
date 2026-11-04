@@ -650,3 +650,71 @@ fn rapid_encrypted_messages_keep_sender_order_for_both_peers_after_restart() {
         );
     }
 }
+
+#[test]
+fn global_history_choice_applies_to_both_directions_and_survives_restart() {
+    use iris_market_core::messaging::Retention;
+    let paths = [
+        TempDir::new().unwrap(),
+        TempDir::new().unwrap(),
+        TempDir::new().unwrap(),
+    ];
+    let keys = [Keys::generate(), Keys::generate(), Keys::generate()];
+    let open = |i: usize| Messaging::open(paths[i].path(), keys[i].clone()).unwrap();
+    let mut a = open(0);
+    let mut others = [open(1), open(2)];
+    let owner = keys[0].public_key().to_hex();
+    fn has(chat: &Messaging, peer: &str, text: &str) -> bool {
+        chat.conversations()
+            .iter()
+            .filter(|c| c.id == peer)
+            .flat_map(|c| &c.messages)
+            .any(|m| m.text == text)
+    }
+    a.set_retention(Retention::Keep).unwrap();
+    for (i, b) in others.iter_mut().enumerate() {
+        let peer = keys[i + 1].public_key().to_hex();
+        b.accept_invite(&a.invite().unwrap()).unwrap();
+        exchange(&mut a, b);
+        b.set_chat_timer(&owner, Some(2 + i as u32)).unwrap();
+        exchange(&mut a, b);
+        assert_eq!(a.chat_timer(&peer), Some(2 + i as u64));
+        a.send(&peer, "sent keep").unwrap();
+        exchange(&mut a, b);
+        b.send(&owner, "received keep").unwrap();
+        exchange(&mut a, b);
+        assert!(has(b, &owner, "sent keep") && has(&a, &peer, "received keep"));
+    }
+    drop(a);
+    std::thread::sleep(std::time::Duration::from_millis(3100));
+    let mut a = open(0);
+    assert_eq!(a.retention(), Retention::Keep);
+    for (i, b) in others.iter_mut().enumerate() {
+        let peer = keys[i + 1].public_key().to_hex();
+        assert!(has(&a, &peer, "sent keep") && has(&a, &peer, "received keep"));
+        assert!(!has(b, &owner, "sent keep") && !has(b, &owner, "received keep"));
+        let shared = if i == 0 { None } else { Some(3600) };
+        b.set_chat_timer(&owner, shared).unwrap();
+        exchange(&mut a, b);
+        assert_eq!(a.chat_timer(&peer), shared.map(u64::from));
+    }
+    a.set_retention(Retention::Expire { seconds: 2 }).unwrap();
+    for (i, b) in others.iter_mut().enumerate() {
+        let peer = keys[i + 1].public_key().to_hex();
+        a.send(&peer, "sent local").unwrap();
+        exchange(&mut a, b);
+        b.send(&owner, "received local").unwrap();
+        exchange(&mut a, b);
+        assert!(has(&a, &peer, "sent local") && has(&a, &peer, "received local"));
+    }
+    drop(a);
+    std::thread::sleep(std::time::Duration::from_millis(2100));
+    let mut a = open(0);
+    assert_eq!(a.retention(), Retention::Expire { seconds: 2 });
+    a.set_retention(Retention::Keep).unwrap();
+    for (i, b) in others.iter().enumerate() {
+        let peer = keys[i + 1].public_key().to_hex();
+        assert!(!has(&a, &peer, "sent local") && !has(&a, &peer, "received local"));
+        assert!(has(b, &owner, "sent local") && has(b, &owner, "received local"));
+    }
+}

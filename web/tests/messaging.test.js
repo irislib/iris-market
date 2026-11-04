@@ -291,3 +291,88 @@ test('private durable outbox dispatches beyond library concurrency while ACKs re
   await waitFor(async()=>(await alice.vault.list('v1/runtime-outbox/')).length===0);
   assert(alice.app.state().conversations.flatMap(thread=>thread.messages).filter(message=>message.text.startsWith('Pending ACK ')).every(message=>message.delivery==='sent'));
 });
+
+test('shared chat timer expires both directions; a global local policy applies across chats and restarts', {timeout:30_000}, async t=>{
+  const bus=memoryRelay(),a=client(bus),b=client(bus),c=client(bus);
+  t.after(async()=>{for(const v of [a,b,c])await v.app.destroy();});
+  for(const v of [a,b,c])await v.app.createAccount();
+  await waitFor(()=>[a,b,c].every(v=>v.app.state().canSend));
+  const [ak,bk,ck]=[a,b,c].map(v=>v.app.state().ownerPubkey);
+  const texts=(v,peer)=>v.app.state().conversations.find(x=>x.pubkey===peer)?.messages.map(m=>m.text)??[];
+  await a.app.open(bk);await a.app.open(ck);
+  // Establish each verified NDR session.
+  for(const [p,peer] of [[b,bk],[c,ck]]) {
+    await a.app.send(peer,'start');await waitFor(()=>texts(p,ak).includes('start'));
+  }
+  await a.app.setRetention({mode:'keep'});
+  await b.app.setChatTimer(ak,2);
+  await waitFor(()=>a.app.state().chatTimers[bk]?.seconds===2);
+  await c.app.setChatTimer(ak,3);
+  await waitFor(()=>a.app.state().chatTimers[ck]?.seconds===3);
+  for(const [p,peer] of [[b,bk],[c,ck]]) {
+    await a.app.send(peer,'outgoing keep');await p.app.send(ak,'incoming keep');
+    await waitFor(()=>texts(a,peer).includes('incoming keep')&&texts(p,ak).includes('outgoing keep'));
+  }
+  await new Promise(r=>setTimeout(r,3250));
+  await a.app.lock();await a.app.unlock();
+  for(const [p,peer] of [[b,bk],[c,ck]]) {
+    assert.deepEqual(texts(a,peer).slice(-2).sort(),['incoming keep','outgoing keep']);
+    assert.deepEqual(texts(p,ak),['start']);
+    const shared=peer===bk?null:3600;
+    await p.app.setChatTimer(ak,shared);
+    await waitFor(()=>a.app.state().chatTimers[peer]?.seconds===shared);
+  }
+  await a.app.setRetention({mode:'expire',seconds:2});
+  for(const [p,peer] of [[b,bk],[c,ck]]){
+    await a.app.send(peer,'outgoing local');await p.app.send(ak,'incoming local');
+    await waitFor(()=>texts(a,peer).includes('incoming local')&&texts(p,ak).includes('outgoing local'));
+  }
+  await a.app.lock();await new Promise(r=>setTimeout(r,2250));await a.app.unlock();
+  assert.deepEqual(a.app.state().retention,{mode:'expire',seconds:2});
+  for(const [p,peer] of [[b,bk],[c,ck]]){
+    assert.deepEqual(texts(a,peer),[]);
+    assert.ok(texts(p,ak).includes('outgoing local')&&texts(p,ak).includes('incoming local'));
+  }
+  assert.ok(!bus.frames.some(e=>e.content.includes('incoming local')||e.content.includes('messageTtlSeconds')));
+  await a.app.setRetention({mode:'follow'});
+  assert.deepEqual(texts(a,bk),[]);
+});
+
+test('signed-in notice history is private to its account, written only after acceptance and not copied onto NDR',async t=>{
+  const bus=memoryRelay(),base=bus.factory;let accept=false;
+  bus.factory=()=>{const original=base();return {...original,async publish(e,o){if(e.kind===1059&&!e.tags.some(t=>t[0]==='v')&&!accept)return {remoteAccepted:false};return original.publish(e,o);}};};
+  const backend=memoryBackend(),first=client(bus,backend);await first.app.createAccount();await waitFor(()=>first.app.state().canSend);
+  const seller=generateSecretKey(),peer=getPublicKey(seller),listed=finalizeEvent({kind:10050,content:'',created_at:Math.floor(Date.now()/1000),tags:[['relay','wss://test.invalid']]},seller);
+  bus.events.set(listed.id,listed);
+  const service=first.app.sellerNotices();await service.queue(peer);await service.flush();
+  assert.ok(!first.app.state().conversations.some(c=>c.pubkey===peer));
+  accept=true;await service.flush();await service.flush();
+  assert.equal(first.app.state().conversations.find(c=>c.pubkey===peer).messages.length,1);
+  await first.app.destroy();assert.equal(first.app.state().conversations.length,0);
+  const restored=client(bus,backend);await restored.app.restore();t.after(()=>restored.app.destroy());
+  const messages=restored.app.state().conversations.find(c=>c.pubkey===peer).messages;
+  assert.equal(messages.length,1);assert.equal(messages[0].delivery,'sent');assert.match(messages[0].text,/Someone wants to buy from you/);
+  assert.ok(bus.frames.every(e=>!e.content.includes('Someone wants to buy')));
+  const other=client(bus);await other.app.createAccount();t.after(()=>other.app.destroy());
+  assert.ok(!other.app.state().conversations.some(c=>c.pubkey===peer));
+});
+
+test('a local keep override does not resend expired ciphertext after reconnect', {timeout:20_000},async t=>{
+  const bus=memoryRelay(),factory=bus.factory;let hold=false;
+  bus.factory=()=>{const wire=factory();return {...wire,async publish(event,options){
+    if(hold&&event.kind===1060)return {remoteAccepted:false};
+    return wire.publish(event,options);
+  }};};
+  const a=client(bus),b=client(bus);t.after(async()=>{await a.app.destroy();await b.app.destroy();});
+  await a.app.createAccount();await b.app.createAccount();await waitFor(()=>a.app.state().canSend&&b.app.state().canSend);
+  const peer=b.app.state().ownerPubkey,owner=a.app.state().ownerPubkey;
+  await a.app.open(peer);await a.app.send(peer,'warm up');
+  await waitFor(()=>b.app.state().conversations.some(c=>c.messages.some(m=>m.text==='warm up')));
+  await b.app.setRetention({mode:'keep'});await a.app.setRetention({mode:'keep'});
+  await a.app.setChatTimer(peer,1);await waitFor(()=>b.app.state().chatTimers[owner]?.seconds===1);
+  hold=true;await a.app.send(peer,'expired before delivery');await a.app.lock();
+  await new Promise(r=>setTimeout(r,1250));hold=false;await a.app.unlock();await waitFor(()=>a.app.state().canSend);
+  await a.app.reconnect();await new Promise(r=>setTimeout(r,250));
+  assert.equal(a.app.state().conversations.find(c=>c.pubkey===peer).messages.find(m=>m.text==='expired before delivery')?.delivery,'failed');
+  assert.ok(b.app.state().conversations.every(c=>!c.messages.some(m=>m.text==='expired before delivery')));
+});

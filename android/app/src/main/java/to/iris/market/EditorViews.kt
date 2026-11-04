@@ -204,6 +204,7 @@ import org.json.JSONObject
         Row(verticalAlignment=Alignment.CenterVertically) {
             Icon(Icons.Filled.Settings,null,tint=Forest);Spacer(Modifier.width(10.dp));Text("Settings",style=MaterialTheme.typography.titleLarge,fontWeight=FontWeight.SemiBold)
         }
+        ChatTimerControl(state,model)
         HorizontalDivider()
         Row(verticalAlignment=Alignment.CenterVertically) {
             Text("AI search",modifier=Modifier.weight(1f),fontWeight=FontWeight.Medium)

@@ -139,6 +139,15 @@ fn input(source: &str, file: bool, stdin: &mut impl Read) -> Result<String> {
 
 fn action(mode: &Mode, stdin: &mut impl Read) -> Result<Option<Value>> {
     Ok(Some(match mode {
+        Mode::Settings {
+            policy: Some(policy),
+            ..
+        } => json!({"type":"set_chat_retention","policy":policy}),
+        Mode::Timer {
+            peer,
+            set: Some(seconds),
+        } => json!({"type":"set_chat_timer","peer_id":peer,"seconds":seconds}),
+        Mode::Profile { author } => json!({"type":"load_profile","author":author}),
         Mode::Search { query, side } => json!({"type":"set_filter","query":query,"side":side}),
         Mode::Publish { source } => {
             let draft: iris_market_core::model::Draft =
@@ -282,9 +291,41 @@ fn selected_order_result(state: &Value, order: Option<&Value>) -> Value {
     json!({"order":order,"live_location_supported":state["live_location_supported"],"status":state["status"],"error":state["error"],"note":"queued means saved locally; sent means relay acknowledgement, not recipient receipt or payment. Pending updates resume when this profile is opened."})
 }
 
+fn thread<'a>(state: &'a Value, peer: &str) -> Option<&'a Value> {
+    state["conversations"]
+        .as_array()?
+        .iter()
+        .find(|c| c["id"] == peer)
+}
+
 fn result(mode: &Mode, before: &Value, state: &Value) -> Value {
     let mut output = json!({"status":state["status"],"error":state["error"]});
     match mode {
+        Mode::Notice { .. }
+        | Mode::Reviews { .. }
+        | Mode::WriteReview { .. }
+        | Mode::Listing { .. } => unreachable!("These operations return their own result"),
+        Mode::PrivateMatches => return state["private_matching"].clone(),
+        Mode::Settings { retention_only, .. } => {
+            return if *retention_only {
+                state["chat_retention"].clone()
+            } else {
+                json!({"settings":state["settings"],"retention":state["chat_retention"]})
+            };
+        }
+        Mode::Timer { peer, .. } => {
+            return json!({"peer":peer,"seconds":thread(state,peer).map(|c|&c["timer_seconds"]),"local_retention":state["chat_retention"]});
+        }
+        Mode::Inbox { peer } => {
+            return peer.as_ref().map_or_else(
+                || state["conversations"].clone(),
+                |peer| thread(state, peer).cloned().unwrap_or(Value::Null),
+            );
+        }
+        Mode::Saved => return state["saved_listings"].clone(),
+        Mode::Profile { .. } => {
+            return json!({"profile":state["profile"],"products":state["profile_listings"]});
+        }
         Mode::Preview | Mode::Snapshot | Mode::Command { .. } => return state.clone(),
         Mode::Search { .. } => return public_results(state),
         Mode::Publish { .. } => {
@@ -360,10 +401,18 @@ fn sleep_remaining(deadline: Instant) {
     }
 }
 
-fn wait_for_listing(app: &iris_market_core::Market, id: &str, deadline: Instant) -> Result<()> {
+fn wait_for_listing(app: &iris_market_core::Market, id: &str, deadline: Instant) -> Result<Value> {
     loop {
-        if listing(&snapshot(app)?, id).is_some() {
-            return Ok(());
+        if let Ok(raw) = app.trade_listing(id, false) {
+            let row: Value = serde_json::from_str(&raw)?;
+            anyhow::ensure!(
+                row["status"] == "active"
+                    && row["expires_at"]
+                        .as_u64()
+                        .is_none_or(|t| t > iris_market_core::listing::now()),
+                "Listing is no longer available"
+            );
+            return Ok(row);
         }
         if Instant::now() >= deadline {
             bail!("Listing is not in local inventory; retry search with a longer --wait");
@@ -439,6 +488,21 @@ fn run(invocation: Invocation) -> Result<()> {
         Invocation::Profile { dir, mode, wait } => (dir, mode, wait),
     };
     // Validate and bound input before opening a profile or connecting to relays.
+    let review_input = if let Mode::WriteReview { source, .. } = &mode {
+        let draft: Value = serde_json::from_str(&input(source, true, &mut io::stdin().lock())?)
+            .map_err(|_| anyhow::anyhow!("Invalid review JSON"))?;
+        let rating = draft["rating"]
+            .as_u64()
+            .filter(|r| (1..=5).contains(r))
+            .context("Choose a rating from 1 to 5")?;
+        let body = draft["body"]
+            .as_str()
+            .filter(|s| s.chars().count() <= 3000)
+            .context("Choose a review of up to 3000 characters")?;
+        Some((rating as u8, body.to_owned()))
+    } else {
+        None
+    };
     let request = action(&mode, &mut io::stdin().lock())?;
     let demo = mode == Mode::Preview;
     let secret = if demo {
@@ -447,9 +511,56 @@ fn run(invocation: Invocation) -> Result<()> {
         std::env::var("IRIS_MARKET_SECRET_KEY")
             .context("Set IRIS_MARKET_SECRET_KEY using secure credential storage")?
     };
-    let app = iris_market_core::Market::open(&dir, &secret, demo)?;
+    let app = if !demo
+        && (std::env::var_os("IRIS_MARKET_OWNER_PUBKEY").is_some()
+            || std::env::var_os("IRIS_MARKET_PRIVATE_DIR").is_some())
+    {
+        let device = nostr::Keys::parse(&secret)?;
+        let owner = std::env::var("IRIS_MARKET_OWNER_PUBKEY")
+            .ok()
+            .as_deref()
+            .map(nostr::PublicKey::parse)
+            .transpose()?
+            .unwrap_or(device.public_key());
+        let private = std::env::var_os("IRIS_MARKET_PRIVATE_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| dir.clone());
+        anyhow::ensure!(
+            private.join("private-messages/messages.sqlite3").is_file(),
+            "Select the existing native profile’s private store"
+        );
+        iris_market_core::Market::open_identity_private(
+            &dir,
+            &private,
+            owner,
+            (owner == device.public_key()).then(|| device.clone()),
+            device,
+            None,
+            false,
+        )?
+    } else {
+        iris_market_core::Market::open(&dir, &secret, demo)?
+    };
     let deadline = Instant::now() + Duration::from_secs(wait);
-    if mode == Mode::FriendPosts {
+    if let Mode::Listing { id } = &mode {
+        println!("{}", wait_for_listing(&app, id, deadline)?);
+    } else if let (Mode::WriteReview { target, .. }, Some((rating, body))) = (&mode, review_input) {
+        println!("{}", app.publish_review(target.clone(), rating, body)?);
+    } else if let Mode::Reviews { target, product } = &mode {
+        println!("{}", app.reviews(target.clone(), *product, wait > 0)?);
+    } else if let Mode::Notice { id, send } = &mode {
+        wait_for_listing(&app, id, deadline)?;
+        let mut status = if *send {
+            app.merchant_notice(id, true)?
+        } else {
+            app.merchant_notice(id, false)?
+        };
+        while status == "queued" && Instant::now() < deadline {
+            sleep_remaining(deadline);
+            status = app.merchant_notice(id, false)?;
+        }
+        println!("{}", json!({"status":status}));
+    } else if mode == Mode::FriendPosts {
         std::thread::sleep(Duration::from_secs(wait));
         println!("{}", app.friend_posts()?);
     } else if matches!(mode, Mode::Serve | Mode::Mcp) {
@@ -492,7 +603,12 @@ fn run(invocation: Invocation) -> Result<()> {
         let state = if demo
             || matches!(
                 mode,
-                Mode::Invite | Mode::Save { .. } | Mode::OrderArchive { .. }
+                Mode::Invite
+                    | Mode::Save { .. }
+                    | Mode::OrderArchive { .. }
+                    | Mode::Settings { .. }
+                    | Mode::Saved
+                    | Mode::Timer { .. }
             ) {
             snapshot(&app)?
         } else {

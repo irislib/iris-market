@@ -77,3 +77,14 @@ test('the button is limited to a current third-party signed offer',()=>{
   assert.equal(canNotifySeller(live,true),false);
   assert.equal(canNotifySeller(live,false,key),false);
 });
+
+test('anonymous guest history contains only accepted invitations and keeps a single copy after reopening',async()=>{
+  const f=fixture(),app=f.app();
+  await app.queue(key);await app.flush();
+  assert.deepEqual(await app.guestHistory(),[]);
+  f.accept();await app.flush();await app.queue(key);await app.flush();
+  const [chat]=await f.app().guestHistory();assert.equal(chat.pubkey,key);assert.equal(chat.messages.length,1);
+  assert.equal(chat.messages[0].text,noticeMessage);assert.equal(chat.messages[0].delivery,'sent');
+  assert.ok(chat.messages[0].id.startsWith('notice-'));
+  assert.ok(!f.sent.some(p=>p.event.id===chat.messages[0].id));
+});

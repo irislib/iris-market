@@ -657,6 +657,7 @@ mod tests {
     }
     fn message(id: &str, mine: bool) -> Message {
         Message {
+            expires_at: None,
             id: id.into(),
             context: None,
             text: "private fixture".into(),

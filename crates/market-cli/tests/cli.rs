@@ -283,3 +283,159 @@ fn friend_post_rules_are_only_returned_by_private_inspection() {
     let public = offline_command(&helper, &key, "search", &["--wait", "0"], None);
     assert!(!public.to_string().contains("Private test category"));
 }
+
+#[test]
+fn settings_retention_round_trips_between_native_core_and_fresh_cli_processes() {
+    use iris_market_core::messaging::Retention;
+    let fixture = Fixture::new();
+    let profile = offline_profile(&fixture, "retention");
+    let key = iris_market_core::generate_secret_key();
+    let open = || iris_market_core::Market::open(&profile, &key, false).unwrap();
+    assert_eq!(
+        offline_command(&profile, &key, "settings", &["retention", "keep"], None)["mode"],
+        "keep"
+    );
+    assert_eq!(
+        offline_command(&profile, &key, "settings", &["retention"], None)["mode"],
+        "keep"
+    );
+    let native = open();
+    let snapshot: serde_json::Value = serde_json::from_str(&native.snapshot().unwrap()).unwrap();
+    assert_eq!(snapshot["chat_retention"]["mode"], "keep");
+    native.command(&serde_json::json!({"type":"set_chat_retention","policy":Retention::Expire{seconds:75}}).to_string()).unwrap();
+    native.shutdown();
+    drop(native);
+    assert_eq!(
+        offline_command(&profile, &key, "settings", &["retention"], None),
+        serde_json::json!({"mode":"expire","seconds":75})
+    );
+    assert_eq!(
+        offline_command(&profile, &key, "settings", &["retention", "follow"], None)["mode"],
+        "follow"
+    );
+    assert_eq!(
+        offline_command(&profile, &key, "inbox", &[], None),
+        serde_json::json!([])
+    );
+    assert_eq!(
+        offline_command(&profile, &key, "saved", &[], None),
+        serde_json::json!([])
+    );
+}
+
+#[test]
+fn named_marketplace_reads_and_profile_feedback_use_the_shared_store() {
+    let f = Fixture::new();
+    let dir = offline_profile(&f, "marketplace-reads");
+    let secret = iris_market_core::generate_secret_key();
+    let owner = iris_market_core::identity::public_key(&secret).unwrap();
+    let post = offline_command(
+        &dir,
+        &secret,
+        "publish",
+        &["-", "--wait", "0"],
+        Some(r#"{"title":"Kitchen chair","description":"Pine","side":"offer"}"#),
+    );
+    let id = post["listing"]["id"].as_str().unwrap();
+    offline_command(&dir, &secret, "save", &[id, "--wait", "0"], None);
+    offline_command(
+        &dir,
+        &secret,
+        "search",
+        &["deliberately unmatched", "--wait", "0"],
+        None,
+    );
+    assert_eq!(
+        offline_command(&dir, &secret, "saved", &[], None)[0]["id"],
+        id
+    );
+    assert_eq!(
+        offline_command(&dir, &secret, "listing", &[id, "--wait", "0"], None)["title"],
+        "Kitchen chair"
+    );
+    let collection =
+        serde_json::json!({"type":"save_collection","title":"Kitchen","listing_ids":[id]})
+            .to_string();
+    offline_command(
+        &dir,
+        &secret,
+        "command",
+        &["-", "--wait", "0"],
+        Some(&collection),
+    );
+    let profile = offline_command(&dir, &secret, "profile", &[&owner, "--wait", "0"], None);
+    assert_eq!(profile["products"]["collections"][0]["title"], "Kitchen");
+    let other =
+        iris_market_core::identity::public_key(&iris_market_core::generate_secret_key()).unwrap();
+    assert_eq!(
+        offline_command(&dir, &secret, "reviews", &[id], None),
+        serde_json::json!([])
+    );
+    let written = offline_command(
+        &dir,
+        &secret,
+        "review",
+        &[&other, "-"],
+        Some(r#"{"rating":5,"body":"Reliable seller"}"#),
+    );
+    assert!(written.to_string().contains("Reliable seller"));
+    assert_eq!(
+        written,
+        offline_command(&dir, &secret, "reviews", &[&other], None)
+    );
+    assert!(offline_command(&dir, &secret, "private-matches", &[], None).is_null());
+}
+
+#[test]
+fn settings_reopens_the_native_linked_devices_separate_private_directory() {
+    use nostr::Keys;
+    let f = Fixture::new();
+    let profile = offline_profile(&f, "linked");
+    let private = f.0.join("device-private");
+    let owner = Keys::generate().public_key();
+    let device = Keys::generate();
+    let open = || {
+        iris_market_core::Market::open_identity_private(
+            &profile,
+            &private,
+            owner,
+            None,
+            device.clone(),
+            None,
+            false,
+        )
+        .unwrap()
+    };
+    let native = open();
+    native
+        .command(r#"{"type":"set_chat_retention","policy":{"mode":"keep"}}"#)
+        .unwrap();
+    native.shutdown();
+    drop(native);
+    let settings = |args: &[&str]| {
+        let out = cli()
+            .env("IRIS_MARKET_OWNER_PUBKEY", owner.to_hex())
+            .env(
+                "IRIS_MARKET_SECRET_KEY",
+                device.secret_key().to_secret_hex(),
+            )
+            .env("IRIS_MARKET_PRIVATE_DIR", &private)
+            .arg("settings")
+            .arg(&profile)
+            .arg("retention")
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()
+    };
+    assert_eq!(settings(&[])["mode"], "keep");
+    assert_eq!(settings(&["expire", "90"])["seconds"], 90);
+    let native = open();
+    let snapshot: Value = serde_json::from_str(&native.snapshot().unwrap()).unwrap();
+    assert_eq!(
+        snapshot["chat_retention"],
+        serde_json::json!({"mode":"expire","seconds":90})
+    );
+    native.shutdown();
+}

@@ -24,3 +24,7 @@
 /* Let the message list shrink inside the shell, keeping the composer visible. */
 .inbox-dialog.app-page .chat-main{min-height:0;flex:1 1 0}.inbox-dialog.app-page #chat-messages{min-height:0;max-height:none;flex:1 1 0}.inbox-dialog.app-page #chat-person,.inbox-dialog.app-page #chat-send{flex-shrink:0}.chat-message{flex-shrink:0}
 @media(max-width:760px){.chat-message-meta{flex-wrap:wrap}.chat-reaction-picker[open]{width:100%}.chat-reaction-picker[open] summary{margin-left:auto}.chat-reaction-picker[open] .chat-reaction-options{position:static;width:fit-content;margin:4px 0 0 auto}}
+.chat-timer-dialog h2{margin:0 0 10px}
+.chat-timer-dialog .chat-timer-duration:not([hidden]){display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.chat-timer-dialog .account-actions{margin:10px 0 0}
+.chat-timer-dialog p{line-height:1.55}

@@ -1,3 +1,5 @@
+import {deadline,follow,validRetention,validSeconds,timerFromRumor,type Retention,type Timer} from './retention.ts';
+import {merchantNotices,noticeMessageRow} from './merchant-notice.ts';
 import {createMatchBook,isPrivateMatch,type MatchAction} from '../private-matches.ts';
 import {createMarketTrades, TRADE_TAG} from './market-trades.ts';
 import {schnorr} from '@noble/curves/secp256k1.js';
@@ -11,7 +13,7 @@ import { REVIEW_KIND, parseReview, validateReviewDraft } from '../reviews.ts';
 import {validateShippingOptionEvent} from '../shipping.ts';
 import {COLLECTION_KIND, checkCollectionRevision, parseCollection, rememberAcceptedCollection, validateCollectionDraft} from '../collections.ts';
 import { finalizeEvent, generateSecretKey, getEventHash, getPublicKey, nip19 } from 'nostr-tools';
-import { AppKeys, Invite, NdrRuntime, hasExistingSessionWithRecipient, createPersistentNostrOutbox, hasMetadataPrivacyVersion } from 'nostr-double-ratchet';
+import { AppKeys, Invite, NdrRuntime, hasExistingSessionWithRecipient, CHAT_SETTINGS_KIND, getExpirationTimestampSeconds, createPersistentNostrOutbox, hasMetadataPrivacyVersion } from 'nostr-double-ratchet';
 import { createVault } from './vault.ts';
 import { createPrivateTransport, verifiedPrivateEvent } from './transport.ts';
 import { RemoteSigner } from './remote-signer.ts';
@@ -26,13 +28,13 @@ import type { PrivateTransport } from './transport.ts';
 import type { DeliveryPlace, OrderListing, OrderPatch, OrderRequestOptions, OrderView } from '../orders.ts';
 type AccountMode='local'|'extension'|'linked';
 interface AccountRecord {owner:string;mode:AccountMode;deviceSecret:number[];ownerSecret?:number[];proof?:VerifiedEvent;installed?:boolean;freshOwner?:boolean;displayName?:string;profileEvent?:VerifiedEvent}
-export interface ChatMessage {id:string;text:string;mine:boolean;createdAt:number;createdAtMs?:number;expiresAt?:number;delivery:'queued'|'sent'|'delivered'|'seen'|'received';reactions?:ReactionSummary[];_chat?:ChatControlMeta;orderId?:string;context?:MessageContext;system?:boolean}
-export interface MessagingState {tradeSteps:ReturnType<ReturnType<typeof createMarketTrades>["rows"]>;receiptPreferences:ReceiptPreferences;status:string;error:string;password:boolean;ownerPubkey?:string;devicePubkey?:string;displayName?:string;pendingPublic:number;chatStatus:string;profileEvent?:VerifiedEvent;pendingListings:VerifiedEvent[];pendingReviews:VerifiedEvent[];pendingCollections:VerifiedEvent[];orders:OrderView[];canSend:boolean;canSign:boolean;mode?:AccountMode;needsLogin:boolean;devices:{pubkey:string;current:boolean}[];conversations:{pubkey:string;messages:ChatMessage[]}[]}
+export interface ChatMessage {id:string;text:string;mine:boolean;createdAt:number;createdAtMs?:number;expiresAt?:number;delivery:'queued'|'sent'|'delivered'|'seen'|'received'|'failed';reactions?:ReactionSummary[];_chat?:ChatControlMeta;orderId?:string;context?:MessageContext;system?:boolean}
+export interface MessagingState {retention:Retention;chatTimers:Record<string,Timer>;tradeSteps:ReturnType<ReturnType<typeof createMarketTrades>["rows"]>;receiptPreferences:ReceiptPreferences;status:string;error:string;password:boolean;ownerPubkey?:string;devicePubkey?:string;displayName?:string;pendingPublic:number;chatStatus:string;profileEvent?:VerifiedEvent;pendingListings:VerifiedEvent[];pendingReviews:VerifiedEvent[];pendingCollections:VerifiedEvent[];orders:OrderView[];canSend:boolean;canSign:boolean;mode?:AccountMode;needsLogin:boolean;devices:{pubkey:string;current:boolean}[];conversations:{pubkey:string;messages:ChatMessage[]}[]}
 type AccountSigner=(event:UnsignedEvent)=>Event|Promise<Event>;
 interface BrowserSigner {getPublicKey():Promise<string>;signEvent:AccountSigner}
 interface MessagingOptions {developerMint?:string;getRelays?:()=>string[];onChange?:(state:MessagingState)=>void;vault?:Vault;transportFactory?:()=>PrivateTransport;extension?:()=>BrowserSigner|undefined}
 interface SignerLoginOptions {password?:string;bunkerLink?:string;signal?:AbortSignal;onConnectionLink?:(url:string)=>void;onAuthUrl?:(url:string)=>void;onCommitting?:()=>void}
-type PublicationContext=NostrPublishContext&{recipientDeviceOwnerPubkey?:string};
+type PublicationContext=NostrPublishContext&{recipientDeviceOwnerPubkey?:string;wireDeadline?:number};
 
 class PendingRelayAcceptance extends Error {}
 
@@ -66,10 +68,12 @@ export function canPublishToDevice(event, context, snapshots) {
   return !!roster?.appKeys.getDevice(target);
 }
 
-export function messageProjection(rumor:Rumor, from:string, meta:OnEventMeta, owner:string):{pubkey:string;message:ChatMessage}|null {
+export function messageProjection(rumor:Rumor, from:string, meta:OnEventMeta, owner:string, retention:Retention=follow):{pubkey:string;message:ChatMessage}|null {
   if (rumor.kind !== 14 || typeof rumor.content !== 'string' || rumor.content.length > 16_000 || rumor.tags.some(tag => tag[0] === 'l')) return null;
   const expiry = rumor.tags.find(tag => tag[0] === 'expiration')?.[1];
-  if (expiry && Number(expiry) <= now()) return null;
+  if (expiry!==undefined && (!/^\d+$/.test(expiry)||!Number.isSafeInteger(Number(expiry)))) return null;
+  const end=deadline(retention,{createdAt:rumor.created_at,expiresAt:expiry===undefined?undefined:Number(expiry)});
+  if(end!==undefined && end<=now())return null;
   const mine = meta?.isSelf === true || meta?.senderOwnerPubkey === owner;
   const pubkey = mine ? rumor.tags.find(tag => tag[0] === 'p')?.[1] ?? owner : meta?.senderOwnerPubkey ?? from;
   if (!HEX.test(pubkey) || !HEX.test(rumor.id)) return null;
@@ -90,9 +94,12 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
   let orders:ReturnType<typeof createOrderBook>, syncingOrders:Promise<void>;
   let controls:ReturnType<typeof createChatControls>,syncingControls:Promise<void>;
   let tradeBook:ReturnType<typeof createMarketTrades>, syncingTrades:Promise<void>;
+  let retention:Retention=follow,chatTimers:Record<string,Timer>={},expiryTimer:ReturnType<typeof setTimeout>;
+  const wireDeadlines=new Map<string,{end:number;observed:number}>();
+  let accountNotices:ReturnType<typeof merchantNotices>;
   let messageWrites = Promise.resolve(),lastChatMs=0;
   const canSend = () => status === 'ready' && authorizationChecked && runtime?.getState().isCurrentDeviceRegistered === true;
-  const state = ():MessagingState => ({ status, error, password: !!savedStatus?.password,
+  const state = ():MessagingState => ({ retention:{...retention},chatTimers:structuredClone(chatTimers),status, error, password: !!savedStatus?.password,
     ownerPubkey: account?.owner, devicePubkey: runtime?.getState().currentDevicePubkey ?? (account?.deviceSecret ? getPublicKey(Uint8Array.from(account.deviceSecret)) : undefined),
     tradeSteps:tradeBook?.rows(false)??[],
     receiptPreferences:controls?.preferences()??{delivered:true,seen:true},
@@ -106,7 +113,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
     canSign: !!signer && status === 'ready', mode: account?.mode, needsLogin: status === 'locked' && !account?.ownerSecret,
     devices: runtime?.getState().registeredDevices.map(device => ({ pubkey: device.identityPubkey,
       current: device.identityPubkey === runtime.getState().currentDevicePubkey })) ?? [],
-    conversations: [...conversations].map(([pubkey, messages]) => ({ pubkey, messages: messages.filter(message => !message.expiresAt || message.expiresAt > now()).map(({_chat,...message}) => ({ ...message,reactions:messageReactions({...message,_chat},account?.owner) })) })) });
+    conversations: [...conversations].map(([pubkey, messages]) => ({ pubkey, messages: messages.filter(message => (deadline(retention,message)??Infinity)>now()).map(({_chat,...message}) => ({ ...message,delivery:message.delivery==='queued' && message.expiresAt<=now()?'failed':message.delivery,reactions:messageReactions({...message,_chat},account?.owner) })) })) });
   const validOrderContext=(id:string,peer:string)=>{
     const order=orders?.state().find(order=>order.id===id);
     if(!order)return false;
@@ -140,6 +147,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
       const next = [...previous];
       let combined=index<0?structuredClone(message):{...next[index],...message,_chat:next[index]._chat};
       if(index>=0&&message.mine&&deliveryRank(next[index].delivery)>deliveryRank(combined.delivery))combined.delivery=next[index].delivery;
+      if((deadline(retention,combined)??Infinity)<=now())return;
       const pending=controls?.pendingFor(pubkey,message.id)??[];
       for(const control of pending)combined=applyChatControl(combined,control,account.owner,pubkey);
       if(index===-1)next.push(combined);else next[index]=combined;
@@ -148,21 +156,68 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
       if(combined.mine)lastChatMs=Math.max(lastChatMs,messageMilliseconds(combined));
       if (next.length > 1000) throw new Error('This conversation has reached its local storage limit.');
       await vault.put(`market/messages/${pubkey}`, next);
-      check(attempt); conversations.set(pubkey, next); notify();
+      check(attempt); conversations.set(pubkey, next); scheduleExpiry(); notify();
       await controls?.settled(pending);
     });
     messageWrites = operation.catch(() => {});
     return operation;
   };
+  function scheduleExpiry() {
+    clearTimeout(expiryTimer);
+    let next=Infinity;
+    for(const messages of conversations.values())for(const m of messages)next=Math.min(next,deadline(retention,m)??Infinity);
+    if(Number.isFinite(next)) {
+      expiryTimer=setTimeout(()=>{void updateRetention().catch(report);},Math.max(1,Math.min(2147483647,next*1000-Date.now())));
+      expiryTimer.unref?.();
+    }
+  }
+  function updateRetention(policy?:Retention) {
+    const attempt=generation;
+    const operation=messageWrites.then(async()=>{
+      check(attempt);
+      const next=policy??retention;
+      if(!validRetention(next))throw Error('Choose a positive duration.');
+      const at=now(), changes=new Map<string,ChatMessage[]>();
+      for(const [peer,messages] of conversations){
+        const live=messages.filter(m=>(deadline(retention,m)??Infinity)>at && (deadline(next,m)??Infinity)>at);
+        if(live.length!==messages.length)changes.set(peer,live);
+      }
+      const entries:Array<[string,unknown]>=[...changes].map(([key,rows])=>['market/messages/'+key,rows]);
+      if(policy)entries.push(['market/chat-retention',next]);
+      if(entries.length)await vault.putMany(entries);
+      check(attempt);for(const [key,rows] of changes)conversations.set(key,rows);
+      retention=next;scheduleExpiry();notify();
+    });
+    messageWrites=operation.catch(()=>{});return operation;
+  }
+  function adoptTimer(peer:string,rumor:Rumor) {
+    const attempt=generation;
+    const operation=messageWrites.then(async()=>{
+      check(attempt);
+      const item=timerFromRumor(rumor),old=chatTimers[peer];
+      if(!item || old&&(item.ms<old.ms || item.ms===old.ms&&item.id<=old.id))return;
+      const next={...chatTimers,[peer]:item};
+      await vault.putMany([['market/chat-timers',next],...(!conversations.has(peer)?[['market/messages/'+peer,[]] as [string,unknown]]:[])]);
+      check(attempt);chatTimers=next;if(!conversations.has(peer))conversations.set(peer,[]);notify();
+    });
+    messageWrites=operation.catch(()=>{});return operation;
+  }
   const orderQueueEntry = (key, value) => {
     if(key.startsWith('v1/message-queue/')||key.startsWith('v1/discovery-queue/'))return value?.event?.id;
     if(key.startsWith('v1/runtime-outbox/'))return value?.innerEventId;
   };
-  // These queue prefixes belong to the pinned NDR storage adapter. Remove only
-  // exact order rumors the book has retired; ordinary messages are untouched.
-  const privateStorage = { ...vault, async put(key,value){
+  // Keep the wire deadline with pending ciphertext even when the local copy
+  // follows a different policy. These fields never become outer event tags.
+  function learnDeadline(key:string,value:any) {
     const id=orderQueueEntry(key,value);
-    return id&&orders&&!orders.canPublish(id)?vault.del(key):vault.put(key,value);
+    const end=value?.event?.kind===14?getExpirationTimestampSeconds(value.event):value?.context?.wireDeadline;
+    if(id && Number.isSafeInteger(end))wireDeadlines.set(id,{end,observed:now()});
+    return id;
+  }
+  const privateStorage = { ...vault, async put(key,value){
+    const id=learnDeadline(key,value);
+    if(id && ((wireDeadlines.get(id)?.end??Infinity)<=now() || orders&&!orders.canPublish(id)))return vault.del(key);
+    return vault.put(key,value);
   }};
   async function hasQueuedRecipientEnvelope(innerId:string,peer:string) {
     for(const key of await vault.list('v1/runtime-outbox/')){
@@ -173,10 +228,15 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
   }
   async function pruneOrderQueues(){
     const attempt=generation,book=orders;if(!book)return;
+    const retired=new Set(wireDeadlines.keys());
     for(const prefix of ['v1/message-queue/','v1/discovery-queue/','v1/runtime-outbox/'])for(const key of await vault.list(prefix)){
-      check(attempt);const value=await vault.get(key),id=orderQueueEntry(key,value);
-      if(id&&!book.canPublish(id))await vault.del(key);
+      check(attempt);const value=await vault.get(key),id=learnDeadline(key,value);
+      if(id && (!book.canPublish(id)||(wireDeadlines.get(id)?.end??Infinity)<=now()))await vault.del(key);
+      else if(id)retired.delete(id);
     }
+    // The SDK can be completing a handoff while we inspect its queues. Only
+    // forget unreferenced deadlines after the current handoff window.
+    for(const id of retired)if(wireDeadlines.get(id)?.observed<now()-60)wireDeadlines.delete(id);
   }
   const startRuntime = async ({ justAuthorized = false } = {}) => {
     const attempt = generation;
@@ -190,12 +250,13 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
       await vault.put(`${DEVICE_PREFIX}owner-pubkey`, account.owner);
     }
     check(attempt);
+    await pruneOrderQueues();check(attempt);
     outbox = createPersistentNostrOutbox({ storage: privateStorage, concurrency: 3,
-      publish: async (event, _innerId, context) => {
+      publish: async (event, _innerId, context:PublicationContext) => {
         check(attempt);
         // Superseded/expired positions are retired without network publication.
         // Their IDs remain in the private book so NDR's exact retry can be dropped.
-        if (_innerId && orders && !orders.canPublish(_innerId)) return event;
+        if ((context?.wireDeadline??wireDeadlines.get(_innerId)?.end??Infinity)<=now() || _innerId && orders && !orders.canPublish(_innerId)) return event;
         if ([1059, 1060].includes(event.kind) && (!authorizationChecked || !runtime?.getState().isCurrentDeviceRegistered || !hasMetadataPrivacyVersion(event))) throw new Error('This device is not authorized to send.');
         if (!canPublishToDevice(event, context, runtime?.getKnownAppKeysSnapshots() ?? [])) throw new Error('The receiving device was removed.');
         const options={signal:controller.signal,onAccepted:()=>{if(attempt===generation)void outbox.retry().catch(report);}};
@@ -210,6 +271,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
       onPublished: async ({ innerEventId, context: rawContext }) => {
         if (!innerEventId) return;
         const context=rawContext as PublicationContext;
+        if((context?.wireDeadline??wireDeadlines.get(innerEventId)?.end??Infinity)<=now())return;
         await orders?.sent(innerEventId, context?.recipientDeviceOwnerPubkey ?? context?.recipientOwnerPubkey);
         for (const [peer, messages] of conversations) {
           const message = messages.find(item => item.id === innerEventId && item.mine);
@@ -229,6 +291,10 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
         if (record.devices.has(target) || record.appKeys?.getAllDevices().some(device=>device.identityPubkey===target)) return { recipientOwnerPubkey, createdAt: now() };
       }
       return context;
+    };
+    const outboundContext=(event:UnsignedEvent, id:string|undefined, context:PublicationContext):PublicationContext=>{
+      const result=publicationContext(event,context),end=wireDeadlines.get(id)?.end;
+      return result && end!==undefined ? {...result,wireDeadline:end} : result;
     };
     const observedAuthorization = new Map([[account.proof.id, account.proof]]);
     let observedAt = -1, authorizationOverflow = false;
@@ -261,13 +327,22 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
       } }, { signal: controller.signal }).close,
       nostrFetch: async filter => (await transport.query([filter], { signal: controller.signal })).events,
       nostrSign: signing,
-      nostrEnqueue: (event, id, context) => outbox.enqueue(event, id, publicationContext(event, context)),
-      nostrPublish: (event, id, context) => outbox.publish(event, id, publicationContext(event, context)),
+      nostrEnqueue: (event, id, context) => outbox.enqueue(event,id, outboundContext(event,id,context)),
+      nostrPublish: (event, id, context) => outbox.publish(event,id, outboundContext(event,id,context)),
       onPublishError:failure=>{if(!(failure.error instanceof PendingRelayAcceptance))report();}, appKeysFetchTimeoutMs: 6000, appKeysFastTimeoutMs: 1500,
     });
     runtime.onStateChange(() => { if (attempt === generation) notify(); });
-    runtime.onDurableSessionEvent([14,7,15], async (rumor, from, meta) => {
+    runtime.onDurableSessionEvent([14,7,15,CHAT_SETTINGS_KIND], async (rumor, from, meta) => {
       check(attempt);
+      if(rumor.kind===CHAT_SETTINGS_KIND) {
+        const sender=meta?.senderOwnerPubkey,device=meta?.senderDevicePubkey??meta?.fromDeviceId;
+        if(!sender||!device||sender!==device&&!runtime.getKnownAppKeysSnapshots().some(s=>s.ownerPubkey===sender&&s.appKeys.getDevice(device)))return;
+        const target=rumor.tags.find(t=>t[0]==='p')?.[1];
+        if(rumor.tags.some(t=>t[0]==='l')||sender!==account.owner&&target&&target!==account.owner)return;
+        const peer=sender===account.owner?target:sender;
+        if(HEX.test(peer??''))await adoptTimer(peer,rumor);
+        return;
+      }
       if(rumor.kind===7||rumor.kind===15){
         const sender=meta?.senderOwnerPubkey;if(!HEX.test(sender??''))return;
         const targets=rumor.tags.filter(t=>t[0]==='e').map(t=>t[1]);
@@ -286,7 +361,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
         }
         return;
       }
-      const projection = messageProjection(rumor, from, meta, account.owner);
+      const projection = messageProjection(rumor, from, meta, account.owner,isOrderMessage(rumor)?follow:retention);
       if (isOrderMessage(rumor)) {
         // A transport/device key or a claimed JSON field never grants order roles.
         const sender = meta?.senderOwnerPubkey;
@@ -304,7 +379,6 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
         if(!projection.message.mine&&meta?.senderOwnerPubkey===projection.pubkey)await sendReceipt(projection.pubkey,[projection.message.id],'delivered').catch(report);
       }
     });
-    for (const key of await vault.list('market/messages/')) conversations.set(key.slice('market/messages/'.length), await vault.get<ChatMessage[]>(key));
     await runtime.initManagers();
     check(attempt);
     const manager = await runtime.initSessionManager(account.owner);
@@ -497,8 +571,14 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
     tradeBook=createMarketTrades(vault,account.owner,getPublicKey(Uint8Array.from(account.deviceSecret)),()=>check(attempt));
     await tradeBook.load();check(attempt);
     controls=createChatControls({vault,owner:account.owner,device:getPublicKey(Uint8Array.from(account.deviceSecret)),check:()=>check(attempt)});await controls.load();check(attempt);
+    retention=await vault.get<Retention>('market/chat-retention')??follow;
+    chatTimers=await vault.get<Record<string,Timer>>('market/chat-timers')??{};
     conversations.clear();
     for(const key of await vault.list('market/messages/'))conversations.set(key.slice('market/messages/'.length),await vault.get<ChatMessage[]>(key));
+    await updateRetention();
+    accountNotices=merchantNotices({transport,getRelays,accountVault:()=>{check(attempt);if(status!=='ready')throw Error('Unlock your profile.');return vault;},
+      hasChat:key=>key===account.owner || !!runtime?.getKnownAppKeysSnapshots().some(s=>s.ownerPubkey===key&&s.appKeys.getAllDevices().length) || hasExistingSessionWithRecipient(runtime?.getSessionUserRecords(),key),
+      onAccepted:(peer,at)=>saveMessage(peer,noticeMessageRow(at))});
     matches=createMatchBook(vault,account.owner,getPublicKey(Uint8Array.from(account.deviceSecret)),notify,()=>check(attempt));
     await matches.load();check(attempt);
     orders=createOrderBook({vault,developerMint,owner:account.owner,device:getPublicKey(Uint8Array.from(account.deviceSecret)),notify,check:()=>check(attempt)});
@@ -524,6 +604,14 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
   };
   return {
     state,
+    sellerNotices:()=>accountNotices,
+    async refreshHistory(){if(status==='ready')await updateRetention();},
+    async setRetention(policy:Retention) { requireReady();await updateRetention(policy); },
+    async setChatTimer(peer:string,seconds:number|null) {
+      requireChat();if(!canSend()||!conversations.has(peer))throw Error('Open an authorized private chat first.');
+      if(seconds!==null&&!validSeconds(seconds))throw Error('Choose a positive duration.');
+      const rumor=await runtime.setChatSettingsForPeer(peer,seconds);await adoptTimer(peer,rumor);
+    },
     knowsMerchantChat: (key:string) => !!runtime?.getKnownAppKeysSnapshots().some(s => s.ownerPubkey === key && s.appKeys.getAllDevices().length) || hasExistingSessionWithRecipient(runtime?.getSessionUserRecords(),key),
     privateMatchView:()=>matches?.view()??null,
     async privateMatch(action:MatchAction,listing?:Parameters<typeof matches.action>[1]){
@@ -630,9 +718,10 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
       if(context&&(!validMessageContext(context)||context.order_id&&!validOrderContext(context.order_id,pubkey)))throw new Error('This order is not shared with this person.');
       if(!conversations.has(pubkey)){await vault.put(`market/messages/${pubkey}`,[]);conversations.set(pubkey,[]);}
       lastChatMs=Math.max(Date.now(),lastChatMs+1,...(conversations.get(pubkey)??[]).filter(message=>message.mine).map(message=>messageMilliseconds(message)+1));
-      const rumor = await runtime.sendMessage(pubkey, text, {tags:[...contextTags(context),['ms',String(lastChatMs)]]});
+      const seconds=chatTimers[pubkey]?.seconds;
+      const rumor = await runtime.sendMessage(pubkey, text, {expiration:seconds?{ttlSeconds:seconds}:null,tags:[...contextTags(context),['ms',String(lastChatMs)]]});
       const diagnostics = await runtime.queuedMessageDiagnostics(rumor.id);
-      await saveMessage(pubkey, { id: rumor.id, text, context,orderId:context?.order_id,mine: true, createdAt: rumor.created_at,...(rumorMilliseconds(rumor)!==undefined?{createdAtMs:rumorMilliseconds(rumor)}:{}), delivery: diagnostics.some(entry=>entry.ownerPubkey===pubkey)||await hasQueuedRecipientEnvelope(rumor.id,pubkey) ? 'queued' : 'sent' });
+      await saveMessage(pubkey, { id: rumor.id, text, context,orderId:context?.order_id,mine: true, createdAt: rumor.created_at,expiresAt:getExpirationTimestampSeconds(rumor),...(rumorMilliseconds(rumor)!==undefined?{createdAtMs:rumorMilliseconds(rumor)}:{}), delivery: diagnostics.some(entry=>entry.ownerPubkey===pubkey)||await hasQueuedRecipientEnvelope(rumor.id,pubkey) ? 'queued' : 'sent' });
       return rumor.id;
     },
     async react(peer:string,messageId:string,emoji:string){
@@ -719,11 +808,11 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
     },
     exportKey() { if (!ownerSecret) throw new Error('Your account key is held by your signer.'); return nip19.nsecEncode(ownerSecret); },
     async lock() {
-      generation++; clearTimeout(retryTimer);retryTimer=undefined;enrollmentRemote?.close();enrollmentRemote=undefined;activation=syncing=syncingProfile=undefined; postingRemote?.close(); postingTransport?.close(); postingRemote = postingTransport = undefined; controller?.abort(); const closing = outbox?.close(); runtime?.close(); transport?.close();
+      generation++;clearTimeout(expiryTimer);accountNotices=undefined;clearTimeout(retryTimer);retryTimer=undefined;enrollmentRemote?.close();enrollmentRemote=undefined;activation=syncing=syncingProfile=undefined; postingRemote?.close(); postingTransport?.close(); postingRemote = postingTransport = undefined; controller?.abort(); const closing = outbox?.close(); runtime?.close(); transport?.close();
       await closing;
       await messageWrites; await orders?.flush();await controls?.flush();await matches?.flush();await tradeBook?.flush(); await vault.flush(); vault.lock();
       ownerSecret?.fill(0); account = runtime = transport = outbox = signer = ownerSecret = undefined;
-      conversations.clear();lastChatMs=0;matches=undefined;syncingMatches=undefined;tradeBook=undefined;syncingTrades=undefined;controls=undefined;syncingControls=undefined;orders=undefined;syncingOrders=undefined;publicQueue.clear();profilePatch=undefined;enrollmentSigner=undefined;controller=undefined;authorizationChecked = false;status='locked';chatStatus='connecting';error='';notify();
+      conversations.clear();retention=follow;chatTimers={};wireDeadlines.clear();lastChatMs=0;matches=undefined;syncingMatches=undefined;tradeBook=undefined;syncingTrades=undefined;controls=undefined;syncingControls=undefined;orders=undefined;syncingOrders=undefined;publicQueue.clear();profilePatch=undefined;enrollmentSigner=undefined;controller=undefined;authorizationChecked = false;status='locked';chatStatus='connecting';error='';notify();
     },
     async destroy() { await this.lock(); },
   };

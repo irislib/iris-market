@@ -6,6 +6,8 @@
 //! listings or for receiving. Only acknowledge an outbound event after a relay OK.
 
 mod controls;
+mod retention;
+pub use retention::Retention;
 mod escrow;
 pub mod friend_posts;
 pub mod mobile_push;
@@ -56,6 +58,8 @@ const INVITE_PREFIX: &str = "double-ratchet/invites/";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Message {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<crate::conversation_context::MessageContext>,
     pub id: String,
@@ -150,6 +154,8 @@ pub struct PrivateSubscription {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct QueuedPublish {
+    #[serde(default)]
+    expires_at: Option<u64>,
     event: Event,
     inner_id: Option<String>,
     peer_id: String,
@@ -167,6 +173,12 @@ struct PendingContactMessage {
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct PrivateState {
+    #[serde(default)]
+    retention: Retention,
+    #[serde(default)]
+    timers: BTreeMap<String, retention::Timer>,
+    #[serde(default)]
+    notice_history: BTreeMap<String, Vec<u64>>,
     #[serde(default)]
     controls: controls::Controls,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -259,6 +271,28 @@ impl Messaging {
             engine,
             state,
         };
+        if this.history_due(now())
+            || this
+                .state
+                .merchant_notices
+                .values()
+                .any(|n| n.needs_history())
+        {
+            this.transaction(|this| {
+                for (seller, row) in &mut this.state.merchant_notices {
+                    if row.needs_history() {
+                        this.state
+                            .notice_history
+                            .entry(seller.to_hex())
+                            .or_default()
+                            .push(row.created());
+                        row.recorded = true;
+                    }
+                }
+                this.prune_history(now());
+                Ok(())
+            })?;
+        }
         if let Some(event) = authorization {
             if event.pubkey != owner {
                 return Err("Device authorization belongs to a different profile".into());
@@ -338,7 +372,7 @@ impl Messaging {
     pub(crate) fn save_merchant_notice(
         &mut self,
         merchant: PublicKey,
-        notice: crate::merchant_notice::Notice,
+        mut notice: crate::merchant_notice::Notice,
     ) -> MessagingResult<()> {
         self.transaction(|this| {
             this.state
@@ -348,6 +382,18 @@ impl Messaging {
                 && !this.state.merchant_notices.contains_key(&merchant)
             {
                 return Err("Too many recent seller notifications".into());
+            }
+            if notice.needs_history() {
+                let history = this
+                    .state
+                    .notice_history
+                    .entry(merchant.to_hex())
+                    .or_default();
+                if !history.contains(&notice.created()) {
+                    history.push(notice.created());
+                }
+                notice.recorded = true;
+                this.prune_history(now());
             }
             this.state.merchant_notices.insert(merchant, notice);
             Ok(())
@@ -686,10 +732,13 @@ impl Messaging {
         if text.len() > MAX_MESSAGE_BYTES {
             return Err("Message is too long".into());
         }
-        if !self.state.conversations.contains_key(&id) {
+        if !self.state.conversations.contains_key(&id)
+            && !self.state.notice_history.contains_key(&id)
+        {
             return Err("Accept a private invitation first".into());
         }
         self.transaction(move |this| {
+            this.ensure_conversation(&id)?;
             if this.state.outbox.len() + this.state.pending_contact_messages.len() >= MAX_OUTBOX {
                 return Err("Connect to send queued messages before sending more".into());
             }
@@ -698,17 +747,24 @@ impl Messaging {
             let mut rumor = UnsignedEvent::from_json(serde_json::json!({"pubkey":this.keys.public_key(),"kind":14,"created_at":now,"content":text,"tags":[["p",id],["ms",millis.to_string()]]}).to_string()).map_err(protocol_error)?;
             if let Some(value) = &context { rumor.tags.push(value.tag()?); }
             if let Some(value) = &escrow { rumor.tags.push(value.tag().map_err(|e|e.to_string())?); }
+            let expires_at = if escrow.is_none() {
+                this.chat_timer(&id).map(|ttl| now.saturating_add(ttl))
+            } else { None };
+            if let Some(end) = expires_at {
+                rumor.tags.push(nostr::Tag::expiration(nostr::Timestamp::from(end)));
+            }
             rumor.ensure_id();
             if !this.contact_recipient_ready(peer) {
                 let message_id = rumor.id.as_ref().ok_or("Private message identity is unavailable")?.to_hex();
-                this.state.pending_contact_messages.insert(message_id.clone(), PendingContactMessage { peer_id: id.clone(), rumor, expires_at: None });
-                return this.append(&id, Message { id:message_id, order_id:context.as_ref().and_then(|value|value.order_id.clone()), context, text, mine:true, created_at:now, created_at_ms:millis, delivery:"pending".into(), escrow, cashu:None, reactions:Vec::new() });
+                this.state.pending_contact_messages.insert(message_id.clone(), PendingContactMessage { peer_id: id.clone(), rumor, expires_at });
+                return this.append(&id, Message { expires_at, id:message_id, order_id:context.as_ref().and_then(|value|value.order_id.clone()), context, text, mine:true, created_at:now, created_at_ms:millis, delivery:"pending".into(), escrow, cashu:None, reactions:Vec::new() });
             }
             let result = this.engine.send_direct_unsigned_event(peer, &id, rumor, UnixSeconds(now)).map_err(protocol_error)?;
-            this.queue_effects(result.effects)?;
+            let effects = result.effects;
             this.append(
                 &id,
                 Message {
+                    expires_at,
                     id: result.message_id,
                     order_id: context.as_ref().and_then(|c| c.order_id.clone()),
                     context,
@@ -722,7 +778,7 @@ impl Messaging {
                 reactions: Vec::new(),
                 },
             )?;
-            Ok(())
+            this.queue_effects(effects)
         })
     }
 
@@ -864,6 +920,7 @@ impl Messaging {
             && !self.state.orders.jobs.iter().any(|job| !job.handed)
             && self.state.pending_invites.is_empty()
             && !self.state.matches.expired(now())
+            && !self.history_due(now())
             && !self.has_control_work()
             && !self.state.pending_contact_messages.values().any(|queued| {
                 queued.expires_at.is_some_and(|deadline| deadline <= now())
@@ -874,6 +931,7 @@ impl Messaging {
             return Ok(());
         }
         self.transaction(|this| {
+            this.prune_history(now());
             this.state.matches.prune(now());
             this.send_control_jobs()?;
             this.retry_invitations()?;
@@ -975,14 +1033,51 @@ impl Messaging {
     }
 
     pub fn conversations(&self) -> Vec<Conversation> {
-        let mut items = self
-            .state
-            .conversations
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
+        let at = now();
+        let mut threads = self.state.conversations.clone();
+        // Local-only notices are projected into the inbox, never into the
+        // engine's list of peers to discover or initiate sessions with.
+        for (peer, dates) in &self.state.notice_history {
+            for &created in dates
+                .iter()
+                .filter(|&&t| self.retention().visible(t, None, at))
+            {
+                let thread = threads.entry(peer.clone()).or_insert_with(|| Conversation {
+                    id: peer.clone(),
+                    name: "Private conversation".into(),
+                    messages: vec![],
+                });
+                thread.messages.push(Message {
+                    id: format!("notice-{created}"),
+                    text: crate::merchant_notice::MESSAGE.into(),
+                    mine: true,
+                    created_at: created,
+                    created_at_ms: created.saturating_mul(1000),
+                    delivery: "sent".into(),
+                    expires_at: None,
+                    context: None,
+                    order_id: None,
+                    cashu: None,
+                    escrow: None,
+                    reactions: vec![],
+                });
+            }
+            if let Some(thread) = threads.get_mut(peer) {
+                thread.messages.sort_by_key(message_sort_millis);
+            }
+        }
+        let mut items = threads.into_values().collect::<Vec<_>>();
         for conversation in &mut items {
+            conversation
+                .messages
+                .retain(|m| self.retention().visible(m.created_at, m.expires_at, at));
             for message in &mut conversation.messages {
+                if message.mine
+                    && message.delivery == "pending"
+                    && message.expires_at.is_some_and(|t| t <= now())
+                {
+                    message.delivery = "failed".into();
+                }
                 message.reactions = self.reactions_for(&conversation.id, &message.id);
                 let (text, payment) = cashu_content(&message.text);
                 message.text = text;
@@ -1179,6 +1274,7 @@ impl Messaging {
                 self.append(
                     &job.recipient,
                     Message {
+                        expires_at: None,
                         id: job.id,
                         context: Some(crate::conversation_context::MessageContext::for_order(
                             &job.order_id,
@@ -1391,7 +1487,10 @@ impl Messaging {
         self.state
             .outbox
             .values()
-            .filter(|queued| self.outbound_is_authorized(queued))
+            .filter(|queued| {
+                queued.expires_at.is_none_or(|end| end > now())
+                    && self.outbound_is_authorized(queued)
+            })
             .filter(|queued| {
                 queued
                     .inner_id
@@ -1600,6 +1699,21 @@ impl Messaging {
             self.state.outbox.insert(
                 id,
                 QueuedPublish {
+                    expires_at: publish.inner_event_id.as_ref().and_then(|id| {
+                        self.state
+                            .pending_contact_messages
+                            .get(id)
+                            .and_then(|q| q.expires_at)
+                            .or_else(|| {
+                                self.state
+                                    .conversations
+                                    .get(&publish.chat_id)?
+                                    .messages
+                                    .iter()
+                                    .find(|m| m.id == *id)?
+                                    .expires_at
+                            })
+                    }),
                     event,
                     inner_id: publish.inner_event_id,
                     peer_id: publish.chat_id,
@@ -1634,7 +1748,13 @@ impl Messaging {
         let friend_request = friend_posts::is_request(&inner);
         let private_match = private_matches::is_match(&inner);
         let trade_step = trade_steps::is_trade(&inner);
-        if friend_request || private_match || trade_step || matches!(inner.kind.as_u16(), 7 | 15) {
+        let chat_setting = inner.kind.as_u16() as u32 == iris_chat_protocol::CHAT_SETTINGS_KIND;
+        if friend_request
+            || private_match
+            || trade_step
+            || chat_setting
+            || matches!(inner.kind.as_u16(), 7 | 15)
+        {
             let device = message.sender_device.unwrap_or(message.sender);
             if device != message.sender
                 && !self
@@ -1653,6 +1773,29 @@ impl Messaging {
                 {
                     return Err("Private control device is not authorized".into());
                 }
+            }
+            if chat_setting {
+                let target = inner.tags.public_keys().next().copied();
+                if inner
+                    .tags
+                    .iter()
+                    .any(|t| t.as_slice().first().is_some_and(|k| k == "l"))
+                    || message.sender != self.owner
+                        && target.is_some_and(|target| target != self.owner)
+                {
+                    return Ok(());
+                }
+                let peer = if message.sender == self.owner {
+                    message
+                        .conversation_owner
+                        .or_else(|| inner.tags.public_keys().next().copied())
+                } else {
+                    Some(message.sender)
+                };
+                if let Some(peer) = peer {
+                    self.apply_timer(peer, &inner)?;
+                }
+                return Ok(());
             }
             if private_match {
                 self.receive_match(message.sender, &inner);
@@ -1753,7 +1896,15 @@ impl Messaging {
         };
         let created_at_ms = message_millis(&inner);
         let escrow = crate::escrow::AgreementMessage::from_rumor(&inner);
+        let expires_at = inner.tags.expiration().map(|t| t.as_secs());
+        if !self
+            .retention()
+            .visible(inner.created_at.as_secs(), expires_at, now())
+        {
+            return Ok(());
+        }
         let stored = Message {
+            expires_at,
             id,
             context,
             // Retain the exact received text encrypted, including additional
@@ -2024,6 +2175,7 @@ mod chronology_tests {
     use super::*;
     fn fixture_message(id: &str, text: &str, seconds: u64) -> Message {
         Message {
+            expires_at: None,
             id: id.into(),
             context: None,
             text: text.into(),

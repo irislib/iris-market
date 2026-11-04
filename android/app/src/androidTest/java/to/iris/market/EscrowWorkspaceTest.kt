@@ -3,10 +3,20 @@ package to.iris.market
 import android.app.Application
 import android.content.Intent
 import android.graphics.Bitmap
+import android.view.View
+import android.view.ViewGroup
+import android.view.inspector.WindowInspector
+import android.webkit.WebView
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import android.os.SystemClock
 import android.view.accessibility.AccessibilityNodeInfo
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.ui.Modifier
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.ViewModel
@@ -39,6 +49,26 @@ class EscrowWorkspaceTest {
         var node: AccessibilityNodeInfo? = waitFor(label)
         while (node != null && !node.isClickable) node = node.parent
         check(node?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true) { "Could not open $label" }
+    }
+    private fun webView(view: View): WebView? {
+        if (view is WebView) return view
+        if (view is ViewGroup) for (i in 0 until view.childCount) webView(view.getChildAt(i))?.let { return it }
+        return null
+    }
+    private fun waitForTrade(script: String) {
+        val deadline = SystemClock.elapsedRealtime() + 30_000
+        while (SystemClock.elapsedRealtime() < deadline) {
+            val reply = CountDownLatch(1)
+            var result: String? = null
+            instrumentation.runOnMainSync {
+                val web = WindowInspector.getGlobalWindowViews().firstNotNullOfOrNull(::webView)
+                if (web == null) reply.countDown()
+                else web.evaluateJavascript(script) { result = it; reply.countDown() }
+            }
+            if (reply.await(2, TimeUnit.SECONDS) && result == "true") return
+            SystemClock.sleep(100)
+        }
+        error("The trade screen did not complete the expected provider action.")
     }
     private fun screenshot(app: Application, name: String) {
         val image = checkNotNull(instrumentation.uiAutomation.takeScreenshot())
@@ -73,18 +103,21 @@ class EscrowWorkspaceTest {
                 host.setContent {
                     val snapshot by model.state.collectAsState()
                     val busy by model.busy.collectAsState()
-                    MarketTheme(false) { OrdersView(snapshot, model, busy) { } }
+                    MarketTheme(false) { Box(Modifier.fillMaxSize().systemBarsPadding()) { OrdersView(snapshot, model, busy) { } } }
                 }
             }
             click("Escrow jobs")
             waitFor("Oak reading lamp")
             screenshot(app, "android-provider-jobs")
             click("Oak reading lamp")
-            waitFor("Accept job")
+            waitForTrade("Array.from(document.querySelectorAll('button')).some(b=>b.textContent==='Accept job' && !b.disabled)")
             screenshot(app, "android-provider-review")
-            click("Decline job")
-            waitFor("Invitation declined")
+            waitForTrade("(()=>{const b=Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='Decline job' && !b.disabled);if(!b)return false;b.click();return true})()")
+            waitForTrade("document.body.innerText.includes('Invitation declined')")
             screenshot(app, "android-provider-declined")
+        } catch (error: Throwable) {
+            screenshot(app, "android-provider-last-failure")
+            throw error
         } finally { activity.close(); root.deleteRecursively() }
     }
 }

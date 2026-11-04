@@ -5,6 +5,10 @@ private struct OrderSelection: Identifiable { let id: String }
 struct OrdersView: View {
     @EnvironmentObject private var store: MarketStore
     @State private var section = MarketOrderList.purchases
+    @State private var offerService = false
+    private var jobsAvailable: Bool {
+        !store.demo && (store.snapshot.settings.escrowUi || store.snapshot.escrowCards.contains { $0.joined && $0.deal.provider == store.snapshot.publicKey })
+    }
     private var orders: [MarketOrder] { store.snapshot.orders.filter { section.contains($0, owner: store.snapshot.publicKey) } }
     private var selection: Binding<OrderSelection?> {
         Binding(get: { store.activeOrderID.map { OrderSelection(id: $0) } }, set: { store.activeOrderID = $0?.id })
@@ -15,7 +19,7 @@ struct OrdersView: View {
                 Text("Orders").font(.system(size: 30, weight: .medium)).tracking(-1)
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
-                        ForEach(MarketOrderList.allCases, id: \.self) { value in
+                        ForEach(MarketOrderList.allCases.filter { $0 != .escrow || jobsAvailable }, id: \.self) { value in
                             Button { section = value } label: {
                                 Text(value.rawValue).font(.system(size: 13, weight: .medium)).padding(.horizontal, 14).padding(.vertical, 11)
                                     .foregroundStyle(section == value ? MarketTheme.onAction : MarketTheme.ink)
@@ -24,7 +28,14 @@ struct OrdersView: View {
                         }
                     }
                 }
-                if orders.isEmpty {
+                if section == .escrow && jobsAvailable {
+                    EscrowInboxCards(jobsOnly: true)
+                    if store.snapshot.settings.escrowUi {
+                        Button("Offer escrow services") { offerService = true }
+                            .disabled(!store.snapshot.canSign)
+                        if !store.snapshot.canSign { Text("Use the device holding your profile key to offer escrow services.").font(.caption).foregroundStyle(MarketTheme.muted) }
+                    }
+                } else if orders.isEmpty {
                     MarketEmptyState(symbol: "shippingbox.fill", title: section == .archived ? "Nothing archived" : "No \(section.rawValue.lowercased()) yet", description: section == .purchases ? "Your orders appear here." : section == .sales ? "Order requests for your listings appear here." : section == .deliveries ? "Deliveries you handle appear here." : "Finished orders can be kept here.")
                 } else {
                     LazyVStack(spacing: 12) {
@@ -35,6 +46,8 @@ struct OrdersView: View {
                 }
             }.padding(23)
         }.foregroundStyle(MarketTheme.ink)
+            .onChange(of: jobsAvailable) { available in if !available && section == .escrow { section = .purchases } }
+            .marketPage(isPresented: $offerService) { NewListingView(providerService: true).marketListingEditorSheetScope() }
             .marketPage(item: selection) { value in OrderDetailView(orderID: value.id).marketSheetScope() }
     }
 }
@@ -68,6 +81,11 @@ struct OrderReviewView: View {
     @State private var pickup = MarketDeliveryPlace(label: "Pickup")
     @State private var destination = MarketDeliveryPlace(label: "Destination")
     @State private var requestError: String?
+    @State private var useEscrow = false
+    @State private var showingEscrow = false
+    @State private var checkout: EscrowCheckout?
+    @State private var createdOrderID: String?
+    private var canUseEscrow: Bool { !store.demo && store.snapshot.settings.escrowUi && listing.escrow?.trade == "goods" }
     var body: some View {
         MarketNavigationContainer {
             ScrollView {
@@ -80,19 +98,31 @@ struct OrderReviewView: View {
                         .onChange(of: note) { value in if value.count > 2000 { note = String(value.prefix(2000)) } }
                     if listing.category.lowercased() == "transport" || NativeTransportType.classify(listing.tags ?? []) != nil { PrivateDeliveryPlaceField(place: $pickup); PrivateDeliveryPlaceField(place: $destination) }
                     if let requestError { Text(requestError).foregroundStyle(.red).font(.caption) }
-                    Text("The seller will confirm your order. No payment is taken here.").font(.system(size: 13)).foregroundStyle(MarketTheme.muted)
+                    if canUseEscrow { Toggle("Use escrow", isOn: $useEscrow) }
+                    Text(canUseEscrow && useEscrow ? "Choose a provider next. The seller and provider each review your request before anyone pays." : "The seller will confirm your order. No payment is taken here.").font(.system(size: 13)).foregroundStyle(MarketTheme.muted)
                     MarketInlineError()
                     Button {
                         do {
                             let delivery = (listing.category.lowercased() != "transport" && NativeTransportType.classify(listing.tags ?? []) == nil) ? nil : MarketDeliveryRequest(pickup: pickup, destination: destination)
                             if let delivery { _ = try delivery.projection() }
                             requestError = nil
-                            store.requestOrder(listing, quantity: quantity, note: note.trimmingCharacters(in: .whitespacesAndNewlines), deliveryRequest: delivery) { success in if success { dismiss(); onRequested() } }
+                            let orderNote = note.trimmingCharacters(in: .whitespacesAndNewlines)
+                            if useEscrow && canUseEscrow {
+                                checkout = EscrowCheckout(quantity: quantity, note: orderNote, delivery: delivery)
+                                showingEscrow = true
+                            } else {
+                                store.requestOrder(listing, quantity: quantity, note: orderNote, deliveryRequest: delivery) { success in if success { dismiss(); onRequested() } }
+                            }
                         } catch { requestError = error.localizedDescription }
-                    } label: { Text(NativeTransportType.classify(listing.tags ?? [])?.requestLabel ?? "Request order") }
+                    } label: { Text(canUseEscrow && useEscrow ? "Choose escrow provider" : NativeTransportType.classify(listing.tags ?? [])?.requestLabel ?? "Request order") }
                         .buttonStyle(PrimaryButton()).disabled(store.demo || store.busy || !store.snapshot.canSign).accessibilityIdentifier("requestOrder")
                 }.padding(24)
             }.background(MarketTheme.paper).foregroundStyle(MarketTheme.ink).navigationTitle("Review order").marketInlineTitle()
+                .marketPage(isPresented: $showingEscrow, onDismiss: {
+                    if let createdOrderID { store.activeOrderID = createdOrderID; dismiss(); onRequested() }
+                }) {
+                    MarketplaceEscrowView(listingID: listing.id, checkout: checkout, onOrderCreated: { createdOrderID = $0 }).marketSheetScope()
+                }
                 .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
         }
     }
@@ -105,6 +135,7 @@ struct OrderDetailView: View {
     @State private var editingRoute = false
     @State private var cancelling = false
     @State private var arrangingDelivery = false
+    @State private var escrowOpen = false
     @State private var paying = false
     @State private var requestingPayment = false
     @State private var confirmingPayment = false
@@ -123,6 +154,14 @@ struct OrderDetailView: View {
                 .marketPage(isPresented: $showingChat) { if let order { let peer = order.seller == store.snapshot.publicKey ? order.buyer : order.seller; ConversationView(conversation: store.snapshot.conversations.first(where: { $0.id == peer }) ?? MarketConversation(id: peer, name: "Conversation", messages: []), context: .order(order.id), threadKey: "order:" + order.id).marketSheetScope() } }
                 .marketPage(isPresented: $requestingPayment) { if let order { OrderPaymentRequestView(order: order).marketSheetScope() } }
                 .confirmationDialog("Confirm payment received?", isPresented: $confirmingPayment, titleVisibility: .visible) { Button("Confirm received") { if let order, let payment = order.payment { store.updateOrder(order.id, patch: ["payment": ["mint": payment.mint, "amount": payment.amount, "unit": payment.unit, "status": "received"]]) } }; Button("Cancel", role: .cancel) {} } message: { Text("Confirm after checking your wallet. This records your confirmation for the buyer.") }
+                .marketPage(isPresented: $escrowOpen) {
+                    if let order, let item = order.items.first, let trade = order.escrowTradeId {
+                        let hasInvite = store.snapshot.escrowCards.contains { $0.matches(order) }
+                        MarketplaceEscrowView(listingID: item.id, tradeID: trade,
+                            checkout: !hasInvite && order.buyer == store.snapshot.publicKey ? EscrowCheckout(quantity: item.quantity, note: order.note, delivery: order.deliveryRequest, resumeOrder: order) : nil
+                        ).marketSheetScope()
+                    }
+                }
                 .marketPage(isPresented: $paying) { NativeOrderPaymentView(orderID: orderID).marketSheetScope() }
                 .marketPage(item: $relatedOrder) { value in OrderDetailView(orderID: value.id).marketSheetScope() }
                 .marketPage(isPresented: $editingRoute) { if let order { OrderRouteEditor(order: order).marketSheetScope() } }
@@ -150,15 +189,34 @@ struct OrderDetailView: View {
             MarketInlineError()
             if let request = order.deliveryRequest { VStack(alignment: .leading, spacing: 8) { Text("Requested route").font(.headline); Text("Pickup · " + request.pickup.address); Text("Destination · " + request.destination.address); if let collection = request.collection { Text("Pickup reference · " + collection.reference).font(.caption).foregroundStyle(MarketTheme.muted) } } }
             if let authorization = order.pickupAuthorization { VStack(alignment: .leading, spacing: 8) { Text("Authorized collection").font(.headline); UserRow(person: store.snapshot.people[authorization.courierPubkey] ?? .unnamed(authorization.courierPubkey), subtitle: "Courier"); Text("Pickup reference · " + authorization.reference).font(.caption).foregroundStyle(MarketTheme.muted) } }
-            if let payment = order.payment { orderPayment(payment, order: order) }
-            if seller && !order.terminal && order.payment == nil { Button("Request payment") { requestingPayment = true } }
-            if seller && order.payment?.status == "requested" { Button("Confirm payment received") { confirmingPayment = true } }
+            if order.escrowTradeId != nil {
+                if participant, let provider = order.escrowProvider {
+                    let card = store.snapshot.escrowCards.first { $0.matches(order) }
+                    if store.snapshot.settings.escrowUi || card?.joined == true {
+                        let name = store.snapshot.people[provider]?.name ?? MarketPerson.unnamed(provider).name
+                        Text("Escrow provider · " + name).font(.subheadline)
+                        if let card {
+                            Button("Open escrow · " + card.status) { escrowOpen = true }
+                        } else if !seller && !order.terminal {
+                            Button("Finish escrow invitation") { escrowOpen = true }
+                        } else {
+                            Text(order.terminal ? "No escrow invitation received." : "Waiting for the buyer’s escrow invitation.").font(.caption).foregroundStyle(MarketTheme.muted)
+                        }
+                    } else if seller && order.status == "requested" {
+                        Text("Enable escrow in Settings to review this order’s provider.").font(.caption).foregroundStyle(MarketTheme.muted)
+                    }
+                }
+            } else {
+                if let payment = order.payment { orderPayment(payment, order: order) }
+                if seller && !order.terminal && order.payment == nil { Button("Request payment") { requestingPayment = true } }
+                if seller && order.payment?.status == "requested" { Button("Confirm payment received") { confirmingPayment = true } }
+            }
             if participant { Button("Message") { store.command(["type": "contact", "author": other]) { if $0 { showingChat = true } } } }
             if let delivery = order.deliveryOrderId { Button("Open delivery order") { relatedOrder = OrderSelection(id: delivery) } }
             if let source = order.sourceOrderId { Button("Open product order") { relatedOrder = OrderSelection(id: source) } }
             if order.buyer == store.snapshot.publicKey && ["accepted", "in-transit"].contains(order.status) && order.deliveryRequest == nil && order.deliveryOrderId == nil && !order.shipment.stops.isEmpty && !order.shipment.stops.contains(where: { $0.courierPubkey != nil }) { Button("Arrange delivery") { arrangingDelivery = true }.buttonStyle(PrimaryButton()).disabled(store.busy) }
             if !order.terminal {
-                if seller && order.status == "requested" { statusButton("Accept order", status: "accepted") }
+                if seller && order.status == "requested" && order.escrowTradeId == nil { statusButton("Accept order", status: "accepted") }
                 if seller && order.status == "accepted" { statusButton("Mark on the way", status: "in-transit") }
                 if participant && ["accepted", "in-transit"].contains(order.status) { statusButton("Mark delivered", status: "delivered", primary: false) }
             }

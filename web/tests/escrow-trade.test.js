@@ -50,3 +50,61 @@ test('starting or funding uses the verified current revision',async()=>{
   await assert.rejects(E.exactListing(async()=>({...listing,event_id:'e'.repeat(64)}),d),/listing changed/);
   await E.exactListing(async()=>listing,d);
 });
+
+test('provider search separates advertised services, mutual follows and ordinary contacts',()=>{
+  const known=[{id:buyer,name:'Robin'},{id:seller,name:'Robin'}, {id:'c'.repeat(64),name:'Robin A',contact:true},
+    {id:provider,name:'Robin B',advertised:true}, {id:'d'.repeat(64),name:'Robin C',mutual:true}];
+  assert.deepEqual(E.candidates(known,buyer,seller,'  ROBIN ').map(p=>p.name),['Robin B','Robin C','Robin A']);
+  assert.deepEqual(E.candidates(known,buyer,seller,'d'.repeat(12)).map(p=>p.name),['Robin C']);
+  assert.deepEqual(E.candidates(known,buyer,seller,'unknown'),[]);
+});
+
+test('traders check the exact private order before joining, approving or funding',async()=>{
+  const order_id=buyer+':00000000-0000-4000-8000-000000000001',linked={...d,order_id,quantity:2};
+  const order={id:order_id,buyer,seller,listing_id:listing.id,provider,trade_id:id,quantity:2,status:'requested'};
+  E.validateDeal(linked);
+  await E.exactListing(async()=>listing,linked);
+  await E.exactOrder(async()=>order,buyer,id,linked);
+  for(const wrong of [{provider:seller},{seller:provider},{quantity:1},{trade_id:revision},{listing_id:'other'},{status:'cancelled'}])
+    await assert.rejects(E.exactOrder(async()=>({...order,...wrong}),seller,id,linked));
+  await E.exactOrder(()=>assert.fail('Provider must never fetch private order details'),provider,id,linked);
+  await E.exactOrder(()=>assert.fail('Legacy agreements do not require an order'),seller,id,d);
+});
+
+test('only a participant can decline, and a late decline never strands an approved payment',async()=>{
+  const rogue=row('c'.repeat(64),'decline',{deal_hash});
+  const decline=row(provider,'decline',{deal_hash});
+  const pending=phases.slice(0,3);
+  assert.equal((await E.project([...pending,rogue],id,buyer)).declined,undefined);
+  assert.equal((await E.project([...pending,decline],id,buyer)).declined,provider);
+  const t=await E.project([...phases,decline,row(buyer,'funded',{deal_hash,terms_hash,token:'locked'})],id,buyer);
+  assert.equal(t.declined,undefined);assert.equal(t.token,'locked');
+});
+
+test('the trade discussion deduplicates both local recipients and filters unrelated senders and deals',async()=>{
+  const message={deal_hash,message_id:'9'.repeat(64),text:'Friday pickup?'};
+  const own=row(buyer,'comment',message), outsider=row('8'.repeat(64),'comment',message);
+  const other=row(provider,'comment',{...message,deal_hash:id,text:'Other trade'});
+  const records=[...phases,own,own,outsider,other];
+  assert.deepEqual((await E.project(records,id,buyer)).messages.map(m=>[m.author,m.text]),[[buyer,'Friday pickup?']]);
+});
+
+test('merchant consents to both the named provider and order before announcing a join',async()=>{
+  const order_id=buyer+':10000000-0000-4000-8000-000000000001',linked={...d,order_id,quantity:1};
+  const order={id:order_id,buyer,seller,listing_id:listing.id,provider,trade_id:id,quantity:1,status:'requested'};
+  const actions=[];
+  const api=async(method,args)=>{
+    actions.push(method);
+    if(method==='listing')return listing;
+    if(method==='order')return order;
+    if(method==='wallet')return {key:key(5)};
+    if(method==='acceptOrder'){assert.deepEqual(args,{id:order_id,trade_id:id,provider});order.status='accepted';}
+  };
+  await assert.rejects(E.exactOrder(api,buyer,id,linked,true),/merchant/);
+  await E.join(api,seller,{id,d:linked,dealHash:await E.hash(linked)});
+  assert.equal(order.status,'accepted');
+  assert.deepEqual(actions.slice(-2),['acceptOrder','send']);
+  await E.exactOrder(api,buyer,id,linked,true);
+  await E.join(api,seller,{id,d:linked,dealHash:await E.hash(linked)});
+  assert.equal(actions.filter(a=>a==='acceptOrder').length,1);
+});

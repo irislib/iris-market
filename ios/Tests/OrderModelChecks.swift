@@ -42,6 +42,12 @@ import Foundation
         let testCashu = try decoder.decode(CashuPayment.self, from: Data(#"{"token":"synthetic-not-redeemable","amount":"128","mint":"https://testnut.cashu.space","unit":"sat","status":"unverified"}"#.utf8))
         check(testCashu.formattedAmount == "128 test sats" && testCashu.isTestMoney, "Test tokens must remain separate from real sats")
         var checkout = try JSONSerialization.jsonObject(with: Data(source.utf8)) as! [String: Any]
+        check(order.escrowTradeId == nil && order.escrowProvider == nil, "Existing direct orders have no escrow")
+        var protected = checkout
+        protected["escrowTradeId"] = "trade-fixture"
+        protected["escrowProvider"] = "provider-fixture"
+        let linked = try decoder.decode(MarketOrder.self, from: JSONSerialization.data(withJSONObject: protected))
+        check(linked.escrowTradeId == "trade-fixture" && linked.escrowProvider == "provider-fixture", "Checkout keeps the exact trade and provider")
         checkout["payment"] = ["mint": "https://testnut.cashu.space", "amount": "16", "unit": "sat", "status": "requested"]
         checkout["deliveryRequest"] = ["pickup": ["label": "Shop", "address": "Shop entrance", "coordinates": [24.9, 60.2]], "destination": ["label": "Home", "address": "Private meeting point"], "collection": ["merchant": "seller", "reference": "opaque-reference"]]
         checkout["pickupAuthorization"] = ["courierPubkey": "courier", "reference": "opaque-reference"]

@@ -303,7 +303,7 @@ private fun rememberListLayout(): MutableState<Boolean> {
         if(!listing.mine && !demo && listing.side=="offer" && !listing.isBitcoinOffer) TextButton(enabled=!busy,onClick={
             model.command(JSONObject().put("type","contact").put("author",listing.author).put("listing_id",listing.id),inbox)
         },modifier=Modifier.fillMaxWidth()) { Text("Message") }
-        if(!listing.mine && !demo && listing.escrow!=null && JSONObject(model.state.value.settings).optBoolean("escrow_ui"))
+        if(!listing.mine && !demo && listing.escrow!=null && (listing.isBitcoinOffer || listing.side=="request") && JSONObject(model.state.value.settings).optBoolean("escrow_ui"))
             OutlinedButton(onClick={showEscrow=true},modifier=Modifier.fillMaxWidth()){Text("Arrange escrow")}
         if(listing.mine && !demo && listing.externalOrder==null) TextButton(enabled=!busy,onClick={model.command(JSONObject().put("type","close").put("id",listing.id))}) { Text("Close listing") }
     }

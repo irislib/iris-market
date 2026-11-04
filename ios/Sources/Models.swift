@@ -46,7 +46,7 @@ struct MarketSnapshot: Decodable {
 
 struct EscrowInboxRow: Decodable {
     struct Step: Decodable {
-        struct Deal: Decodable { let title: String?, taker: String?, buyer: String?, seller: String?, provider: String?, listingId: String?; let sats: UInt64? }
+        struct Deal: Decodable { let title: String?, taker: String?, buyer: String?, seller: String?, provider: String?, listingId: String?, orderId: String?; let sats: UInt64? }
         let tradeId: String, action: String, deal: Deal?, outcome: String?
         private enum CodingKeys: String, CodingKey { case tradeId, action, deal, outcome }
         init(from decoder: Decoder) throws {
@@ -58,6 +58,40 @@ struct EscrowInboxRow: Decodable {
         }
     }
     let mine: Bool, peer: String, step: Step
+}
+
+struct EscrowCard: Identifiable {
+    let id: String
+    let deal: EscrowInboxRow.Step.Deal
+    let joined: Bool
+    let status: String
+    func matches(_ order: MarketOrder) -> Bool {
+        id == order.escrowTradeId && deal.orderId == order.id && deal.provider == order.escrowProvider &&
+            deal.buyer == order.buyer && deal.seller == order.seller && deal.listingId == order.items.first?.id
+    }
+}
+
+extension MarketSnapshot {
+    var escrowCards: [EscrowCard] {
+        let rows = tradeSteps ?? []
+        let joined = Set(rows.filter { $0.mine && $0.step.action == "join" }.map { $0.step.tradeId })
+        var seen = Set<String>()
+        return rows.reversed().compactMap { row in
+            let id = row.step.tradeId
+            guard (settings.escrowUi || joined.contains(id)), row.step.action == "invite", let deal = row.step.deal,
+                  deal.taker == (row.mine ? publicKey : row.peer), [deal.buyer, deal.seller, deal.provider].contains(publicKey),
+                  seen.insert(id).inserted else { return nil }
+            let status: String
+            switch row.step.outcome {
+            case "release": status = "Payment released"
+            case "refund": status = "Payment refunded"
+            case "declined": status = "Declined"
+            case "disputed": status = "Help requested"
+            default: status = joined.contains(id) ? "In progress" : "Invitation"
+            }
+            return EscrowCard(id: id, deal: deal, joined: joined.contains(id), status: status)
+        }
+    }
 }
 
 struct MarketListing: Decodable, Identifiable, Hashable {

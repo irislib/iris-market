@@ -149,10 +149,35 @@ test('inbox receipt hints require the intended recipient and an independent auth
   await receive(book,step('settled',refund),provider);
   const card=()=>globalThis.IrisEscrow.list(book.rows(false),seller)[0];
   assert.equal(card().status,'In progress');
-  await receive(book,step('settled',refund));
   await receive(book,step('cosign',refund),provider);
   assert.equal(card().status,'In progress');
   await send(step('dispute',terms));
+  assert.equal(card().status,'Help requested');
+  await receive(book,step('settled',refund));
   assert.equal(card().status,'Refund receipt');
   assert.equal(card().deal.sats,10);
+});
+
+test('room messages require all three joined profiles, use the two exact private recipients and stay out of inbox summaries',async()=>{
+  const book=open(wallet());await book.load();await receive(book,invite);
+  await book.send([buyer,provider],join,id(nextId++));
+  const comment=step('comment',{deal_hash:dealHash,message_id:id(16),text:'Meet by the entrance.'});
+  await assert.rejects(book.send([buyer,provider],comment,id(nextId++)),/discussion/);
+  await receive(book,join,buyer);await receive(book,join,provider);
+  await assert.rejects(book.send([buyer,outsider],comment,id(nextId++)),/discussion/);
+  await book.send([provider,buyer],comment,id(nextId++));
+  for(let n=0;n<4;n++)await receive(book,{...comment,message_id:id(160+n),text:'Reply '+n},provider);
+  await receive(book,comment,outsider);
+  const messages=book.rows(true).filter(r=>r.step.action==='comment');
+  assert.equal(messages.length,6);assert.ok(!messages.some(m=>m.peer===outsider));
+  assert.ok(!JSON.stringify(book.rows(false)).includes('entrance'));
+});
+
+test('declines bind the invited role and exact agreement even before the recipient joins',async()=>{
+  const book=open(wallet());await book.load();await receive(book,invite);
+  const action=step('decline',{deal_hash:dealHash});
+  await receive(book,action,outsider);await receive(book,{...action,deal_hash:id(12)},provider);
+  const card=()=>globalThis.IrisEscrow.list(book.rows(false),seller)[0];
+  assert.equal(card().status,'Invitation');
+  await receive(book,action,provider);assert.equal(card().status,'Declined');
 });

@@ -13,6 +13,7 @@ const MAX_PENDING_ROWS: usize = 128;
 const MAX_ROWS: usize = 2048;
 const ACTIONS: &[&str] = &[
     "invite", "join", "approve", "funded", "payout", "cosign", "settled", "dispute", "rated",
+    "decline", "comment",
 ];
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -29,6 +30,18 @@ pub fn is_trade(event: &UnsignedEvent) -> bool {
     event.kind == Kind::from(14) && event.tags.iter().any(|tag| tag.as_slice()[0] == TAG)
 }
 fn valid(step: &Value) -> bool {
+    if step["action"] == "comment"
+        && !(step["text"]
+            .as_str()
+            .is_some_and(|s| !s.trim().is_empty() && s.len() <= 2000)
+            && ["message_id", "deal_hash"].iter().all(|k| {
+                step[*k]
+                    .as_str()
+                    .is_some_and(|id| EventId::from_hex(id).is_ok())
+            }))
+    {
+        return false;
+    }
     step["v"].as_u64() == Some(1)
         && step["trade_id"]
             .as_str()
@@ -45,6 +58,7 @@ impl Record {
             let deal = &self.step["deal"];
             let mut public = json!({});
             for key in [
+                "order_id",
                 "listing_id",
                 "revision",
                 "title",
@@ -66,6 +80,9 @@ impl Record {
                 .filter(|n| (1..=1_000_000_000_000).contains(n))
             {
                 public["sats"] = sats.into();
+            }
+            if let Some(q) = deal["quantity"].as_u64().filter(|n| (1..=999).contains(n)) {
+                public["quantity"] = q.into();
             }
             step["deal"] = public;
             if let Some(outcome) = outcome {
@@ -135,6 +152,58 @@ impl Messaging {
                     return Ok(());
                 }
                 return Err("This escrow action was already used for different terms".into());
+            }
+            if step["action"] == "comment" {
+                let rows = &this.state.trade_steps;
+                let history: Vec<_> = rows
+                    .iter()
+                    .filter(|r| r.step["trade_id"] == step["trade_id"])
+                    .collect();
+                let invitation = history
+                    .iter()
+                    .find(|r| {
+                        let actor = if r.mine { this.owner } else { r.peer };
+                        r.step["action"] == "invite"
+                            && invite_matches(&r.step, &actor.to_hex(), &this.owner.to_hex())
+                            && invitation_hash(&r.step["deal"]) == step["deal_hash"]
+                    })
+                    .ok_or("Open the discussion for the trade you joined.")?;
+                let deal = &invitation.step["deal"];
+                let members: BTreeSet<_> = ["buyer", "seller", "provider"]
+                    .iter()
+                    .filter_map(|role| PublicKey::from_hex(deal[*role].as_str()?).ok())
+                    .collect();
+                let joined: BTreeSet<_> = history
+                    .iter()
+                    .filter(|r| {
+                        r.step["action"] == "join" && r.step["deal_hash"] == step["deal_hash"]
+                    })
+                    .map(|r| if r.mine { this.owner } else { r.peer })
+                    .collect();
+                if !members.is_subset(&joined)
+                    || members != peers.iter().copied().chain([this.owner]).collect()
+                {
+                    return Err("Open the discussion for the trade you joined.".into());
+                }
+                if history
+                    .iter()
+                    .filter(|r| r.mine && r.step["action"] == "comment")
+                    .count()
+                    >= 96
+                    || rows
+                        .iter()
+                        .filter(|r| r.step["action"] == "comment")
+                        .count()
+                        + 2
+                        > 512
+                    || rows.len() + 2 > MAX_ROWS - 128
+                    || this.state.outbox.len() + this.state.pending_contact_messages.len() + 2
+                        > super::MAX_OUTBOX - 16
+                {
+                    return Err(
+                        "The trade discussion is full. Use private messages to continue.".into(),
+                    );
+                }
             }
             if this.state.trade_steps.len() + peers.len() > MAX_ROWS
                 || this.state.outbox.len() + this.state.pending_contact_messages.len() + peers.len()
@@ -242,24 +311,36 @@ impl Messaging {
             if !authorized {
                 return;
             }
-        } else if !matches!(action, "invite" | "join") || payload.len() > MAX_PENDING_STEP {
+        } else if !matches!(action, "invite" | "join" | "decline")
+            || payload.len() > MAX_PENDING_STEP
+        {
             return;
         }
         // Two distinct copies are sufficient to detect conflicting keys or proposals.
-        if rows
-            .iter()
-            .filter(|r| {
-                !r.mine
-                    && r.peer == sender
-                    && r.step["trade_id"] == *trade
-                    && r.step["action"] == action
-                    && r.step["direction"].as_str().filter(|d| *d == "refund")
-                        == step["direction"].as_str().filter(|d| *d == "refund")
-            })
-            .take(2)
-            .count()
-            == 2
-        {
+        let variants = rows.iter().filter(|r| {
+            !r.mine
+                && r.peer == sender
+                && r.step["trade_id"] == *trade
+                && r.step["action"] == action
+                && r.step["direction"].as_str().filter(|d| *d == "refund")
+                    == step["direction"].as_str().filter(|d| *d == "refund")
+        });
+        if action == "comment" {
+            if pinned.is_none()
+                || rows.len() >= MAX_ROWS - 128
+                || rows
+                    .iter()
+                    .filter(|r| r.step["action"] == "comment")
+                    .count()
+                    >= 512
+                || variants.clone().count() >= 48
+                || variants
+                    .into_iter()
+                    .any(|r| r.step["message_id"] == step["message_id"])
+            {
+                return;
+            }
+        } else if variants.take(2).count() == 2 {
             return;
         }
         let pending =

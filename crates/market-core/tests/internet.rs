@@ -261,6 +261,15 @@ fn buying_backfills_typed_requests_beyond_latest_three_hundred() {
             listing::build(&seller, &draft, &format!("offer-{n}"), now - 302 + n, false).unwrap(),
         );
     }
+    // The provider's service is older than the normal browse window.
+    let provider = Keys::generate();
+    let service:Draft=serde_json::from_value(json!({"title":"Escrow services","description":"Public service","side":"offer","tags":["escrow-provider"]})).unwrap();
+    events.push(listing::build(&provider, &service, "escrow-service", now - 600, false).unwrap());
+    events.push(
+        EventBuilder::new(nostr::Kind::Metadata, r#"{"name":"Rowan"}"#)
+            .sign_with_keys(&provider)
+            .unwrap(),
+    );
     events.sort_by_key(|event| std::cmp::Reverse(event.created_at));
     let frames = Arc::new(Mutex::new(Vec::<Value>::new()));
     let log = frames.clone();
@@ -347,6 +356,32 @@ fn buying_backfills_typed_requests_beyond_latest_three_hundred() {
                 .any(|listing| listing["title"] == "Older request")
         })
     });
+    let lookup = r#"{"type":"discover_escrow_providers"}"#;
+    assert!(
+        app.command(lookup)
+            .unwrap_err()
+            .to_string()
+            .contains("Enable escrow")
+    );
+    let mut settings = snapshot(&app)["settings"].clone();
+    settings["escrow_ui"] = json!(true);
+    app.command(&json!({"type":"set_settings","settings":settings}).to_string())
+        .unwrap();
+    app.command(lookup).unwrap();
+    let local: Value = serde_json::from_str(
+        &app.trade_listing(&format!("{}:offer-301", seller.public_key()), false)
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        local["escrow_candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["id"] == provider.public_key().to_hex()
+                && p["advertised"] == true
+                && p["name"] == "Rowan")
+    );
     let frames = frames.lock().unwrap();
     let filters: Vec<_> = frames
         .iter()
@@ -354,6 +389,15 @@ fn buying_backfills_typed_requests_beyond_latest_three_hundred() {
         .flat_map(|frame| frame.as_array().unwrap()[2..].iter())
         .filter(|filter| filter["kinds"] == json!([30402]))
         .collect();
+    let directory = filters
+        .iter()
+        .find(|f| f["#t"] == json!(["escrow-provider"]))
+        .expect("public service lookup");
+    assert!(
+        directory.get("authors").is_none()
+            && directory.get("#p").is_none()
+            && directory.get("search").is_none()
+    );
     assert!(filters.iter().any(|filter| filter["#k"] == json!(["buy"])));
     assert!(filters.iter().any(|filter| filter.get("until").is_some()));
     assert!(

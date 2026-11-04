@@ -67,6 +67,47 @@ fn both_sides_of_each_trade_bind_the_correct_funder_to_the_signed_quote() {
     }
 }
 #[test]
+fn native_checkout_requires_opt_in_and_retries_without_duplicating_the_order() {
+    use iris_market_core::{Market, model::Settings};
+    let directory = tempfile::tempdir().unwrap();
+    let seller = Keys::generate();
+    let now = listing::now();
+    let event = listing::build(&seller, &draft(false, "offer", now), "goods", now, false).unwrap();
+    let id = listing::parse(&event, now).unwrap().id;
+    let mut db = Store::open(&directory.path().join("market.sqlite")).unwrap();
+    assert!(db.ingest(&event, now, false).unwrap());
+    let mut settings = Settings::default();
+    settings.relays.clear();
+    db.save_settings(&settings).unwrap();
+    drop(db);
+    let app = Market::open(
+        directory.path(),
+        &Keys::generate().secret_key().to_secret_hex(),
+        false,
+    )
+    .unwrap();
+    let provider = Keys::generate().public_key().to_hex();
+    let trade = "a".repeat(64);
+    let request=json!({"type":"request_order","listing_id":id,"quantity":2,"escrow_trade_id":trade,"escrow_provider":provider}).to_string();
+    assert!(
+        app.command(&request)
+            .unwrap_err()
+            .to_string()
+            .contains("Enable escrow")
+    );
+    settings.escrow_ui = true;
+    app.command(&json!({"type":"set_settings","settings":settings}).to_string())
+        .unwrap();
+    app.command(&request).unwrap();
+    let state: serde_json::Value = serde_json::from_str(&app.command(&request).unwrap()).unwrap();
+    let orders = state["orders"].as_array().unwrap();
+    assert_eq!(orders.len(), 1);
+    assert_eq!(orders[0]["escrowProvider"], provider);
+    assert_eq!(orders[0]["escrowTradeId"], trade);
+    assert_eq!(orders[0]["items"][0]["quantity"], 2);
+    app.shutdown();
+}
+#[test]
 fn malformed_quotes_and_forged_or_collapsed_signer_sets_fail_closed() {
     let now = listing::now();
     let maker = Keys::generate();

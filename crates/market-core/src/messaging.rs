@@ -980,12 +980,29 @@ impl Messaging {
         note: &str,
         delivery: Option<crate::orders::DeliveryRequest>,
     ) -> MessagingResult<String> {
+        self.request_order_with_escrow(
+            listing,
+            quantity,
+            note,
+            delivery,
+            crate::orders::OrderEscrow::default(),
+        )
+    }
+    pub(crate) fn request_order_with_escrow(
+        &mut self,
+        listing: &crate::model::Listing,
+        quantity: u16,
+        note: &str,
+        delivery: Option<crate::orders::DeliveryRequest>,
+        escrow: crate::orders::OrderEscrow,
+    ) -> MessagingResult<String> {
         self.transaction(|this| {
-            let id = this.state.orders.request_with_delivery(
+            let id = this.state.orders.request_with_escrow(
                 listing,
                 quantity,
                 note,
                 delivery,
+                escrow,
                 &this.owner.to_hex(),
                 &this.keys.public_key().to_hex(),
                 now(),

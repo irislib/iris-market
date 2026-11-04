@@ -7,30 +7,44 @@ struct EscrowInboxCards: View {
     @State private var selected: String?
     var peer: String? = nil
     var listing: String? = nil
-    private struct Card: Identifiable { let id: String; let label: String }
-    private var invites: [Card] {
-        var seen=Set<String>()
-        let rows=store.snapshot.tradeSteps ?? []
-        let joined=Set(rows.filter { $0.mine && $0.step.action=="join" }.map { $0.step.tradeId })
-        return rows.reversed().compactMap { row in
-            guard store.snapshot.settings.escrowUi || joined.contains(row.step.tradeId) else {return nil}
-            guard row.step.action == "invite", let d=row.step.deal, let title=d.title, !title.isEmpty,
-                  d.taker == (row.mine ? store.snapshot.publicKey : row.peer),
-                  [d.buyer,d.seller,d.provider].contains(store.snapshot.publicKey) else { return nil }
-            if let peer, ![d.buyer,d.seller,d.provider].contains(peer) { return nil }
-            if let listing, let id=d.listingId, listing != id && listing != "30402:" + id { return nil }
-            guard seen.insert(row.step.tradeId).inserted else { return nil }
-            let status = row.step.outcome == "release" ? "Release receipt" : row.step.outcome == "refund" ? "Refund receipt" : joined.contains(row.step.tradeId) ? "In progress" : "Invitation"
-            let amount = d.sats.map { $0.formatted() + " sats" }
-            return Card(id: row.step.tradeId, label: ["Escrow", title, amount, status].compactMap { $0 }.joined(separator: " · "))
+    var jobsOnly = false
+    private var invites: [EscrowCard] {
+        store.snapshot.escrowCards.filter { card in
+            let d = card.deal
+            if jobsOnly && d.provider != store.snapshot.publicKey { return false }
+            if let peer, ![d.buyer, d.seller, d.provider].contains(peer) { return false }
+            if let listing, let id = d.listingId, listing != id && listing != "30402:" + id { return false }
+            return true
         }
     }
     var body: some View {
+        if jobsOnly && invites.isEmpty {
+            MarketEmptyState(symbol: "lock.shield.fill", title: "No escrow jobs yet", description: "Private invitations to provide escrow appear here. You choose which jobs to accept.")
+        }
         ForEach(invites) { card in
-            Button { selected=card.id } label: { Label(card.label,systemImage:"lock.shield.fill") }
+            let role = card.deal.provider == store.snapshot.publicKey ? "Escrow job" : "Escrow"
+            let amount = card.deal.sats.map { $0.formatted() + " sats" }
+            let label = [role, card.deal.title, amount, card.status].compactMap { $0 }.joined(separator: " · ")
+            Button { selected = card.id } label: { Label(label, systemImage: "lock.shield.fill") }
         }.marketPage(isPresented: Binding(get:{selected != nil},set:{if !$0 { selected=nil }})) {
             if let selected { MarketplaceEscrowView(tradeID:selected).marketSheetScope() }
         }
+    }
+}
+
+struct EscrowCheckout {
+    let quantity: Int
+    let note: String
+    var delivery: MarketDeliveryRequest?
+    var resumeOrder: MarketOrder?
+
+    var selection: [String: Any] {
+        var value: [String: Any] = ["quantity": quantity, "note": note]
+        if let resumeOrder {
+            value["resume"] = true
+            value["provider"] = resumeOrder.escrowProvider
+        }
+        return value
     }
 }
 
@@ -39,11 +53,20 @@ struct MarketplaceEscrowView: View {
     @Environment(\.dismiss) private var dismiss
     var listingID: String? = nil
     var tradeID: String? = nil
+    var checkout: EscrowCheckout?
+    var onOrderCreated: ((String) -> Void)?
+    @State private var chatPeer: String?
     var body: some View {
         MarketNavigationContainer {
-            EscrowWeb(store:store, owner:store.snapshot.publicKey, listingID:listingID, tradeID:tradeID, revision:UInt64(store.snapshot.tradeSteps?.count ?? 0))
+            EscrowWeb(store:store, owner:store.snapshot.publicKey, listingID:listingID, tradeID:tradeID, checkout:checkout, onOrderCreated:onOrderCreated, onContact:{ chatPeer = $0 }, revision:UInt64(store.snapshot.tradeSteps?.count ?? 0))
                 .navigationTitle("Escrow trade").marketInlineTitle()
                 .toolbar { ToolbarItem(placement:.cancellationAction) { MarketDoneButton { dismiss() } } }
+                .marketPage(isPresented: Binding(get: { chatPeer != nil }, set: { if !$0 { chatPeer = nil } })) {
+                    if let peer = chatPeer {
+                        ConversationView(conversation: store.snapshot.conversations.first { $0.id == peer } ?? MarketConversation(id: peer, name: "Conversation", messages: []),
+                            context: nil, threadKey: "general").marketSheetScope()
+                    }
+                }
                 .onChange(of:store.snapshot.publicKey) { _ in dismiss() }
         }
     }
@@ -57,16 +80,22 @@ private actor EscrowWalletSession {
     }
 }
 private struct EscrowWeb {
-    let store: MarketStore, owner: String, listingID: String?, tradeID: String?, revision: UInt64
-    @MainActor func makeCoordinator() -> Controller { Controller(store:store,owner:owner,listing:listingID,trade:tradeID) }
+    let store: MarketStore, owner: String, listingID: String?, tradeID: String?, checkout: EscrowCheckout?, onOrderCreated: ((String) -> Void)?, onContact: (String) -> Void, revision: UInt64
+    @MainActor func makeCoordinator() -> Controller { Controller(store:store,owner:owner,listing:listingID,trade:tradeID,checkout:checkout,onOrderCreated:onOrderCreated,onContact:onContact) }
     @MainActor final class Controller: NSObject, WKNavigationDelegate, WKScriptMessageHandlerWithReply {
         let store: MarketStore, owner: String, listing: String?
+        let checkout: EscrowCheckout?
+        let onOrderCreated: ((String) -> Void)?
+        let onContact: (String) -> Void
         var trade: String?
         weak var web: WKWebView?
         var revision: UInt64 = 0
         let wallet = EscrowWalletSession()
         let index = Bundle.main.url(forResource:"index",withExtension:"html",subdirectory:"escrow")
-        init(store: MarketStore, owner:String, listing:String?, trade:String?) { self.store=store;self.owner=owner;self.listing=listing;self.trade=trade }
+        init(store: MarketStore, owner: String, listing: String?, trade: String?, checkout: EscrowCheckout?, onOrderCreated: ((String) -> Void)?, onContact: @escaping (String) -> Void) {
+            self.store = store; self.owner = owner; self.listing = listing; self.trade = trade
+            self.checkout = checkout; self.onOrderCreated = onOrderCreated; self.onContact = onContact
+        }
         private var permitted: Bool {
             store.snapshot.settings.escrowUi || (trade != nil && store.snapshot.tradeSteps?.contains { $0.mine && $0.step.tradeId==trade && $0.step.action=="join" } == true)
         }
@@ -101,13 +130,79 @@ private struct EscrowWeb {
         private func call(_ method:String,_ args:[String:Any]) async throws -> Any {
             let id=args["trade_id"] as? String
             switch method {
-            case "selection": return trade.map {["trade_id":$0]} ?? ["listing_id":listing ?? ""]
+            case "selection":
+                var selection: [String: Any] = [:]
+                selection["listing_id"] = listing
+                selection["trade_id"] = trade
+                selection["order"] = checkout?.selection
+                return selection
+            case "createOrder":
+                guard let checkout, let listing, let id, let provider = args["provider"] as? String,
+                      store.snapshot.settings.escrowUi, (trade == nil || trade == id), args["listing_id"] as? String == listing,
+                      args["quantity"] as? Int == checkout.quantity, args["note"] as? String == checkout.note else { throw CancellationError() }
+                func matchingOrder() -> MarketOrder? {
+                    store.snapshot.orders.first { $0.escrowTradeId == id && $0.escrowProvider == provider && $0.buyer == owner &&
+                        $0.items.first?.id == listing && $0.items.first?.quantity == checkout.quantity && $0.note == checkout.note }
+                }
+                if let existing = matchingOrder() {
+                    if checkout.resumeOrder == nil { onOrderCreated?(existing.id) }
+                    return existing.id
+                }
+                guard checkout.resumeOrder == nil else { throw MarketRouteError.message("The order changed. Reopen it to continue.") }
+                var request: [String: Any] = ["type":"request_order", "listing_id":listing, "escrow_trade_id":id,
+                    "escrow_provider":provider, "quantity":checkout.quantity, "note":checkout.note]
+                if let delivery = checkout.delivery { request["delivery_request"] = try delivery.projection() }
+                let ok = await withCheckedContinuation { c in store.command(request) { c.resume(returning: $0) } }
+                guard ok, let order = matchingOrder() else { throw MarketRouteError.message(store.alert ?? "Could not save this order.") }
+                onOrderCreated?(order.id)
+                return order.id
+            case "acceptOrder":
+                guard store.snapshot.settings.escrowUi, let trade, trade == id,
+                      let order = store.snapshot.orders.first(where: { $0.id == args["id"] as? String && $0.seller == owner }),
+                      order.escrowProvider == args["provider"] as? String,
+                      let card = store.snapshot.escrowCards.first(where: { $0.id == trade && $0.matches(order) }),
+                      card.status != "Declined", ["requested", "accepted", "in-transit"].contains(order.status)
+                else { throw MarketRouteError.message("Review the current order and its provider before accepting.") }
+                if order.status == "requested" {
+                    let ok = await withCheckedContinuation { c in store.updateOrder(order.id, patch: ["status":"accepted"]) { c.resume(returning: $0) } }
+                    guard ok else { throw MarketRouteError.message(store.alert ?? "Could not accept this order.") }
+                }
+                return true
+            case "order":
+                guard let order = store.snapshot.orders.first(where: { $0.id == args["id"] as? String }),
+                      [order.buyer, order.seller].contains(owner), let item = order.items.first,
+                      let provider = order.escrowProvider, let trade = order.escrowTradeId else {
+                    throw MarketRouteError.message("The linked order has not reached this device yet.")
+                }
+                return ["id":order.id, "buyer":order.buyer, "seller":order.seller, "listing_id":item.id,
+                    "provider":provider, "trade_id":trade, "status":order.status, "quantity":item.quantity] as [String: Any]
+            case "contact":
+                guard let peer = args["peer"] as? String, peer != owner, let trade, trade == id,
+                      store.snapshot.escrowCards.contains(where: { $0.id == trade && [$0.deal.buyer, $0.deal.seller, $0.deal.provider].contains(peer) })
+                else { throw MarketRouteError.message("Choose another participant in this trade.") }
+                let ok = await withCheckedContinuation { c in store.command(["type":"contact","author":peer]) { c.resume(returning: $0) } }
+                guard ok else { throw MarketRouteError.message(store.alert ?? "Could not open this conversation.") }
+                onContact(peer)
+                return true
             case "context":
                 var mints=["https://mint.coinos.io","https://testnut.cashu.space"]
                 #if DEBUG
                 if let local=ProcessInfo.processInfo.environment["MARKET_ESCROW_TEST_MINT"],local.hasPrefix("http://127.0.0.1:") {mints.insert(local,at:0)}
                 #endif
-                return ["enabled":true,"allowFunding":store.snapshot.settings.escrowUi,"names":store.snapshot.people.mapValues(\.name),"owner":owner,"contacts":store.snapshot.conversations.map {["id":$0.id,"name":store.snapshot.people[$0.id]?.name ?? $0.name]},"mints":mints] as [String:Any]
+                let names = store.snapshot.people.mapValues(\.name)
+                var contacts: [String: [String: Any]] = [:]
+                for (key, name) in names where !name.isEmpty { contacts[key] = ["id": key, "name": name] }
+                for chat in store.snapshot.conversations {
+                    contacts[chat.id] = ["id": chat.id, "name": names[chat.id] ?? chat.name, "contact": true]
+                }
+                return ["enabled":true, "canProvide":store.snapshot.canSign, "allowFunding":store.snapshot.settings.escrowUi, "names":names, "owner":owner,
+                    "contacts":Array(contacts.values), "mints":mints] as [String:Any]
+            case "discoverProviders":
+                guard trade == nil, store.snapshot.settings.escrowUi, let listing, listing == args["listing_id"] as? String else { throw CancellationError() }
+                let ok = await withCheckedContinuation { c in store.command(["type":"discover_escrow_providers"]) { c.resume(returning: $0) } }
+                guard ok else { throw MarketRouteError.message(store.alert ?? "Could not check public escrow services.") }
+                let result = try parse(await store.escrowRead("listing", value: listing, owner: owner)) as? [String: Any]
+                return result?["escrow_candidates"] as? [[String: Any]] ?? []
             case "profileKey":return try escrowProfileKey(value:args["value"] as? String ?? "")
             case "records":
                 guard let trade,id==trade else {throw CancellationError()}
@@ -125,6 +220,11 @@ private struct EscrowWeb {
                 trade=next;return true
             case "wallet":
                 guard let trade,id==trade else {throw CancellationError()}
+                let op = args["op"] as? String
+                if op == "fund" && !store.snapshot.settings.escrowUi { throw MarketRouteError.message("Enable escrow in Settings before funding this order.") }
+                if ["fund", "prepare", "cosign", "complete"].contains(op ?? "") && !store.snapshot.messagingReady {
+                    throw MarketRouteError.message("Approve this device for private messages before moving funds.")
+                }
                 return try parse(await wallet.call(encode(args),material:store.walletCredentials()))
             case "rate":
                 guard let trade,id==trade,let profile=args["profile"] as? String,let rating=args["rating"] as? Int,(1...5).contains(rating) else {throw CancellationError()}

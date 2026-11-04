@@ -36,7 +36,7 @@ import org.json.JSONObject
             unfocusedContainerColor=White,focusedContainerColor=White))
 }
 
-@Composable fun PostListing(state:MarketSnapshot,model:MarketModel,busy:Boolean,transportType:NativeTransportType?=null,initialArea:String="",initialServiceAreas:String?=null,done:()->Unit) {
+@Composable fun PostListing(state:MarketSnapshot,model:MarketModel,busy:Boolean,transportType:NativeTransportType?=null,initialArea:String="",initialServiceAreas:String?=null,providerService:Boolean=false,done:()->Unit) {
     var expiry by remember { mutableStateOf(NativeListingExpiry.NEVER) }
     var expiryOpen by remember { mutableStateOf(false) }
     val escrowEnabled=remember(state.settings){JSONObject(state.settings).optBoolean("escrow_ui")}
@@ -46,9 +46,9 @@ import org.json.JSONObject
     var fiatMethod by remember { mutableStateOf("bank_transfer") }
     var confirmPublish by remember { mutableStateOf(false) }
     var side by remember { mutableStateOf("offer") }
-    var title by remember { mutableStateOf(transportType?.serviceTitle ?: "") };var description by remember { mutableStateOf("") }
+    var title by remember { mutableStateOf(if(providerService)"Escrow services" else transportType?.serviceTitle ?: "") };var description by remember { mutableStateOf("") }
     var price by remember { mutableStateOf("") };var currency by remember { mutableStateOf("EUR") }
-    var location by remember { mutableStateOf(initialArea) };var category by remember { mutableStateOf(if(transportType == null) "Other" else "Transport") }
+    var location by remember { mutableStateOf(initialArea) };var category by remember { mutableStateOf(if(providerService)"Services" else if(transportType == null) "Other" else "Transport") }
     var transport by remember { mutableStateOf(transportType) }
     var serviceAreas by remember {mutableStateOf(initialServiceAreas)}
     var chooseServiceAreas by remember {mutableStateOf(false)}
@@ -108,7 +108,7 @@ import org.json.JSONObject
         } else Text("This listing will be public. Keep personal contact details and exact addresses out of the description.",color=Muted,style=MaterialTheme.typography.bodySmall)
         if(!state.demo && !state.canSign) Text("Sign in with your profile’s secret key to publish listings.",color=Muted,style=MaterialTheme.typography.bodySmall)
         if(escrowEnabled) {
-            ToolSwitch("Offer escrow","Agree on payment protection with the other person.",offerEscrow){offerEscrow=it}
+            ToolSwitch(if(side=="offer")"Allow buyers to propose escrow" else "Allow sellers to propose escrow","The other trader can suggest a provider. You and the provider decide whether to accept each invitation.",offerEscrow){offerEscrow=it}
             if(offerEscrow) {
                 ToolSwitch("Bitcoin for fiat","Set a fixed bitcoin amount and a total fiat price.",bitcoinTrade){bitcoinTrade=it;if(it&&expiry==NativeListingExpiry.NEVER)expiry=NativeListingExpiry.WEEK}
                 if(bitcoinTrade) {
@@ -133,6 +133,7 @@ import org.json.JSONObject
             if(category=="Transport")Text("Service · "+(transport?.label ?: "Other"),style=MaterialTheme.typography.bodyMedium)
             Text(if(expiry==NativeListingExpiry.NEVER) "No expiry" else "Expires "+expiry.label+" after publication",style=MaterialTheme.typography.bodySmall)
             HorizontalDivider()
+            if(providerService && escrowEnabled && side=="offer") Text("People can find you and privately invite you to an escrow job.",style=MaterialTheme.typography.bodyMedium)
             if(escrowEnabled && offerEscrow) Text(if(bitcoinTrade)"Escrow · $bitcoinAmount sats · "+(if(fiatMethod=="cash") "Cash in person" else "Bank transfer") else "Escrow offered",style=MaterialTheme.typography.bodyMedium)
             Text(description.trim(),style=MaterialTheme.typography.bodyMedium)
             if(imageUrl.isNotBlank())Text("Photo included",style=MaterialTheme.typography.bodySmall)
@@ -145,6 +146,7 @@ import org.json.JSONObject
             val draft=JSONObject().put("title",title.trim()).put("description",description.trim()).put("side",side)
                 .put("price",price.trim()).put("currency",currency.trim()).put("location",location.trim())
                 .put("category",category).put("tags",JSONArray(if(category == "Transport") transport?.tags ?: emptyList<String>() else emptyList<String>())).put("image_url",imageUrl.trim().ifBlank { null } ?: JSONObject.NULL)
+            if(providerService && escrowEnabled && side=="offer") draft.getJSONArray("tags").put("escrow-provider")
             if(category=="Transport")serviceAreas?.let {draft.put("service_areas",JSONObject(it))}
             if(escrowEnabled&&offerEscrow) {
                 val terms=JSONObject().put("trade",if(bitcoinTrade)"bitcoin_fiat" else "goods")

@@ -33,12 +33,13 @@ const courierKey = (input:string) => {
 const dark = () => document.documentElement.dataset.appearance === 'dark' || (document.documentElement.dataset.appearance !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
 
 /** Private order requests are separate from chat and never imply a payment. */
-export function setupOrders({ onPay, onReceiveToken, account, isPreview = () => false, onProfile = () => {}, onReview = onProfile, courier, onUnread = (_count:number) => {}, page, onNavigate = (_id?:string,_tab?:string) => {}, onClose = () => {}, formatPrice = item => `${item.price || ''} ${item.currency || ''}`.trim() }: {onPay?:(order:import('./orders.ts').OrderView)=>unknown;onReceiveToken?:(token:string,orderId:string)=>unknown;account:ReturnType<typeof import('./account-ui.ts').setupAccount>;isPreview?:()=>boolean;onProfile?:(key:string)=>void;onReview?:(key:string)=>void;courier?:CourierFeedOptions;onUnread?:(count:number)=>void;page?:HTMLElement;onNavigate?:(id?:string,tab?:string)=>void;onClose?:()=>void;formatPrice?:(item:any)=>string}) {
+export function setupOrders({ escrow, onPay, onReceiveToken, account, isPreview = () => false, onProfile = () => {}, onReview = onProfile, courier, onUnread = (_count:number) => {}, page, onNavigate = (_id?:string,_tab?:string) => {}, onClose = () => {}, formatPrice = item => `${item.price || ''} ${item.currency || ''}`.trim() }: {escrow?:ReturnType<typeof import('./escrow-trade-ui.ts').setupEscrowTrade>;onPay?:(order:import('./orders.ts').OrderView)=>unknown;onReceiveToken?:(token:string,orderId:string)=>unknown;account:ReturnType<typeof import('./account-ui.ts').setupAccount>;isPreview?:()=>boolean;onProfile?:(key:string)=>void;onReview?:(key:string)=>void;courier?:CourierFeedOptions;onUnread?:(count:number)=>void;page?:HTMLElement;onNavigate?:(id?:string,tab?:string)=>void;onClose?:()=>void;formatPrice?:(item:any)=>string}) {
   const unread=createUnreadTracker({kind:'orders',onUnread});
   let state = account.state(), view = 'history', tab = 'purchases', selected, listing, pending, busy = false, error = '', sharing, map, mapLoading, mapHost, mapOrderId, mapGeneration = 0, destroyed = false;
   let arrivalHeadline:HTMLElement|undefined,renderVersion=0;
+  let syncCheckoutFlag:(()=>void)|undefined;
   let placeInputs:ReturnType<typeof createDeliveryPlaceInput>[]=[],renderProviders:(()=>void)|undefined;
-  const clearEditors=()=>{for(const editor of placeInputs)editor.destroy();placeInputs=[];renderProviders=undefined;};
+  const clearEditors=()=>{syncCheckoutFlag=undefined;for(const editor of placeInputs)editor.destroy();placeInputs=[];renderProviders=undefined;};
   const dialog = createSurface({className:'orders-dialog',label:'Orders',pageHost:page,onOpen:()=>onNavigate(view==='detail'?selected:undefined,tab),onClose}); dialog.id = 'orders-dialog'; dialog.setAttribute('aria-labelledby', 'orders-title');
   const close = node('button', '×', 'dialog-close icon-button'); close.type = 'button'; close.setAttribute('aria-label', 'Close orders'); close.onclick = () => dialog.close();
   const back = node('button', '← Orders', 'text-button orders-back'); back.type = 'button'; back.onclick = () => showHistory();
@@ -71,7 +72,7 @@ export function setupOrders({ onPay, onReceiveToken, account, isPreview = () => 
     error = ''; failure.textContent = ''; setBusy(true);
     try { await task(); state = account.state(); }
     catch (cause) { error = cause?.message || 'Could not save this update. Try again.'; }
-    finally { setBusy(false); if (error && ['review', 'route', 'delivery', 'payment'].includes(view)) failure.textContent = error; else render(); }
+    finally { setBusy(false); if (view==='review'||(error&&['route','delivery','payment'].includes(view))) failure.textContent = error; else render(); }
   }
   function dropMap() {
     mapGeneration++; map?.destroy().catch(() => {}); map = mapLoading = mapHost = mapOrderId = undefined;
@@ -94,7 +95,7 @@ export function setupOrders({ onPay, onReceiveToken, account, isPreview = () => 
     if (state.status !== 'ready') { pending = intent; account.showAccount(); return false; }
     return true;
   }
-  function open(id,section?:string) { if(['purchases','sales','deliveries','archived'].includes(section))tab=section;state = account.state(); if (!(courierUI&&tab==='deliveries'&&!id) && !requestReady({ type: 'history', id, section })) return; const order = id && orders().find(item => item.id === id); if (order) showDetail(order); else { showHistory(); if (id) { error = 'This order is not available on this device yet.'; render(); } } if (!dialog.open) dialog.showModal(); syncUnread(); }
+  function open(id,section?:string) { if(['purchases','sales','deliveries','archived','escrow'].includes(section))tab=section;state = account.state(); if (!(courierUI&&tab==='deliveries'&&!id) && !requestReady({ type: 'history', id, section })) return; const order = id && orders().find(item => item.id === id); if (order) showDetail(order); else { showHistory(); if (id) { error = 'This order is not available on this device yet.'; render(); } } if (!dialog.open) dialog.showModal(); syncUnread(); }
   function buy(value) {
     state = account.state();
     if (!requestReady({ type: 'buy', listing: value })) return;
@@ -102,7 +103,10 @@ export function setupOrders({ onPay, onReceiveToken, account, isPreview = () => 
   }
   function renderTabs() {
     tabs.hidden = view !== 'history'||!!courier&&tab==='deliveries'; tabs.replaceChildren();
-    for (const [key, label] of [['purchases', 'Purchases'], ['sales', 'Sales'], ['deliveries', 'Transport'], ['archived', 'Archived']]) {
+    const sections=[['purchases','Purchases'],['sales','Sales'],['deliveries','Transport']];
+    if(escrow?.showJobs())sections.push(['escrow','Escrow jobs']);else if(tab==='escrow')tab='purchases';
+    sections.push(['archived','Archived']);
+    for (const [key, label] of sections) {
       const button = node('button', label); button.type = 'button'; button.setAttribute('aria-pressed', String(tab === key));
       button.onclick = () => { tab = key; error = ''; render(); if(dialog.open)onNavigate(undefined,tab); }; tabs.append(button);
     }
@@ -112,6 +116,7 @@ export function setupOrders({ onPay, onReceiveToken, account, isPreview = () => 
       .sort((a, b) => b.updatedAt - a.updatedAt);
   }
   function renderHistory() {
+    if(tab==='escrow'&&escrow){escrow.jobs(body);return;}
     if(tab==='deliveries'&&courierUI){body.append(courierUI.element);courierUI.show();return;}
     const rows = filteredOrders();
     if (!rows.length) {
@@ -158,12 +163,28 @@ export function setupOrders({ onPay, onReceiveToken, account, isPreview = () => 
     const quantity = input('Quantity', { type: 'number', value: '1', required: true, min: 1, max: 999, step: 1 });
     const note = input('Message to the seller', { type: 'textarea', maxLength: 2000, placeholder: 'Optional' }); note.field.rows = 3;
     if(listing.category==='transport'){const pickup=createDeliveryPlaceInput({label:'Pickup'}),destination=createDeliveryPlaceInput({label:'Destination'});placeInputs.push(pickup,destination);form.append(pickup.element,destination.element);}
-    form.append(quantity.wrap, note.wrap, node('p', 'The seller will confirm your request. No payment is taken here.', 'small muted'));
-    const submit = node('button', 'Request order', 'button primary'); submit.type = 'submit'; submit.dataset.orderAction = ''; submit.disabled = busy || listing.author === owner(); form.append(submit);
+    form.append(quantity.wrap, note.wrap);
+    const protect=node('input');protect.type='checkbox';
+    if(escrow && listing.escrow?.trade==='goods' && listing.side==='offer'){
+      const label=node('label',undefined,'checkbox-label');label.append(protect,node('span','Use escrow'));form.append(label);
+      syncCheckoutFlag=()=>{const eligible=escrow.canCheckout(listing);label.hidden=!eligible;
+        if(!eligible){protect.checked=false;submit.textContent='Request order';}
+      };
+      protect.onchange=()=>{submit.textContent=protect.checked?'Choose escrow provider':'Request order';};
+    }
+    form.append(node('p', 'The seller will confirm your request. No payment is taken here.', 'small muted'));
+    const submit = node('button', 'Request order', 'button primary'); submit.type = 'submit'; submit.dataset.orderAction = ''; submit.disabled = busy || listing.author === owner(); form.append(submit);syncCheckoutFlag?.();
     form.onsubmit = event => {
       event.preventDefault(); const count = Number(quantity.field.value), message = note.field.value.trim();
       if (!Number.isInteger(count) || count < 1 || count > 999) { quantity.field.reportValidity(); return; }
-      void perform(async () => { const order = await account.messaging.requestOrder(listing, { quantity: count, note: message, ...(placeInputs.length===2?{deliveryRequest:{pickup:placeInputs[0].read(),destination:placeInputs[1].read()}}:{}) }); state = account.state(); showDetail(order); live.textContent = 'Order requested'; });
+      void perform(async () => {
+        const draft={quantity:count,note:message,...(placeInputs.length===2?{deliveryRequest:{pickup:placeInputs[0].read(),destination:placeInputs[1].read()}}:{})};
+        const saved=order=>{state=account.state();showDetail(order);live.textContent='Order requested';};
+        if(protect.checked){
+          if(!escrow?.canCheckout(listing))throw Error('Enable escrow in Settings to use a provider.');
+          await escrow.checkout(listing,draft,saved);
+        }else saved(await account.messaging.requestOrder(listing,draft));
+      });
     };
     body.append(form);
   }
@@ -251,14 +272,15 @@ export function setupOrders({ onPay, onReceiveToken, account, isPreview = () => 
     if (order.note) body.append(node('p', order.note, 'order-note'));
     if(order.deliveryRequest){const route=node('section',undefined,'order-request-route');route.append(node('h3','Requested route'),node('p','Pickup · '+order.deliveryRequest.pickup.address),node('p','Destination · '+order.deliveryRequest.destination.address));body.append(route);}
     if(order.pickupAuthorization){const pickup=node('section',undefined,'order-pickup-authorization');pickup.append(node('h3','Collection'),person(order.pickupAuthorization.courierPubkey,'Authorized courier'),node('p','Pickup reference · '+order.pickupAuthorization.reference,'small muted'));body.append(pickup);}
-    if(order.payment){const payment=node('section',undefined,'order-payment');payment.append(node('h3',order.payment.status==='received'?'Payment received':'Payment requested'),node('strong',new Intl.NumberFormat().format(BigInt(order.payment.amount))+' '+mintUnitLabel(order.payment.mint)),node('p',new URL(order.payment.mint).hostname+(isTestMint(order.payment.mint)?' · Test money · no bitcoin value':''),'small muted'));if(order.payment.status==='received')payment.append(node('span','Confirmed by seller','small muted'));else if(selfRole==='buyer'&&onPay&&!terminal(order))payment.append(action('Pay',()=>{void onPay(order);},true));body.append(payment);}
-    if(onReceiveToken&&order.payment?.status!=='received'){const version=renderVersion,peer=selfRole==='buyer'?order.seller:order.buyer;const messages=state.conversations?.find(thread=>thread.pubkey===peer)?.messages||[];for(const message of messages.filter(message=>!message.mine&&message.context?.order_id===order.id&&containsCashu(message.text)).slice(-2)){const credit=node('div',undefined,'order-funds');body.append(credit);void renderCashuContent(message.text,{isActive:()=>version===renderVersion&&view==='detail'&&selected===order.id,onToken:token=>onReceiveToken(token,order.id)}).then(content=>{if(version===renderVersion)credit.replaceChildren(content);});}}
+    if(order.escrowTradeId){const panel=escrow?.linked(order);if(panel)body.append(panel);}
+    else if(order.payment){const payment=node('section',undefined,'order-payment');payment.append(node('h3',order.payment.status==='received'?'Payment received':'Payment requested'),node('strong',new Intl.NumberFormat().format(BigInt(order.payment.amount))+' '+mintUnitLabel(order.payment.mint)),node('p',new URL(order.payment.mint).hostname+(isTestMint(order.payment.mint)?' · Test money · no bitcoin value':''),'small muted'));if(order.payment.status==='received')payment.append(node('span','Confirmed by seller','small muted'));else if(selfRole==='buyer'&&onPay&&!terminal(order))payment.append(action('Pay',()=>{void onPay(order);},true));body.append(payment);}
+    if(!order.escrowTradeId&&onReceiveToken&&order.payment?.status!=='received'){const version=renderVersion,peer=selfRole==='buyer'?order.seller:order.buyer;const messages=state.conversations?.find(thread=>thread.pubkey===peer)?.messages||[];for(const message of messages.filter(message=>!message.mine&&message.context?.order_id===order.id&&containsCashu(message.text)).slice(-2)){const credit=node('div',undefined,'order-funds');body.append(credit);void renderCashuContent(message.text,{isActive:()=>version===renderVersion&&view==='detail'&&selected===order.id,onToken:token=>onReceiveToken(token,order.id)}).then(content=>{if(version===renderVersion)credit.replaceChildren(content);});}}
     const actions = node('div', undefined, 'order-actions');
     if(selfRole==='buyer'&&['accepted','in-transit'].includes(order.status)&&!order.deliveryRequest&&!order.deliveryOrderId&&order.shipment.stops.length&&!order.shipment.stops.some(stop=>stop.courierPubkey)&&courier)actions.append(action('Arrange delivery',()=>{changeView('delivery');render();},true));
     for(const [id,label] of [[order.deliveryOrderId,'View delivery'],[order.sourceOrderId,'View product order']]){const related=id&&orders().find(value=>value.id===id);if(related)actions.append(action(label,()=>showDetail(related)));}
-    if(selfRole==='seller'&&!terminal(order)&&!order.payment)actions.append(action('Request payment',()=>{changeView('payment');render();}));
-    if(selfRole==='seller'&&order.payment?.status==='requested')actions.append(action('Confirm payment received',()=>update(order,{payment:{...order.payment,status:'received'}},'Payment confirmed')));
-    if (order.status === 'requested' && selfRole === 'seller') actions.append(action('Accept order', () => update(order, { status: 'accepted' }, 'Order accepted'), true));
+    if(!order.escrowTradeId&&selfRole==='seller'&&!terminal(order)&&!order.payment)actions.append(action('Request payment',()=>{changeView('payment');render();}));
+    if(!order.escrowTradeId&&selfRole==='seller'&&order.payment?.status==='requested')actions.append(action('Confirm payment received',()=>update(order,{payment:{...order.payment,status:'received'}},'Payment confirmed')));
+    if (!order.escrowTradeId && order.status === 'requested' && selfRole === 'seller') actions.append(action('Accept order', () => update(order, { status: 'accepted' }, 'Order accepted'), true));
     if (order.status === 'accepted' && selfRole === 'seller') actions.append(action('Mark on the way', () => update(order, { status: 'in-transit' }, 'Delivery started'), true));
     if (['accepted', 'in-transit'].includes(order.status) && ['seller', 'buyer'].includes(selfRole)) actions.append(action(selfRole === 'buyer' ? 'Mark received' : 'Mark delivered', () => update(order, { status: 'delivered' }, 'Order delivered'), selfRole === 'buyer'));
     if (['buyer', 'seller'].includes(selfRole)) actions.append(action('Message', () => { dialog.hide(); void account.openChat(selfRole === 'buyer' ? order.seller : order.buyer,{context:orderContext(order.id)}); }));
@@ -286,7 +308,7 @@ export function setupOrders({ onPay, onReceiveToken, account, isPreview = () => 
     form.onsubmit=event=>{event.preventDefault();if(!service)return;void perform(async()=>{const result=await account.messaging.requestDelivery(order.id,service,destination.read());state=account.state();showDetail(result);live.textContent='Delivery requested';});};body.append(form);
   }
   function renderPayment(){
-    const order=current();if(!order||order.seller!==owner())return;
+    const order=current();if(!order||order.escrowTradeId||order.seller!==owner())return;
     const form=node('form',undefined,'order-payment-form'),amount=input('Amount in sats',{type:'number',required:true,min:1,step:1,value:['SATS','TESTSAT'].includes(order.items[0].currency)?order.items[0].price:''});
     const label=node('label','Mint'),mint=node('select');mint.setAttribute('aria-label','Payment mint');for(const url of DEFAULT_SUPPORTED_MINTS){const option=node('option',new URL(url).hostname+(isTestMint(url)?' · Test money':''));option.value=url;mint.append(option);}label.append(mint);const submit=node('button','Request payment','button primary');submit.type='submit';submit.dataset.orderAction='';form.append(amount.wrap,label,submit,action('Cancel',()=>showDetail(order)));form.onsubmit=event=>{event.preventDefault();void perform(async()=>{await account.messaging.updateOrder(order.id,{payment:{amount:amount.field.value,mint:mint.value,unit:'sat',status:'requested'}});view='detail';});};body.append(form);
   }
@@ -384,7 +406,9 @@ export function setupOrders({ onPay, onReceiveToken, account, isPreview = () => 
   const theme = () => { map?.setDark(dark()).catch(() => {}); };
   document.addEventListener('visibilitychange', hidden);document.addEventListener('close',uncovered,true); window.addEventListener('focus',focused); window.addEventListener('market-themechange', theme);
   const appearance = matchMedia('(prefers-color-scheme: dark)'); appearance.addEventListener('change', theme);
+  const settingsChanged=()=>{if(!dialog.open)return;if(view==='review')syncCheckoutFlag?.();else if(view==='history'||view==='detail')render();};
+  window.addEventListener('market-tools-change',settingsChanged);
   const unsubscribe=account.onState?.(refresh);syncUnread();
-  window.addEventListener('pagehide', () => { clearInterval(arrivalTimer);stopLocation(); dropMap(); courierUI?.destroy();destroyed = true;unsubscribe?.();window.removeEventListener('focus',focused);document.removeEventListener('visibilitychange', hidden);document.removeEventListener('close',uncovered,true); window.removeEventListener('market-themechange', theme); appearance.removeEventListener('change', theme); });
+  window.addEventListener('pagehide', () => { window.removeEventListener('market-tools-change',settingsChanged);clearInterval(arrivalTimer);stopLocation(); dropMap(); courierUI?.destroy();destroyed = true;unsubscribe?.();window.removeEventListener('focus',focused);document.removeEventListener('visibilitychange', hidden);document.removeEventListener('close',uncovered,true); window.removeEventListener('market-themechange', theme); appearance.removeEventListener('change', theme); });
   return { open, buy, refresh, refreshCourier(){if(dialog.open&&view==='delivery'){renderProviders?.();return;}if(dialog.open&&view==='history'&&tab==='deliveries')courierUI?.refresh();}, hide:()=>dialog.hide() };
 }

@@ -27,3 +27,12 @@
 .esc-identities summary {cursor:pointer;color:var(--ec-muted);font-size:.85rem;padding:.2rem 0}
 .esc-identities .esc-row {display:grid;grid-template-columns:4rem 1fr;margin:.4rem 0}
 .esc-identities strong {font:.75rem/1.4 ui-monospace,monospace;overflow-wrap:anywhere;text-align:left;user-select:all}
+
+.esc-person {display:grid;gap:.15rem;width:100%;padding:.55rem .7rem;text-align:start;min-height:44px;background:var(--ec-bg);color:var(--ec-ink);border:1px solid var(--ec-line);border-radius:.6rem;cursor:pointer}
+.esc-results,.esc-selected,.esc-log {display:grid;gap:.4rem}
+.esc-selected code {overflow-wrap:anywhere;font-size:.77rem}
+.esc-log {max-height:18rem;overflow-y:auto}
+.esc-log p {white-space:pre-wrap}
+.esc-root details.esc-panel > :not(summary) {margin-top:.65rem}
+.esc-root details summary {cursor:pointer}
+.esc-field textarea {font:inherit;resize:vertical;background:var(--ec-bg);color:inherit;border:1px solid var(--ec-line);border-radius:.6rem;padding:.55rem}

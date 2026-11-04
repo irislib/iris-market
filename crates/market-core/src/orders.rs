@@ -145,9 +145,32 @@ pub struct PickupAuthorization {
     pub courier_pubkey: String,
     pub reference: String,
 }
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OrderEscrow {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub escrow_trade_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub escrow_provider: Option<String>,
+}
+impl OrderEscrow {
+    fn validate(&self, buyer: &str, seller: &str) -> Result<()> {
+        match (&self.escrow_trade_id, &self.escrow_provider) {
+            (None, None) => Ok(()),
+            (Some(trade), Some(provider))
+                if hex(trade) && hex(provider) && provider != buyer && provider != seller =>
+            {
+                Ok(())
+            }
+            _ => Err("Choose a valid escrow invitation and an independent provider".into()),
+        }
+    }
+}
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Order {
+    #[serde(flatten)]
+    pub escrow: OrderEscrow,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payment: Option<OrderPayment>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -389,6 +412,11 @@ fn wire_shipment(mut value: Shipment) -> Result<Shipment> {
     Ok(value)
 }
 fn snapshot_with_mint(mut value: Order, developer_mint: Option<&str>) -> Result<Order> {
+    value.escrow.validate(&value.buyer, &value.seller)?;
+    require(
+        value.escrow.escrow_trade_id.is_none() || value.payment.is_none(),
+        "Use the escrow agreement for this payment",
+    )?;
     value.payment = value
         .payment
         .map(|value| payment(value, developer_mint))
@@ -449,6 +477,7 @@ fn immutable(a: &Order, b: &Order) -> bool {
         && a.buyer == b.buyer
         && a.seller == b.seller
         && a.items == b.items
+        && a.escrow == b.escrow
         && a.note == b.note
         && a.created_at == b.created_at
         && a.delivery_request == b.delivery_request
@@ -598,6 +627,10 @@ fn apply_with_mint(
             require(
                 sender_role == "seller",
                 "Only the seller can update payment",
+            )?;
+            require(
+                order.escrow.escrow_trade_id.is_none(),
+                "Use the escrow agreement for this payment",
             )?;
             let next = payment(parse(event.payload.clone())?, developer_mint)?;
             require(
@@ -795,10 +828,25 @@ pub fn decode(rumor: &UnsignedEvent) -> Option<Envelope> {
         .iter()
         .filter(|t| t.as_slice().first().is_some_and(|s| s == ORDER_TAG));
     let tag = tags.next()?.as_slice();
-    if tags.next().is_some() || tag.len() != 3 || tag[1] != "1" || tag[2].len() > 24_000 {
+    if tags.next().is_some() || tag.len() != 3 || tag[2].len() > 24_000 {
         return None;
     }
-    serde_json::from_str(&tag[2]).ok()
+    let event: Envelope = serde_json::from_str(&tag[2]).ok()?;
+    (tag[1] == wire_version(&event)).then_some(event)
+}
+
+// Older clients must not silently interpret an escrow request as payable directly.
+fn wire_version(event: &Envelope) -> &'static str {
+    if event
+        .snapshot
+        .as_ref()
+        .is_some_and(|order| order.escrow.escrow_trade_id.is_some())
+        || (event.action == "request" && !event.payload["escrowTradeId"].is_null())
+    {
+        "2"
+    } else {
+        "1"
+    }
 }
 fn message_text(event: &Envelope, order: &Order) -> String {
     let title = &order.items[0].title;
@@ -858,6 +906,10 @@ impl OrderBook {
             "Only the buyer can send this order payment",
         )?;
         require(!order.status.terminal(), "This order is finished")?;
+        require(
+            order.escrow.escrow_trade_id.is_none(),
+            "Use the escrow agreement for this payment",
+        )?;
         let request = order.payment.clone().ok_or("No payment requested")?;
         require(
             request.status == PaymentStatus::Requested,
@@ -944,6 +996,52 @@ impl OrderBook {
         device: &str,
         now: u64,
     ) -> Result<String> {
+        self.request_with_escrow(
+            listing,
+            quantity,
+            note,
+            delivery,
+            OrderEscrow::default(),
+            owner,
+            device,
+            now,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn request_with_escrow(
+        &mut self,
+        listing: &crate::model::Listing,
+        quantity: u16,
+        note: &str,
+        delivery: Option<DeliveryRequest>,
+        escrow: OrderEscrow,
+        owner: &str,
+        device: &str,
+        now: u64,
+    ) -> Result<String> {
+        escrow.validate(owner, &listing.author)?;
+        if let Some(trade) = &escrow.escrow_trade_id {
+            if let Some(existing) = self
+                .records
+                .values()
+                .map(|r| &r.order)
+                .find(|o| o.buyer == owner && o.escrow.escrow_trade_id.as_ref() == Some(trade))
+            {
+                require(
+                    existing.escrow == escrow
+                        && existing.items[0].id == listing.id
+                        && existing.items[0].quantity == quantity
+                        && existing.note == note
+                        && existing.delivery_request == delivery,
+                    "This escrow invitation already belongs to a different order request",
+                )?;
+                return Ok(existing.id.clone());
+            }
+            require(
+                matches!(listing.escrow, Some(crate::escrow::Offer::Goods)),
+                "This listing does not offer escrow for orders",
+            )?;
+        }
         require(
             listing.external_order.is_none(),
             "This public quote cannot be purchased through Iris",
@@ -963,6 +1061,7 @@ impl OrderBook {
         )?;
         let order = snapshot_with_mint(
             Order {
+                escrow,
                 payment: None,
                 pickup_authorization: None,
                 delivery_request: delivery,
@@ -1204,12 +1303,19 @@ impl OrderBook {
                 && self.jobs.len() - retired.len() + peers.len() <= MAX_JOBS,
             "The private delivery queue is full",
         )?;
-        let wire = serde_json::to_string(&event).map_err(|_| "Invalid order update")?;
-        require(wire.len() <= 24_000, "Order details are too large")?;
         let mut jobs = Vec::new();
         let mut ephemeral = Vec::new();
         for peer in peers {
-            let mut rumor = UnsignedEvent::from_json(json!({"kind":14,"pubkey":device,"created_at":now,"content":message_text(&event,&record.order),"tags":[["p",peer],[ORDER_TAG,"1",wire],["ms",(now*1000).to_string()]]}).to_string()).map_err(|_| "Invalid private order message")?;
+            let mut shared = event.clone();
+            if peer != record.order.seller
+                && peer != record.order.buyer
+                && let Some(snapshot) = &mut shared.snapshot
+            {
+                snapshot.escrow = OrderEscrow::default();
+            }
+            let wire = serde_json::to_string(&shared).map_err(|_| "Invalid order update")?;
+            require(wire.len() <= 24_000, "Order details are too large")?;
+            let mut rumor = UnsignedEvent::from_json(json!({"kind":14,"pubkey":device,"created_at":now,"content":message_text(&event,&record.order),"tags":[["p",peer],[ORDER_TAG,wire_version(&shared),wire],["ms",(now*1000).to_string()]]}).to_string()).map_err(|_| "Invalid private order message")?;
             if action == "location" && !event.payload.is_null() {
                 rumor.tags.push(
                     nostr::Tag::parse([
@@ -1403,6 +1509,71 @@ mod tests {
     }
     fn receive(book: &mut OrderBook, event: &UnsignedEvent, sender: &str, owner: &str) -> bool {
         book.receive(event, sender, sender, owner, 1000).is_some()
+    }
+    #[test]
+    fn escrow_checkout_is_idempotent_private_and_cannot_request_direct_payment() {
+        let buyer = "a".repeat(64);
+        let seller = "b".repeat(64);
+        let provider = "c".repeat(64);
+        let courier = "d".repeat(64);
+        let link = OrderEscrow {
+            escrow_trade_id: Some("4".repeat(64)),
+            escrow_provider: Some(provider.clone()),
+        };
+        let mut goods = listing(&seller);
+        let mut b = OrderBook::default();
+        let mut m = OrderBook::default();
+        let mut c = OrderBook::default();
+        let request = |book: &mut OrderBook, listing: &crate::model::Listing, quantity, link| {
+            book.request_with_escrow(
+                listing,
+                quantity,
+                "Ring twice",
+                None,
+                link,
+                &buyer,
+                &buyer,
+                1000,
+            )
+        };
+        assert!(request(&mut b, &goods, 2, link.clone()).is_err());
+        goods.escrow = Some(crate::escrow::Offer::Goods);
+        let id = request(&mut b, &goods, 2, link.clone()).unwrap();
+        let mut b: OrderBook = serde_json::from_value(json!(b)).unwrap();
+        assert_eq!(id, request(&mut b, &goods, 2, link.clone()).unwrap());
+        assert!(request(&mut b, &goods, 1, link.clone()).is_err());
+        assert_eq!(b.jobs.len(), 1);
+        let request = take(&b, "request", &seller);
+        assert!(
+            request
+                .tags
+                .iter()
+                .any(|t| t.as_slice()[0] == ORDER_TAG && t.as_slice()[1] == "2")
+        );
+        assert!(receive(&mut m, &request, &buyer, &seller));
+        assert_eq!(m.get(&id).unwrap().escrow, link);
+        assert!(m.update(&id,json!({"payment":{"mint":"https://testnut.cashu.space","amount":"12","unit":"sat","status":"requested"}}),&seller,&seller,1000).is_err());
+        assert!(b.buyer_payment_request(&id, &buyer).is_err());
+        m.update(&id, json!({"status":"accepted"}), &seller, &seller, 1000)
+            .unwrap();
+        m.update(
+            &id,
+            json!({"shipment":{"stops":[{"id":"pickup","courierPubkey":courier}]}}),
+            &seller,
+            &seller,
+            1000,
+        )
+        .unwrap();
+        let routed = take(&m, "route", &courier);
+        assert!(!routed.as_json().contains(&provider));
+        assert!(!routed.as_json().contains("escrowTradeId"));
+        assert!(receive(&mut c, &routed, &seller, &courier));
+        assert!(receive(&mut b, &take(&m, "route", &buyer), &seller, &buyer));
+        assert_eq!(b.get(&id).unwrap().escrow, link);
+        let mut wrong = decode(&take(&m, "route", &buyer)).unwrap();
+        wrong.seq += 1;
+        wrong.snapshot.as_mut().unwrap().escrow.escrow_provider = Some("e".repeat(64));
+        assert!(apply(b.records.get(&id), &wrong, &seller, &seller, &buyer, 1000).is_err());
     }
     #[test]
     fn stopping_location_after_completion_is_safe_and_role_scoped() {

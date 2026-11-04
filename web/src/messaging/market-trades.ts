@@ -9,8 +9,8 @@ export const TRADE_TAG = 'iris-market/escrow-trade';
 const legacyStore = 'market/private-trade-tools/v1';
 const maxStep = 64 * 1024, maxPendingStep = 4 * 1024;
 const maxRows = 2048, maxPendingRows = 128, maxJobs = 256;
-const actions = new Set(['invite', 'join', 'approve', 'funded', 'payout', 'cosign', 'settled', 'dispute', 'rated']);
-const dealStrings = ['listing_id', 'revision', 'title', 'maker', 'taker', 'buyer', 'seller', 'funder', 'beneficiary', 'provider', 'mint'];
+const actions = new Set(['invite', 'join', 'approve', 'funded', 'payout', 'cosign', 'settled', 'dispute', 'rated', 'decline', 'comment']);
+const dealStrings = ['order_id', 'listing_id', 'revision', 'title', 'maker', 'taker', 'buyer', 'seller', 'funder', 'beneficiary', 'provider', 'mint'];
 const now = () => Math.floor(Date.now() / 1000);
 const utf8 = new TextEncoder();
 const isId = (value:unknown):value is string => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
@@ -34,6 +34,7 @@ function parseStep(payload:unknown):Step | undefined {
   if (typeof payload !== 'string' || payload.length > maxStep || utf8.encode(payload).length > maxStep) return;
   try {
     const step = JSON.parse(payload);
+    if(object(step) && step.action==='comment' && (!isId(step.message_id) || !isId(step.deal_hash) || typeof step.text!=='string' || !step.text.trim() || utf8.encode(step.text).length>2000))return;
     if (object(step) && shallowJson(step) && step.v === 1 && isId(step.trade_id) && typeof step.action === 'string' && actions.has(step.action)) return step as Step;
   } catch { /* Malformed data from a peer is not a trade message. */ }
 }
@@ -48,28 +49,36 @@ function invitation(step:Step, actor:string, owner:string):Deal | undefined {
 
 // Only an authenticated recipient receipt corroborated by another signer gets an inbox hint.
 function receiptHints(rows:Row[], owner:string) {
-  const approved=new Map<string,string>(), observed=new Set<string>(),receipts=new Set<string>();
+  const declined=new Set<string>(),consented=new Set<string>();
+  const approved=new Map<string,string>(), observed=new Set<string>(),outcomes=new Set<string>();
   for(const r of rows){
     const s=r.step;
-    if(!isId(s.deal_hash)||!isId(s.terms_hash))continue;
+    if(!isId(s.deal_hash))continue;
+    const decision=[s.trade_id,s.deal_hash,r.mine?owner:r.peer].join('/');
+    if(s.action==='decline')declined.add(decision);
+    if(!isId(s.terms_hash))continue;
+    if(s.action==='approve')consented.add(decision);
     const key=s.trade_id+s.deal_hash, actor=r.mine?owner:r.peer;
     if(r.mine&&s.action==='approve')approved.set(key,s.terms_hash);
-    if(s.action==='settled')receipts.add(s.trade_id);
+    if(s.action==='settled' || s.action==='dispute')outcomes.add(s.trade_id);
     const direction=s.direction==='refund'||s.direction==='release'?s.direction:'';
     observed.add([key,s.terms_hash,s.action,actor,direction].join('/'));
   }
   return (r:Row) => {
-    if(!receipts.has(r.step.trade_id))return;
+    if(!outcomes.has(r.step.trade_id) && !declined.size)return;
     const d=invitation(r.step,r.mine?owner:r.peer,owner);if(!d)return;
-    const key=r.step.trade_id+bytesToHex(sha256(utf8.encode(protocol.canonical(r.step.deal)))), terms=approved.get(key);
+    const digest=bytesToHex(sha256(utf8.encode(protocol.canonical(r.step.deal)))),key=r.step.trade_id+digest,terms=approved.get(key);
+    if([d.buyer,d.seller,d.provider].some(actor=>declined.has([r.step.trade_id,digest,actor].join('/')) && !consented.has([r.step.trade_id,digest,actor].join('/'))))return 'declined';
     if(!terms)return;
     const has=(action:string,actor:string,direction='')=>observed.has([key,terms,action,actor,direction].join('/'));
     if(!has('funded',d.funder))return;
+    const disputed=has('dispute',d.buyer)||has('dispute',d.seller);
     for(const direction of ['release','refund']){
       const payee=direction==='release'?d.beneficiary:d.funder, other=direction==='release'?d.funder:d.beneficiary;
-      const second=has('cosign',other,direction)||(has('cosign',d.provider,direction)&&(has('dispute',d.buyer)||has('dispute',d.seller)));
+      const second=has('cosign',other,direction)||(has('cosign',d.provider,direction)&&disputed);
       if(second && has('payout',payee,direction) && has('settled',payee,direction))return direction;
     }
+    if(disputed)return 'disputed';
   };
 }
 
@@ -82,6 +91,7 @@ function summary(row:Row,receipt:(row:Row)=>string|undefined):Row {
       if (typeof text === 'string' && utf8.encode(text).length <= 2048) deal[field] = text;
     }
     if (typeof value.sats === 'number' && Number.isSafeInteger(value.sats) && value.sats > 0 && value.sats <= 1e12) deal.sats = value.sats;
+    if(typeof value.quantity==='number' && Number.isInteger(value.quantity) && value.quantity>=1 && value.quantity<=999)deal.quantity=value.quantity;
     step.deal = deal;
     const outcome=receipt(row);if(outcome)step.outcome=outcome;
   }
@@ -140,12 +150,15 @@ export function createMarketTrades(vault:Vault, owner:string, device:string, che
       if (!pinned || ![pinned.buyer, pinned.seller, pinned.provider].includes(peer)) return;
       const digest = step.action === 'invite' ? await protocol.hash(step.deal) : step.deal_hash;
       if (digest !== join.step.deal_hash || step.action === 'funded' && peer !== pinned.funder) return;
-    } else if (!['invite','join'].includes(step.action) || size > maxPendingStep) return;
+    } else if (!['invite','join','decline'].includes(step.action) || size > maxPendingStep) return;
 
     // Two conflicting values are sufficient to warn participants. Arbitrary direction strings cannot create new buckets.
     const variants = history.filter(r => !r.mine && r.peer === peer && r.step.action === step.action
       && (r.step.direction === 'refund') === (step.direction === 'refund'));
-    if (variants.length >= 2) return;
+    if (step.action==='comment'){
+      if(!join || variants.length>=48 || variants.some(r=>r.step.message_id===step.message_id) ||
+        data.rows.filter(r=>r.step.action==='comment').length>=512 || data.rows.length>=maxRows-128)return;
+    }else if (variants.length >= 2) return;
     const digest = variants.length ? await protocol.hash(step) : undefined;
     for (const previous of variants) if (await protocol.hash(previous.step) === digest) return;
 
@@ -211,6 +224,24 @@ export function createMarketTrades(vault:Vault, owner:string, device:string, che
           if (previous.length !== recipients.length || !previous.every(r => recipients.includes(r.peer))
               || await protocol.hash(previous[0].step) !== digest) throw Error('This action already belongs to a different trade.');
           return;
+        }
+        if(step.action==='comment'){
+          const history=data.rows.filter(r=>r.step.trade_id===step.trade_id);
+          const mine=history.find(r=>r.mine && r.step.action==='join' && r.step.deal_hash===step.deal_hash);
+          let allowed:string[]=[];
+          if(mine)for(const r of history){
+            const d=invitation(r.step,r.mine?owner:r.peer,owner);
+            if(d && await protocol.hash(d)===step.deal_hash){
+              const members=[d.buyer,d.seller,d.provider];
+              if(members.every(p=>history.some(j=>j.step.action==='join' && j.step.deal_hash===step.deal_hash && (j.mine?owner:j.peer)===p)))
+                allowed=members.filter(p=>p!==owner);
+              break;
+            }
+          }
+          if(allowed.length!==recipients.length || !allowed.every(p=>recipients.includes(p)))throw Error('Open the discussion for the trade you joined.');
+          if(history.filter(r=>r.mine && r.step.action==='comment').length>=96 ||
+            data.rows.filter(r=>r.step.action==='comment').length+2>512 || data.rows.length+2>maxRows-128 || data.jobs.length+2>maxJobs-16)
+            throw Error('The trade discussion is full. Use private messages to continue.');
         }
         if (data.rows.length + recipients.length > maxRows || data.jobs.length + recipients.length > maxJobs) throw Error('Your private trade queue is full.');
         const next = {v:1 as const, rows:[...data.rows], jobs:[...data.jobs]};

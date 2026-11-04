@@ -57,7 +57,7 @@ struct ListingDetailView: View {
                     ReviewsView(target: current.reviewAddress, product: true) }
                     if let relevance = current.relevance { Label(relevance.reason, systemImage: "sparkles").font(.system(size: 13)).foregroundStyle(MarketTheme.green).padding(15).frame(maxWidth: .infinity, alignment: .leading).background(MarketTheme.mint.opacity(0.4), in: RoundedRectangle(cornerRadius: 16)) }
                     MarketInlineError()
-                    if store.snapshot.settings.escrowUi && current.escrow != nil && !current.mine && !store.demo {
+                    if store.snapshot.settings.escrowUi && current.escrow != nil && (current.isBitcoinOffer || current.side == "request") && !current.mine && !store.demo {
                         Button { showEscrow = true } label: { Label("Arrange escrow", systemImage:"lock.shield.fill") }
                             .disabled(!store.snapshot.messagingReady)
                     }
@@ -126,12 +126,15 @@ struct NewListingView: View {
     private var validBitcoin: Bool {
         !escrowEnabled || !bitcoinTrade || ((UInt64(bitcoinAmount) ?? 0) > 0 && currency != "BTC" && expiry != .never && (Decimal(string: price) ?? 0) > 0)
     }
-    init(transport: NativeTransportType? = nil, area: String = "", serviceAreas: MarketServiceAreas? = nil) {
+    let providerService: Bool
+    private var advertisingProvider: Bool { providerService && side == "offer" && store.snapshot.settings.escrowUi }
+    init(providerService: Bool = false, transport: NativeTransportType? = nil, area: String = "", serviceAreas: MarketServiceAreas? = nil) {
+        self.providerService = providerService
         _serviceAreas = State(initialValue: serviceAreas)
         _transport = State(initialValue: transport)
         _location = State(initialValue: area)
-        _category = State(initialValue: transport == nil ? "Other" : "Transport")
-        _title = State(initialValue: transport?.serviceTitle ?? "")
+        _category = State(initialValue: providerService ? "Services" : transport == nil ? "Other" : "Transport")
+        _title = State(initialValue: providerService ? "Escrow services" : transport?.serviceTitle ?? "")
     }
     @FocusState private var entryFocused: Bool
     private let categories = ["Electronics", "Home", "Clothing", "Books", "Transport", "Services", "Garden", "Music", "Other"]
@@ -160,8 +163,9 @@ struct NewListingView: View {
                 }
                 if store.snapshot.settings.escrowUi {
                     Section("Trade options") {
-                        Toggle("Offer escrow", isOn: $offerEscrow)
+                        Toggle(side == "offer" ? "Allow buyers to propose escrow" : "Allow sellers to propose escrow", isOn: $offerEscrow)
                         if offerEscrow {
+                            Text("The other trader can suggest a provider. You and the provider decide whether to accept each invitation.").font(.footnote).foregroundStyle(MarketTheme.muted)
                             Picker("Trade", selection: $bitcoinTrade) { Text("Goods or services").tag(false); Text("Bitcoin for fiat").tag(true) }
                             if bitcoinTrade {
                                 TextField("Bitcoin amount in sats", text: $bitcoinAmount)
@@ -218,6 +222,7 @@ struct NewListingView: View {
                     if escrowEnabled {
                         reviewDetail("Payment protection", bitcoinTrade ? "Escrow · " + bitcoinAmount + " sats · " + (fiatMethod == "cash" ? "Cash in person" : "Bank transfer") : "Escrow offered")
                     }
+                    if advertisingProvider { reviewDetail("Escrow directory", "People can find you and privately invite you to a job.") }
                     reviewDetail("Category", category)
                     if category == "Transport" { reviewDetail("Service type", transport?.label ?? "Other transport") }
                     reviewDetail("Location", location.isEmpty ? "Not specified" : location)
@@ -242,6 +247,7 @@ struct NewListingView: View {
     }
     private func publish() {
         var draft: [String: Any] = ["title": title, "description": description, "side": side, "price": price, "currency": currency, "location": location, "category": category, "tags": category == "Transport" ? (transport?.tags ?? []) : [], "image_url": imageURL.isEmpty ? NSNull() : imageURL as Any]
+        if advertisingProvider { draft["tags"] = (draft["tags"] as? [String] ?? []) + ["escrow-provider"] }
         if category == "Transport", let serviceAreas, let data = try? JSONEncoder().encode(serviceAreas), let geometry = try? JSONSerialization.jsonObject(with: data) { draft["service_areas"] = geometry }
         if escrowEnabled {
             if bitcoinTrade, let sats = UInt64(bitcoinAmount) { draft["escrow"] = ["trade":"bitcoin_fiat", "sats":sats, "method":fiatMethod] as [String:Any] }

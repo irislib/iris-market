@@ -23,6 +23,11 @@
     const traders=[d.buyer,d.seller];
     insist(new Set(parties(d)).size === 3 && [d.maker,d.taker,d.funder,d.beneficiary].every(k=>traders.includes(k)) && d.maker!==d.taker && d.funder!==d.beneficiary, 'The buyer, seller and provider must be distinct.');
     insist(typeof d.title==='string' && d.title.length<=320 && typeof d.listing_id==='string' && d.listing_id.length<=260 && Number.isSafeInteger(d.sats) && d.sats>0 && d.sats<=1e12 && typeof d.mint==='string' && d.mint.length<=2048, 'This invitation contains invalid trade terms.');
+    if (d.order_id !== undefined || d.quantity !== undefined) {
+      insist(typeof d.order_id==='string' && d.order_id.startsWith(d.buyer+':') &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(d.order_id.slice(65)) &&
+        d.taker===d.buyer && Number.isInteger(d.quantity) && d.quantity>=1 && d.quantity<=999, 'Invalid order on this invitation.');
+    }
     const url=new URL(d.mint);
     insist((url.protocol==='https:' || (url.protocol==='http:' && url.hostname==='127.0.0.1' && !!url.port)) && !url.username && !url.password && !url.hash && !url.search && url.href.replace(/\/$/,'')===d.mint,'Choose a mint supported by this wallet.');
     if(d.fiat)insist(typeof d.fiat==='object' && typeof d.fiat.price==='string' && /^\d{1,12}(?:\.\d{1,2})?$/.test(d.fiat.price) && /^[A-Z]{3}$/.test(d.fiat.currency) && ['bank_transfer','cash'].includes(d.fiat.method),'The fiat quote is invalid.');
@@ -38,11 +43,30 @@
       funder:bitcoin?seller:buyer,beneficiary:bitcoin?buyer:seller,title:l.title,sats,mint,
       ...(bitcoin?{fiat:{price:l.price,currency:l.currency,method:l.escrow.method}}:{})});
   }
-  async function exactListing(api,deal) {
-    const listing=await api('listing',{id:deal.listing_id,latest:true});
+  async function exactListing(api,deal,latest=true) {
+    const listing=await api('listing',{id:deal.listing_id,latest});
     const expected=dealFromListing(listing,deal.taker,deal.provider,deal.mint,deal.sats);
+    if(deal.order_id)Object.assign(expected,{order_id:deal.order_id,quantity:deal.quantity});
     if(!deal.fiat)delete expected.fiat; // Existing proposals already bind the full signed revision.
     insist(equal(deal,expected), 'The listing changed. Start a new trade from the current listing.');
+  }
+  async function exactOrder(api,owner,id,deal,accepted=false) {
+    // The provider receives the agreement, never the private order or its delivery notes.
+    if(!deal.order_id || owner===deal.provider)return;
+    const o=await api('order',{id:deal.order_id});
+    insist(o && o.id===deal.order_id && o.trade_id===id && o.provider===deal.provider &&
+      o.buyer===deal.buyer && o.seller===deal.seller && o.listing_id===deal.listing_id && o.quantity===deal.quantity,
+      'The matching order has not arrived or names a different provider. Open Orders to check the request.');
+    insist(o.status!=='cancelled','This order was cancelled. Start a new order to use escrow.');
+    if(accepted)insist(['accepted','in-transit','delivered'].includes(o.status),'Waiting for the merchant’s acceptance to reach Orders.');
+    return o;
+  }
+  function candidates(contacts,owner,maker,query) {
+    const words=query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    const rank=p=>Number(!!p.advertised)*4+Number(!!p.mutual)*2+Number(!!p.contact);
+    return contacts.filter(p=>hex.test(p.id) && p.id!==owner && p.id!==maker &&
+      (words.length>0 || p.advertised || p.mutual || p.contact) && words.every(w=>[p.name,p.id,p.address].some(x=>x?.toLowerCase().includes(w))))
+      .sort((a,b)=>rank(b)-rank(a)||a.name.localeCompare(b.name)||a.id.localeCompare(b.id));
   }
   const actor=(r,owner)=>r.mine?owner:r.peer;
   const validJoin=(s,who,d)=>spendingKey.test(s.key) && !parties(d).includes(s.key.slice(2)) && (who!==d.provider || (s.provider?.profile===d.provider && s.provider?.key===s.key && /^[0-9a-f]{128}$/.test(s.provider?.signature)));
@@ -50,7 +74,7 @@
     const rows=records.filter(r=>r.step?.v===1 && r.step.trade_id===id);
     const invitations=rows.filter(r=>{const d=r.step.deal;try{return r.step.action==='invite' && validateDeal(d) && parties(d).includes(owner) && actor(r,owner)===d.taker;}catch{return false;}});
     if(!invitations.length)return null;
-    const own=rows.find(r=>r.mine && ['join','approve','funded'].includes(r.step.action));
+    const own=rows.find(r=>r.mine && ['join','decline','approve','funded'].includes(r.step.action));
     let d=undefined;
     for(const row of invitations){
       const candidate=row.step.deal;
@@ -78,6 +102,18 @@
     const termsHash=ready ? await hash(terms) : '';
     const final=relevant.filter(r=>ready && r.step.terms_hash===termsHash);
     const approved=new Set(final.filter(r=>r.step.action==='approve').map(r=>actor(r,owner)));
+    // An approval supersedes an earlier decline on a second device. A late decline
+    // must never strand a payment made after all three people approved.
+    const declined=parties(d).find(p=>!approved.has(p) && relevant.some(r=>actor(r,owner)===p && r.step.action==='decline'));
+    const discussion=new Map();
+    for(const r of relevant){
+      const s=r.step, who=actor(r,owner);
+      if(s.action!=='comment' || !ready || !hex.test(s.message_id) || typeof s.text!=='string' ||
+        !s.text.trim() || new TextEncoder().encode(s.text).length>2000)continue;
+      const k=who+':'+s.message_id;
+      if(!discussion.has(k))discussion.set(k,{id:k,author:who,text:s.text,at:r.created_at??0});
+    }
+    const messages=[...discussion.values()].sort((a,b)=>a.at-b.at);
     const funded=approved.size===3 ? final.filter(r=>r.step.action==='funded' && actor(r,owner)===d.funder && typeof r.step.token==='string') : [];
     const token=unique(funded,r=>r.step.token,'funding records');
     const disputed=!!token && final.some(r=>r.step.action==='dispute' && actor(r,owner)!==d.provider);
@@ -94,7 +130,7 @@
         settled[direction]=second.length>0 && final.some(r=>r.step.action==='settled' && r.step.direction===direction && actor(r,owner)===payee);
       }
     }
-    return {id,d,dealHash,termsHash,joins,terms,approved,token,disputed,payouts,cosigns,settled,
+    return {id,d,dealHash,termsHash,joins,terms,approved,declined,messages,token,disputed,payouts,cosigns,settled,
       rated:final.some(r=>r.step.action==='rated' && actor(r,owner)===owner)};
   }
   async function send(api, owner, id, deal, payload) {
@@ -104,9 +140,11 @@
   }
   const wallet=(api,id,op,more={})=>api('wallet',{trade_id:id,op,...more});
   async function join(api,owner,t){
-    await exactListing(api,t.d);
+    await exactListing(api,t.d,owner!==t.d.taker);
+    const order=await exactOrder(api,owner,t.id,t.d);
     const {key}=await wallet(api,t.id,'key');
     const provider=owner===t.d.provider ? await api('certificate',{key}) : undefined;
+    if(owner===t.d.seller && order?.status==='requested')await api('acceptOrder',{id:order.id,trade_id:t.id,provider:t.d.provider});
     await send(api,owner,t.id,t.d,{action:'join',deal_hash:t.dealHash,key,...(provider?{provider}:{})});
   }
   function list(records, owner) {
@@ -114,9 +152,9 @@
     for(const r of records){
       const s=r.step;
       if(s?.v!==1 || !hex.test(s.trade_id) || s.action!=='invite')continue;
-      try{const d=validateDeal(s.deal);if(actor(r,owner)===d.taker && parties(d).includes(owner))items.set(s.trade_id,{id:s.trade_id,title:d.title,deal:d,peer:r.peer,joined:joined.has(s.trade_id),status:s.outcome==='release'?'Release receipt':s.outcome==='refund'?'Refund receipt':joined.has(s.trade_id)?'In progress':'Invitation'});}catch{}
+      try{const d=validateDeal(s.deal);if(actor(r,owner)===d.taker && parties(d).includes(owner))items.set(s.trade_id,{id:s.trade_id,title:d.title,deal:d,peer:r.peer,joined:joined.has(s.trade_id),status:s.outcome==='disputed'?'Help requested':s.outcome==='declined'?'Declined':s.outcome==='release'?'Release receipt':s.outcome==='refund'?'Refund receipt':joined.has(s.trade_id)?'In progress':'Invitation'});}catch{}
     }
     return [...items.values()].reverse();
   }
-  globalThis.IrisEscrow = {canonical,hash,uid,parties,recipient,validateDeal,dealFromListing,exactListing,project,send,wallet,join,list};
+  globalThis.IrisEscrow = {canonical,hash,uid,parties,recipient,validateDeal,dealFromListing,exactListing,exactOrder,candidates,project,send,wallet,join,list};
 })();

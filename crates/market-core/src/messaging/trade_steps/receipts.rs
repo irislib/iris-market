@@ -8,32 +8,47 @@ type Marker<'a> = (&'a str, &'a str, &'a str, &'a str, PublicKey, &'a str);
 pub(super) struct Receipts<'a> {
     approved: HashMap<(&'a str, &'a str), &'a str>,
     observed: HashSet<Marker<'a>>,
-    receipts: HashSet<&'a str>,
+    updated: HashSet<&'a str>,
+    declined: HashSet<(&'a str, &'a str, PublicKey)>,
+    consented: HashSet<(&'a str, &'a str, PublicKey)>,
 }
 impl<'a> Receipts<'a> {
     pub(super) fn new(rows: &'a [Record], owner: PublicKey) -> Self {
         let mut receipts = Self {
             approved: HashMap::new(),
             observed: HashSet::new(),
-            receipts: HashSet::new(),
+            updated: HashSet::new(),
+            declined: HashSet::new(),
+            consented: HashSet::new(),
         };
         for r in rows {
             let s = &r.step;
-            let (Some(id), Some(deal), Some(terms), Some(action)) = (
+            let actor = if r.mine { owner } else { r.peer };
+            let (Some(id), Some(deal), Some(action)) = (
                 s["trade_id"].as_str(),
                 s["deal_hash"].as_str(),
-                s["terms_hash"].as_str(),
                 s["action"].as_str(),
             ) else {
                 continue;
             };
-            if action == "settled" {
-                receipts.receipts.insert(id);
+            if action == "decline" {
+                receipts.declined.insert((id, deal, actor));
+            }
+            let Some(terms) = s["terms_hash"]
+                .as_str()
+                .filter(|s| nostr::EventId::from_hex(s).is_ok())
+            else {
+                continue;
+            };
+            if action == "approve" {
+                receipts.consented.insert((id, deal, actor));
+            }
+            if matches!(action, "settled" | "dispute") {
+                receipts.updated.insert(id);
             }
             if r.mine && action == "approve" {
                 receipts.approved.insert((id, deal), terms);
             }
-            let actor = if r.mine { owner } else { r.peer };
             let direction = s["direction"]
                 .as_str()
                 .filter(|d| matches!(*d, "release" | "refund"))
@@ -46,7 +61,9 @@ impl<'a> Receipts<'a> {
     }
     pub(super) fn for_invite(&self, r: &Record, owner: PublicKey) -> Option<&'static str> {
         let s = &r.step;
-        if s["action"] != "invite" || !self.receipts.contains(s["trade_id"].as_str()?) {
+        if s["action"] != "invite"
+            || (self.declined.is_empty() && !self.updated.contains(s["trade_id"].as_str()?))
+        {
             return None;
         }
         let actor = if r.mine { owner } else { r.peer };
@@ -56,11 +73,17 @@ impl<'a> Receipts<'a> {
         let d = &s["deal"];
         let id = s["trade_id"].as_str()?;
         let digest = invitation_hash(d);
-        let terms = self.approved.get(&(id, digest.as_str()))?;
         let key = |field: &str| PublicKey::from_hex(d[field].as_str()?).ok();
         let funder = key("funder")?;
         let beneficiary = key("beneficiary")?;
         let provider = key("provider")?;
+        if [funder, beneficiary, provider].iter().any(|actor| {
+            let key = (id, digest.as_str(), *actor);
+            self.declined.contains(&key) && !self.consented.contains(&key)
+        }) {
+            return Some("declined");
+        }
+        let terms = self.approved.get(&(id, digest.as_str()))?;
         let has = |action: &str, actor: PublicKey, direction: &str| {
             self.observed
                 .contains(&(id, digest.as_str(), *terms, action, actor, direction))
@@ -81,6 +104,6 @@ impl<'a> Receipts<'a> {
                 return Some(direction);
             }
         }
-        None
+        disputed.then_some("disputed")
     }
 }

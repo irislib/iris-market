@@ -361,6 +361,7 @@ pub enum Command {
         id: String,
     },
     Refresh,
+    DiscoverEscrowProviders,
     LoadProfile {
         author: String,
     },
@@ -493,6 +494,10 @@ pub enum Command {
         note: String,
         #[serde(default)]
         delivery_request: Option<crate::orders::DeliveryRequest>,
+        #[serde(default)]
+        escrow_trade_id: Option<String>,
+        #[serde(default)]
+        escrow_provider: Option<String>,
     },
     RequestDelivery {
         source_order_id: String,

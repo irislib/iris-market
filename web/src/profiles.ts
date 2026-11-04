@@ -19,6 +19,7 @@
  */
 import { verifyEvent, type Event as NostrEvent } from 'nostr-tools/pure'
 import { fallbackIdentityName, getProfileName } from './shared/iris-kit/profile.ts'
+import { npubEncode } from 'nostr-tools/nip19'
 import { SocialGraph } from 'nostr-social-graph'
 import {createProfileHeadCache} from './profile-cache.ts'
 import type { Filter } from 'nostr-tools'
@@ -456,6 +457,15 @@ export function cacheProfileMetadata(input: NostrEvent, { relays = DEFAULT_RELAY
 }
 export function readProfileMetadata(pubkey: string, { relays = DEFAULT_RELAYS }: {relays?: readonly string[]} = {}) {
   return person(storeFor(relays), normalizePublicKey(pubkey))
+}
+/** Suggest people using only records already authenticated on this device. */
+export function escrowCandidates(owner:string, seller:string|undefined, contacts:string[], relays:readonly string[], advertised:ReadonlySet<string>) {
+  const store=storeFor(relays), buyerFollows=new Set(store.follows.get(owner)?.follows ?? []);
+  const sellerFollows=new Set(store.follows.get(seller)?.follows ?? []), known=new Set(contacts.filter(isKey));
+  const mutual=[...buyerFollows].filter(id=>sellerFollows.has(id));
+  const candidates=new Set([...advertised,...mutual,...known,...store.profiles.keys(),...buyerFollows]);
+  candidates.delete(owner);candidates.delete(seller);
+  return [...candidates].slice(0,1024).map(id=>({id,name:person(store,id).name,address:npubEncode(id),contact:known.has(id),advertised:advertised.has(id),mutual:buyerFollows.has(id)&&sellerFollows.has(id)}));
 }
 export async function loadProfileMetadata(pubkeys: string[], options: ProfileQueryOptions = {}) {
   const keys = [...new Set(pubkeys.map(normalizePublicKey))].slice(0, PROFILE_LIMITS.metadata)

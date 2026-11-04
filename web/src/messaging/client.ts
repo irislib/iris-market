@@ -16,12 +16,13 @@ import { createPrivateTransport, verifiedPrivateEvent } from './transport.ts';
 import { RemoteSigner } from './remote-signer.ts';
 import { authorizeSignerDevice, fetchSignerRoster, prepareSignerAuthorization, selectSignerRoster, validateSignerAuthorization } from './authorization.ts';
 import {createChatControls,applyChatControl,messageReactions,deliveryRank,type ReceiptPreferences,type ReactionSummary,type ChatControlMeta} from './chat-controls.ts';
+import { marketplaceToolEnabled } from '../marketplace-flags.ts';
 import { createOrderBook, isOrderMessage } from '../orders.ts';
 import type { Event, UnsignedEvent, VerifiedEvent } from 'nostr-tools';
 import type { NostrPublishContext, Rumor, OnEventMeta } from 'nostr-double-ratchet';
 import type { Vault } from './vault.ts';
 import type { PrivateTransport } from './transport.ts';
-import type { DeliveryPlace, DeliveryRequest, OrderListing, OrderPatch, OrderView } from '../orders.ts';
+import type { DeliveryPlace, OrderListing, OrderPatch, OrderRequestOptions, OrderView } from '../orders.ts';
 type AccountMode='local'|'extension'|'linked';
 interface AccountRecord {owner:string;mode:AccountMode;deviceSecret:number[];ownerSecret?:number[];proof?:VerifiedEvent;installed?:boolean;freshOwner?:boolean;displayName?:string;profileEvent?:VerifiedEvent}
 export interface ChatMessage {id:string;text:string;mine:boolean;createdAt:number;createdAtMs?:number;expiresAt?:number;delivery:'queued'|'sent'|'delivered'|'seen'|'received';reactions?:ReactionSummary[];_chat?:ChatControlMeta;orderId?:string;context?:MessageContext;system?:boolean}
@@ -634,7 +635,11 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
     },
     async markSeen(peer:string,messageIds:string[]){requireReady();if(!HEX.test(peer)||!Array.isArray(messageIds)||messageIds.length>128)throw Error('Choose visible messages in this conversation.');await sendReceipt(peer,messageIds,'seen');},
     async setReceiptPreferences(patch:Partial<ReceiptPreferences>){requireReady();await controls.setPreferences(patch);notify();},
-    async requestOrder(listing:OrderListing, options?:{quantity?:number;note?:string;deliveryRequest?:DeliveryRequest}) { requireReady();const order=await orders.request(listing,options);scheduleBackground();return order; },
+    async requestOrder(listing:OrderListing, options?:OrderRequestOptions) {
+      requireReady();
+      if((options?.escrowTradeId!=null || options?.escrowProvider!=null) && !marketplaceToolEnabled('escrow',account.owner))throw Error('Enable escrow in Settings to request an escrow order.');
+      const order=await orders.request(listing,options);scheduleBackground();return order;
+    },
     async requestDelivery(sourceOrderId:string, serviceListing:OrderListing, destination:DeliveryPlace) { requireReady();const order=await orders.requestDelivery(sourceOrderId,serviceListing,destination);scheduleBackground();return order; },
     async updateOrder(id:string, patch:OrderPatch) { requireReady();const order=await orders.update(id,patch);await pruneOrderQueues();scheduleBackground();return order; },
     async archiveOrder(id, archived=true) { requireReady();return orders.archive(id,archived); },
@@ -660,6 +665,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
     tradeSteps(){requireReady();return tradeBook.rows(true);},
     async sendTradeStep(peers:string[],step:Parameters<typeof tradeBook.send>[1],operationId:string){
       requireChat();if(!canSend())throw Error('Approve this device before sending a trade update.');
+      if(['invite','join'].includes(step.action) && !marketplaceToolEnabled('escrow',account.owner))throw Error('Enable escrow in Settings to start or join a trade.');
       await tradeBook.send(peers,step,operationId);notify();scheduleBackground();
     },
     escrowProvider(key:string){requireReady();

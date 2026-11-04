@@ -356,15 +356,51 @@ impl Profiles {
             .and_then(|e| serde_json::from_str(&e.content).ok())
             .unwrap_or_default()
     }
-    pub fn person(&self, author: &str) -> Person {
-        let metadata = self.metadata(author);
-        let name = text(&metadata, "display_name", 100)
-            .or_else(|| text(&metadata, "name", 100))
+    fn display_name(metadata: &serde_json::Value) -> String {
+        text(metadata, "display_name", 100)
+            .or_else(|| text(metadata, "name", 100))
             .filter(|name| {
                 !name.starts_with("npub1")
                     && !(name.len() == 64 && name.chars().all(|ch| ch.is_ascii_hexdigit()))
             })
-            .unwrap_or_else(|| "Unnamed user".into());
+            .unwrap_or_else(|| "Unnamed user".into())
+    }
+
+    pub(crate) fn escrow_candidates(
+        &self,
+        buyer: PublicKey,
+        merchant: PublicKey,
+        advertised: std::collections::BTreeSet<String>,
+    ) -> Vec<serde_json::Value> {
+        // Only verified, winning kind-3 events establish a direct follow.
+        let follows = |author: PublicKey| -> std::collections::BTreeSet<String> {
+            self.events
+                .get(&(author.to_hex(), 3))
+                .filter(|event| supported_contacts(event))
+                .into_iter()
+                .flat_map(|event| event.tags.public_keys().map(PublicKey::to_hex))
+                .collect()
+        };
+        let mutual: std::collections::BTreeSet<_> = follows(buyer)
+            .intersection(&follows(merchant))
+            .cloned()
+            .collect();
+        let buyer = buyer.to_hex();
+        let merchant = merchant.to_hex();
+        advertised
+            .union(&mutual)
+            .filter(|key| **key != buyer && **key != merchant)
+            .map(|key| {
+                serde_json::json!({
+                    "id": key, "name": Self::display_name(&self.metadata(key)),
+                    "advertised": advertised.contains(key), "mutual": mutual.contains(key)
+                })
+            })
+            .collect()
+    }
+    pub fn person(&self, author: &str) -> Person {
+        let metadata = self.metadata(author);
+        let name = Self::display_name(&metadata);
         Person {
             author: author.into(),
             name,
@@ -729,6 +765,29 @@ mod tests {
             .sign_with_keys(keys)
             .unwrap()
     }
+    #[test]
+    fn escrow_candidates_require_two_current_signed_follow_lists() {
+        let buyer = Keys::generate();
+        let merchant = Keys::generate();
+        let agent = Keys::generate().public_key();
+        let mut profiles = Profiles::default();
+        let advertised = std::collections::BTreeSet::from([agent.to_hex()]);
+        let candidates = |profiles: &Profiles| {
+            profiles.escrow_candidates(
+                buyer.public_key(),
+                merchant.public_key(),
+                advertised.clone(),
+            )
+        };
+        profiles.ingest(follows(&buyer, &[agent], 100)).unwrap();
+        assert_eq!(candidates(&profiles)[0]["advertised"], true);
+        assert_eq!(candidates(&profiles)[0]["mutual"], false);
+        profiles.ingest(follows(&merchant, &[agent], 101)).unwrap();
+        assert_eq!(candidates(&profiles)[0]["mutual"], true);
+        profiles.ingest(follows(&buyer, &[], 102)).unwrap();
+        assert_eq!(candidates(&profiles)[0]["mutual"], false);
+    }
+
     #[test]
     fn home_uses_personal_verified_follows_and_returns_to_discovery_when_cleared() {
         let viewer = Keys::generate();

@@ -16,6 +16,8 @@ struct MarketOrder: Decodable, Hashable, Identifiable {
     let sync: String
     let locationFresh: Bool
     let displayPrice: MarketOrderDisplayPrice?
+    let escrowTradeId: String?
+    let escrowProvider: String?
     let payment: MarketOrderPayment?
     let deliveryRequest: MarketDeliveryRequest?
     let pickupAuthorization: MarketPickupAuthorization?
@@ -142,7 +144,7 @@ struct CashuPayment: Decodable, Hashable {
 }
 
 enum MarketOrderList: String, CaseIterable {
-    case purchases = "Purchases", sales = "Sales", deliveries = "Deliveries", archived = "Archived"
+    case purchases = "Purchases", sales = "Sales", deliveries = "Deliveries", escrow = "Escrow jobs", archived = "Archived"
     func contains(_ order: MarketOrder, owner: String) -> Bool {
         if self == .archived { return order.archived }
         guard !order.archived else { return false }
@@ -150,7 +152,7 @@ enum MarketOrderList: String, CaseIterable {
         case .purchases: return order.buyer == owner
         case .sales: return order.seller == owner
         case .deliveries: return order.shipment.stops.contains { $0.courierPubkey == owner }
-        case .archived: return false
+        case .escrow, .archived: return false
         }
     }
 }

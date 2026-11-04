@@ -26,6 +26,31 @@ test('request and exact outgoing rumors are one encrypted durable mutation, rest
  await restored.book.sent(jobs[0].id,seller);assert.equal(restored.book.state()[0].sync,'sent');
 });
 
+test('escrow checkout attaches once, blocks direct payment, and hides the provider from couriers',async()=>{
+ const a=await book(buyer),b=await book(seller),c=await book(courier);
+ const goods={...listing,escrow:{trade:'goods'}}, options={escrowTradeId:'e'.repeat(64),escrowProvider:outsider,note:'Ring twice',quantity:2};
+ assert.throws(()=>a.book.request(listing,options),/does not offer escrow/);
+ for(const invalid of [{escrowProvider:buyer},{escrowProvider:seller},{escrowProvider:undefined},{escrowTradeId:'invalid'}]){
+  assert.throws(()=>a.book.request(goods,{...options,...invalid}),/independent provider/);
+ }
+ const [order,retry]=await Promise.all([a.book.request(goods,options),a.book.request(goods,options)]);
+ assert.equal(order.id,retry.id);
+ assert.deepEqual(a.book.jobs().map(job=>job.recipient),[seller]);
+ await assert.rejects(a.book.request(goods,{...options,note:'Different request'}),/already belongs/);
+ const request=rumorFor(a.book,'request'),wire=request.tags.find(tag=>tag[0]===ORDER_TAG);
+ assert.equal(wire[1],'2');assert.equal(decodeOrder({...request,tags:[[ORDER_TAG,'1',wire[2]]]}),null);
+ await b.book.receive(request,buyer);
+ assert.equal(b.book.state()[0].escrowProvider,outsider);assert.equal(b.book.state()[0].escrowTradeId,options.escrowTradeId);
+ await assert.rejects(b.book.update(order.id,{payment:{mint:'https://testnut.cashu.space',amount:'12',unit:'sat',status:'requested'}}),/escrow agreement/);
+ await b.book.update(order.id,{status:'accepted'});
+ await b.book.update(order.id,{shipment:{stops:[{id:'pickup',courierPubkey:courier}]}});
+ const shared=rumorFor(b.book,'route',courier);assert(!JSON.stringify(shared).includes(outsider));assert(!JSON.stringify(shared).includes(options.escrowTradeId));
+ assert(await c.book.receive(shared,seller));assert(await a.book.receive(rumorFor(b.book,'route',buyer),seller));
+ assert.equal(a.book.state()[0].escrowTradeId,options.escrowTradeId);
+ const raw=rumorFor(b.book,'route',buyer),bad=decodeOrder(raw);bad.seq+=1;bad.snapshot.escrowProvider=device;
+ assert.equal(await a.book.receive({...raw,tags:[[ORDER_TAG,'2',JSON.stringify(bad)]]},seller),null);
+});
+
 test('storage failure cannot expose an order or a half-written outgoing queue',async()=>{
  const a=await book(buyer);a.vault.put=async()=>{throw Error('full')};
  await assert.rejects(a.book.request(listing),/full/);assert.deepEqual(a.book.state(),[]);assert.deepEqual(a.book.jobs(),[]);

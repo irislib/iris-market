@@ -47,7 +47,8 @@ data class MarketOrder(
     val id: String, val buyer: String, val seller: String, val items: List<OrderItem>, val note: String,
     val status: String, val createdAt: Long, val updatedAt: Long, val shipment: Shipment,
     val archived: Boolean, val sync: String, val role: String?, val locationFresh: Boolean,
-    val displayPrice:PriceDisplay?=null,val payment:OrderPayment?=null,val deliveryRequest:OrderDeliveryRequest?=null,val pickupAuthorization:PickupAuthorization?=null,val sourceOrderId:String?=null,val deliveryOrderId:String?=null
+    val displayPrice:PriceDisplay?=null,val payment:OrderPayment?=null,val deliveryRequest:OrderDeliveryRequest?=null,val pickupAuthorization:PickupAuthorization?=null,val sourceOrderId:String?=null,val deliveryOrderId:String?=null,
+    val escrowTradeId:String?=null,val escrowProvider:String?=null
 ) {
     val formattedPrice:String get() {
         val display=displayPrice?:return items.firstOrNull()?.displayPrice?:"Negotiable"
@@ -75,7 +76,8 @@ data class MarketOrder(
                 value.optJSONObject("display_price")?.let {PriceDisplay(it.optDouble("amount"),it.optString("currency"),it.optBoolean("approximate"),it.optBoolean("stale"))},
                 value.optJSONObject("payment")?.let {OrderPayment(it.getString("mint"),it.getString("amount"),it.getString("unit"),it.getString("status"))},
                 value.optJSONObject("deliveryRequest")?.let {OrderDeliveryRequest.parse(it)},
-                value.optJSONObject("pickupAuthorization")?.let {PickupAuthorization(it.getString("courierPubkey"),it.getString("reference"))},value.textOrNull("sourceOrderId"),value.textOrNull("deliveryOrderId"))
+                value.optJSONObject("pickupAuthorization")?.let {PickupAuthorization(it.getString("courierPubkey"),it.getString("reference"))},value.textOrNull("sourceOrderId"),value.textOrNull("deliveryOrderId"),
+                value.textOrNull("escrowTradeId"), value.textOrNull("escrowProvider"))
         }
         private fun coordinates(value: JSONArray?): List<Double>? = value?.takeIf { it.length() == 2 }?.let { listOf(it.optDouble(0), it.optDouble(1)) }?.takeIf { it.all(Double::isFinite) && kotlin.math.abs(it[0]) <= 180 && kotlin.math.abs(it[1]) <= 90 }
     }

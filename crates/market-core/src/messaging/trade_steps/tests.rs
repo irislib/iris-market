@@ -54,7 +54,12 @@ impl Trade {
 
     fn receive(&mut self, actor: PublicKey, op: u32, step: &Value) {
         let rumor = rumor(actor, self.chat.owner, id(op), step);
-        self.chat.receive_trade_step(actor, &rumor);
+        self.chat
+            .transaction(|chat| {
+                chat.receive_trade_step(actor, &rumor);
+                Ok(())
+            })
+            .unwrap();
     }
 
     fn rows(&self) -> usize {
@@ -259,8 +264,151 @@ fn receipt_hint_requires_recipient_and_corroborating_dispute_signature() {
     t.receive(t.buyer, 5, &payout);
     t.receive(t.provider, 6, &settled);
     t.receive(t.provider, 7, &cosign);
-    t.receive(t.buyer, 8, &settled);
     assert!(t.chat.trade_steps(false)[0]["step"]["outcome"].is_null());
     t.receive(t.buyer, 9, &dispute);
+    assert_eq!(t.chat.trade_steps(false)[0]["step"]["outcome"], "disputed");
+    t.receive(t.buyer, 8, &settled);
     assert_eq!(t.chat.trade_steps(false)[0]["step"]["outcome"], "refund");
+}
+
+#[test]
+fn provider_declines_and_discussion_stay_with_the_exact_trade() {
+    let mut t = Trade::new();
+    let invitation = t.step("invite");
+    t.receive(t.buyer, 90, &invitation);
+    let outsider = Keys::generate().public_key();
+    let decline = t.step("decline");
+    t.receive(outsider, 91, &decline);
+    assert!(t.chat.trade_steps(false)[0]["step"]["outcome"].is_null());
+    t.receive(t.provider, 92, &decline);
+    assert_eq!(t.chat.trade_steps(false)[0]["step"]["outcome"], "declined");
+
+    let mut t = Trade::new();
+    let invitation = t.step("invite");
+    t.receive(t.buyer, 90, &invitation);
+    t.send_join();
+    let mut comment = t.step("comment");
+    comment["text"] = json!("When can we collect the lamp?");
+    comment["message_id"] = json!(id(55));
+    let peers = BTreeSet::from([t.buyer, t.provider]);
+    assert!(
+        t.chat
+            .send_trade_step(peers.clone(), id(9), comment.clone())
+            .is_err()
+    );
+    t.receive(t.provider, 93, &t.step("join"));
+    t.receive(t.buyer, 94, &t.step("join"));
+    assert!(
+        t.chat
+            .send_trade_step([outsider, t.buyer].into(), id(9), comment.clone())
+            .is_err()
+    );
+    t.chat
+        .send_trade_step(peers, id(9), comment.clone())
+        .unwrap();
+    let count = t.rows();
+    t.receive(outsider, 95, &comment);
+    assert_eq!(t.rows(), count);
+    for i in 0..3 {
+        comment["message_id"] = json!(id(100 + i));
+        t.receive(t.provider, 100 + i, &comment);
+    }
+    t.receive(t.provider, 111, &comment);
+    assert_eq!(t.rows(), count + 3);
+    assert!(
+        !json!(t.chat.trade_steps(false))
+            .to_string()
+            .contains("collect the lamp")
+    );
+    assert!(
+        json!(t.chat.trade_steps(true))
+            .to_string()
+            .contains("collect the lamp")
+    );
+}
+
+#[test]
+fn three_ratchets_keep_the_trade_room_and_private_provider_dm_separate() {
+    let dirs = [
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+    ];
+    let mut chats = dirs
+        .each_ref()
+        .map(|dir| Messaging::open(dir.path(), Keys::generate()).unwrap());
+    let owners = chats.each_ref().map(|c| c.owner);
+    let flush = |chats: &mut [Messaging; 3]| {
+        for _ in 0..20 {
+            let mut events = Vec::new();
+            for (sender, c) in chats.iter_mut().enumerate() {
+                c.retry().unwrap();
+                events.extend(c.pending_outbound().into_iter().map(|e| (sender, e)));
+            }
+            if events.is_empty() {
+                return;
+            }
+            for (sender, e) in events {
+                for secret in ["shared collection time", "private access code"] {
+                    assert!(!e.as_json().contains(secret));
+                }
+                for (i, c) in chats.iter_mut().enumerate() {
+                    if i != sender {
+                        c.receive(&e).unwrap();
+                    }
+                }
+                chats[sender].acknowledge_published(&e.id.to_hex()).unwrap();
+            }
+        }
+        panic!("Local ratchet delivery did not settle");
+    };
+    for (a, b) in [(0, 1), (0, 2), (1, 2)] {
+        let invite = chats[b].invite().unwrap();
+        chats[a].accept_invite(&invite).unwrap();
+        flush(&mut chats);
+    }
+    let deal = json!({"buyer":owners[0],"seller":owners[1],"provider":owners[2],"funder":owners[0],"beneficiary":owners[1],"taker":owners[0],"maker":owners[1]});
+    let request = json!({"v":1,"action":"invite","trade_id":id(444),"deal":deal});
+    let others = |i: usize| {
+        owners
+            .into_iter()
+            .filter(|p| *p != owners[i])
+            .collect::<BTreeSet<_>>()
+    };
+    chats[0]
+        .send_trade_step(others(0), id(401), request)
+        .unwrap();
+    flush(&mut chats);
+    for (i, c) in chats.iter_mut().enumerate() {
+        c.send_trade_step(
+            others(i),
+            id(402 + i as u32),
+            json!({"v":1,"action":"join","trade_id":id(444),"deal_hash":invitation_hash(&deal)}),
+        )
+        .unwrap();
+    }
+    flush(&mut chats);
+    let comment = json!({"v":1,"action":"comment","trade_id":id(444),"deal_hash":invitation_hash(&deal),"message_id":id(499),"text":"shared collection time"});
+    chats[1]
+        .send_trade_step(others(1), id(410), comment)
+        .unwrap();
+    chats[0]
+        .send(&owners[2].to_hex(), "private access code")
+        .unwrap();
+    flush(&mut chats);
+    for (i, c) in chats.iter().enumerate() {
+        assert!(
+            json!(c.trade_steps(true))
+                .to_string()
+                .contains("shared collection time")
+        );
+        assert!(
+            !json!(c.trade_steps(false))
+                .to_string()
+                .contains("shared collection time")
+        );
+        let ordinary = json!(c.conversations()).to_string();
+        assert!(!ordinary.contains("shared collection time"));
+        assert_eq!(ordinary.contains("private access code"), i != 1);
+    }
 }

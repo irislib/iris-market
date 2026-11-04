@@ -28,7 +28,7 @@ pub mod uploads;
 #[cfg(feature = "cashu-wallet")]
 pub mod wallet;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use model::*;
 use nostr::{Keys, SecretKey};
 use std::{
@@ -760,6 +760,7 @@ impl Market {
                 return self.contact(&author, listing_id.as_deref());
             }
             Command::AcceptInvite { invite } => return self.accept_invite(&invite),
+            Command::DiscoverEscrowProviders => return self.discover_escrow_providers(),
             Command::LoadProfile { author } => return self.load_profile(Some(author)),
             Command::LoadProfileFollowers { author } => {
                 return self.load_profile_followers(&author);
@@ -1193,6 +1194,11 @@ impl Market {
                 operation_id,
                 step,
             } => {
+                ensure!(
+                    s.settings.escrow_ui
+                        || !matches!(step["action"].as_str(), Some("invite" | "join")),
+                    "Enable escrow in Settings to start or join a trade"
+                );
                 s.messaging
                     .as_mut()
                     .context("Sign in to use escrow")?
@@ -1251,13 +1257,24 @@ impl Market {
                 quantity,
                 note,
                 delivery_request,
+                escrow_trade_id,
+                escrow_provider,
             } => {
+                ensure!(
+                    s.settings.escrow_ui
+                        || (escrow_trade_id.is_none() && escrow_provider.is_none()),
+                    "Enable escrow in Settings to request an escrow order"
+                );
+                let escrow = orders::OrderEscrow {
+                    escrow_trade_id,
+                    escrow_provider,
+                };
                 let event = s.store.event(&listing_id)?;
                 let listing = listing::parse(&event, listing::now())?;
                 s.messaging
                     .as_mut()
                     .context("Leave Preview to request an order")?
-                    .request_order_with_delivery(&listing, quantity, &note, delivery_request)
+                    .request_order_with_escrow(&listing, quantity, &note, delivery_request, escrow)
                     .map_err(anyhow::Error::msg)?;
                 self.notify.notify_waiters();
             }
@@ -1300,6 +1317,7 @@ impl Market {
             }
             Command::Contact { .. }
             | Command::AcceptInvite { .. }
+            | Command::DiscoverEscrowProviders
             | Command::LoadProfile { .. }
             | Command::LoadContext
             | Command::LoadProfileFollowers { .. }

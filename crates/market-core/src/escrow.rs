@@ -350,9 +350,6 @@ impl AgreementMessage {
 
 async fn fetch_trade_listing(relays: Vec<String>, id: &str) -> Result<Vec<Event>> {
     use nostr::{Filter, Kind};
-    use nostr_pubsub::{EventBus, QueryOptions};
-    use nostr_pubsub_relay::RelayEventBus;
-    use std::time::Duration;
     let (kind, coordinate) = id
         .strip_prefix("38383:")
         .map_or((listing::LISTING_KIND, id), |value| {
@@ -368,15 +365,26 @@ async fn fetch_trade_listing(relays: Vec<String>, id: &str) -> Result<Vec<Event>
         .author(nostr::PublicKey::from_hex(author)?)
         .identifier(identifier)
         .limit(16);
+    query_public(relays, vec![filter], 16).await
+}
+
+async fn query_public(
+    relays: Vec<String>,
+    filters: Vec<nostr::Filter>,
+    limit: usize,
+) -> Result<Vec<Event>> {
+    use nostr_pubsub::{EventBus, QueryOptions};
+    use nostr_pubsub_relay::RelayEventBus;
+    use std::time::Duration;
     let bus = RelayEventBus::new(relays, Duration::from_secs(3)).await?;
     let report = tokio::time::timeout(
         Duration::from_secs(5),
-        bus.query(vec![filter], QueryOptions { limit: Some(16) }),
+        bus.query(filters, QueryOptions { limit: Some(limit) }),
     )
     .await;
     bus.client().shutdown().await;
     Ok(report
-        .context("The listing check timed out. Reconnect and retry.")??
+        .context("Public lookup timed out. Reconnect and retry.")??
         .events
         .into_iter()
         .map(|entry| entry.event.as_event().clone())
@@ -384,20 +392,127 @@ async fn fetch_trade_listing(relays: Vec<String>, id: &str) -> Result<Vec<Event>
 }
 
 impl crate::Market {
+    pub(crate) fn discover_escrow_providers(&self) -> Result<()> {
+        use nostr::{Filter, Kind};
+        let relays = {
+            let s = self.state.lock().unwrap();
+            ensure!(
+                s.settings.escrow_ui && !s.demo,
+                "Enable escrow in Settings to find providers"
+            );
+            ensure!(
+                !s.settings.relays.is_empty(),
+                "Connect to look for public escrow services"
+            );
+            s.settings.relays.clone()
+        };
+        let runtime = self
+            .runtime
+            .lock()
+            .unwrap()
+            .as_ref()
+            .context("Market is closed")?
+            .handle()
+            .clone();
+        // Only public service ads and the profiles advertising them go into relay filters.
+        let events = runtime.block_on(query_public(
+            relays.clone(),
+            vec![
+                Filter::new()
+                    .kind(Kind::Custom(listing::LISTING_KIND))
+                    .hashtag("escrow-provider")
+                    .limit(48),
+            ],
+            48,
+        ))?;
+        let mut authors = std::collections::BTreeSet::new();
+        {
+            let mut s = self.state.lock().unwrap();
+            ensure!(
+                s.settings.escrow_ui && s.settings.relays == relays,
+                "Provider search settings changed"
+            );
+            let at = listing::now();
+            for e in events {
+                if e.kind.as_u16() != listing::LISTING_KIND
+                    || !e
+                        .tags
+                        .iter()
+                        .any(|t| matches!(t.as_slice(),[k,v,..] if k=="t" && v=="escrow-provider"))
+                {
+                    continue;
+                }
+                if let Ok(changed) = s.store.ingest(&e, at, false) {
+                    if changed {
+                        s.revision += 1;
+                    }
+                    authors.insert(e.pubkey);
+                }
+            }
+        }
+        if !authors.is_empty() {
+            // Profile names are optional. Verified ads remain usable by address when names are unavailable.
+            let profiles = runtime.block_on(query_public(
+                relays.clone(),
+                vec![
+                    Filter::new()
+                        .kind(Kind::Metadata)
+                        .authors(authors.iter().copied())
+                        .limit(48),
+                ],
+                48,
+            ));
+            let mut s = self.state.lock().unwrap();
+            ensure!(
+                s.settings.escrow_ui && s.settings.relays == relays,
+                "Provider search settings changed"
+            );
+            for e in profiles
+                .into_iter()
+                .flatten()
+                .filter(|e| e.kind == Kind::Metadata && authors.contains(&e.pubkey))
+            {
+                if s.profiles.ingest_public(e).unwrap_or(false) {
+                    s.revision += 1;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Navigation uses the verified local copy. Consent and funding check the
     /// public listing separately, without revealing a private trade or its participants.
     pub fn trade_listing(&self, id: &str, refresh: bool) -> Result<String> {
         let relays = {
-            let state = self.state.lock().unwrap();
+            let mut state = self.state.lock().unwrap();
             if !refresh {
                 let event = state
                     .store
                     .event(id)
                     .context("Open the listing and retry")?;
-                return Ok(serde_json::to_string(&listing::parse(
-                    &event,
-                    listing::now(),
-                )?)?);
+                let at = listing::now();
+                let mut result = serde_json::to_value(listing::parse(&event, at)?)?;
+                if state.settings.escrow_ui && !state.demo {
+                    state.profiles.refresh_public_cache();
+                    let owner = state.owner;
+                    let advertised = state
+                        .store
+                        .listings(&owner.to_hex(), at)?
+                        .into_iter()
+                        .filter(|listing| {
+                            listing.status == "active"
+                                && listing.side == "offer"
+                                && listing.expires_at.is_none_or(|end| end > at)
+                                && listing.tags.iter().any(|tag| tag == "escrow-provider")
+                        })
+                        .map(|listing| listing.author)
+                        .collect();
+                    result["escrow_candidates"] = state
+                        .profiles
+                        .escrow_candidates(owner, event.pubkey, advertised)
+                        .into();
+                }
+                return Ok(serde_json::to_string(&result)?);
             }
             ensure!(
                 !state.demo && !state.settings.relays.is_empty(),

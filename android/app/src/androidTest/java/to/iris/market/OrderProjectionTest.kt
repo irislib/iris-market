@@ -24,6 +24,17 @@ class OrderProjectionTest {
         assertFalse(stop.has("courierPubkey"))
         assertEquals(24.94, stop.getJSONArray("coordinates").getDouble(0), 0.0001)
     }
+    @Test fun onlyTheSelectedOrderAndProviderMatchItsInvitation() {
+        val direct = MarketOrder.parse(order())
+        assertNull(direct.escrowTradeId)
+        val linked = MarketOrder.parse(order().put("escrowTradeId", "trade").put("escrowProvider", "provider"))
+        val card = EscrowInboxCard("trade", "Local delivery", listOf("buyer", "seller", "provider"),
+            "seller:listing", 24, "", "buyer:order")
+        assertTrue(card.matches(linked))
+        assertFalse(card.copy(id="other").matches(linked))
+        assertFalse(card.copy(orderId="buyer:different").matches(linked))
+        assertFalse(card.copy(participants=listOf("buyer", "seller", "uninvited")).matches(linked))
+    }
     @Test fun expiredLocationsAndInvalidCoordinatesDoNotReachMap() {
         val raw = order()
         raw.getJSONObject("shipment").put("location", JSONObject().put("coordinates", org.json.JSONArray(listOf(24.94,60.17))).put("at", System.currentTimeMillis()/1000-121))

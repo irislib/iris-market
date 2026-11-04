@@ -10,7 +10,7 @@ import {fileURLToPath} from 'node:url';
 import {createMessaging} from '../../../web/src/messaging/client.ts';
 import {createVault} from '../../../web/src/messaging/vault.ts';
 const require=createRequire(new URL('../../../web/package.json',import.meta.url));
-const {matchFilters,verifyEvent}=require('nostr-tools');
+const {generateSecretKey,getPublicKey,matchFilters,verifyEvent}=require('nostr-tools');
 const root=fileURLToPath(new URL('../../../',import.meta.url));
 const dir=await mkdtemp(join(tmpdir(),'market-order-interop-'));
 const events=new Map(),subscriptions=new Set(),frames=[];
@@ -52,5 +52,19 @@ try {
   await waitFor(()=>app.state().orders.find(o=>o.id===order.id)?.shipment.stops.length===1);
   assert.equal(app.state().orders[0].shipment.stops[0].address,'Private synthetic address');
   assert(routed.outgoing.every(e=>!JSON.stringify(e).includes('Private synthetic address')));
-  console.log('PASS: actual JS request → Rust accept/route → JS projection; authenticated NDR, no network');
+  const provider=getPublicKey(generateSecretKey()),tradeId='5'.repeat(64);
+  const listing={id:`${initial.owner_public_key}:protected`,author:initial.owner_public_key,title:'Escrow pickup',price:'12',currency:'SATS',side:'offer',escrow:{trade:'goods'}};
+  const selection={escrowTradeId:tradeId,escrowProvider:provider};
+  await assert.rejects(app.requestOrder(listing,selection),/Enable escrow/);
+  // This standalone memory harness has no browser settings storage.
+  Object.defineProperty(globalThis,'localStorage',{configurable:true,value:{getItem:key=>key===`market-tools-v1/${app.state().ownerPubkey}/escrow`?'1':null}});
+  const start=frames.length,linked=await app.requestOrder(listing,selection);
+  await waitFor(()=>frames.slice(start).some(e=>e.kind===1060));
+  const next=await native({incoming:frames.slice(start).filter(e=>[1059,1060].includes(e.kind)),expected_order:linked.id,order_patch:{status:'accepted'}});
+  const received=next.orders.find(o=>o.id===linked.id);
+  assert.equal(received.escrowProvider,provider);assert.equal(received.escrowTradeId,tradeId);
+  await waitFor(()=>app.state().orders.find(o=>o.id===linked.id)?.status==='accepted');
+  assert(frames.slice(start).every(e=>!JSON.stringify(e).includes(provider)&&!JSON.stringify(e).includes(tradeId)));
+  console.log('PASS: direct and escrow JS requests → Rust accept → JS projection; authenticated NDR, no public provider or trade ID');
+
 } finally { await app.destroy();await rm(dir,{recursive:true,force:true}); }

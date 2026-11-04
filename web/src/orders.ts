@@ -13,9 +13,11 @@ export interface DeliveryPlace {label:string;address:string;coordinates?:Coordin
 export interface DeliveryRequest {pickup:DeliveryPlace;destination:DeliveryPlace;collection?:{merchant:string;reference:string}}
 export interface PickupAuthorization {courierPubkey:string;reference:string}
 export interface OrderPayment {mint:string;amount:string;unit:'sat';status:'requested'|'received'}
-export interface Order {payment?:OrderPayment;deliveryRequest?:DeliveryRequest;pickupAuthorization?:PickupAuthorization;id:string;buyer:string;seller:string;items:OrderItem[];note:string;status:OrderStatus;createdAt:number;updatedAt:number;shipment:Shipment;routeId:string}
+export interface OrderEscrow {escrowTradeId?:string;escrowProvider?:string}
+export interface OrderRequestOptions extends OrderEscrow {quantity?:number;note?:string;deliveryRequest?:DeliveryRequest}
+export interface Order extends OrderEscrow {payment?:OrderPayment;deliveryRequest?:DeliveryRequest;pickupAuthorization?:PickupAuthorization;id:string;buyer:string;seller:string;items:OrderItem[];note:string;status:OrderStatus;createdAt:number;updatedAt:number;shipment:Shipment;routeId:string}
 export interface OrderView extends Order {sourceOrderId?:string;deliveryOrderId?:string;archived:boolean;role:'buyer'|'seller'|'courier'|null;sync:'queued'|'sent';locationFresh:boolean}
-export interface OrderListing {id:string;author:string;title:string;price:string|number;currency:string;side?:string;status?:string;expiration?:number}
+export interface OrderListing {id:string;author:string;title:string;price:string|number;currency:string;side?:string;status?:string;expiration?:number;escrow?:{trade:string};externalOrder?:unknown}
 export type OrderPatch={payment:OrderPayment}|{pickupAuthorization:PickupAuthorization|null}|{status:OrderStatus}|{shipment:Shipment}|{stopId:string;status:StopStatus}|{location:{coordinates:Coordinates;stopId:string}|null};
 type EnvelopeBase={v:1;id:string;opId:string;seq:number;at:number;routeId?:string;snapshot?:Order};
 export type OrderEnvelope=EnvelopeBase&({action:'request';payload:Order}|{action:'payment';payload:OrderPayment}|{action:'pickup';payload:PickupAuthorization|null}|{action:'status';payload:{status:OrderStatus}}|{action:'route';payload:Shipment}|{action:'stop';payload:{stopId:string;status:StopStatus}}|{action:'location';payload:{stopId:string;coordinates:Coordinates}|null});
@@ -75,10 +77,22 @@ function deliveryRequest(raw:unknown):DeliveryRequest {
   const value=raw as DeliveryRequest;if(!value||typeof value!=='object')fail('Invalid delivery request.');
   return {pickup:deliveryPlace(value.pickup),destination:deliveryPlace(value.destination),...(value.collection?{collection:{merchant:pubkey(value.collection.merchant),reference:text(value.collection.reference,80,'collection reference')}}:{})};
 }
+function escrowAttachment(value:OrderEscrow,buyer:string,seller:string):OrderEscrow {
+  const {escrowTradeId,escrowProvider}=value;
+  if(escrowTradeId==null && escrowProvider==null)return {};
+  if(typeof escrowTradeId!=='string' || !HEX.test(escrowTradeId)
+    || typeof escrowProvider!=='string' || !HEX.test(escrowProvider)
+    || [buyer,seller].includes(escrowProvider)){
+    fail('Choose a valid escrow invitation and an independent provider.');
+  }
+  return {escrowTradeId,escrowProvider};
+}
 function validateSnapshot(raw:unknown,options:OrderValidationOptions={}):Order {
   const value=raw as Partial<Order>;
   if(!value||typeof value!=='object')fail('Invalid order.');
   const buyer=pubkey(value.buyer),seller=pubkey(value.seller);
+  const escrow=escrowAttachment(value,buyer,seller);
+  if(escrow.escrowTradeId && value.payment!=null)fail('Use the escrow agreement for this payment.');
   if(buyer===seller||!value.id?.startsWith(`${buyer}:`)||!UUID.test(value.id.slice(65)))fail('Invalid order identity.');
   if(!Array.isArray(value.items)||value.items.length!==1)fail('One listing per order is supported.');
   const items=value.items.map(item=>{
@@ -89,14 +103,19 @@ function validateSnapshot(raw:unknown,options:OrderValidationOptions={}):Order {
     return {id:text(item.id,240,'listing ID'),title:text(item.title,160,'listing title'),price,currency,quantity:item.quantity};
   });
   if(!statusValues.includes(value.status)||!Number.isSafeInteger(value.createdAt)||value.createdAt<0||!Number.isSafeInteger(value.updatedAt)||value.updatedAt<value.createdAt)fail('Invalid order state.');
-  return {...(value.payment!==undefined?{payment:validatePayment(value.payment,options)}:{}),...(value.deliveryRequest!==undefined?{deliveryRequest:deliveryRequest(value.deliveryRequest)}:{}),...(value.pickupAuthorization!==undefined?{pickupAuthorization:pickupAuthorization(value.pickupAuthorization)}:{}),id:value.id,buyer,seller,items,note:text(value.note??'',2000,'note',true),status:value.status,createdAt:value.createdAt,updatedAt:value.updatedAt,shipment:shipment(value.shipment),routeId:typeof value.routeId==='string'?text(value.routeId,36,'route ID',true):''};
+  return {...escrow,...(value.payment!==undefined?{payment:validatePayment(value.payment,options)}:{}),...(value.deliveryRequest!==undefined?{deliveryRequest:deliveryRequest(value.deliveryRequest)}:{}),...(value.pickupAuthorization!==undefined?{pickupAuthorization:pickupAuthorization(value.pickupAuthorization)}:{}),id:value.id,buyer,seller,items,note:text(value.note??'',2000,'note',true),status:value.status,createdAt:value.createdAt,updatedAt:value.updatedAt,shipment:shipment(value.shipment),routeId:typeof value.routeId==='string'?text(value.routeId,36,'route ID',true):''};
 }
-const immutable = (order:Order) => JSON.stringify([order.id,order.buyer,order.seller,order.items,order.note,order.createdAt,order.deliveryRequest]);
+const immutable = (order:Order) => JSON.stringify([order.id,order.buyer,order.seller,order.items,order.note,order.createdAt,order.deliveryRequest,order.escrowTradeId,order.escrowProvider]);
+// Older clients must not silently interpret an escrow checkout as direct payment.
+function wireVersion(event:OrderEnvelope){
+  const linked=event.snapshot?.escrowTradeId!=null || (event.action==='request' && event.payload?.escrowTradeId!=null);
+  return linked?'2':'1';
+}
 export function decodeOrder(rumor:Pick<OrderRumor,'kind'|'tags'>):OrderEnvelope|null {
   if(rumor?.kind!==14||!Array.isArray(rumor.tags))return null;
   const tags=rumor.tags.filter(tag=>tag[0]===ORDER_TAG);
-  if(tags.length!==1||tags[0].length!==3||tags[0][1]!=='1'||typeof tags[0][2]!=='string'||new TextEncoder().encode(tags[0][2]).length>24000)return null;
-  try{const event=JSON.parse(tags[0][2]);if(event.v!==1||!UUID.test(event.opId)||!Number.isSafeInteger(event.seq)||event.seq<1||event.seq>1e9||!Number.isSafeInteger(event.at)||event.at<0||typeof event.id!=='string')return null;return event;}catch{return null;}
+  if(tags.length!==1||tags[0].length!==3||typeof tags[0][2]!=='string'||new TextEncoder().encode(tags[0][2]).length>24000)return null;
+  try{const event=JSON.parse(tags[0][2]);if(event.v!==1||!UUID.test(event.opId)||!Number.isSafeInteger(event.seq)||event.seq<1||event.seq>1e9||!Number.isSafeInteger(event.at)||event.at<0||typeof event.id!=='string'||tags[0][1]!==wireVersion(event))return null;return event;}catch{return null;}
 }
 export const isOrderMessage = (rumor:Pick<OrderRumor,'tags'>) => rumor?.tags?.some(tag=>tag[0]===ORDER_TAG) === true;
 export const orderMessageText = (event:OrderEnvelope, order:Order) => {
@@ -155,6 +174,7 @@ export function applyOrderEnvelope(previous:OrderRecord|undefined, event:OrderEn
     if(role!=='buyer'||immutable(snapshot(event.payload))!==immutable(order)||previous)fail('Order request cannot replace an order.');
   }else if(event.action==='payment'){
     if(role!=='seller')fail('Only the seller can update payment.');
+    if(order.escrowTradeId)fail('Use the escrow agreement for this payment.');
     const next=payment(event.payload);
     if(order.payment?.status==='received'&&JSON.stringify(order.payment)!==JSON.stringify(next))fail('Received payment cannot change.');
     order.payment=next;
@@ -217,7 +237,12 @@ export function createOrderBook({vault,owner,device,notify=()=>{},now=time,check
     if(next.jobs.length+peers.length>MAX_JOBS)fail('Too many order updates are waiting to sync.');
     const content=orderMessageText(event,record.order);
     for(const peer of peers){
-      const tags=[['p',peer],[ORDER_TAG,'1',JSON.stringify(event)],['ms',String(event.at*1000)]];
+      const shared=copy(event);
+      if(shared.snapshot && ![record.order.buyer,record.order.seller].includes(peer)){
+        delete shared.snapshot.escrowTradeId;
+        delete shared.snapshot.escrowProvider;
+      }
+      const tags=[['p',peer],[ORDER_TAG,wireVersion(shared),JSON.stringify(shared)],['ms',String(event.at*1000)]];
       if(event.action==='location'&&event.payload!==null)tags.push(['expiration',String(event.at+LOCATION_TTL)]);
       const unsigned:UnsignedEvent={kind:14,pubkey:device,created_at:event.at,content,tags},rumor:OrderRumor={...unsigned,id:getEventHash(unsigned)};
       next.jobs.push({id:rumor.id,orderId:record.order.id,recipient:peer,rumor,action:event.action,at:event.at,handed:false});
@@ -231,6 +256,18 @@ export function createOrderBook({vault,owner,device,notify=()=>{},now=time,check
   const local=async(orderId:string,action:OrderEnvelope['action'],payload:OrderEnvelope['payload'],initial=false)=>serial(async()=>{
     const next=copy(data),index=next.records.findIndex(record=>record.order.id===orderId),previous=next.records[index];
     if(index===-1&&!initial)fail('Order not found.');
+    if(initial && action==='request' && 'escrowTradeId' in payload && payload.escrowTradeId){
+      const prior=data.records.find(r=>r.order.buyer===owner && r.order.escrowTradeId===payload.escrowTradeId);
+      if(prior){
+        const order=prior.order;
+        if(order.escrowProvider!==payload.escrowProvider || order.items[0].id!==payload.items[0].id
+          || order.items[0].quantity!==payload.items[0].quantity || order.note!==payload.note
+          || JSON.stringify(order.deliveryRequest)!==JSON.stringify(payload.deliveryRequest)){
+          fail('This escrow invitation already belongs to a different order request.');
+        }
+        return project(prior);
+      }
+    }
     const event={v:1,id:orderId,opId:crypto.randomUUID(),seq:(previous?.clocks[`${owner}:${device}`]??0)+1,at:now(),action,payload} as OrderEnvelope;
     if(event.action==='route')event.snapshot={...copy(previous.order),shipment:event.payload,routeId:event.opId};
     if(action==='stop'||action==='location')event.routeId=previous.order.routeId;
@@ -243,9 +280,11 @@ export function createOrderBook({vault,owner,device,notify=()=>{},now=time,check
     state:()=>data.records.map(project).sort((a,b)=>b.updatedAt-a.updatedAt||a.id.localeCompare(b.id)),
     async load(){const stored=await vault.get<OrderData>(KEY);check();if(stored){if(!Array.isArray(stored.records)||stored.records.length>MAX_ORDERS||!Array.isArray(stored.jobs)||stored.jobs.length>MAX_JOBS||!Array.isArray(stored.ephemeral))fail('Invalid private order storage.');data={...stored,blocked:stored.blocked??[],pending:stored.pending??[]};}},
     flush:()=>writes,
-    request(listing:OrderListing,{quantity=1,note='',deliveryRequest:delivery}:{quantity?:number;note?:string;deliveryRequest?:DeliveryRequest}={}){
+    request(listing:OrderListing,{quantity=1,note='',deliveryRequest:delivery,...selected}:OrderRequestOptions={}){
       if(!listing||listing.side==='request'||listing.status==='sold'||listing.expiration&&listing.expiration<=now())fail('Choose an available selling listing.');
-      const order=snapshot({id:`${owner}:${crypto.randomUUID()}`,buyer:owner,seller:listing.author,items:[{id:listing.id,title:listing.title,price:listing.price,currency:listing.currency,quantity}],...(delivery?{deliveryRequest:delivery}:{}),note,status:'requested',createdAt:now(),updatedAt:now(),shipment:{stops:[]},routeId:''});
+      const escrow=escrowAttachment(selected,owner,listing.author);
+      if(escrow.escrowTradeId && (listing.externalOrder || listing.escrow?.trade!=='goods'))fail('This listing does not offer escrow for orders.');
+      const order=snapshot({...escrow,id:`${owner}:${crypto.randomUUID()}`,buyer:owner,seller:listing.author,items:[{id:listing.id,title:listing.title,price:listing.price,currency:listing.currency,quantity}],...(delivery?{deliveryRequest:delivery}:{}),note,status:'requested',createdAt:now(),updatedAt:now(),shipment:{stops:[]},routeId:''});
       return local(order.id,'request',order,true);
     },
     requestDelivery(sourceOrderId:string,serviceListing:OrderListing,destination:DeliveryPlace){return serial(async()=>{

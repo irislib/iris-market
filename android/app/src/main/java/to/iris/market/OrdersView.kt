@@ -43,8 +43,13 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.UUID
 
-@Composable fun OrdersView(state: MarketSnapshot, openOrder: (String) -> Unit) {
+@Composable fun OrdersView(state: MarketSnapshot, model:MarketModel, busy:Boolean, openOrder: (String) -> Unit) {
     var tab by remember { mutableStateOf("purchases") }
+    val escrowEnabled=JSONObject(state.settings).optBoolean("escrow_ui") && !state.demo
+    val showJobs=escrowEnabled || (!state.demo && state.escrowInvites.any {it.joined && it.participants[2]==state.publicKey})
+    var offerService by remember {mutableStateOf(false)}
+    LaunchedEffect(showJobs){if(!showJobs && tab=="jobs")tab="purchases"}
+    if(offerService && escrowEnabled){PostListing(state,model,busy,providerService=true){offerService=false};return}
     val orders = state.orders.filter { order ->
         if (tab == "archived") order.archived else !order.archived && when(tab) {
             "sales" -> order.seller == state.publicKey
@@ -55,11 +60,19 @@ import java.util.UUID
     Column(Modifier.fillMaxSize().padding(horizontal = 22.dp)) {
         Text("Orders", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.padding(top = 15.dp, bottom = 10.dp))
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("purchases" to "Purchases", "sales" to "Sales", "deliveries" to "Deliveries", "archived" to "Archived").forEach { (key, label) ->
+            (listOf("purchases" to "Purchases", "sales" to "Sales", "deliveries" to "Deliveries") + listOfNotNull(("jobs" to "Escrow jobs").takeIf {showJobs}, "archived" to "Archived")).forEach { (key, label) ->
                 FilterChip(selected = tab == key, onClick = { tab = key }, label = { Text(label) }, shape = CircleShape)
             }
         }
-        if (orders.isEmpty()) EmptyView(when(tab) { "sales" -> "No sales yet"; "deliveries" -> "No deliveries yet"; "archived" -> "Nothing archived"; else -> "No purchases yet" },
+        if(tab=="jobs" && showJobs) {
+            Column(Modifier.verticalScroll(rememberScrollState()).padding(vertical=14.dp),verticalArrangement=Arrangement.spacedBy(10.dp)) {
+                EscrowCardsView(state,model,jobsOnly=true)
+                if(escrowEnabled) {
+                    OutlinedButton(enabled=state.canSign && !busy,onClick={offerService=true}){Text("Offer escrow services")}
+                    if(!state.canSign) Text("Use the device holding your profile key to offer escrow services.",style=MaterialTheme.typography.bodySmall,color=Muted)
+                }
+            }
+        } else if (orders.isEmpty()) EmptyView(when(tab) { "sales" -> "No sales yet"; "deliveries" -> "No deliveries yet"; "archived" -> "Nothing archived"; else -> "No purchases yet" },
             when(tab) { "sales" -> "Order requests for your listings appear here."; "deliveries" -> "Deliveries you handle appear here."; "archived" -> "Finished orders can be kept here."; else -> "Your orders appear here." }, Icons.Filled.ReceiptLong)
         else LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(top = 12.dp, bottom = 24.dp)) {
             items(orders, key = { it.id }) { order ->
@@ -87,6 +100,16 @@ import java.util.UUID
     var pickup by remember(listing.id){mutableStateOf(OrderDeliveryPlace("Pickup"))}
     var destination by remember(listing.id){mutableStateOf(OrderDeliveryPlace("Destination"))}
     var error by remember { mutableStateOf<String?>(null) }
+    val canUseEscrow=!state.demo && JSONObject(state.settings).optBoolean("escrow_ui") && listing.escrow?.trade=="goods"
+    var useEscrow by remember(listing.id) {mutableStateOf(false)}
+    var checkout by remember(listing.id) {mutableStateOf<EscrowCheckout?>(null)}
+    var createdOrder by remember(listing.id) {mutableStateOf<String?>(null)}
+    checkout?.let { selected ->
+        EscrowDialog(model,listing.id,null,selected,orderCreated={createdOrder=it}) {
+            checkout=null
+            createdOrder?.let(done)
+        }
+    }
     Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).imePadding().padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Review order", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
@@ -98,21 +121,31 @@ import java.util.UUID
         MarketField(quantity, { quantity = it.filter(Char::isDigit).take(3) }, "Quantity", keyboard = KeyboardType.Number)
         MarketField(note, { note = it.take(2000) }, "Note · optional", lines = 3)
         if(listing.category.lowercase()=="transport"||NativeTransportType.classify(listing.tags)!=null){PrivateDeliveryPlaceField(pickup,{pickup=it});PrivateDeliveryPlaceField(destination,{destination=it})}
-        Text("The seller will confirm your order. No payment is taken here.", color = Muted, style = MaterialTheme.typography.bodySmall)
+        if(canUseEscrow) Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically){
+            Text("Use escrow",Modifier.weight(1f))
+            Switch(checked=useEscrow,onCheckedChange={useEscrow=it})
+        }
+        Text(if(canUseEscrow && useEscrow)"Choose a provider next. The seller and provider each review your request before anyone pays." else "The seller will confirm your order. No payment is taken here.", color = Muted, style = MaterialTheme.typography.bodySmall)
         error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         Button(enabled = !busy && !state.demo && (quantity.toIntOrNull() ?: 0) in 1..999, onClick = {
             error = null
             runCatching {
                 val request=JSONObject().put("type", "request_order").put("listing_id", listing.id).put("quantity", quantity.toInt()).put("note", note.trim())
-                if(listing.category.lowercase()=="transport"||NativeTransportType.classify(listing.tags)!=null)request.put("delivery_request",OrderDeliveryRequest(pickup,destination).json())
+                val delivery=if(listing.category.lowercase()=="transport"||NativeTransportType.classify(listing.tags)!=null)OrderDeliveryRequest(pickup,destination) else null
+                delivery?.let {request.put("delivery_request",it.json())}
+                if(canUseEscrow && useEscrow){
+                    checkout=EscrowCheckout(quantity.toInt(),note.trim(),delivery)
+                    return@runCatching
+                }
                 model.orderCommand(request,onSuccess = { done(model.state.value.orders.filter { order -> order.buyer == state.publicKey && order.items.any { it.id == listing.id } }.maxByOrNull { it.createdAt }?.id) },onError = { error = it })
             }.onFailure {error=it.message?:"Enter pickup and destination."}
-        }, modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(16.dp)) { Text(NativeTransportType.classify(listing.tags)?.requestLabel ?: "Request order") }
+        }, modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(16.dp)) { Text(if(canUseEscrow && useEscrow)"Choose escrow provider" else NativeTransportType.classify(listing.tags)?.requestLabel ?: "Request order") }
     }
 }
 
 @Composable fun OrderDetail(order: MarketOrder, state: MarketSnapshot, model: MarketModel, busy: Boolean, openProfile: (String) -> Unit, openOrder:(String)->Unit={}, close: () -> Unit) {
     var arrangingDelivery by remember(order.id){mutableStateOf(false)}
+    var escrowOpen by remember(order.id){mutableStateOf(false)}
     var requestingPayment by remember(order.id){mutableStateOf(false)}
     var confirmingPayment by remember(order.id){mutableStateOf(false)}
     var showingChat by remember(order.id){mutableStateOf(false)}
@@ -125,6 +158,12 @@ import java.util.UUID
     fun update(patch: JSONObject) {
         error = null
         model.orderCommand(JSONObject().put("type", "update_order").put("order_id", order.id).put("patch", patch), onError = { error = it })
+    }
+    val escrowCard=state.escrowInvites.firstOrNull {it.matches(order)}
+    if(escrowOpen && order.escrowTradeId!=null) {
+        val item=order.items.first()
+        val resume=if(escrowCard==null && order.buyer==state.publicKey)EscrowCheckout(item.quantity,order.note,order.deliveryRequest,order) else null
+        EscrowDialog(model,item.id,order.escrowTradeId,resume){escrowOpen=false}
     }
     if(showingChat){val other=if(seller)order.buyer else order.seller;val c=state.conversations.firstOrNull {it.id==other}?:Conversation(other,"Conversation",emptyList());ConversationView(c.copy(messages=c.messages.filter {it.threadKey=="order:"+order.id}),state.people[other]?:PublicPerson.unnamed(other),model,busy,openOrder,context=MessageContext.order(order.id),accountID=state.publicKey,threadKey="order:"+order.id,back={showingChat=false});return}
     if(requestingPayment){OrderPaymentRequestView(order,model,busy){requestingPayment=false};return}
@@ -150,6 +189,16 @@ import java.util.UUID
         if (order.note.isNotBlank()) Text(order.note)
         order.deliveryRequest?.let {request->Text("Requested route",style=MaterialTheme.typography.titleMedium);Text("Pickup · "+request.pickup.address);Text("Destination · "+request.destination.address);request.collection?.let {Text("Pickup reference · "+it.reference,style=MaterialTheme.typography.bodySmall,color=Muted)}}
         order.pickupAuthorization?.let {authorization->Text("Authorized collection",style=MaterialTheme.typography.titleMedium);UserRow(state.people[authorization.courierPubkey]?:PublicPerson.unnamed(authorization.courierPubkey),"Courier");Text("Pickup reference · "+authorization.reference,style=MaterialTheme.typography.bodySmall,color=Muted)}
+        if(order.escrowTradeId!=null) {
+            if(participant && order.escrowProvider!=null && (JSONObject(state.settings).optBoolean("escrow_ui") || escrowCard?.joined==true)) {
+                Text("Escrow provider · "+(state.people[order.escrowProvider]?.name ?: PublicPerson.unnamed(order.escrowProvider).name))
+                if(escrowCard!=null) OutlinedButton(onClick={escrowOpen=true}){Text("Open escrow")}
+                else if(!seller && !order.terminal) OutlinedButton(onClick={escrowOpen=true}){Text("Finish escrow invitation")}
+                else Text(if(order.terminal)"No escrow invitation received." else "Waiting for the buyer’s escrow invitation.",style=MaterialTheme.typography.bodySmall,color=Muted)
+            } else if(seller && order.status=="requested") {
+                Text("Enable escrow in Settings to review this order’s provider.",style=MaterialTheme.typography.bodySmall,color=Muted)
+            }
+        } else {
         order.payment?.let {payment->
             Text(if(payment.status=="received")"Payment received" else "Payment requested",style=MaterialTheme.typography.titleMedium)
             val test=payment.mint.trimEnd('/') in setOf("https://testnut.cashu.space","https://nofees.testnut.cashu.space")
@@ -161,6 +210,7 @@ import java.util.UUID
         }
         if(seller&&!order.terminal&&order.payment==null)TextButton(onClick={requestingPayment=true}){Text("Request payment")}
         if(seller&&order.payment?.status=="requested")TextButton(onClick={confirmingPayment=true}){Text("Confirm payment received")}
+        }
         if(participant)TextButton(onClick={model.command(JSONObject().put("type","contact").put("author",if(seller)order.buyer else order.seller)){showingChat=true}}){Text("Message")}
         order.deliveryOrderId?.let {TextButton(onClick={openOrder(it)}){Text("Open delivery order")}}
         order.sourceOrderId?.let {TextButton(onClick={openOrder(it)}){Text("Open product order")}}
@@ -169,7 +219,7 @@ import java.util.UUID
         if (order.sync == "queued") Text("Waiting to send", color = Muted, style = MaterialTheme.typography.bodySmall)
         error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         if (!order.terminal) {
-            if (seller && order.status == "requested") Button(enabled = !busy, onClick = { update(JSONObject().put("status", "accepted")) }, modifier = Modifier.fillMaxWidth()) { Text("Accept order") }
+            if (seller && order.status == "requested" && order.escrowTradeId == null) Button(enabled = !busy, onClick = { update(JSONObject().put("status", "accepted")) }, modifier = Modifier.fillMaxWidth()) { Text("Accept order") }
             if (seller && order.status == "accepted") Button(enabled = !busy, onClick = { update(JSONObject().put("status", "in-transit")) }, modifier = Modifier.fillMaxWidth()) { Text("Mark on the way") }
             if (participant && order.status in listOf("accepted", "in-transit")) OutlinedButton(enabled = !busy, onClick = { update(JSONObject().put("status", "delivered")) }, modifier = Modifier.fillMaxWidth()) { Text("Mark delivered") }
         }

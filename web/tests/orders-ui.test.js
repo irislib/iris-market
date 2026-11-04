@@ -23,14 +23,14 @@ const {setupPeople}=await import('../src/people.ts');setupPeople({getRelays:()=>
 const {setupOrders}=await import('../src/orders-ui.ts');
 const all=node=>[node,...node.children.flatMap(all)],find=(node,text)=>all(node).find(child=>child.textContent===text),settle=()=>new Promise(resolve=>setImmediate(resolve));
 const buyer='b'.repeat(64),seller='a'.repeat(64),courier='c'.repeat(64);
-function fixture({signedOut=false,delivered=false,eta=undefined,buyerView=false,offers=[],payment=undefined}={}){
+function fixture({signedOut=false,delivered=false,eta=undefined,buyerView=false,offers=[],payment=undefined,escrow}={}){
   doc.visibilityState='visible';geo.calls=[];geo.cleared=[];
   let state={status:signedOut?'empty':'ready',ownerPubkey:signedOut?undefined:buyerView?buyer:courier,orders:[],conversations:[]},reads=0,signIns=0;
   const listeners=new Set(),updates=[],reviews=[],announced=[],deliveries=[],payments=[];
   const job={id:'job',buyer,seller,payment,items:[{id:'item',title:'Private parcel',price:'10',currency:'EUR',quantity:1}],status:delivered?'delivered':'accepted',createdAt:100,updatedAt:100,shipment:{eta,stops:[{id:'pickup',label:'Pickup',address:'Private pickup',status:'pending',...(buyerView?{}:{courierPubkey:courier})}]},archived:false,sync:'queued',locationFresh:false};state.orders=[job];
   const account={state:()=>state,showAccount:()=>signIns++,closeAccount(){},onState:fn=>{listeners.add(fn);return()=>listeners.delete(fn);},messaging:{requestDelivery:async(id,service,destination)=>{deliveries.push({id,service,destination});const result={...job,id:'delivery',seller:service.author,deliveryRequest:{pickup:job.shipment.stops[0],destination}};state.orders.push(result);return result;},updateOrder:async(id,patch)=>{updates.push({id,patch});}}};
   const page=new Element('main');doc.body.append(page);
-  const ui=setupOrders({account,page,onPay:order=>payments.push(order),onReview:key=>reviews.push(key),courier:{getListings:()=>{reads++;return[...offers,{id:'public',author:seller,title:'Public parcel request',tags:['parcel'],category:'transport',side:'request',status:'active'}];},onListing(){},onAnnounce:value=>announced.push(value)}});
+  const ui=setupOrders({account,page,escrow,onPay:order=>payments.push(order),onReview:key=>reviews.push(key),courier:{getListings:()=>{reads++;return[...offers,{id:'public',author:seller,title:'Public parcel request',tags:['parcel'],category:'transport',side:'request',status:'active'}];},onListing(){},onAnnounce:value=>announced.push(value)}});
   return{ui,page,job,updates,reviews,announced,deliveries,payments,get reads(){return reads;},get signIns(){return signIns;},setState:patch=>{state={...state,...patch};for(const fn of listeners)fn(state);},cleanup(){win.dispatchEvent(new Event('pagehide'));page.remove();}};
 }
 
@@ -123,5 +123,39 @@ test('payment uses the normal order action and keeps test funds visibly distinct
   const f=fixture({buyerView:true,payment:{amount:'16',mint:'https://testnut.cashu.space',unit:'sat',status:'requested'}});try{
     f.ui.open('job');assert(find(f.page,'16 test sats'));assert(find(f.page,'testnut.cashu.space · Test money · no bitcoin value'));find(f.page,'Pay').click();assert.deepEqual(f.payments,[f.job]);
     f.job.payment.status='received';f.setState({});assert(find(f.page,'Payment received'));assert.equal(find(f.page,'Pay'),undefined);
+  }finally{f.cleanup();}
+});
+
+
+test('escrow checkout preserves the draft, requests no direct order, and responds to a flag change',async()=>{
+  let enabled=true,requests=[];
+  const escrow={canCheckout:()=>enabled,showJobs:()=>enabled,checkout:async(l,draft)=>{requests.push(draft);}};
+  const f=fixture({buyerView:true,escrow});try{
+    f.ui.buy({id:seller+':camera',author:seller,title:'Camera',price:'20',currency:'SATS',status:'active',side:'offer',escrow:{trade:'goods'}});
+    const form=all(f.page).find(el=>el.className==='order-review'),inputs=all(form);
+    const quantity=inputs.find(el=>el.type==='number'),note=inputs.find(el=>el.tag==='textarea'),protect=inputs.find(el=>el.type==='checkbox');
+    assert(!protect.checked);quantity.value='3';note.value='Pickup on Saturday';protect.checked=true;protect.onchange();
+    assert(find(form,'Choose escrow provider'));form.onsubmit({preventDefault(){}});await settle();
+    assert.deepEqual(requests,[{quantity:3,note:'Pickup on Saturday'}]);assert.equal(find(f.page,'Choose escrow provider').parent,form);
+    enabled=false;win.dispatchEvent(new Event('market-tools-change'));
+    assert.equal(protect.parent.hidden,true);assert.equal(protect.checked,false);assert.equal(quantity.value,'3');assert(find(form,'Request order'));
+  }finally{f.cleanup();}
+});
+
+test('linked orders expose escrow and suppress direct payment for both traders',()=>{
+  const escrow={showJobs:()=>false,linked:()=>{const button=new Element('button');button.textContent='Open escrow';return button;}};
+  for(const owner of [buyer,seller]){const f=fixture({buyerView:true,payment:{amount:'10',mint:'https://testnut.cashu.space',status:'requested'},escrow});try{
+    f.job.escrowTradeId='d'.repeat(64);f.job.escrowProvider=courier;f.setState({ownerPubkey:owner});f.ui.open('job');
+    assert(find(f.page,'Open escrow'));assert(!find(f.page,'Pay'));assert(!find(f.page,'Confirm payment received'));
+    delete f.job.payment;f.job.status='requested';f.setState({});assert(!find(f.page,'Request payment'));assert(!find(f.page,'Accept order'));
+  }finally{f.cleanup();}}
+});
+
+test('provider jobs are reachable from Orders, including after the ordinary orders list is empty',()=>{
+  let enabled=true;
+  const escrow={showJobs:()=>enabled,jobs:host=>{const message=new Element('p');message.textContent='Private invitation';host.append(message);}};
+  const f=fixture({escrow});try{
+    f.setState({orders:[]});f.ui.open();find(f.page,'Escrow jobs').click();assert(find(f.page,'Private invitation'));
+    enabled=false;win.dispatchEvent(new Event('market-tools-change'));assert(!find(f.page,'Escrow jobs'));assert(!find(f.page,'Private invitation'));
   }finally{f.cleanup();}
 });

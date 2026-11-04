@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { finalizeEvent, getPublicKey } from 'nostr-tools/pure'
 import { SocialGraph } from 'nostr-social-graph'
-import { DEFAULT_SOCIAL_GRAPH_ROOT, PROFILE_LIMITS, parseProfileEvent, parseFollowEvent, verifyProfileRecord, queryProfileRecords, socialConnection, excludeKnownFollowers, loadProfile, loadProfileFollowers, subscribeProfileMetadata, loadCurationContext, clearProfileCache, cacheProfileMetadata, readProfileMetadata } from '../src/profiles.ts'
+import { DEFAULT_SOCIAL_GRAPH_ROOT, PROFILE_LIMITS, parseProfileEvent, parseFollowEvent, verifyProfileRecord, queryProfileRecords, socialConnection, excludeKnownFollowers, loadProfile, loadProfileFollowers, subscribeProfileMetadata, loadCurationContext, clearProfileCache, escrowCandidates, cacheProfileMetadata, readProfileMetadata } from '../src/profiles.ts'
 
 const now = 1700000000
 const secrets = Array.from({ length: 20 }, (_, i) => new Uint8Array(32).fill(i + 1))
@@ -331,4 +331,19 @@ test('anonymous follower history accepts a finished relay, verifies current list
     return {events,sources:[incomplete,complete]};
   });
   assert.equal(hits.length,3);assert.deepEqual(result.items.map(p=>p.pubkey),[keys[1]]);assert.deepEqual(result.excludedKnownFollowers,[keys[3]]);
+});
+
+
+test('provider search distinguishes a verified shared follow, a public service and a known contact without networking',async()=>{
+  clearProfileCache();
+  const Socket=scriptedSocket(()=>[follows(0,[keys[1],keys[2],keys[4]]),follows(1,[keys[2],keys[3]]),metadata(2,{name:'Shared friend'})]);
+  const context=options(Socket);await loadCurationContext({...context,bootstrapLoader:async()=>null});
+  const before=Socket.sockets.length;
+  const people=escrowCandidates(keys[0],keys[1],[keys[3]],context.relays,new Set([keys[5]]));
+  assert.equal(Socket.sockets.length,before);assert(!people.some(p=>[keys[0],keys[1]].includes(p.id)));
+  assert.equal(people.find(p=>p.id===keys[2]).mutual,true);
+  assert.equal(people.find(p=>p.id===keys[3]).contact,true);
+  assert.equal(people.find(p=>p.id===keys[3]).mutual,false);
+  assert.equal(people.find(p=>p.id===keys[5]).advertised,true);
+  assert.equal(people.find(p=>p.id===keys[4]).mutual,false);
 });

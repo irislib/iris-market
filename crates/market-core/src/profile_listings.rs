@@ -15,6 +15,9 @@ use std::{
 };
 use tokio::{runtime::Runtime, sync::Notify};
 
+mod collections;
+pub(crate) use collections::open as open_collection;
+
 const PAGE_SIZE: usize = 48;
 const MAX_RECORDS: usize = 240;
 const MAX_DELIVERIES: usize = 1024;
@@ -24,13 +27,17 @@ const MAX_BYTES: usize = 8 * 1024 * 1024;
 pub struct Page {
     pub author: String,
     pub listings: Vec<Listing>,
+    pub collections: Vec<crate::collections::ProductCollection>,
+    pub collections_error: Option<String>,
     pub loading: bool,
     pub can_load_more: bool,
     pub error: Option<String>,
 }
+#[derive(Default)]
 struct Control {
     cancelled: AtomicBool,
     wake: Notify,
+    updates: Notify,
 }
 pub(crate) struct Feed {
     pub author: String,
@@ -38,15 +45,38 @@ pub(crate) struct Feed {
     loading: bool,
     has_more: bool,
     error: Option<String>,
+    collections_error: Option<String>,
     control: Arc<Control>,
+    selected: Option<(String, Arc<Control>)>,
     deliveries: usize,
     bytes: usize,
     seen: HashSet<nostr::EventId>,
 }
+impl Control {
+    fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+        self.wake.notify_one();
+    }
+}
 impl Feed {
     pub fn cancel(&self) {
-        self.control.cancelled.store(true, Ordering::Release);
-        self.control.wake.notify_one();
+        self.control.cancel();
+        if let Some((_, member)) = &self.selected {
+            member.cancel();
+        }
+    }
+    fn owns(&self, token: &Arc<Control>) -> bool {
+        Arc::ptr_eq(&self.control, token)
+            || self
+                .selected
+                .as_ref()
+                .is_some_and(|(_, c)| Arc::ptr_eq(c, token))
+    }
+    pub(crate) fn collection_changed(&self) {
+        self.control.updates.notify_one();
+        if let Some((_, member)) = &self.selected {
+            member.updates.notify_one();
+        }
     }
     pub fn snapshot(
         &self,
@@ -59,7 +89,17 @@ impl Feed {
         let mut listings = store.listings_for_author(owner, &self.author, listing::now())?;
         let more_cached = listings.len() > self.limit;
         listings.truncate(self.limit);
-        for listing in &mut listings {
+        let mut collections = store.profile_collections(
+            &self.author,
+            owner,
+            self.selected.as_ref().map(|(id, _)| id.as_str()),
+            listing::now(),
+        )?;
+        for listing in listings.iter_mut().chain(
+            collections
+                .iter_mut()
+                .flat_map(|c| c.members.iter_mut().filter_map(|m| m.listing.as_mut())),
+        ) {
             crate::rates::project(listing, rates, currency, listing::now());
             listing.image_url = listing
                 .image_url
@@ -69,6 +109,8 @@ impl Feed {
         Ok(Page {
             author: self.author.clone(),
             listings,
+            collections,
+            collections_error: self.collections_error.clone(),
             loading: self.loading,
             can_load_more: self.limit < MAX_RECORDS && (self.has_more || more_cached),
             error: self.error.clone(),
@@ -81,7 +123,7 @@ pub(crate) fn start(
     author: &str,
     more: bool,
 ) -> Result<()> {
-    let (relays, control, limit, demo) = {
+    let (relays, control, limit, demo, selected) = {
         let mut s = state.lock().unwrap();
         let limit = if more {
             let feed = s
@@ -100,13 +142,13 @@ pub(crate) fn start(
         } else {
             PAGE_SIZE
         };
-        if let Some(feed) = s.profile_listings.take() {
+        let selected = s.profile_listings.take().and_then(|feed| {
             feed.cancel();
-        }
-        let control = Arc::new(Control {
-            cancelled: AtomicBool::new(false),
-            wake: Notify::new(),
+            (feed.author == author)
+                .then(|| feed.selected.map(|(id, _)| id))
+                .flatten()
         });
+        let control = Arc::new(Control::default());
         let demo = s.demo;
         let relays = s.settings.relays.clone();
         s.profile_listings = Some(Feed {
@@ -115,14 +157,19 @@ pub(crate) fn start(
             loading: !demo && !relays.is_empty(),
             has_more: false,
             error: None,
+            collections_error: None,
             control: control.clone(),
+            selected: None,
             deliveries: 0,
             bytes: 0,
             seen: HashSet::new(),
         });
         s.revision += 1;
-        (relays, control, limit, demo)
+        (relays, control, limit, demo, selected)
     };
+    if let Some(id) = selected {
+        let _ = open_collection(runtime, state.clone(), author.into(), Some(id));
+    }
     if !demo && !relays.is_empty() {
         runtime.spawn(run(
             state,
@@ -203,6 +250,7 @@ async fn run(
     let bus = match RelayEventBus::new(relays, Duration::from_secs(5)).await {
         Ok(bus) => bus,
         Err(_) => {
+            collections::mark_error(&state, &control);
             finish(&state, &control, None);
             return;
         }
@@ -227,6 +275,7 @@ async fn run(
     let subscription = match subscription {
         Ok(subscription) => subscription,
         Err(_) => {
+            collections::mark_error(&state, &control);
             finish(&state, &control, None);
             bus.client().shutdown().await;
             return;
@@ -234,17 +283,31 @@ async fn run(
     };
     // Streaming starts before this bounded historical query. Cached data and new
     // events are visible immediately; EOSE never gates opening the profile.
-    tokio::select! {
-        _=control.wake.notified()=>{},
-        report=tokio::time::timeout(Duration::from_secs(6),bus.query(listing::filters(filter),QueryOptions{limit:Some(limit)}))=>{
-            match report {
-                Ok(Ok(report))=>{let count=report.events.len();for received in report.events {ingest(&state,&control,author,received.event.as_event());}finish(&state,&control,Some(count));},
-                _=>finish(&state,&control,None),
+    let history = async {
+        match tokio::time::timeout(
+            Duration::from_secs(6),
+            bus.query(
+                listing::filters(filter),
+                QueryOptions { limit: Some(limit) },
+            ),
+        )
+        .await
+        {
+            Ok(Ok(report)) => {
+                let count = report.events.len();
+                for received in report.events {
+                    ingest(&state, &control, author, received.event.as_event());
+                }
+                finish(&state, &control, Some(count));
             }
+            _ => finish(&state, &control, None),
         }
-    }
-    if !control.cancelled.load(Ordering::Acquire) {
-        tokio::select! {_=control.wake.notified()=>{},_=tokio::time::sleep_until(deadline)=>{}}
+        tokio::time::sleep_until(deadline).await;
+    };
+    tokio::select! {
+        _ = control.wake.notified() => {},
+        _ = tokio::time::sleep_until(deadline) => {},
+        _ = async { tokio::join!(history, collections::observe(&bus,&state,&control,author,None)); } => {},
     }
     let _ = subscription.close().await;
     bus.client().shutdown().await;

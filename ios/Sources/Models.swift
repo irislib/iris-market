@@ -276,7 +276,23 @@ struct PublicMarketProfile: Decodable {
     let error: String?
 }
 
+struct MarketCollection: Decodable, Identifiable {
+    let identifier: String
+    let eventId: String
+    let title: String
+    let delivery: String
+    let members: [Member]
+    var id: String { identifier }
+
+    struct Member: Decodable, Identifiable {
+        let id: String
+        let listing: MarketListing?
+    }
+}
+
 struct ProfileListingPage: Decodable {
+    let collections: [MarketCollection]?
+    let collectionsError: String?
     let author: String
     let listings: [MarketListing]
     let loading: Bool

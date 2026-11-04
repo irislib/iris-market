@@ -196,6 +196,7 @@ fun MarketAppView(model: MarketModel, appearance: Appearance, changeAppearance: 
         val latest = state.listings.firstOrNull { it.id == original.id }
             ?: state.savedListings?.firstOrNull { it.id == original.id }
             ?: state.profileListings?.listings?.firstOrNull { it.id == original.id }
+            ?: state.profileListings?.collections?.asSequence()?.flatMap { it.members.asSequence() }?.firstOrNull { it.id == original.id && it.listing != null }?.listing
         val listing = latest ?: original
         if (original.externalOrder != null) LaunchedEffect(latest?.id, latest?.expiresAt) {
             if (latest != null && latest.expiresAt != null) {

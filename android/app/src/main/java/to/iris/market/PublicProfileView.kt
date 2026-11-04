@@ -73,14 +73,18 @@ import org.json.JSONObject
                 if(!profile?.about.isNullOrBlank()) Text(profile!!.about,style=MaterialTheme.typography.bodyMedium)
                 profile?.website?.let { url -> TextButton(onClick={runCatching{uri.openUri(url)}}) { Text(url,maxLines=2) } }
                 if(known.isNotEmpty()) KnownFollowersLine(known.take(3),maxOf(known.size,person.connection.knownFollowers),open={history=history+author;author=it},showFollowers={
+                    if (selection == 3) model.openCollection(author, null)
                     selection=2
                     if(!state.demo && profile?.followersLoaded!=true && profile?.followersLoading!=true) model.command(JSONObject().put("type","load_profile_followers").put("author",author))
                 })
                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),horizontalArrangement=Arrangement.spacedBy(6.dp)) {
-                    val labels=listOf("Listings",profile?.let{"Following ${it.followingCount}"}?:"Following",profile?.takeIf{it.followersLoaded}?.let{"Followers ${followers.size}"}?:"Followers")
-                    labels.forEachIndexed { index,label ->
+                    val tabs=listOf(0 to "Listings", 3 to "Collections",
+                        1 to (profile?.let{"Following ${it.followingCount}"}?:"Following"),
+                        2 to (profile?.takeIf{it.followersLoaded}?.let{"Followers ${followers.size}"}?:"Followers"))
+                    tabs.forEach { (index,label) ->
                         FilterChip(selected=selection==index,onClick={
                             if(selection==2 && index!=2) model.command(JSONObject().put("type","cancel_profile_followers").put("author",author))
+                            if (selection == 3 && index != 3) model.openCollection(author, null)
                             selection=index
                             if(!state.demo && index==2 && profile?.followersLoaded!=true && profile?.followersLoading!=true) model.command(JSONObject().put("type","load_profile_followers").put("author",author))
                         },label={Text(label,style=MaterialTheme.typography.labelSmall)})
@@ -104,6 +108,12 @@ import org.json.JSONObject
                     if(feed?.canLoadMore==true && feed.error==null) OutlinedButton(
                         onClick={model.command(JSONObject().put("type","load_more_profile_listings").put("author",author))},enabled=!feed.loading
                     ) { Text("Load more") }
+                }
+            }
+        } else if(selection==3) {
+            item(span={GridItemSpan(maxLineSpan)}) {
+                key(author,state.publicKey) {
+                    ProfileCollectionsView(author, feed, state, model, openListing)
                 }
             }
         } else {

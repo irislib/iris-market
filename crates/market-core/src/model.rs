@@ -354,6 +354,16 @@ pub enum Command {
     Save {
         id: String,
     },
+    OpenCollection {
+        author: String,
+        identifier: Option<String>,
+    },
+    SaveCollection {
+        identifier: Option<String>,
+        previous_event_id: Option<String>,
+        title: String,
+        listing_ids: Vec<String>,
+    },
     Publish {
         draft: Draft,
     },

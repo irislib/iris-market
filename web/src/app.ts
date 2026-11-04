@@ -30,6 +30,7 @@ import {createSearchDiscovery} from './search-discovery.ts';
 import { relatedSearchLabels } from './seen-tags.ts';
 import { rankListings } from './ranking.ts';
 import {setupUserLocation} from './user-location.ts';
+import { setupCollectionPanel } from './collection-ui.ts';
 import { setupProfiles, createRelationshipBadge } from './profile-ui.ts';
 import { DEFAULT_SOCIAL_GRAPH_ROOT, loadCurationContext, profileLabel } from './profiles.ts';
 import { setupMap } from './map-ui.ts';
@@ -327,9 +328,21 @@ function renderProfileListings(pubkey,host){
   }
   return()=>{disposed=true;feed?.close();view.dispose();if(refreshProfileListings===update)refreshProfileListings=()=>{};};
 }
+function renderProfileCollections(author:string,host:HTMLElement){
+  const panel=setupCollectionPanel({author,host,preview,
+    account:()=>{const state=accountUI.messaging.state();return {owner:state.ownerPubkey,canSign:state.canSign,pending:state.pendingCollections};},
+    onAccountChange:listener=>accountUI.onState(listener),connectSigner:()=>accountUI.showAccount({posting:true}),
+    listings:()=>client?.records.values()??[],loadLocalListings:()=>client?.offlineCache?.load()??Promise.resolve([]),
+    cacheListing:event=>client?.offlineCache?.save(event),sellerName:nameFor,isSaved:id=>saved.has(id),isHidden:id=>hiddenListings.has(id),makeCard:card,
+    query:(filters,options)=>getPublicRuntime(relays).query(filters,{...options,relays}),
+    publish:(draft,previousId)=>accountUI.messaging.publishEvent(draft,previousId),
+  });
+  refreshProfileListings=panel.refresh;
+  return ()=>{panel.close();if(refreshProfileListings===panel.refresh)refreshProfileListings=()=>{};};
+}
 const rootChoice=createSocialRootController({initialContext:contextKey,loadContext:(owner,{signal})=>loadCurationContext({relays,contextPubkey:owner,targetAuthors:listings.map(item=>item.author),signal}),onChange:selection=>{const changed=selection.root!==contextKey;contextKey=selection.root;if(selection.context){graphAbort?.abort();graphContext=selection.context;$('graph-context').textContent=nameFor(contextKey)+' network';render();refreshPeople();}else if(changed)loadGraph();updateFilterSummary();}});
 window.addEventListener('pagehide',()=>rootChoice.dispose());
-profiles=setupProfiles({page:$('profile-page'),onNavigate:key=>pageOpened(profileURL(key,location.href)),onClose:backToBrowse,getRelays:()=>relays,getContext:()=>contextKey,isPreview:()=>preview,onContextChange:key=>{persist('market-graph-context',key);rootChoice.selectContext(key)},onMessage:key=>accountUI.openChat(key).catch(error=>toast(error.message)),renderListings:renderProfileListings,
+profiles=setupProfiles({page:$('profile-page'),onNavigate:key=>pageOpened(profileURL(key,location.href)),onClose:backToBrowse,getRelays:()=>relays,getContext:()=>contextKey,isPreview:()=>preview,onContextChange:key=>{persist('market-graph-context',key);rootChoice.selectContext(key)},onMessage:key=>accountUI.openChat(key).catch(error=>toast(error.message)),renderListings:renderProfileListings,renderCollections:renderProfileCollections,
   queryReviews:(filters,options)=>getPublicRuntime(relays).query(filters,options),
   getReviewAccount:()=>({owner:accountUI?.state().ownerPubkey,canSign:!!accountUI?.state().canSign,pending:accountUI?.state().pendingReviews}),
   publishReview:draft=>accountUI.messaging.publishEvent(draft),onReviewSignIn:()=>accountUI.showAccount({posting:true})});

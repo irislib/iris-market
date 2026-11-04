@@ -30,10 +30,11 @@ interface ProfileOptions {
   page?:HTMLElement;getRelays:()=>string[];getContext?:()=>string;isPreview?:()=>boolean;
   onContextChange?:(key:string)=>void;onAuthorListings?:(key:string)=>void;onMessage?:(key:string)=>void;
   onNavigate?:(key:string)=>void;onClose?:()=>void;renderListings?:(key:string,host:HTMLElement)=>void|(()=>void);
+  renderCollections?:(key:string,host:HTMLElement)=>()=>void;
   queryReviews?:ReviewQuery;getReviewAccount?:()=>ReviewAccount;publishReview?:PublishReview;onReviewSignIn?:()=>void;
   loadFollowers?:typeof loadProfileFollowers;loadProfileData?:typeof loadProfile;
 }
-export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCIAL_GRAPH_ROOT, isPreview = () => false, onContextChange = () => {}, onAuthorListings = () => {}, onMessage = () => {}, onNavigate = () => {}, onClose = () => {}, renderListings, queryReviews, getReviewAccount, publishReview, onReviewSignIn, loadFollowers=loadProfileFollowers,loadProfileData=loadProfile }: ProfileOptions) {
+export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCIAL_GRAPH_ROOT, isPreview = () => false, onContextChange = () => {}, onAuthorListings = () => {}, onMessage = () => {}, onNavigate = () => {}, onClose = () => {}, renderListings, renderCollections, queryReviews, getReviewAccount, publishReview, onReviewSignIn, loadFollowers=loadProfileFollowers,loadProfileData=loadProfile }: ProfileOptions) {
   const container = page ?? element('section', undefined, 'profile-page')
   container.setAttribute('aria-labelledby', 'public-profile-title')
   container.hidden = true
@@ -53,6 +54,9 @@ export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCI
   let listingCleanup:(()=>void)|undefined, listingsActive=false, selectedView='listings'
   let reviews:ReturnType<typeof setupProfileReviews>|undefined, reviewSummaryButton:HTMLButtonElement|undefined, reviewTab:HTMLButtonElement|undefined
   const listingHost=element('div',undefined,'profile-listings')
+  const collectionHost=element('div',undefined,'profile-collections')
+  let stopCollections:(()=>void)|undefined
+  const closeCollections=()=>{stopCollections?.();stopCollections=undefined}
   const panel=element('div',undefined,'profile-list-panel')
   panel.id='profile-list-panel';panel.setAttribute('role','tabpanel')
   const stopListings=()=>{listingCleanup?.();listingCleanup=undefined;listingsActive=false}
@@ -87,9 +91,10 @@ export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCI
   const renderSections=(data?:ProfileData)=>{
     const tabs=element('div',undefined,'profile-tabs')
     tabs.setAttribute('role','tablist');tabs.setAttribute('aria-label','Profile')
-    const views:ProfileView[]=[{id:'listings',label:'Listings'},{id:'reviews',label:'Reviews'},...connectionViews(data)]
+    const views:ProfileView[]=[{id:'listings',label:'Listings'},...(renderCollections?[{id:'collections',label:'Collections'}]:[]),{id:'reviews',label:'Reviews'},...connectionViews(data)]
     const select=(view:ProfileView,button:HTMLButtonElement)=>{
       selectedView=view.id
+      if(view.id!=='collections')closeCollections()
       for(const tab of tabs.children){tab.setAttribute('aria-selected',String(tab===button));(tab as HTMLElement).tabIndex=tab===button?0:-1}
       panel.setAttribute('aria-labelledby',button.id)
       if(view.id==='listings'){
@@ -99,6 +104,10 @@ export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCI
           if(renderListings){const cleanup=renderListings(currentKey,listingHost);if(typeof cleanup==='function')listingCleanup=cleanup}
           else {const browse=element('button','Browse listings','button secondary');browse.onclick=()=>{const key=currentKey;close();onAuthorListings(key)};listingHost.append(browse)}
         }
+      }else if(view.id==='collections'){
+        stopListings()
+        panel.replaceChildren(collectionHost)
+        if(!stopCollections)stopCollections=renderCollections(currentKey,collectionHost)
       }else if(view.id==='reviews'){
         stopListings()
         panel.replaceChildren(reviews.element)
@@ -127,7 +136,7 @@ export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCI
   }
 
   function close({notify=false}: {notify?:boolean} = {}) {
-    controller?.abort();unsubscribeMetadata?.();unsubscribeMetadata=undefined;stopFollowers();followers=undefined;followersTab=undefined;currentData=undefined;followDistanceNote=undefined;stopListings(); reviews?.close(); reviews=undefined; reviewTab=undefined; reviewSummaryButton=undefined; generation++; currentKey=undefined; container.hidden=true
+    controller?.abort();unsubscribeMetadata?.();unsubscribeMetadata=undefined;stopFollowers();followers=undefined;followersTab=undefined;currentData=undefined;followDistanceNote=undefined;closeCollections();stopListings(); reviews?.close(); reviews=undefined; reviewTab=undefined; reviewSummaryButton=undefined; generation++; currentKey=undefined; container.hidden=true
     if (notify && !destroyed) onClose()
   }
   const peopleList = (people, emptyText) => {
@@ -236,7 +245,7 @@ export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCI
     if (navigate) onNavigate(key)
     // A router may synchronously reopen this profile without navigation.
     if (generation!==beforeNavigate || destroyed) return
-    controller?.abort();unsubscribeMetadata?.();unsubscribeMetadata=undefined;stopFollowers();followers=undefined;followersError='';followersTab=undefined;currentData=undefined;followDistanceNote=undefined;stopListings(); reviews?.close(); reviewTab=undefined; reviewSummaryButton=undefined; selectedView='listings'; controller = new AbortController(); const run = ++generation
+    controller?.abort();unsubscribeMetadata?.();unsubscribeMetadata=undefined;stopFollowers();followers=undefined;followersError='';followersTab=undefined;currentData=undefined;followDistanceNote=undefined;closeCollections();stopListings(); reviews?.close(); reviewTab=undefined; reviewSummaryButton=undefined; selectedView='listings'; controller = new AbortController(); const run = ++generation
     currentKey = key; container.hidden=false; container.scrollTop=0
     reviews=setupProfileReviews({target:key,query:queryReviews,getAccount:getReviewAccount,publish:publishReview,preview:isPreview(),onSignIn:onReviewSignIn,onProfile:pubkey=>void open(pubkey),onSummary:value=>{if(run===generation&&reviewSummaryButton)reviewSummaryButton.textContent=value.label}})
     const displayed=renderCached(key)

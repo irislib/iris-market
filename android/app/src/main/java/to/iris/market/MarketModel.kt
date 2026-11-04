@@ -550,6 +550,17 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
         return MarketReview.parse(raw)
     }
     fun command(request: JSONObject, onSuccess: (() -> Unit)? = null) = submit(request, onSuccess, null)
+    fun openCollection(author: String, identifier: String?) {
+        if (state.value.profileListings?.author == author)
+            command(JSONObject().put("type","open_collection").put("author",author).put("identifier",identifier ?: JSONObject.NULL))
+    }
+    fun saveCollection(owner: String, request: JSONObject, onSuccess: () -> Unit, onError: (String) -> Unit) {
+        if (state.value.publicKey != owner || !state.value.canSign || preview) {
+            onError("Open your profile to publish this collection.")
+            return
+        }
+        submit(request, onSuccess, onError)
+    }
     suspend fun sendOrderPaymentToken(orderID:String,token:String,expectedOwner:String) {
         val generation=accountGeneration
         check(!preview&&state.value.publicKey==expectedOwner)
@@ -982,13 +993,30 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
     }
 }
 
-data class ProfileListings(val author: String, val listings: List<Listing>, val loading: Boolean, val canLoadMore: Boolean, val error: String?) {
+data class ProfileListings(val author: String, val listings: List<Listing>, val loading: Boolean, val canLoadMore: Boolean, val error: String?,
+    val collections: List<ProfileCollection> = emptyList(), val collectionsError: String? = null) {
     companion object {
         fun parse(o: JSONObject): ProfileListings {
             val author = o.getString("author")
             val rows = o.optJSONArray("listings") ?: JSONArray()
             return ProfileListings(author, (0 until rows.length()).map { Listing.parse(rows.getJSONObject(it)) }.filter { it.author == author },
-                o.optBoolean("loading"), o.optBoolean("can_load_more"), o.optional("error"))
+                o.optBoolean("loading"), o.optBoolean("can_load_more"), o.optional("error"),
+                o.optJSONArray("collections")?.let { values -> List(values.length()) { ProfileCollection.parse(values.getJSONObject(it)) } }.orEmpty(),
+                o.optional("collections_error"))
+        }
+    }
+}
+
+data class ProfileCollection(val identifier: String, val title: String, val eventId: String, val delivery: String, val members: List<Member>) {
+    data class Member(val id: String, val listing: Listing?)
+    companion object {
+        fun parse(o: JSONObject): ProfileCollection {
+            val members = o.getJSONArray("members")
+            return ProfileCollection(o.getString("identifier"), o.getString("title"), o.getString("event_id"), o.getString("delivery"),
+                List(members.length()) { index ->
+                    val member = members.getJSONObject(index)
+                    Member(member.getString("id"), member.optJSONObject("listing")?.let(Listing::parse))
+                })
         }
     }
 }

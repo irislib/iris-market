@@ -162,3 +162,18 @@ test('explicitly superseded second-hop followers clear the current stale badge a
   assert(!all(page).some(node=>node.className==='relationship-badge relationship-friend'),'the open identity must not retain a second-hop badge after every known path explicitly unfollows');
   assert(!all(page).some(node=>node.textContent==='Follow distance: 2'&&!node.hidden));profiles.destroy();
 });
+
+test('public collections mount once through profile refresh and release their lookups on navigation',async()=>{
+  const page=new Element('main'), mounted=[], closed=[];
+  let finishProfile;
+  const profiles=setupProfiles({page,getRelays:()=>relays,loadFollowers:async()=>({items:[],excludedKnownFollowers:[]}),
+    loadProfileData:key=>new Promise(resolve=>{finishProfile=()=>resolve(graphProfile(key));}),
+    renderCollections(key,host){mounted.push(key);host.replaceChildren(new Element('form'));return()=>closed.push(key);}});
+  const pending=profiles.open(keys[0],{navigate:false});
+  find(page,'Collections').click();const editor=all(page).find(element=>element.tag==='form');
+  finishProfile();await pending;
+  assert.deepEqual(mounted,[keys[0]]);assert(all(page).includes(editor),'the draft survives a profile metadata update');
+  find(page,'Reviews').click();assert.deepEqual(closed,[keys[0]]);
+  find(page,'Collections').click();profiles.close();assert.deepEqual(closed,[keys[0],keys[0]]);
+  profiles.destroy();
+});

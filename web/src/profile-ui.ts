@@ -1,3 +1,4 @@
+import { setLoadingStatus } from './loading-status.ts';
 import { element as domElement } from './dom.ts';
 import { npubEncode } from 'nostr-tools/nip19'
 import { loadProfile, loadProfileFollowers, excludeKnownFollowers, readProfileMetadata, subscribeProfileMetadata, DEFAULT_SOCIAL_GRAPH_ROOT, DEFAULT_SOCIAL_GRAPH_LABEL } from './profiles.ts'
@@ -78,7 +79,7 @@ export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCI
     const people=followerPeople();
     panel.replaceChildren(peopleList(people,followers?'No followers found.':''));
     if(followers)return;
-    const note=element('p',followersError||'Loading followers…','muted small');note.setAttribute('role','status');panel.append(note);
+    const note=element('p',followersError||'Loading followers…',followersError?'muted small':'muted small loading-state');note.setAttribute('role','status');panel.append(note);
     if(followersError){const retry=element('button','Try again','text-button');retry.onclick=()=>void requestFollowers();panel.append(retry);}
   }
   const requestFollowers=async()=>{
@@ -114,7 +115,7 @@ export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCI
       }else{
         stopListings()
         if(view.id==='followers')renderFollowers()
-        else panel.replaceChildren(view.people?peopleList(view.people,view.empty):element('p','Loading connections…','muted small'))
+        else panel.replaceChildren(view.people?peopleList(view.people,view.empty):element('p','Loading connections…','muted small loading-state'))
       }
     }
     for(const view of views){
@@ -153,7 +154,7 @@ export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCI
     const name = element('h1', profile.name)
     name.id = 'public-profile-title'
     const badge = createRelationshipBadge(relation)
-    if (badge) name.append(badge)
+    if (badge) name.prepend(badge)
     const heading = element('div')
     heading.append(name)
     reviewSummaryButton=element('button',reviews?.summary().label??'Reviews','text-button profile-review-summary')
@@ -184,8 +185,8 @@ export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCI
     const actions = element('div', undefined, 'profile-actions')
     const share = element('button', 'Copy profile link', 'text-button')
     share.onclick = async () => {
-      try { await navigator.clipboard.writeText(profileURL(profile.pubkey, location.href)); status.textContent = 'Profile link copied' }
-      catch { status.textContent = 'Copy the address from your browser.' }
+      try { await navigator.clipboard.writeText(profileURL(profile.pubkey, location.href)); setLoadingStatus(status, 'Profile link copied')}
+      catch { setLoadingStatus(status, 'Copy the address from your browser.')}
     }
     const message = element('button', 'Message', 'button primary'); message.onclick = () => { close(); onMessage(profile.pubkey) };
     actions.append(message, share); body.append(actions)
@@ -218,7 +219,7 @@ export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCI
     network.append(element('p',`Known followers are people ${data.contextLabel} follows, from loaded public follow lists. Only ${data.coverage.secondHopLoaded} of ${data.coverage.directFollows??'?'} follow lists were loaded.`,'small muted'))
     for(const view of views)network.append(element('p',view.note,'small muted'))
     for(const warning of new Set(data.coverage.warnings))network.append(element('p',String(warning),'small muted'))
-    const copy=element('button','Copy user ID','text-button');copy.onclick=async()=>{try{await navigator.clipboard.writeText(npubEncode(profile.pubkey));status.textContent='User ID copied'}catch{status.textContent='Could not copy this user ID.'}};network.append(copy)
+    const copy=element('button','Copy user ID','text-button');copy.onclick=async()=>{try{await navigator.clipboard.writeText(npubEncode(profile.pubkey));setLoadingStatus(status, 'User ID copied')}catch{setLoadingStatus(status, 'Could not copy this user ID.')}};network.append(copy)
     const form = element('form')
     const label = element('label', 'Public profile for connections'); label.htmlFor = 'profile-context'
     const input = element('input'); input.id = 'profile-context'; input.placeholder = 'Public user ID'; input.autocomplete = 'off'; input.spellcheck = false
@@ -234,13 +235,13 @@ export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCI
     form.append(label, input, error, apply, reset)
     network.append(form, element('p', 'Uses public follow lists. This does not sign in or follow anyone.', 'small muted'))
     body.append(network)
-    status.textContent = ''
+    setLoadingStatus(status, '')
   }
 
   async function open(pubkey:string, {navigate=true}: {navigate?:boolean} = {}) {
     if (destroyed) return
     let key:string
-    try { key = normalizePublicKey(pubkey) } catch (error) { status.textContent = error.message; return }
+    try { key = normalizePublicKey(pubkey) } catch (error) { setLoadingStatus(status, error.message); return }
     const beforeNavigate=generation
     if (navigate) onNavigate(key)
     // A router may synchronously reopen this profile without navigation.
@@ -249,9 +250,9 @@ export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCI
     currentKey = key; container.hidden=false; container.scrollTop=0
     reviews=setupProfileReviews({target:key,query:queryReviews,getAccount:getReviewAccount,publish:publishReview,preview:isPreview(),onSignIn:onReviewSignIn,onProfile:pubkey=>void open(pubkey),onSummary:value=>{if(run===generation&&reviewSummaryButton)reviewSummaryButton.textContent=value.label}})
     const displayed=renderCached(key)
-    if (isPreview()) { status.textContent = 'Profiles are available in live mode.'; return }
+    if (isPreview()) { setLoadingStatus(status, 'Profiles are available in live mode.'); return }
     void requestFollowers()
-    status.textContent = displayed ? 'Loading connections…' : 'Loading profile…'
+    setLoadingStatus(status, displayed ? 'Loading connections…' : 'Loading profile…', true)
     // Metadata is useful immediately, even while graph discovery is pending.
     // Updating only the identity keeps listing cards and active forms mounted.
     unsubscribeMetadata=subscribeProfileMetadata(profile=>{
@@ -263,7 +264,7 @@ export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCI
       const data = await loadProfileData(key, { relays: getRelays(), contextPubkey: getContext() || DEFAULT_SOCIAL_GRAPH_ROOT, signal: controller.signal })
       if (run !== generation || destroyed) return
       currentData={...data,profile:readProfileMetadata(key,{relays:getRelays()}),relation:excludeKnownFollowers(data.relation,followers?.excludedKnownFollowers)};render(currentData)
-    } catch (error) { if (run === generation && error.name !== 'AbortError') status.textContent = error.message || 'Could not load this profile.' }
+    } catch (error) { if (run === generation && error.name !== 'AbortError') setLoadingStatus(status, error.message || 'Could not load this profile.')}
   }
   return { open, openReviews(pubkey:string){void open(pubkey);reviewTab?.click()}, close, refreshReviews(){reviews?.refresh()}, destroy() { destroyed = true; close(); container.replaceChildren(); if(!page)container.remove() } }
 }

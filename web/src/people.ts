@@ -58,7 +58,7 @@ function paintRelationship(row:HTMLElement) {
   const relation = relationshipFor(row.dataset.person);
   if (!relation) return;
   const badge = makeRelationshipBadge(relation);
-  if (badge) { badge.dataset.personRelationship = ''; row.append(badge); }
+  if (badge) { badge.dataset.personRelationship = ''; row.prepend(badge); }
 }
 export function resetPeople() { generation++;bootstrapController?.abort();bootstrapController=undefined; pending.clear(); attempted.clear();activeKeys.clear(); queued = false; for (const watch of watches) watch.close(); watches.clear(); }
 export function warmProfiles(keys) {

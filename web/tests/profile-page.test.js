@@ -5,6 +5,7 @@ import {finalizeEvent,getPublicKey} from 'nostr-tools/pure';
 class Element {
   constructor(tag){this.tag=tag;this.children=[];this.dataset={};this.attributes=new Map();this.hidden=false;this.textContent='';this.className='';}
   append(...children){for(const child of children){child.parent=this;this.children.push(child);}}
+  prepend(...children){for(const child of children)child.parent=this;this.children.unshift(...children);}
   replaceChildren(...children){this.children=[];this.append(...children);}
   setAttribute(name,value){this.attributes.set(name,String(value));}
   querySelectorAll(selector){return this.children.flatMap(child=>[...(selector==='[data-person-relationship]'&&'personRelationship'in child.dataset?[child]:[]),...child.querySelectorAll(selector)]);}

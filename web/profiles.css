@@ -1,8 +1,8 @@
 .profile-dialog { width:660px; max-width:calc(100% - 28px); }
 .profile-dialog>.dialog-close { position:sticky; top:15px; right:auto; margin:15px 15px -53px auto; }
 .profile-content { padding:44px 32px 20px; }
-.profile-identity { display:flex; gap:18px; align-items:center; margin:12px 32px 22px 0; }
-.profile-identity>div { min-width:0; }
+.profile-identity { display:flex; flex-wrap:wrap; gap:18px; align-items:center; margin:12px 32px 22px 0; }
+.profile-identity>div { min-width:0; flex:1 1 160px; }
 .profile-identity h2 { overflow-wrap:anywhere; line-height:1.25; }
 .profile-avatar { width:76px; height:76px; flex:none; border-radius:50%; object-fit:cover; background:var(--soft); }
 .profile-initial { display:grid; place-items:center; font-size:28px; font-weight:600; color:var(--muted); }
@@ -12,7 +12,7 @@
 .profile-address { margin-top:10px; overflow-wrap:anywhere; }
 .profile-connection { margin-top:20px; padding:16px 18px; border-radius:13px; background:var(--soft); }
 .profile-connection p+p { margin-top:4px; }
-.relationship-badge { display:inline-grid; place-items:center; font:bold 12px/1 ui-sans-serif,sans-serif; width:19px; height:19px; border-radius:50%; margin-left:7px; vertical-align:middle; color:white; background:#5d7078; flex:none; }
+.relationship-badge { display:inline-grid; place-items:center; font:bold 12px/1 ui-sans-serif,sans-serif; width:19px; height:19px; border-radius:50%; vertical-align:middle; color:white; background:#5d7078; flex:none; }
 .relationship-following { background:#267ab1; }
 .relationship-trusted { background:#a77a16; }
 .profile-actions { display:flex; gap:10px 14px; align-items:center; flex-wrap:wrap; margin:22px 0; }
@@ -74,3 +74,10 @@
 .collection-form .profile-actions { margin:0; }
 .collection-form .error:empty,.profile-collections>[role=status]:empty { display:none; }
 .profile-collections>[role=status]:not(:empty) { margin-top:12px; }
+
+.profile-identity h1 { display:flex; align-items:baseline; gap:7px; }
+.user-row>.relationship-badge { width:14px; height:14px; font-size:10px; }
+/* Reserve space without flashing loading UI for fast requests. */
+.loading-state, [data-loading-status="pending"] { animation:loading-reveal 180ms ease-out 2s both; }
+@keyframes loading-reveal { from { opacity:0;visibility:hidden; } to { opacity:1;visibility:visible; } }
+@media(prefers-reduced-motion:reduce) { .loading-state, [data-loading-status="pending"] { animation-duration:1ms; } }

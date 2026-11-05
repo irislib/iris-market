@@ -1,3 +1,4 @@
+import { setLoadingStatus } from './loading-status.ts';
 import { byId, element as domElement, formFields, setToggleLabel } from './dom.ts';
 import { createViewportDiscovery } from './map/discovery.ts';
 import publishedCells from './data/map-cells.json' with { type: 'json' };
@@ -29,15 +30,15 @@ export function setupMap({ getListings, getPriceLabel, onSelect, onVisibilityCha
     refresh();
     if (instance) { instance.resize(); discovery.update(instance.viewport()); return; }
     if (loading) return;
-    $('map-status').textContent = 'Loading map…';
+    setLoadingStatus($('map-status'), 'Loading map…', true);
     loading = (async () => {
       try {
         const { createMarketMap, listingsForViewport } = await import('./map/index.ts');
         selectForViewport=listingsForViewport;
-        const map = await createMarketMap($('map-canvas'), { listings: mappable(), getPriceLabel, dark: darkAppearance(), cacheMiB: Number($('map-cache').value), onSelect, onViewport: value => {discovery.update(value);if(instance)refresh();}, onError: () => { $('map-status').textContent = 'Map unavailable'; } });
+        const map = await createMarketMap($('map-canvas'), { listings: mappable(), getPriceLabel, dark: darkAppearance(), cacheMiB: Number($('map-cache').value), onSelect, onViewport: value => {discovery.update(value);if(instance)refresh();}, onError: () => { setLoadingStatus($('map-status'), 'Map unavailable'); } });
         if (disposed) { await map.destroy(); return; }
         instance = map; await instance.setDark(darkAppearance()); refresh(); await stats();
-      } catch { $('map-status').textContent = 'Map unavailable. Close and reopen to try again.'; }
+      } catch { setLoadingStatus($('map-status'), 'Map unavailable. Close and reopen to try again.'); }
       finally { loading = null; }
     })();
   }
@@ -46,15 +47,15 @@ export function setupMap({ getListings, getPriceLabel, onSelect, onVisibilityCha
     const listings = getListings(), located = mappable(listings);
     const inView=selectForViewport(located,instance.viewport());
     instance.setListings(located.length>1000?inView:located);
-    $('map-status').textContent = isDiscoveryLimited() ? 'Map listing limit reached for this session.' : inView.length ? `${inView.length} mapped ${inView.length===1?'listing':'listings'} in view` : 'No shared listing locations in view yet.';
+    setLoadingStatus($('map-status'), isDiscoveryLimited() ? 'Map listing limit reached for this session.' : inView.length ? `${inView.length} mapped ${inView.length===1?'listing':'listings'} in view` : 'No shared listing locations in view yet.');
   }
   const theme = () => instance?.setDark(darkAppearance()).catch(() => {});
   const watcher = matchMedia('(prefers-color-scheme: dark)'); watcher.addEventListener('change', theme);
   window.addEventListener('market-themechange', theme);
   $('map-toggle').onclick = open;
-  $('map-cache').onchange = async () => { try { await instance?.setCacheMiB(Number($('map-cache').value)); await stats(); try { localStorage.setItem('market-map-cache', $('map-cache').value); } catch {} } catch { $('map-status').textContent='Could not change map storage.'; } };
+  $('map-cache').onchange = async () => { try { await instance?.setCacheMiB(Number($('map-cache').value)); await stats(); try { localStorage.setItem('market-map-cache', $('map-cache').value); } catch {} } catch { setLoadingStatus($('map-status'), 'Could not change map storage.'); } };
   try { const saved = localStorage.getItem('market-map-cache'); if (['64','128','256','512'].includes(saved)) $('map-cache').value = saved; } catch {}
-  $('map-clear').onclick = async () => { try { await instance?.clearCache(); await stats(); } catch { $('map-status').textContent='Could not clear downloaded maps.'; } };
+  $('map-clear').onclick = async () => { try { await instance?.clearCache(); await stats(); } catch { setLoadingStatus($('map-status'), 'Could not clear downloaded maps.'); } };
   const interval = setInterval(() => { if (visible) stats().catch(() => {}); }, 5000);
   window.addEventListener('pagehide', () => { disposed = true; discovery.dispose(); clearInterval(interval); watcher.removeEventListener('change', theme); instance?.destroy(); });
   return { refresh, refreshDiscovery: () => discovery.refresh() };

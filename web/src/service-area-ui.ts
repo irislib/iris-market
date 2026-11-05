@@ -1,3 +1,4 @@
+import { setLoadingStatus } from './loading-status.ts';
 import {createPlaceSearch} from './places/search.ts';
 import {element} from './dom.ts';
 import {serviceAreaBounds,serviceAreaCircle,validateServiceArea,MIN_SERVICE_AREA_RADIUS_KM,MAX_SERVICE_AREA_RADIUS_KM} from './service-area.ts';
@@ -93,7 +94,7 @@ export function setupServiceAreaPicker({value=null,onChange=()=>{},readOnly=fals
   let areas:Areas={},samePickup=true,active:Role='pickup',destroyed=false,visible=false,mapFailed=false,ticket=0,locationTicket=0,map:MapInstance|null=null,mapDark:boolean|null=null,opening:Promise<void>|null=null,overlay:ReturnType<typeof createServiceAreaOverlay>|null=null;
   const themeEvents=globalThis.window,systemDark=globalThis.matchMedia?.('(prefers-color-scheme: dark)');
   const darkAppearance=()=>{const appearance=globalThis.document?.documentElement?.dataset.appearance;return appearance==='dark'||appearance!=='light'&&!!systemDark?.matches;};
-  const themeChanged=()=>{const current=map,dark=darkAppearance();if(destroyed||!visible||!current||dark===mapDark)return;mapDark=dark;void current.setDark(dark).catch(()=>{if(!destroyed&&map===current){mapDark=null;mapFailed=true;message.textContent='Map unavailable.';retry.hidden=false;}});};
+  const themeChanged=()=>{const current=map,dark=darkAppearance();if(destroyed||!visible||!current||dark===mapDark)return;mapDark=dark;void current.setDark(dark).catch(()=>{if(!destroyed&&map===current){mapDark=null;mapFailed=true;setLoadingStatus(message,'Map unavailable.');retry.hidden=false;}});};
   themeEvents?.addEventListener('market-themechange',themeChanged);systemDark?.addEventListener('change',themeChanged);
   const centers:Partial<Record<Role,ServiceAreaPoint>>={},radii:Record<Role,number>={pickup:10,destination:10},buttons=new Map<Role,HTMLButtonElement>();
   const projected=():Areas=>samePickup&&areas.pickup?{pickup:areas.pickup,destination:areas.pickup}:areas;
@@ -126,18 +127,18 @@ export function setupServiceAreaPicker({value=null,onChange=()=>{},readOnly=fals
   async function startMap(){
     if(destroyed||!visible||map)return;
     if(opening){await opening;if(!destroyed&&visible&&!map&&!mapFailed)return startMap();return;}
-    const current=ticket;mapFailed=false;message.textContent='Loading map…';retry.hidden=true;
+    const current=ticket;mapFailed=false;setLoadingStatus(message,'Loading map…',true);retry.hidden=true;
     const operation=(async()=>{
       try{
         const factory=createMap??(await import('./map/index.ts')).createMarketMap;
         if(destroyed||!visible||current!==ticket)return;
         const dark=darkAppearance();
-        const instance=await factory(canvas,{dark,onError:()=>{if(!destroyed&&visible&&current===ticket){mapFailed=true;message.textContent='Map unavailable.';retry.hidden=false;}},createOverlay:instance=>{
+        const instance=await factory(canvas,{dark,onError:()=>{if(!destroyed&&visible&&current===ticket){mapFailed=true;setLoadingStatus(message,'Map unavailable.');retry.hidden=false;}},createOverlay:instance=>{
           const next=createServiceAreaOverlay(instance,{areas:projected(),interactive:!readOnly,onPick:point=>{if(!destroyed&&visible&&current===ticket)choose(point);}});if(current===ticket)overlay=next;return next;
         }});
         if(destroyed||!visible||current!==ticket){await instance.destroy();return;}
-        map=instance;mapDark=dark;if(!mapFailed)message.textContent='';paint();map.resize();themeChanged();
-      }catch{if(!destroyed&&visible&&current===ticket){mapFailed=true;message.textContent='Map unavailable.';retry.hidden=false;}}
+        map=instance;mapDark=dark;if(!mapFailed)setLoadingStatus(message,'');paint();map.resize();themeChanged();
+      }catch{if(!destroyed&&visible&&current===ticket){mapFailed=true;setLoadingStatus(message,'Map unavailable.');retry.hidden=false;}}
     })();opening=operation;await operation;if(opening===operation)opening=null;
   }
   function setValue(value:ServiceAreas|null){

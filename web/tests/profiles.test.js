@@ -36,11 +36,34 @@ function scriptedSocket(respond) {
 const options = Socket => ({ relays: ['wss://profile.example'], WebSocketImpl: Socket, now: () => now, contextPubkey: keys[0] })
 const closed = Socket => assert(Socket.sockets.every(socket => socket.readyState === 3 && socket.onmessage === null))
 
-test('discovery catch-up recognizes normalized defaults and preserves custom relay choices', () => {
-  const normalized = validateRelays(DEFAULT_RELAYS).reverse()
-  assert.deepEqual(discoverySyncRelays(normalized), ['wss://graph-relay.iris.to', ...normalized])
-  assert.deepEqual(discoverySyncRelays(DEFAULT_RELAYS), ['wss://graph-relay.iris.to', ...DEFAULT_RELAYS])
-  for (const custom of [normalized.slice(1), ['wss://custom.example/', ...normalized.slice(1)]]) {
+test('default graph catch-up includes Ditto inside the actual three-relay budget', async () => {
+  const { syncGraphLists } = await import('nostr-social-graph/publicGraphSync')
+  const ditto = 'wss://relay.ditto.pub'
+  assert(DEFAULT_RELAYS.includes(ditto))
+  for (const defaults of [DEFAULT_RELAYS, validateRelays(DEFAULT_RELAYS).reverse()]) {
+    const routes = [], frames = []
+    class Relay {
+      constructor(url) { routes.push(url); queueMicrotask(() => this.onopen?.()) }
+      send(raw) {
+        const frame = JSON.parse(raw); frames.push(frame)
+        if (frame[0] === 'NEG-OPEN') queueMicrotask(() => this.onmessage?.({data:JSON.stringify(['NEG-ERR',frame[1],'test unavailable'])}))
+      }
+      close() { this.onclose?.() }
+    }
+    const before = [...defaults]
+    await syncGraphLists({graph:new SocialGraph(keys[0]),relays:discoverySyncRelays(defaults),webSocket:Relay,timeoutMs:100,maxDurationMs:500})
+    assert.equal(routes[0], 'wss://graph-relay.iris.to')
+    assert.equal(new URL(routes[1]).href, new URL(ditto).href)
+    assert.equal(routes.length, 3)
+    assert.equal(frames.filter(frame => frame[0] === 'NEG-OPEN').length, 3)
+    assert(!frames.some(frame => frame[0] === 'REQ'))
+    assert.deepEqual(defaults, before)
+  }
+})
+
+test('graph catch-up preserves saved old defaults, custom, mixed and empty relay choices', () => {
+  const oldDefaults = DEFAULT_RELAYS.filter(url => new URL(url).hostname !== 'relay.ditto.pub')
+  for (const custom of [oldDefaults, [], ['wss://custom.example/'], [...DEFAULT_RELAYS, 'wss://custom.example/']]) {
     const before = [...custom]
     assert.deepEqual(discoverySyncRelays(custom), custom)
     assert.deepEqual(custom, before)

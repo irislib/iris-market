@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { WebSocketServer } from 'ws';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools';
+import { DEFAULT_RELAYS } from '../src/public-relays.ts';
 import { createPrivateTransport } from '../src/messaging/transport.ts';
 
 const key = generateSecretKey(), owner = getPublicKey(key);
@@ -110,4 +111,34 @@ test('a missing acknowledgement differs from an explicit rejection of the signed
   const rejected=await transport.publish(event('reject'));
   assert.equal(rejected.remoteAccepted,false);
   assert.equal(rejected.sentWithoutAck,false);
+});
+
+// All selected public destinations are routed to one local test relay; no public posts.
+test('default public reads and signed posting include Ditto without extending saved choices', async t => {
+  assert(DEFAULT_RELAYS.includes('wss://relay.ditto.pub'));
+  const listing = finalizeEvent({kind:30402,created_at:1,content:'Synthetic local route test',tags:[['d','route-test'],['title','Local route test'],['price','1','EUR']]},key);
+  const server = await relay(t, (socket, frame) => {
+    if(frame[0]==='REQ'){socket.send(JSON.stringify(['EVENT',frame[1],listing]));socket.send(JSON.stringify(['EOSE',frame[1]]));}
+    if(frame[0]==='EVENT')socket.send(JSON.stringify(['OK',frame[1].id,true,'']));
+  });
+  for(const selected of [DEFAULT_RELAYS, DEFAULT_RELAYS.filter(url=>!url.includes('relay.ditto.pub')), ['wss://custom.example'], []]) {
+    const routes=[];
+    class LocalRoute extends WebSocket {constructor(url){routes.push(new URL(url).href);super(server.url);}}
+    const transport=createPrivateTransport(()=>[...selected],{WebSocketImpl:LocalRoute});
+    try {
+      const expected=selected.map(url=>new URL(url).href).sort();
+      if(!selected.length) {
+        await assert.rejects(transport.query([{kinds:[30402]}]), /Choose between one and eight/);
+        await assert.rejects(transport.publish(listing), /Choose between one and eight/);
+        assert.deepEqual(routes,[]);
+        continue;
+      }
+      const read=await transport.query([{kinds:[30402]}]);
+      assert.deepEqual(routes.splice(0).sort(),expected);
+      assert.equal(read.events.length,selected.length?1:0);
+      const receipt=await transport.publish(listing);
+      assert.equal(receipt.remoteAccepted,selected.length>0);
+      assert.deepEqual(routes.splice(0).sort(),expected);
+    } finally {transport.close();}
+  }
 });

@@ -1,4 +1,4 @@
-export const DEFAULT_RELAYS = Object.freeze(['wss://temp.iris.to', 'wss://vault.iris.to', 'wss://relay.damus.io', 'wss://relay.snort.social', 'wss://relay.primal.net', 'wss://nos.lol']);
+export const DEFAULT_RELAYS = Object.freeze(['wss://temp.iris.to', 'wss://relay.ditto.pub', 'wss://vault.iris.to', 'wss://relay.damus.io', 'wss://relay.snort.social', 'wss://relay.primal.net', 'wss://nos.lol']);
 
 /** Fixed public discovery services belong only to the shipped relay policy. */
 export function usesDefaultPublicRelays(relays: readonly string[]): boolean {

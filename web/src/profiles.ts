@@ -314,7 +314,9 @@ function relevantFollowLists(direct, targetAuthors, graph) {
 }
 
 export function discoverySyncRelays(relays: readonly string[]): string[] {
-  return usesDefaultPublicRelays(relays) ? ['wss://graph-relay.iris.to', ...relays] : [...relays]
+  if (!usesDefaultPublicRelays(relays)) return [...relays]
+  // Graph reconciliation has a three-relay budget, regardless of saved display order.
+  return ['wss://graph-relay.iris.to', 'wss://relay.ditto.pub', ...relays.filter(url => new URL(url).href !== 'wss://relay.ditto.pub/')]
 }
 
 export async function loadCurationContext({ relays = DEFAULT_RELAYS, contextPubkey = DEFAULT_SOCIAL_GRAPH_ROOT, signal, WebSocketImpl, runtime, now = seconds, timeoutMs, targetAuthors = [], bootstrapLoader = loadGraphBootstrap }: CurationOptions = {}): Promise<CurationContext> {

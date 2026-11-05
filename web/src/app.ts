@@ -113,7 +113,7 @@ let contextKey=load('market-graph-context',DEFAULT_SOCIAL_GRAPH_ROOT);
 if(!/^[0-9a-f]{64}$/.test(contextKey||''))contextKey=DEFAULT_SOCIAL_GRAPH_ROOT;
 let relays=load('market-relays',DEFAULT_RELAYS);
 const usesDefaultRelays=usesDefaultPublicRelays;
-try { relays=validateRelays(relays); if(!relays.length)relays=DEFAULT_RELAYS; } catch { relays=DEFAULT_RELAYS; }
+try { relays=validateRelays(relays); } catch { relays=DEFAULT_RELAYS; }
 let useDiscoveryRelays=usesDefaultRelays(relays);
 // Local browser acceptance can use an isolated relay; production URLs ignore it.
 if(['127.0.0.1','localhost'].includes(location.hostname)&&params.has('test-relay')){try{const testRelay=new URL(params.get('test-relay'));if(testRelay.protocol==='ws:'&&['127.0.0.1','localhost'].includes(testRelay.hostname)){relays=validateRelays([testRelay.href]);useDiscoveryRelays=false;}}catch{}}

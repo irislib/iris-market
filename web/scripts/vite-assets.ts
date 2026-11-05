@@ -38,10 +38,17 @@ async function writeNotices(dest: string, moduleIds: Iterable<string>, includeRu
     const files = (await readdir(folder, { withFileTypes: true }))
       .filter(file => file.isFile() && /^(licen[sc]e|copying|notice)(?:[.-]|$)/i.test(file.name))
       .map(file => file.name).sort();
-    if (!files.length && !['pmtiles','nostr-double-ratchet','@fips/tcp','qrcode-generator'].includes(info.name) && !info.name.startsWith('onnxruntime-')) {
+    const pinnedGraph = info.name === 'nostr-social-graph' && info.version === '4.0.0';
+    if (!files.length && !pinnedGraph && !['pmtiles','nostr-double-ratchet','@fips/tcp','qrcode-generator'].includes(info.name) && !info.name.startsWith('onnxruntime-')) {
       throw new Error(`Missing bundled dependency license: ${info.name}@${info.version}`);
     }
     const texts = await Promise.all(files.map(file => readFile(resolve(folder, file), 'utf8')));
+    // The verified v4.0.0 tarball omits its root license; source 1eb17cb2b02d23445d2284daaceb8ea7043b7e63.
+    if (pinnedGraph) {
+      const license = await readFile(resolve(root, 'licenses/NOSTR-SOCIAL-GRAPH-LICENSE.txt'));
+      if (hash(license) !== '51e841f44c5981b71373b68d6b4def2f84151dc90a05b7d25f5f0d87ad1c3f2e') throw new Error('Unexpected social graph license payload');
+      texts.push(license.toString(), await readFile(resolve(folder, 'src/vendor/LICENSE.negentropy'), 'utf8'));
+    }
     if (info.name === 'nostr-double-ratchet') texts.push(await readFile(resolve(root, 'licenses/NOSTR-DOUBLE-RATCHET-LICENSE.txt'), 'utf8'));
     // fips-tcp's pinned 0.2.3 package omits its root license (upstream commit 975a368f597db5c86ca0231245493da92e4e5ea9).
     if (info.name === '@fips/tcp') texts.push(await readFile(resolve(root, 'licenses/FIPS-TCP-LICENSE.txt'), 'utf8'));
@@ -76,6 +83,7 @@ function assetHeaders(downloads: boolean, routeScript?: string, dev = false) {
   const routeHash = routeScript ? ` 'sha256-${createHash('sha256').update(routeScript).digest('base64')}'` : '';
   // NIP-11 capability checks use HTTPS on the configured default relay hosts.
   const relayOrigins = downloads ? [] : DEFAULT_RELAYS.map(relay => new URL(relay.replace(/^wss:/, 'https:')).origin);
+  if (!downloads) relayOrigins.push('https://graph-api.iris.to');
   if (dev) {
     relayOrigins.push('ws://127.0.0.1:*', 'ws://localhost:*');
     if (process.env.MARKET_TEST_RELAY === '1') relayOrigins.push('http://127.0.0.1:4785');

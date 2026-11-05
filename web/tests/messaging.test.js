@@ -5,6 +5,7 @@ import { AppKeys } from 'nostr-double-ratchet';
 import { createVault } from '../src/messaging/vault.ts';
 import { createMessaging, messageProjection, canPublishToDevice } from '../src/messaging/client.ts';
 import { createPrivateTransport, verifiedPrivateEvent } from '../src/messaging/transport.ts';
+import { DEFAULT_RELAYS, DEFAULT_PRIVATE_RELAYS, privateRelaySelection } from '../src/public-relays.ts';
 
 function memoryBackend() {
   let row;
@@ -42,6 +43,49 @@ function client(bus, backend = memoryBackend()) {
   const vault = createVault({ backend });
   return { app: createMessaging({ getRelays: () => ['wss://test.invalid'], vault, transportFactory: bus.factory }), vault, backend };
 }
+
+test('public posting uses public defaults while encrypted delivery and discovery retain private defaults', { timeout: 15_000 }, async t => {
+  const bus = memoryRelay(), routes = [];
+  let selected = [...DEFAULT_RELAYS], explicit = false;
+  const privateRelays = () => privateRelaySelection(selected, explicit);
+  function scopedClient() {
+    return createMessaging({ getRelays: privateRelays, getPublicRelays: () => selected,
+      vault: createVault({ backend: memoryBackend() }), transportFactory: () => {
+        const transport = bus.factory();
+        return {
+          ...transport,
+          query(filters, options) { routes.push({ type: 'query', relays: options?.relays ?? privateRelays() }); return transport.query(filters, options); },
+          subscribe(filters, handlers, options) { routes.push({ type: 'subscribe', relays: options?.relays ?? privateRelays() }); return transport.subscribe(filters, handlers, options); },
+          publish(event, options) { routes.push({ type: 'publish', kind: event.kind, relays: options?.relays ?? privateRelays() }); return transport.publish(event, options); },
+        };
+      },
+    });
+  }
+  const alice = scopedClient(), bob = scopedClient();
+  t.after(async () => { await alice.destroy(); await bob.destroy(); });
+  await alice.createAccount(); await bob.createAccount();
+  await waitFor(() => alice.state().canSend && bob.state().canSend);
+  const listing = { kind: 30402, created_at: 1, content: 'Local fixture', tags: [['d', 'scope-test'], ['title', 'Local fixture']] };
+  await alice.publishEvent(listing);
+  await waitFor(() => routes.some(row => row.kind === 30402));
+  await alice.send(bob.state().ownerPubkey, 'Private fixture');
+  await waitFor(() => bob.state().conversations.some(chat => chat.messages.some(message => message.text === 'Private fixture')));
+  assert(routes.some(row => [1059, 1060].includes(row.kind)));
+  assert(routes.some(row => row.kind === 37368));
+  for (const row of routes) assert.deepEqual(row.relays, row.kind === 30402 ? DEFAULT_RELAYS : DEFAULT_PRIVATE_RELAYS);
+
+  // An unrelated profile edit may publish public metadata, but must not widen private delivery.
+  await alice.updateProfile({ name: 'Local fixture' });
+  assert.deepEqual(privateRelays(), DEFAULT_PRIVATE_RELAYS);
+  selected = ['wss://chosen.example/']; explicit = true;
+  await alice.reconnect(); await bob.reconnect();
+  await waitFor(() => alice.state().canSend && bob.state().canSend);
+  routes.length = 0;
+  await alice.publishEvent({ ...listing, tags: [['d', 'scope-after-edit'], ['title', 'After choice']] });
+  await alice.send(bob.state().ownerPubkey, 'After relay choice');
+  await waitFor(() => routes.some(row => row.kind === 30402) && routes.some(row => [1059, 1060].includes(row.kind)));
+  for (const row of routes) assert.deepEqual(row.relays, selected);
+});
 
 test('device vault persists only authenticated ciphertext and a nonextractable browser key', async () => {
   const backend = memoryBackend(), vault = createVault({ backend });

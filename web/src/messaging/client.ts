@@ -32,7 +32,7 @@ export interface ChatMessage {id:string;text:string;mine:boolean;createdAt:numbe
 export interface MessagingState {retention:Retention;chatTimers:Record<string,Timer>;tradeSteps:ReturnType<ReturnType<typeof createMarketTrades>["rows"]>;receiptPreferences:ReceiptPreferences;status:string;error:string;password:boolean;ownerPubkey?:string;devicePubkey?:string;displayName?:string;pendingPublic:number;chatStatus:string;profileEvent?:VerifiedEvent;pendingListings:VerifiedEvent[];pendingReviews:VerifiedEvent[];pendingCollections:VerifiedEvent[];orders:OrderView[];canSend:boolean;canSign:boolean;mode?:AccountMode;needsLogin:boolean;devices:{pubkey:string;current:boolean}[];conversations:{pubkey:string;messages:ChatMessage[]}[]}
 type AccountSigner=(event:UnsignedEvent)=>Event|Promise<Event>;
 interface BrowserSigner {getPublicKey():Promise<string>;signEvent:AccountSigner}
-interface MessagingOptions {developerMint?:string;getRelays?:()=>string[];onChange?:(state:MessagingState)=>void;vault?:Vault;transportFactory?:()=>PrivateTransport;extension?:()=>BrowserSigner|undefined}
+interface MessagingOptions {developerMint?:string;getRelays?:()=>string[];getPublicRelays?:()=>string[];onChange?:(state:MessagingState)=>void;vault?:Vault;transportFactory?:()=>PrivateTransport;extension?:()=>BrowserSigner|undefined}
 interface SignerLoginOptions {password?:string;bunkerLink?:string;signal?:AbortSignal;onConnectionLink?:(url:string)=>void;onAuthUrl?:(url:string)=>void;onCommitting?:()=>void}
 type PublicationContext=NostrPublishContext&{recipientDeviceOwnerPubkey?:string;wireDeadline?:number};
 
@@ -82,7 +82,7 @@ export function messageProjection(rumor:Rumor, from:string, meta:OnEventMeta, ow
 }
 
 /** Public account identity and per-device chat key follow the active Iris Chat NDR runtime. */
-export function createMessaging({ developerMint, getRelays=()=>[], onChange = () => {}, vault = createVault(),
+export function createMessaging({ developerMint, getRelays=()=>[], getPublicRelays=getRelays, onChange = () => {}, vault = createVault(),
   transportFactory = () => createPrivateTransport(getRelays), extension = () => (globalThis.window as Window&{nostr?:BrowserSigner})?.nostr }:MessagingOptions = {}) {
   let account:AccountRecord,runtime:NdrRuntime,transport:PrivateTransport,outbox:ReturnType<typeof createPersistentNostrOutbox>,ownerSecret:Uint8Array,signer:AccountSigner,controller:AbortController,postingRemote:RemoteSigner,postingTransport:PrivateTransport,generation = 0;
   let status = 'signed-out', error = '', authorizationChecked = false, savedStatus;
@@ -431,7 +431,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
     syncing = (async () => {
       for (const event of publicQueue.values()) {
         check(attempt); attempted.add(event.id);
-        const options={signal:controller.signal,onAccepted:()=>{void acceptPublic(event,attempt).catch(()=>{});}};
+        const options={relays:publicAccountEvent(event)?getPublicRelays():getRelays(),signal:controller.signal,onAccepted:()=>{void acceptPublic(event,attempt).catch(()=>{});}};
         let receipt;
         try { receipt = await (transport.dispatch ? transport.dispatch(event,options) : transport.publish(event,options)); } catch { check(attempt); continue; }
         check(attempt);
@@ -447,7 +447,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], onChange = ()
       if (profilePatch && signer) {
         const patch = profilePatch;
         const cached = account.profileEvent;
-        const response = account.freshOwner && !cached ? {events:[],complete:true} : await transport.query([{kinds:[0],authors:[account.owner],limit:20}],{signal:controller.signal});
+        const response = account.freshOwner && !cached ? {events:[],complete:true} : await transport.query([{kinds:[0],authors:[account.owner],limit:20}],{relays:getPublicRelays(),signal:controller.signal});
         check(attempt);
         const latest = [...response.events,...(cached?[cached]:[])].sort((a,b)=>b.created_at-a.created_at||a.id.localeCompare(b.id))[0];
         if (!latest && !response.complete) throw new Error('Profile update is waiting for a connection.');

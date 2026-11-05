@@ -26,7 +26,7 @@ import { COUNTRY_CODES, createShippingResolver, matchesShippingDestination } fro
 import { createSocialRootController } from './social-root.ts';
 import { registerPwa } from './pwa.ts';
 import { getPublicRuntime, closePublicRuntimes } from './nostr-runtime.ts';
-import { usesDefaultPublicRelays } from './public-relays.ts';
+import { usesDefaultPublicRelays, privateRelaySelection } from './public-relays.ts';
 import { art } from './art.ts';
 import { renderDescription } from './description.ts';
 import { setupAI } from './ai-ui.ts';
@@ -111,15 +111,17 @@ desktopSearchQuery.addEventListener('change',placeSearch);
 let profiles, mapUI, accountUI, walletUI, ordersUI, composerUI, detailClient, courierClient, courierListings=[], routeReady=false, currentRoute=parseMarketRoute(location.href), visibleResult=[], graphContext, graphAbort;
 let contextKey=load('market-graph-context',DEFAULT_SOCIAL_GRAPH_ROOT);
 if(!/^[0-9a-f]{64}$/.test(contextKey||''))contextKey=DEFAULT_SOCIAL_GRAPH_ROOT;
-let relays=load('market-relays',DEFAULT_RELAYS);
+const savedRelayChoice=load('market-relays',null);
+let relays=savedRelayChoice??DEFAULT_RELAYS, hasSavedRelayChoice=savedRelayChoice!==null;
 const usesDefaultRelays=usesDefaultPublicRelays;
-try { relays=validateRelays(relays); } catch { relays=DEFAULT_RELAYS; }
+try { relays=validateRelays(relays); } catch { relays=DEFAULT_RELAYS; hasSavedRelayChoice=false; }
+const privateRelays=()=>privateRelaySelection(relays,hasSavedRelayChoice);
 let useDiscoveryRelays=usesDefaultRelays(relays);
 // Local browser acceptance can use an isolated relay; production URLs ignore it.
-if(['127.0.0.1','localhost'].includes(location.hostname)&&params.has('test-relay')){try{const testRelay=new URL(params.get('test-relay'));if(testRelay.protocol==='ws:'&&['127.0.0.1','localhost'].includes(testRelay.hostname)){relays=validateRelays([testRelay.href]);useDiscoveryRelays=false;}}catch{}}
+if(['127.0.0.1','localhost'].includes(location.hostname)&&params.has('test-relay')){try{const testRelay=new URL(params.get('test-relay'));if(testRelay.protocol==='ws:'&&['127.0.0.1','localhost'].includes(testRelay.hostname)){relays=validateRelays([testRelay.href]);hasSavedRelayChoice=true;useDiscoveryRelays=false;}}catch{}}
 let noticeControl:ReturnType<typeof sellerNoticeControl>, noticeKey:string, noticeViewer:string;
-const noticeTransport = createPrivateTransport(()=>relays);
-const guestNotices = merchantNotices({transport:noticeTransport,getRelays:()=>relays,
+const noticeTransport = createPrivateTransport(privateRelays);
+const guestNotices = merchantNotices({transport:noticeTransport,getRelays:privateRelays,
   onChange:(_,status)=>{if(status==='sent')void accountUI?.refreshGuestHistory().catch(()=>{});}});
 async function currentNotices() {await accountUI?.restored;return accountUI?.messaging.sellerNotices()??guestNotices;}
 const notices={
@@ -258,7 +260,7 @@ for(const d of document.querySelectorAll('dialog')){d.querySelector<HTMLButtonEl
 $('listing-back').onclick=event=>{event.preventDefault();backToBrowse();};
 $('workspace-page').append($('preferences-dialog'));$('preferences-dialog').querySelector<HTMLButtonElement>('.dialog-close').onclick=backToBrowse;
 $('relay-settings').onclick=()=>{$('relay-input').value=relays.join('\n');$('relay-error').textContent='';$('relays-dialog').showModal()};
-$('relay-form').onsubmit=e=>{e.preventDefault();const values=[...new Set($('relay-input').value.split('\n').map(x=>x.trim()).filter(Boolean))];if(!values.length||values.length>8)return $('relay-error').textContent='Choose between one and eight relays.';try{for(const raw of values){const u=new URL(raw);if(u.protocol!=='wss:'||u.username||u.password||u.hash||u.search)throw Error()}}catch{return $('relay-error').textContent='Use wss:// relay addresses without credentials.'}graphAbort?.abort();closePublicRuntimes();relays=values;useDiscoveryRelays=usesDefaultRelays(relays);resetShipping();shippingResolver=createShippingResolver({query:(filters,options)=>getPublicRuntime(relays).query(filters,options)});resetPeople();persist('market-relays',relays);$('relays-dialog').close();start();loadGraph();void rateService?.refresh();if(accountUI.state().status==='ready')void accountUI.messaging.reconnect().catch(error=>toast(error.message));};
+$('relay-form').onsubmit=e=>{e.preventDefault();const values=[...new Set($('relay-input').value.split('\n').map(x=>x.trim()).filter(Boolean))];if(!values.length||values.length>8)return $('relay-error').textContent='Choose between one and eight relays.';try{for(const raw of values){const u=new URL(raw);if(u.protocol!=='wss:'||u.username||u.password||u.hash||u.search)throw Error()}}catch{return $('relay-error').textContent='Use wss:// relay addresses without credentials.'}graphAbort?.abort();closePublicRuntimes();relays=values;hasSavedRelayChoice=true;useDiscoveryRelays=usesDefaultRelays(relays);resetShipping();shippingResolver=createShippingResolver({query:(filters,options)=>getPublicRuntime(relays).query(filters,options)});resetPeople();persist('market-relays',relays);$('relays-dialog').close();start();loadGraph();void rateService?.refresh();if(accountUI.state().status==='ready')void accountUI.messaging.reconnect().catch(error=>toast(error.message));};
 document.addEventListener('keydown',e=>{if(e.key==='/'&&!['INPUT','TEXTAREA','SELECT'].includes(document.activeElement.tagName)&&!$('main').hidden&&!document.querySelector('dialog[open]')){e.preventDefault();$('search').focus()}});
 function networkFilterLabel(){return accountUI?.state().ownerPubkey===contextKey?'People I follow':contextKey===DEFAULT_SOCIAL_GRAPH_ROOT?'Sirius Business’s network':nameFor(contextKey)+'’s network';}
 const syncHomePrompt=()=>{$('home-prompt-fields').hidden=!$('home-feed-enabled').checked;};
@@ -372,7 +374,7 @@ profiles=setupProfiles({page:$('profile-page'),onNavigate:key=>pageOpened(profil
   getReviewAccount:()=>({owner:accountUI?.state().ownerPubkey,canSign:!!accountUI?.state().canSign,pending:accountUI?.state().pendingReviews}),
   publishReview:draft=>accountUI.messaging.publishEvent(draft),onReviewSignIn:()=>accountUI.showAccount({posting:true})});
 $('graph-context').onclick=()=>profiles.open(contextKey);
-accountUI=setupAccount({guestNotices,getMatchListings:()=>preview?[]:listings,renderEscrowTrades:(host,peer,listing)=>escrowTrade.inbox(host,peer,listing),listingTitle:coordinate=>listings.find(item=>item.id===coordinate.replace(/^30402:/,''))?.title,accountPage:$('workspace-page'),onAccountPage:()=>pageOpened(pageURL('settings/profile',location.href)),onAccountClose:backToBrowse,messagePage:$('workspace-page'),onMessagePage:key=>pageOpened(pageURL('messages'+(key?'/'+npubEncode(key):''),location.href)),onMessageClose:backToBrowse,onUnread:count=>unreadNav('inbox-tab',count),getRelays:()=>relays,isPreview:()=>preview,onProfile:key=>profiles.open(key),onOrder:id=>ordersUI?.open(id),onToken:token=>walletUI?.openToken(token),onIdentity:(key,status,previous,pending)=>{$('my-listings-menu').hidden=!key||preview;rootChoice.setIdentity(key||null,previous);if(client){let changed=false;for(const event of pending)try{changed=applyEvent(client.records,event)||changed;if(courierClient)courierClient.acceptListing(parseEvent(event));}catch{}if(changed)client.emitChange();refreshPeople();}}});
+accountUI=setupAccount({guestNotices,getMatchListings:()=>preview?[]:listings,renderEscrowTrades:(host,peer,listing)=>escrowTrade.inbox(host,peer,listing),listingTitle:coordinate=>listings.find(item=>item.id===coordinate.replace(/^30402:/,''))?.title,accountPage:$('workspace-page'),onAccountPage:()=>pageOpened(pageURL('settings/profile',location.href)),onAccountClose:backToBrowse,messagePage:$('workspace-page'),onMessagePage:key=>pageOpened(pageURL('messages'+(key?'/'+npubEncode(key):''),location.href)),onMessageClose:backToBrowse,onUnread:count=>unreadNav('inbox-tab',count),getRelays:privateRelays,getPublicRelays:()=>relays,isPreview:()=>preview,onProfile:key=>profiles.open(key),onOrder:id=>ordersUI?.open(id),onToken:token=>walletUI?.openToken(token),onIdentity:(key,status,previous,pending)=>{$('my-listings-menu').hidden=!key||preview;rootChoice.setIdentity(key||null,previous);if(client){let changed=false;for(const event of pending)try{changed=applyEvent(client.records,event)||changed;if(courierClient)courierClient.acceptListing(parseEvent(event));}catch{}if(changed)client.emitChange();refreshPeople();}}});
 accountUI.onState(()=>profiles?.refreshReviews());
 composerUI=setupComposer({priceNode,page:$('workspace-page'),onNavigate:()=>pageOpened(pageURL('post',location.href)),onClose:backToBrowse,account:accountUI,isPreview:()=>preview,defaultCurrency:()=>preferredCurrency,onPublished:(event,receipt,showSaved=false)=>{
   const listing=client?client.parseIncoming(event):parseEvent(event);

@@ -406,7 +406,7 @@ for (const selector of currencySelectors) {
     for (const other of currencySelectors) other.value = preferredCurrency;
     persist('market-currency', preferredCurrency);
     render();
-    walletUI?.refresh();
+    walletUI?.refreshDisplay();
     ordersUI?.refresh(accountUI.state());
     if (focusedListing) openDetail(focusedListing, false);
   };

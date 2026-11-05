@@ -14,7 +14,7 @@ export const GRAPH_BOOTSTRAP = Object.freeze({
   maxEdges: 250_000,
 })
 
-export interface GraphBootstrapOptions { root?: string; signal?: AbortSignal }
+export interface GraphBootstrapOptions { root?: string; signal?: AbortSignal; fresh?: boolean }
 export interface GraphBootstrapLoadOptions extends GraphBootstrapOptions { fetchImpl?: typeof fetch; timeoutMs?: number; baseURI?: string }
 
 function checkRoot(root: string) {
@@ -70,9 +70,19 @@ async function responseBytes(response: Response, signal?: AbortSignal) {
   return bytes
 }
 
-/** Loads only a pinned same-origin asset; there is no mutable graph-server fallback. */
-export async function loadGraphBootstrap({ root = GRAPH_BOOTSTRAP.root, signal, fetchImpl = globalThis.fetch, timeoutMs = 8000, baseURI }: GraphBootstrapLoadOptions = {}) {
+/** Optional bounded fresh discovery seed, with a pinned same-origin offline fallback. */
+export async function loadGraphBootstrap({ root = GRAPH_BOOTSTRAP.root, signal, fresh = false, fetchImpl = globalThis.fetch, timeoutMs = 8000, baseURI }: GraphBootstrapLoadOptions = {}) {
   checkRoot(root); active(signal)
+  if (fresh) {
+    try {
+      const { loadGraphBootstrap: loadFreshGraph } = await import('nostr-social-graph/publicGraphSync')
+      const graph = await loadFreshGraph({ root, signal })
+      let newestFollowAt = 0
+      for (const timestamp of graph.getInternalData().followListCreatedAt.values()) newestFollowAt = Math.max(newestFollowAt, timestamp)
+      return { graph, provenance: Object.freeze({ source: 'server-snapshot', package: 'nostr-social-graph', root,
+        sha256: null, bytes: null, verifiedEvents: false, stale: true, newestFollowAt }) }
+    } catch { active(signal) /* Keep the pinned seed available when the fresh service is unreachable. */ }
+  }
   if (typeof fetchImpl !== 'function') throw new Error('Saved network loading is unavailable.')
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30_000) throw new Error('Invalid saved network timeout.')
   const controller = new AbortController()

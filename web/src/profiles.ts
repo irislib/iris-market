@@ -43,7 +43,7 @@ export interface CurationContext {
   rankRelationFor: (pubkey: string) => { distance: number | null; knownFollowerCount: number; source: string; stale?: boolean; partial: boolean }
   coverage: GraphCoverage; graph: SocialGraph | null; lists: Map<string, FollowRecord>
 }
-interface ProfileStore { profiles: Map<string, ProfileRecord>; follows: Map<string, FollowRecord>; contexts: Map<string, {result: CurationContext; loadedAt: number}> }
+interface ProfileStore { rankingBootstrap?: Awaited<ReturnType<typeof loadGraphBootstrap>>; graphSyncAt?: number; graphSync?: Promise<unknown>; profiles: Map<string, ProfileRecord>; follows: Map<string, FollowRecord>; contexts: Map<string, {result: CurationContext; loadedAt: number}> }
 
 // Established visitor root from iris-client/src/utils/socialGraph.ts.
 export const DEFAULT_SOCIAL_GRAPH_ROOT = '336f319763657d6b0e65a5b5876719e8c8dcdcf9396852be71ee26b73368b29b'
@@ -320,7 +320,7 @@ export async function loadCurationContext({ relays = DEFAULT_RELAYS, contextPubk
   if (cached && now() - cached.loadedAt < 120) return cached.result
   const options = { relays, signal, WebSocketImpl, runtime, now, timeoutMs }
   const warnings: string[] = [], selected = new Map<string, FollowRecord>()
-  const bootstrapTask = root === DEFAULT_SOCIAL_GRAPH_ROOT ? bootstrapLoader({ root, signal }).catch(error => ({ error })) : Promise.resolve(null)
+  const bootstrapTask = root === DEFAULT_SOCIAL_GRAPH_ROOT ? (store.rankingBootstrap ? Promise.resolve(store.rankingBootstrap) : bootstrapLoader({ root, signal, fresh: !WebSocketImpl && !runtime && typeof window !== 'undefined' }).catch(error => ({ error }))) : Promise.resolve(null)
   let completed = 0
   try {
     const response = await queryProfileRecords([{ kinds: [0, 3], authors: [root], limit: 2 }], options)
@@ -330,6 +330,7 @@ export async function loadCurationContext({ relays = DEFAULT_RELAYS, contextPubk
   const loadedBootstrap = await bootstrapTask
   if (signal?.aborted) throw abortError()
   const bootstrap = loadedBootstrap?.graph?.getRoot() === root ? loadedBootstrap : null
+  if (bootstrap) store.rankingBootstrap = bootstrap
   if (loadedBootstrap?.error) warnings.push('Saved network unavailable; using signed live lists.')
   const rootRecord = store.follows.get(root)
   const rootList = rootRecord?.follows ? rootRecord : null
@@ -351,6 +352,18 @@ export async function loadCurationContext({ relays = DEFAULT_RELAYS, contextPubk
   if (signal?.aborted) throw abortError()
   const graph = rootList ? await buildGraph(root, selected) : null
   if (rankingGraph) await overlayVerifiedLists(rankingGraph, store.follows)
+  // Refresh the retained discovery graph without changing the independently
+  // verified relationship badges or waiting on a remote graph for presentation.
+  if (rankingGraph && bootstrapLoader === loadGraphBootstrap && !WebSocketImpl && !runtime &&
+      typeof window !== 'undefined' && !store.graphSync &&
+      Date.now() - (store.graphSyncAt ?? 0) > 15 * 60 * 1000) {
+    store.graphSyncAt = Date.now()
+    store.graphSync = import('nostr-social-graph/publicGraphSync').then(({ syncGraphLists }) =>
+      syncGraphLists({ graph: rankingGraph, relays: [...relays], signal,
+        maxAuthors: 500, maxBytes: 2 * 1024 * 1024,
+        onEvent: event => { if (event.kind === 3) ingest(store, [event], now()) } }))
+      .catch(() => {}).finally(() => { store.graphSync = undefined })
+  }
   const coverage = Object.freeze({ partial: true, rootLoaded: !!rootList, directFollows: rootList?.follows.length ?? null, secondHopRequested: secondHop.length, secondHopLoaded: selected.size - Number(selected.has(root)), completedRelays: completed, bootstrap: rankingGraph ? bootstrap.provenance : null, warnings })
   const relationFor = pubkey => socialConnection(graph, root, pubkey)
   const result = { contextPubkey: root, contextLabel: root === DEFAULT_SOCIAL_GRAPH_ROOT ? DEFAULT_SOCIAL_GRAPH_LABEL : person(store, root).name,

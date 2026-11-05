@@ -347,3 +347,21 @@ test('provider search distinguishes a verified shared follow, a public service a
   assert.equal(people.find(p=>p.id===keys[5]).advertised,true);
   assert.equal(people.find(p=>p.id===keys[4]).mutual,false);
 });
+test('discovery catch-up keeps the retained graph across profile queries', async () => {
+  clearProfileCache()
+  const graph = new SocialGraph(DEFAULT_SOCIAL_GRAPH_ROOT)
+  const Socket = scriptedSocket(() => [])
+  let loads = 0
+  const bootstrapLoader = async () => {
+    loads++
+    return { graph, provenance: { source: 'bundled-snapshot', verifiedEvents: false, stale: true } }
+  }
+  const opts = { ...options(Socket), contextPubkey: DEFAULT_SOCIAL_GRAPH_ROOT, bootstrapLoader }
+  await loadCurationContext({ ...opts, targetAuthors: [keys[1]] })
+  graph.addFollower(DEFAULT_SOCIAL_GRAPH_ROOT, keys[2])
+  await graph.recalculateFollowDistances()
+  const next = await loadCurationContext({ ...opts, targetAuthors: [keys[2]] })
+  assert.equal(loads, 1)
+  assert.equal(next.rankRelationFor(keys[2]).distance, 1)
+  assert.equal(next.relationFor(keys[2]).distance, null)
+})

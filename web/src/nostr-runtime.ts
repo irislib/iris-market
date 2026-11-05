@@ -14,7 +14,7 @@ export interface PublicEventRuntime {
   publish(event: Event): Promise<RuntimePublishResult>;
   ingest(events: Event[]): Promise<void>;
   setSources(sources: RuntimeSource[]): Promise<void>;
-  close(): void;
+  close(): void | Promise<void>;
 }
 export interface PublicWorkerClient {
   init(): Promise<void>;
@@ -93,7 +93,7 @@ export function rejectPublicSigning(event: MessageEvent, worker: Pick<Worker, 'p
 
 export async function createPublicWorkerClient(relays: readonly string[], failed: (error?:Error) => void, {WorkerImpl=globalThis.Worker,workerURL=assetUrl('nostr.worker.js'),storeName='iris-market-public-events-v1'}={}): Promise<PublicWorkerClient> {
   const { RelayWorkerClient } = await import('@hashtree/worker/relay-client');
-  const workers=new Set<Worker>();let disposed=false,closing:Promise<void>|undefined;
+  const workers=new Set<Worker>();let disposed=false,closing:Promise<void>|undefined,workerReady=false;
   // The shared client accepts a Worker constructor. Install the public-only
   // signing boundary before its onmessage handler, without modifying the library.
   const PublicWorker = class {
@@ -102,7 +102,7 @@ export async function createPublicWorkerClient(relays: readonly string[], failed
       const worker = new WorkerImpl(workerURL, {type:'module'});workers.add(worker);let ready=false;
       worker.addEventListener('message', event => {
         if(rejectPublicSigning(event, worker))return;
-        if(event.data?.type==='ready')ready=true;
+        if(event.data?.type==='ready'){ready=true;workerReady=true;}
         // The pinned client only matches ordinary request errors. An init
         // failure is otherwise left pending until its 30-second timeout.
         if(!disposed&&!ready&&event.data?.type==='error')failed(new Error(String(event.data.error||'Public worker could not start.')));
@@ -125,13 +125,21 @@ export async function createPublicWorkerClient(relays: readonly string[], failed
     close(){
       if(closing)return closing;
       disposed=true;
-      for(const worker of workers){
-        // Cancel the client's pending promises before close(), which otherwise
-        // calls init() again after a startup crash. The constructor guard above
-        // prevents that cleanup request from creating a replacement worker.
+      const terminate=()=>{for(const worker of workers){
         worker.dispatchEvent(new ErrorEvent('error',{message:'Public worker closed.'}));worker.terminate();
+      }workers.clear();};
+      if(!workerReady){
+        // Pending/failed initialization cannot flush. Cancel it before close()
+        // can try to initialize again; the constructor guard prevents respawn.
+        terminate();closing=client.close();return closing;
       }
-      workers.clear();closing=client.close();return closing;
+      // A ready worker cancels bootstrap and flushes graph revisions on close.
+      // Bound an unresponsive worker without delaying the settings UI.
+      closing=(async()=>{
+        const timeout=setTimeout(terminate,2000);
+        try{await client.close();}finally{clearTimeout(timeout);terminate();}
+      })();
+      return closing;
     },
   };
 }
@@ -139,7 +147,7 @@ export async function createPublicWorkerClient(relays: readonly string[], failed
 /** One shared worker, with bounded crash recovery. Relay reconnects belong to pubsub. */
 export function createPublicRuntime({relays,createClient,retryMs=500,storeName}: RuntimeOptions): PublicEventRuntime {
   let client: PublicWorkerClient | null = null, initializing:PublicWorkerClient|null=null, starting: Promise<PublicWorkerClient> | null = null;
-  let closed = false, generation = 0, retries = 0, restart: ReturnType<typeof setTimeout> | null = null;
+  let closed = false, generation = 0, retries = 0, restart: ReturnType<typeof setTimeout> | null = null,closing:Promise<void>|undefined;
   let source: RuntimeSource | null = null;
   const subscriptions = new Set<{filters:Filter[];handlers:RuntimeSubscriptionHandlers;handle?:RuntimeSubscription}>();
   const queries = new Set<AbortController>();
@@ -170,12 +178,12 @@ export function createPublicRuntime({relays,createClient,retryMs=500,storeName}:
     const version=generation;
     const task=(async()=>{
       const next=await (createClient ? createClient(failed) : createPublicWorkerClient(relays,failed,{storeName}));
-      if(closed || version!==generation) { void next.close().catch(()=>{}); throw cancelled(); }
+      if(closed || version!==generation) { await next.close().catch(()=>{}); throw cancelled(); }
       initializing=next;
       try { await next.init(); }
       catch(error) { void next.close().catch(()=>{}); throw error; }
       finally{if(initializing===next)initializing=null;}
-      if(closed || version!==generation) { void next.close().catch(()=>{}); throw cancelled(); }
+      if(closed || version!==generation) { await next.close().catch(()=>{}); throw cancelled(); }
       client=next;
       if(source) await next.setNostrSource(source);
       for(const entry of subscriptions) bind(entry,next);
@@ -228,28 +236,32 @@ export function createPublicRuntime({relays,createClient,retryMs=500,storeName}:
       if(client)await client.setNostrSource(source);else await ready();
     },
     close() {
-      if(closed) return;closed=true;generation++;clearTimeout(restart);
+      if(closing) return closing;closed=true;generation++;clearTimeout(restart);
       for(const query of queries) query.abort();
       for(const entry of subscriptions) entry.handle?.close();subscriptions.clear();
-      void (client??initializing)?.close().catch(()=>{});client=null;initializing=null;
+      closing=Promise.all([(client??initializing)?.close().catch(()=>{}),starting?.catch(()=>{})]).then(()=>{});
+      client=null;initializing=null;return closing;
     },
   };
 }
 
 const shared = new Map<string,PublicEventRuntime>();
 const indexes = new Map<string,ReturnType<typeof createPublicIndex>>();
+let closingPublicRuntimes:Promise<void>=Promise.resolve();
 
 /** Relay settings changed: terminate old workers and their pending bootstrap requests. */
 export function closePublicRuntimes() {
-  for(const runtime of shared.values()) runtime.close();
+  closingPublicRuntimes=Promise.all([closingPublicRuntimes,...[...shared.values()].map(runtime=>runtime.close())]).then(()=>{});
   shared.clear();indexes.clear();
+  return closingPublicRuntimes;
 }
 
 export function getPublicRuntime(relays: readonly string[]): PublicEventRuntime {
   const normalized=[...new Set(relays)].sort(), key=JSON.stringify(normalized);
   let runtime=shared.get(key);
   if(!runtime) {
-    runtime=createPublicRuntime({relays:normalized});shared.set(key,runtime);
+    const previous=closingPublicRuntimes;
+    runtime=createPublicRuntime({relays:normalized,createClient:async failed=>{await previous;return createPublicWorkerClient(normalized,failed);}});shared.set(key,runtime);
     const owner=runtime;
     const index=createPublicIndex({queryRoots:(filters,options)=>owner.query(filters,{...options,relays:normalized})});
     indexes.set(key,index);void owner.setSources([index.source]).catch(()=>{});

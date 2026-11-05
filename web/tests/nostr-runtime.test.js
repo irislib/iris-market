@@ -91,6 +91,51 @@ test('public worker reserves a small cache budget before exposing network querie
   assert.equal(messages[1].maxBytes,128*1024*1024);
 });
 
+test('a ready worker flushes through close before termination',async()=>{
+  const {createPublicWorkerClient}=await import('../src/nostr-runtime.ts');
+  const calls=[];let worker,finish;
+  class SavingWorker extends EventTarget {
+    constructor(){super();worker=this;}
+    dispatchEvent(event){const result=super.dispatchEvent(event);this[`on${event.type}`]?.(event);return result;}
+    postMessage(message){
+      calls.push(message.type);
+      if(message.type==='close'){finish=()=>this.dispatchEvent(new MessageEvent('message',{data:{type:'void',id:message.id}}));return;}
+      queueMicrotask(()=>this.dispatchEvent(new MessageEvent('message',{data:message.type==='init'?{type:'ready'}:{type:'void',id:message.id}})));
+    }
+    terminate(){calls.push('terminate');}
+  }
+  const client=await createPublicWorkerClient(DEFAULT_RELAYS,()=>{}, {WorkerImpl:SavingWorker,workerURL:'test.worker.js'});
+  await client.init();const closing=client.close();await until(()=>!!finish);
+  assert(calls.includes('close'));assert(!calls.includes('terminate'));
+  finish();await closing;assert(calls.indexOf('close')<calls.indexOf('terminate'));
+});
+
+test('a replacement worker waits for the previous graph flush without blocking settings',async t=>{
+  const previous=Object.getOwnPropertyDescriptor(globalThis,'Worker'),workers=[];
+  class SavingWorker extends EventTarget {
+    constructor(){super();this.messages=[];workers.push(this);}
+    dispatchEvent(event){const result=super.dispatchEvent(event);this[`on${event.type}`]?.(event);return result;}
+    postMessage(message){
+      this.messages.push(message);
+      const respond=()=>this.dispatchEvent(new MessageEvent('message',{data:message.type==='init'?{type:'ready'}:{type:'void',id:message.id}}));
+      if(message.type==='close'&&this===workers[0])this.finish=respond;else queueMicrotask(respond);
+    }
+    terminate(){this.terminated=true;}
+  }
+  await closePublicRuntimes();
+  Object.defineProperty(globalThis,'Worker',{value:SavingWorker,writable:true,configurable:true});
+  t.after(async()=>{workers[0]?.finish?.();await closePublicRuntimes();if(previous)Object.defineProperty(globalThis,'Worker',previous);else delete globalThis.Worker;});
+  getPublicRuntime(DEFAULT_RELAYS);
+  await until(()=>workers[0]?.messages.some(message=>message.type==='setStorageMaxBytes'));
+  const closing=closePublicRuntimes(),replacement=getPublicRuntime(['wss://custom.example']);
+  assert(replacement,'Settings can select the replacement synchronously');
+  await until(()=>!!workers[0].finish);await tick();assert.equal(workers.length,1);
+  workers[0].finish();await closing;
+  await until(()=>workers[1]?.messages.some(message=>message.type==='init'));
+  assert.equal(workers[0].terminated,true);
+  assert.equal(workers[1].messages[0].config.graphBootstrap,false);
+});
+
 test('public cache imports verify records and cannot publish or accept private events',async()=>{
   const {runtime,clients}=fixture(),record=event();
   await runtime.ingest([record]);assert.deepEqual(clients[0].imported,[record]);

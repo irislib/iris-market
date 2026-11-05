@@ -8,7 +8,7 @@ import { GRAPH_BOOTSTRAP } from '../src/graph-bootstrap.ts';
 const chunks = new URL('../dist/chunks/', import.meta.url);
 const names = (await readdir(chunks)).filter(name => /^publicGraphSync-.*\.js$/.test(name));
 assert.equal(names.length, 1, 'Build Market before checking its graph chunk');
-const { loadGraphBootstrap } = await import(new URL(names[0], chunks));
+const { loadGraphBootstrap, syncGraphLists } = await import(new URL(names[0], chunks));
 const root = GRAPH_BOOTSTRAP.root, author = '1'.repeat(64);
 const graph = new SocialGraph(root);
 graph.addFollower(root, author);
@@ -31,4 +31,21 @@ test('the production chunk imports and decodes a fresh graph, rather than merely
 test('the production chunk rejects a response belonging to another graph', async t => {
   t.mock.method(globalThis, 'fetch', async () => new Response(bytes, { headers: { 'x-graph-root': author } }));
   await assert.rejects(loadGraphBootstrap({ root }), /root mismatch/);
+});
+
+test('unsupported negentropy preserves the graph without broad follow/mute catch-up requests', async () => {
+  const sent = [];
+  class UnsupportedRelay {
+    constructor() { queueMicrotask(() => this.onopen?.()); }
+    send(message) {
+      const frame = JSON.parse(message); sent.push(frame);
+      if (frame[0] === 'NEG-OPEN') queueMicrotask(() => this.onmessage?.({data:JSON.stringify(['NEG-ERR',frame[1],'unsupported'])}));
+      if (frame[0] === 'REQ') queueMicrotask(() => this.onmessage?.({data:JSON.stringify(['EOSE',frame[1]])}));
+    }
+    close() { this.onclose?.(); }
+  }
+  await syncGraphLists({graph,relays:['wss://unsupported.example'],webSocket:UnsupportedRelay,timeoutMs:100,maxDurationMs:500});
+  assert(sent.some(frame => frame[0] === 'NEG-OPEN'));
+  assert(!sent.some(frame => frame[0] === 'REQ'), 'An unsupported relay must not trigger broad catch-up');
+  assert.deepEqual([...graph.getFollowedByUser(root)], [author]);
 });

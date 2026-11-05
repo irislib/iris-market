@@ -38,12 +38,12 @@ async function writeNotices(dest: string, moduleIds: Iterable<string>, includeRu
     const files = (await readdir(folder, { withFileTypes: true }))
       .filter(file => file.isFile() && /^(licen[sc]e|copying|notice)(?:[.-]|$)/i.test(file.name))
       .map(file => file.name).sort();
-    const pinnedGraph = info.name === 'nostr-social-graph' && info.version === '4.0.0';
+    const pinnedGraph = info.name === 'nostr-social-graph' && info.version === '4.0.1';
     if (!files.length && !pinnedGraph && !['pmtiles','nostr-double-ratchet','@fips/tcp','qrcode-generator'].includes(info.name) && !info.name.startsWith('onnxruntime-')) {
       throw new Error(`Missing bundled dependency license: ${info.name}@${info.version}`);
     }
     const texts = await Promise.all(files.map(file => readFile(resolve(folder, file), 'utf8')));
-    // The verified v4.0.0 tarball omits its root license; source 1eb17cb2b02d23445d2284daaceb8ea7043b7e63.
+    // The verified v4.0.1 tarball omits its root license; source bd891c9a928842d1cd67387e9c84c76cb13765e0.
     if (pinnedGraph) {
       const license = await readFile(resolve(root, 'licenses/NOSTR-SOCIAL-GRAPH-LICENSE.txt'));
       if (hash(license) !== '51e841f44c5981b71373b68d6b4def2f84151dc90a05b7d25f5f0d87ad1c3f2e') throw new Error('Unexpected social graph license payload');

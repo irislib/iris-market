@@ -2394,9 +2394,9 @@ dependencies = [
 
 [[package]]
 name = "nostr-social-graph"
-version = "0.1.4"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe75a62e7939ca311dce77039443ea14af0c8e0a9969c01746992acf7ef40b17"
+checksum = "83a7c3e6dedf8c0474c9e09938496abde4a9c77cd38ec4832d9b56ee9602b8f8"
 dependencies = [
  "hex",
  "indexmap 2.14.2",

@@ -312,6 +312,12 @@ function relevantFollowLists(direct, targetAuthors, graph) {
   return [...direct].sort((a, b) => (scores.get(b) || 0) - (scores.get(a) || 0) || a.localeCompare(b)).slice(0, PROFILE_LIMITS.secondHop)
 }
 
+export function discoverySyncRelays(relays: readonly string[]): string[] {
+  const servers = validateRelays(relays), defaults = validateRelays(DEFAULT_RELAYS)
+  const usesDefaults = servers.length === defaults.length && servers.every(url => defaults.includes(url))
+  return usesDefaults ? ['wss://graph-relay.iris.to', ...relays] : [...relays]
+}
+
 export async function loadCurationContext({ relays = DEFAULT_RELAYS, contextPubkey = DEFAULT_SOCIAL_GRAPH_ROOT, signal, WebSocketImpl, runtime, now = seconds, timeoutMs, targetAuthors = [], bootstrapLoader = loadGraphBootstrap }: CurationOptions = {}): Promise<CurationContext> {
   const root = normalizePublicKey(contextPubkey), store = storeFor(relays)
   const targets = [...new Set((Array.isArray(targetAuthors) ? targetAuthors : []).filter(isKey))].sort().slice(0, 128)
@@ -359,9 +365,7 @@ export async function loadCurationContext({ relays = DEFAULT_RELAYS, contextPubk
       Date.now() - (store.graphSyncAt ?? 0) > 15 * 60 * 1000) {
     store.graphSyncAt = Date.now()
     store.graphSync = import('nostr-social-graph/publicGraphSync').then(({ syncGraphLists }) =>
-      syncGraphLists({ graph: rankingGraph,
-        relays: relays.length === DEFAULT_RELAYS.length && relays.every(url => DEFAULT_RELAYS.includes(url))
-          ? ['wss://graph-relay.iris.to', ...relays] : [...relays], signal,
+      syncGraphLists({ graph: rankingGraph, relays: discoverySyncRelays(relays), signal,
         maxAuthors: 500, maxBytes: 2 * 1024 * 1024,
         onEvent: event => { if (event.kind === 3) ingest(store, [event], now()) } }))
       .catch(() => {}).finally(() => { store.graphSync = undefined })

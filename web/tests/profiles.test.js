@@ -2,7 +2,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { finalizeEvent, getPublicKey } from 'nostr-tools/pure'
 import { SocialGraph } from 'nostr-social-graph'
-import { DEFAULT_SOCIAL_GRAPH_ROOT, PROFILE_LIMITS, parseProfileEvent, parseFollowEvent, verifyProfileRecord, queryProfileRecords, socialConnection, excludeKnownFollowers, loadProfile, loadProfileFollowers, subscribeProfileMetadata, loadCurationContext, clearProfileCache, escrowCandidates, cacheProfileMetadata, readProfileMetadata } from '../src/profiles.ts'
+import { DEFAULT_SOCIAL_GRAPH_ROOT, PROFILE_LIMITS, parseProfileEvent, parseFollowEvent, verifyProfileRecord, queryProfileRecords, socialConnection, excludeKnownFollowers, loadProfile, loadProfileFollowers, subscribeProfileMetadata, loadCurationContext, clearProfileCache, escrowCandidates, cacheProfileMetadata, readProfileMetadata, discoverySyncRelays } from '../src/profiles.ts'
+import { DEFAULT_RELAYS, validateRelays } from '../src/market.ts'
 
 const now = 1700000000
 const secrets = Array.from({ length: 20 }, (_, i) => new Uint8Array(32).fill(i + 1))
@@ -33,6 +34,17 @@ function scriptedSocket(respond) {
 }
 const options = Socket => ({ relays: ['wss://profile.example'], WebSocketImpl: Socket, now: () => now, contextPubkey: keys[0] })
 const closed = Socket => assert(Socket.sockets.every(socket => socket.readyState === 3 && socket.onmessage === null))
+
+test('discovery catch-up recognizes normalized defaults and preserves custom relay choices', () => {
+  const normalized = validateRelays(DEFAULT_RELAYS).reverse()
+  assert.deepEqual(discoverySyncRelays(normalized), ['wss://graph-relay.iris.to', ...normalized])
+  assert.deepEqual(discoverySyncRelays(DEFAULT_RELAYS), ['wss://graph-relay.iris.to', ...DEFAULT_RELAYS])
+  for (const custom of [normalized.slice(1), ['wss://custom.example/', ...normalized.slice(1)]]) {
+    const before = [...custom]
+    assert.deepEqual(discoverySyncRelays(custom), custom)
+    assert.deepEqual(custom, before)
+  }
+})
 
 test('a locally signed profile hydrates shared names before relays reply and rejects forgery', () => {
   const relays = ['wss://local-profile.example'], event = metadata(0, {name:'Morgan'});

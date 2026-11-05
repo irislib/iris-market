@@ -4,6 +4,7 @@ import { finalizeEvent, getPublicKey } from 'nostr-tools/pure'
 import { SocialGraph } from 'nostr-social-graph'
 import { DEFAULT_SOCIAL_GRAPH_ROOT, PROFILE_LIMITS, parseProfileEvent, parseFollowEvent, verifyProfileRecord, queryProfileRecords, socialConnection, excludeKnownFollowers, loadProfile, loadProfileFollowers, subscribeProfileMetadata, loadCurationContext, clearProfileCache, escrowCandidates, cacheProfileMetadata, readProfileMetadata, discoverySyncRelays } from '../src/profiles.ts'
 import { DEFAULT_RELAYS, validateRelays } from '../src/market.ts'
+import { closePublicRuntimes } from '../src/nostr-runtime.ts'
 
 const now = 1700000000
 const secrets = Array.from({ length: 20 }, (_, i) => new Uint8Array(32).fill(i + 1))
@@ -43,6 +44,22 @@ test('discovery catch-up recognizes normalized defaults and preserves custom rel
     const before = [...custom]
     assert.deepEqual(discoverySyncRelays(custom), custom)
     assert.deepEqual(custom, before)
+  }
+})
+
+test('the separate profile bootstrap uses the same default-only HTTP policy', async t => {
+  const previous=Object.getOwnPropertyDescriptor(globalThis,'window')
+  Object.defineProperty(globalThis,'window',{value:{},configurable:true})
+  t.after(()=>{closePublicRuntimes();clearProfileCache();if(previous)Object.defineProperty(globalThis,'window',previous);else delete globalThis.window})
+  for(const [relays,fresh] of [[validateRelays(DEFAULT_RELAYS),true],[['wss://custom.example'],false]]) {
+    clearProfileCache()
+    let requested
+    await loadCurationContext({relays,timeoutMs:1,bootstrapLoader:async options=>{
+      requested=options.fresh
+      return {graph:new SocialGraph(DEFAULT_SOCIAL_GRAPH_ROOT),provenance:{source:'test-fixture'}}
+    }})
+    assert.equal(requested,fresh)
+    closePublicRuntimes()
   }
 })
 

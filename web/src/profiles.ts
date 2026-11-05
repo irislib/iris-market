@@ -26,6 +26,7 @@ import type { Filter } from 'nostr-tools'
 import { getPublicRuntime, type PublicEventRuntime } from './nostr-runtime.ts'
 import { loadGraphBootstrap } from './graph-bootstrap.ts'
 import { DEFAULT_RELAYS, validateRelays } from './market.ts'
+import { usesDefaultPublicRelays } from './public-relays.ts'
 import { normalizePublicKey } from './social.ts'
 
 export interface ProfileFilter extends Filter { kinds?: number[]; authors?: string[]; '#p'?: string[]; limit?: number }
@@ -313,9 +314,7 @@ function relevantFollowLists(direct, targetAuthors, graph) {
 }
 
 export function discoverySyncRelays(relays: readonly string[]): string[] {
-  const servers = validateRelays(relays), defaults = validateRelays(DEFAULT_RELAYS)
-  const usesDefaults = servers.length === defaults.length && servers.every(url => defaults.includes(url))
-  return usesDefaults ? ['wss://graph-relay.iris.to', ...relays] : [...relays]
+  return usesDefaultPublicRelays(relays) ? ['wss://graph-relay.iris.to', ...relays] : [...relays]
 }
 
 export async function loadCurationContext({ relays = DEFAULT_RELAYS, contextPubkey = DEFAULT_SOCIAL_GRAPH_ROOT, signal, WebSocketImpl, runtime, now = seconds, timeoutMs, targetAuthors = [], bootstrapLoader = loadGraphBootstrap }: CurationOptions = {}): Promise<CurationContext> {
@@ -326,7 +325,7 @@ export async function loadCurationContext({ relays = DEFAULT_RELAYS, contextPubk
   if (cached && now() - cached.loadedAt < 120) return cached.result
   const options = { relays, signal, WebSocketImpl, runtime, now, timeoutMs }
   const warnings: string[] = [], selected = new Map<string, FollowRecord>()
-  const bootstrapTask = root === DEFAULT_SOCIAL_GRAPH_ROOT ? (store.rankingBootstrap ? Promise.resolve(store.rankingBootstrap) : bootstrapLoader({ root, signal, fresh: !WebSocketImpl && !runtime && typeof window !== 'undefined' }).catch(error => ({ error }))) : Promise.resolve(null)
+  const bootstrapTask = root === DEFAULT_SOCIAL_GRAPH_ROOT ? (store.rankingBootstrap ? Promise.resolve(store.rankingBootstrap) : bootstrapLoader({ root, signal, fresh: usesDefaultPublicRelays(relays) && !WebSocketImpl && !runtime && typeof window !== 'undefined' }).catch(error => ({ error }))) : Promise.resolve(null)
   let completed = 0
   try {
     const response = await queryProfileRecords([{ kinds: [0, 3], authors: [root], limit: 2 }], options)

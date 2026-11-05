@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { finalizeEvent, generateSecretKey } from 'nostr-tools';
-import { createPublicRuntime, publicIndexSource, rejectPublicSigning, publicWorkerConfig } from '../src/nostr-runtime.ts';
+import { createPublicRuntime, publicIndexSource, rejectPublicSigning, publicWorkerConfig, getPublicRuntime, closePublicRuntimes } from '../src/nostr-runtime.ts';
 import { SocialGraph } from 'nostr-social-graph';
 import { GRAPH_BOOTSTRAP } from '../src/graph-bootstrap.ts';
+import { DEFAULT_RELAYS, validateRelays } from '../src/market.ts';
 
 const key=generateSecretKey();
 const event=(kind=0,content='{}')=>finalizeEvent({kind,content,tags:[],created_at:Math.floor(Date.now()/1000)},key);
@@ -32,6 +33,46 @@ test('anonymous worker configuration satisfies the shared graph initialization w
   assert.equal(new SocialGraph(config.pubkey).getRoot(),GRAPH_BOOTSTRAP.root);
   assert.equal(config.pubkey,GRAPH_BOOTSTRAP.root);assert.equal('nsec' in config,false);
   assert.deepEqual(config.reconciliation,{lookbackSeconds:7*86400});
+});
+
+test('fixed graph bootstrap is explicit and restricted to the shipped relay set',()=>{
+  for(const relays of [DEFAULT_RELAYS,validateRelays(DEFAULT_RELAYS).reverse()]) {
+    const config=publicWorkerConfig(relays);
+    assert.equal(config.graphBootstrap,true);
+    assert.deepEqual(config.relays,relays);
+  }
+  for(const relays of [[],['wss://custom.example'],DEFAULT_RELAYS.slice(1),[...DEFAULT_RELAYS,'wss://custom.example']]) {
+    const config=publicWorkerConfig(relays);
+    assert.equal(config.graphBootstrap,false);
+    assert.deepEqual(config.relays,relays);
+    assert.notEqual(config.graphReconciliation,false,'Configured-relay reconciliation stays enabled');
+  }
+});
+
+test('changing relay settings terminates initializing workers and creates a fresh policy',async t=>{
+  const previous=Object.getOwnPropertyDescriptor(globalThis,'Worker'),workers=[];
+  class PendingWorker extends EventTarget {
+    constructor(){super();this.messages=[];this.terminated=false;workers.push(this);}
+    postMessage(message){this.messages.push(message);}
+    dispatchEvent(event){if(event.type==='error')this.onerror?.(event);return super.dispatchEvent(event);}
+    terminate(){this.terminated=true;}
+  }
+  Object.defineProperty(globalThis,'Worker',{value:PendingWorker,writable:true,configurable:true});
+  t.after(()=>{closePublicRuntimes();if(previous)Object.defineProperty(globalThis,'Worker',previous);else delete globalThis.Worker;});
+  closePublicRuntimes();
+  const first=getPublicRuntime(DEFAULT_RELAYS);
+  await until(()=>workers[0]?.messages.some(message=>message.type==='init'));
+  assert.equal(workers[0].messages[0].config.graphBootstrap,true);
+  closePublicRuntimes();
+  assert.equal(workers[0].terminated,true);
+  await assert.rejects(first.query([{kinds:[3]}]),{name:'AbortError'});
+  const next=getPublicRuntime(['wss://custom.example']);
+  assert.notEqual(next,first);
+  await until(()=>workers[1]?.messages.some(message=>message.type==='init'));
+  assert.equal(workers[1].messages[0].config.graphBootstrap,false);
+  closePublicRuntimes();
+  assert.equal(workers[1].terminated,true);
+  assert.notEqual(getPublicRuntime(DEFAULT_RELAYS),first,'Returning to defaults cannot reuse a closed worker');
 });
 
 test('public worker reserves a small cache budget before exposing network queries',async()=>{

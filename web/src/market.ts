@@ -10,8 +10,9 @@ import { HistoryCursor, relaySource, SOURCE_PRIORITY_RELAY, type NostrVerifiedEv
 import { SeenTags, observedMarketTags, TAG_LIMITS, type SearchTagExpansion } from './seen-tags.ts'
 import {publicListingCache,type PublicListingCache} from './offline-listings.ts'
 import {parseServiceAreas} from './service-area.ts'
+import { DEFAULT_RELAYS } from './public-relays.ts'
 
-export const DEFAULT_RELAYS = Object.freeze(['wss://temp.iris.to', 'wss://vault.iris.to', 'wss://relay.damus.io', 'wss://relay.snort.social', 'wss://relay.primal.net', 'wss://nos.lol'])
+export { DEFAULT_RELAYS } from './public-relays.ts'
 export const LISTING_KIND = 30402
 export const MAX_RECORDS = 1000
 const MAX_EVENT_BYTES = 65536

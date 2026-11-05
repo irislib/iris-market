@@ -4,6 +4,7 @@ import { assetUrl } from './asset-url.ts';
 import { createPublicIndex } from './public-index.ts';
 import { BITCOIN_KIND, readEscrowOffer } from './escrow-offer.ts';
 import { GRAPH_BOOTSTRAP } from './graph-bootstrap.ts';
+import { usesDefaultPublicRelays } from './public-relays.ts';
 
 /** This runtime contains PUBLIC market data only. NDR uses its own private transport. */
 const PUBLIC_KINDS = new Set([0, 3, 5, 7368, 30402, 38383, 30405, 30406, 31555, 30064, 30078]);
@@ -34,7 +35,8 @@ const cancelled = () => new DOMException('Public request cancelled', 'AbortError
 
 /** Shared worker initializes a graph even for anonymous reads; its root must be a public key. */
 export function publicWorkerConfig(relays:readonly string[],storeName='iris-market-public-events-v1') {
-  return {relays:[...relays],blossomServers:[],pubkey:GRAPH_BOOTSTRAP.root,storeName,reconciliation:{lookbackSeconds:7*86400}};
+  return {relays:[...relays],blossomServers:[],pubkey:GRAPH_BOOTSTRAP.root,storeName,
+    graphBootstrap:usesDefaultPublicRelays(relays),reconciliation:{lookbackSeconds:7*86400}};
 }
 
 function publicFilters(filters: Filter[]): Filter[] {
@@ -236,6 +238,13 @@ export function createPublicRuntime({relays,createClient,retryMs=500,storeName}:
 
 const shared = new Map<string,PublicEventRuntime>();
 const indexes = new Map<string,ReturnType<typeof createPublicIndex>>();
+
+/** Relay settings changed: terminate old workers and their pending bootstrap requests. */
+export function closePublicRuntimes() {
+  for(const runtime of shared.values()) runtime.close();
+  shared.clear();indexes.clear();
+}
+
 export function getPublicRuntime(relays: readonly string[]): PublicEventRuntime {
   const normalized=[...new Set(relays)].sort(), key=JSON.stringify(normalized);
   let runtime=shared.get(key);

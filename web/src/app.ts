@@ -25,7 +25,8 @@ import { setupHeaderMenu } from './menu.ts';
 import { COUNTRY_CODES, createShippingResolver, matchesShippingDestination } from './shipping.ts';
 import { createSocialRootController } from './social-root.ts';
 import { registerPwa } from './pwa.ts';
-import { getPublicRuntime } from './nostr-runtime.ts';
+import { getPublicRuntime, closePublicRuntimes } from './nostr-runtime.ts';
+import { usesDefaultPublicRelays } from './public-relays.ts';
 import { art } from './art.ts';
 import { renderDescription } from './description.ts';
 import { setupAI } from './ai-ui.ts';
@@ -111,7 +112,7 @@ let profiles, mapUI, accountUI, walletUI, ordersUI, composerUI, detailClient, co
 let contextKey=load('market-graph-context',DEFAULT_SOCIAL_GRAPH_ROOT);
 if(!/^[0-9a-f]{64}$/.test(contextKey||''))contextKey=DEFAULT_SOCIAL_GRAPH_ROOT;
 let relays=load('market-relays',DEFAULT_RELAYS);
-const usesDefaultRelays=(urls:readonly string[])=>JSON.stringify(validateRelays(urls).sort())===JSON.stringify(validateRelays(DEFAULT_RELAYS).sort());
+const usesDefaultRelays=usesDefaultPublicRelays;
 try { relays=validateRelays(relays); if(!relays.length)relays=DEFAULT_RELAYS; } catch { relays=DEFAULT_RELAYS; }
 let useDiscoveryRelays=usesDefaultRelays(relays);
 // Local browser acceptance can use an isolated relay; production URLs ignore it.
@@ -257,7 +258,7 @@ for(const d of document.querySelectorAll('dialog')){d.querySelector<HTMLButtonEl
 $('listing-back').onclick=event=>{event.preventDefault();backToBrowse();};
 $('workspace-page').append($('preferences-dialog'));$('preferences-dialog').querySelector<HTMLButtonElement>('.dialog-close').onclick=backToBrowse;
 $('relay-settings').onclick=()=>{$('relay-input').value=relays.join('\n');$('relay-error').textContent='';$('relays-dialog').showModal()};
-$('relay-form').onsubmit=e=>{e.preventDefault();const values=[...new Set($('relay-input').value.split('\n').map(x=>x.trim()).filter(Boolean))];if(!values.length||values.length>8)return $('relay-error').textContent='Choose between one and eight relays.';try{for(const raw of values){const u=new URL(raw);if(u.protocol!=='wss:'||u.username||u.password||u.hash||u.search)throw Error()}}catch{return $('relay-error').textContent='Use wss:// relay addresses without credentials.'}relays=values;useDiscoveryRelays=usesDefaultRelays(relays);resetShipping();shippingResolver=createShippingResolver({query:(filters,options)=>getPublicRuntime(relays).query(filters,options)});resetPeople();persist('market-relays',relays);$('relays-dialog').close();start();loadGraph();void rateService?.refresh();if(accountUI.state().status==='ready')void accountUI.messaging.reconnect().catch(error=>toast(error.message));};
+$('relay-form').onsubmit=e=>{e.preventDefault();const values=[...new Set($('relay-input').value.split('\n').map(x=>x.trim()).filter(Boolean))];if(!values.length||values.length>8)return $('relay-error').textContent='Choose between one and eight relays.';try{for(const raw of values){const u=new URL(raw);if(u.protocol!=='wss:'||u.username||u.password||u.hash||u.search)throw Error()}}catch{return $('relay-error').textContent='Use wss:// relay addresses without credentials.'}graphAbort?.abort();closePublicRuntimes();relays=values;useDiscoveryRelays=usesDefaultRelays(relays);resetShipping();shippingResolver=createShippingResolver({query:(filters,options)=>getPublicRuntime(relays).query(filters,options)});resetPeople();persist('market-relays',relays);$('relays-dialog').close();start();loadGraph();void rateService?.refresh();if(accountUI.state().status==='ready')void accountUI.messaging.reconnect().catch(error=>toast(error.message));};
 document.addEventListener('keydown',e=>{if(e.key==='/'&&!['INPUT','TEXTAREA','SELECT'].includes(document.activeElement.tagName)&&!$('main').hidden&&!document.querySelector('dialog[open]')){e.preventDefault();$('search').focus()}});
 function networkFilterLabel(){return accountUI?.state().ownerPubkey===contextKey?'People I follow':contextKey===DEFAULT_SOCIAL_GRAPH_ROOT?'Sirius Business’s network':nameFor(contextKey)+'’s network';}
 const syncHomePrompt=()=>{$('home-prompt-fields').hidden=!$('home-feed-enabled').checked;};

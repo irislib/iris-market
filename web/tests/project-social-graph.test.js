@@ -22,5 +22,5 @@ test('newer explicit empty lists override older duplicate identities',async()=>{
  assert.deepEqual(graph.getFollowedByUser(key(2)),new Set([key(3)]));assert.deepEqual(graph.getMutedByUser(key(2)),new Set());assert.equal(graph.getMuteListCreatedAt(key(2)),6);
 });
 test('tied conflicting latest follow lists cannot broaden the graph',async()=>{
- await assert.rejects(projectSocialGraph(await aliases([[0,1,[1]],[1,2,[3]],[2,2,[4]]]),key(1),1),/conflicting latest follow lists/);
+ await assert.rejects(async()=>projectSocialGraph(await aliases([[0,1,[1]],[1,2,[3]],[2,2,[4]]]),key(1),1),/conflicting latest follow lists/);
 });

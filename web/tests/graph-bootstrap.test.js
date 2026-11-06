@@ -13,9 +13,14 @@ test('the pinned company projection loads through the actual library with explic
   assert.equal(result.graph.getRoot(), GRAPH_BOOTSTRAP.root)
   assert.equal(GRAPH_BOOTSTRAP.root, '336f319763657d6b0e65a5b5876719e8c8dcdcf9396852be71ee26b73368b29b')
   const sizes = result.graph.size().sizeByDistance
-  assert.equal(sizes[0] + sizes[1] + sizes[2], 411)
+  assert.equal(sizes[0] + sizes[1] + sizes[2], 412)
   assert.equal(result.graph.getFollowedByUser(GRAPH_BOOTSTRAP.root).size, 2)
-  assert.equal(result.graph.size().users, 31187)
+  assert.equal(result.graph.size().users, 21323)
+  assert(bytes.byteLength < 1_100_000, 'The offline seed remains bounded for mobile')
+  const revisions = [...result.graph.getInternalData().listRevisions]
+  assert(revisions.some(([key, value]) => key.startsWith('3:') && value.id))
+  assert(revisions.some(([key, value]) => key.startsWith('10000:') && value.id))
+  assert(revisions.some(([, value]) => !value.complete), 'Truncated lists must keep their incomplete marker')
   assert.equal(result.provenance.verifiedEvents, false)
   assert.equal(result.provenance.stale, true)
   assert(result.provenance.newestFollowAt > 0)

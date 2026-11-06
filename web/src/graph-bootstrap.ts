@@ -6,10 +6,10 @@ import { SocialGraph } from 'nostr-social-graph'
 export const GRAPH_BOOTSTRAP = Object.freeze({
   root: '336f319763657d6b0e65a5b5876719e8c8dcdcf9396852be71ee26b73368b29b',
   url: './social-graph.bin',
-  package: 'nostr-social-graph@2.0.4',
+  package: 'nostr-social-graph@4.0.4',
   packagePath: 'src/data/social-graph.bin',
-  byteLength: 1_563_994,
-  sha256: 'df349a23122993183b9b9d2d056b7c655a984bdc86bc72f747202ad772de4d8f',
+  byteLength: 1_034_502,
+  sha256: '9af2ad6aaf830ff08aa14f83233e56c49d1379fb5da05efd1ebe9166aceabcb0',
   maxUsers: 40_000,
   maxEdges: 250_000,
 })

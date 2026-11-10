@@ -6,7 +6,7 @@ import {MarketRelayClient} from '../src/market.ts'
 import {readTopicVectors} from '../src/semantic-discovery.ts'
 import {SeenTags} from '../src/seen-tags.ts'
 import {createSearchDiscovery} from '../src/search-discovery.ts'
-import {matchesLiteralSearch,matchesSingleTermSearch,keywordSearches,listingSearchText} from '../src/lexical-search.ts'
+import {matchesLiteralSearch,listingMatchesLiteralSearch,matchesSingleTermSearch,keywordSearches,listingSearchText} from '../src/lexical-search.ts'
 const now=1800000000,key=new Uint8Array(32).fill(8)
 const signed=(id,title,tags=[],content='')=>finalizeEvent({kind:30402,created_at:now-10,content,tags:[['d',id],['title',title],...tags.map(t=>['t',t])]},key)
 const fixtures=[signed('meat','Beef steaks',['meat']),signed('bread','Sourdough bread',['bread']),signed('food','Groceries',['food']),signed('pet','Dog dinner',['petfood']),signed('pan','Cooking pan',['cookware']),signed('literal','Products for human use',[],'Edible fresh produce'),signed('finnish','TUORE LEIPÄ',[],'Helsinki')]
@@ -272,4 +272,20 @@ test('a literal search can fetch signed topic results after the general inventor
     feed.searchTags('anime',[],'literal');await feed.loadQueryCandidates();
     assert(feed.listings().some(item=>item.identifier==='anime'));
   }finally{feed.close()}
+});
+test('a listing match is remembered per search and follows a changed search or an editable listing',()=>{
+ let reads=0
+ const listing=Object.freeze({get title(){reads++;return 'Vintage road bike'},description:'Steel frame',tags:Object.freeze(['cycling'])})
+ assert.equal(listingMatchesLiteralSearch(listing,'road bike'),true)
+ assert.equal(listingMatchesLiteralSearch(listing,'road bike'),true)
+ assert.equal(reads,1)
+ assert.equal(listingMatchesLiteralSearch(listing,'bike steel cycling'),true)
+ assert.equal(listingMatchesLiteralSearch(listing,'sofa'),false)
+ assert.equal(listingMatchesLiteralSearch(listing,'road bike'),true)
+ const draft={title:'Sofa',tags:['home']}
+ assert.equal(listingMatchesLiteralSearch(draft,'sofa'),true)
+ draft.title='Armchair'
+ assert.equal(listingMatchesLiteralSearch(draft,'sofa'),false)
+ assert.equal(matchesLiteralSearch('The Book of Kells','the book'),true)
+ assert.equal(matchesLiteralSearch('Motorbike','bike'),false)
 });

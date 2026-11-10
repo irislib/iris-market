@@ -7,7 +7,7 @@ import {marketplaceToolEnabled} from './marketplace-tools.ts';
 import {setupEscrowTrade} from './escrow-trade-ui.ts';
 import {orderContext} from './message-context.ts';
 import {listingContext} from './message-context.ts';
-import {matchesLiteralSearch,listingSearchText} from './lexical-search.ts'
+import {matchesLiteralSearch,listingMatchesLiteralSearch} from './lexical-search.ts'
 import { npubEncode } from 'nostr-tools/nip19';
 import { parseMarketRoute, searchURL, listingURL, profileURL, pageURL } from './routes.ts';
 import { dismissOnBackdrop } from './surface.ts';
@@ -186,7 +186,7 @@ const inventory=[...listings,...orders];let result=savedOnly?inventory.filter(l=
 if(!savedOnly)result=result.filter(l=>!l.externalOrder||matchesLiteralSearch(l.externalOrder.search,query));
 const literalQuery=aiSelected?'':query;
 if(!savedOnly&&(literalQuery||nearbyFilter||place||shipsTo))result=result.filter(l=>
-  (!literalQuery||matchesLiteralSearch(l.externalOrder?.search??listingSearchText(l),literalQuery))
+  (!literalQuery||(l.externalOrder?matchesLiteralSearch(l.externalOrder.search,literalQuery):listingMatchesLiteralSearch(l,literalQuery)))
   &&(nearbyFilter?listingMatchesNearby(l,nearbyFilter):cell?mapVisible||l.originalTags?.some(t=>t[0]==='g'&&t.length===2&&decodeGeohash(t[1])?.geohash.startsWith(cell)):(l.location||'').toLowerCase().includes(place))
   &&(!shipsTo||matchesShippingDestination(shippingResolver.forListing(l),shipsTo)));if(!savedOnly&&$('sort').value==='price')result.sort((a,b)=>{const av=priceFor(a).converted,bv=priceFor(b).converted;if(av!==null&&bv!==null)return av-bv;if(av!==null)return -1;if(bv!==null)return 1;return(a.currency||'').localeCompare(b.currency||'')||(a.price===''?Infinity:Number(a.price))-(b.price===''?Infinity:Number(b.price));});if(!savedOnly&&$('sort').value!=='price')result=rankListings(result,{sort:$('sort').value as 'suggested'|'social'|'newest',saved,savedListings:listings,query,aiScoreFor:listing=>aiFilter?.scoreFor(listing),location:nearbyFilter||userLocation?.point(),relationFor:key=>graphContext?.rankRelationFor(key)||graphContext?.relationFor(key)});aiCandidates=savedOnly?[]:result.filter(l=>!l.externalOrder);structuredOrderCount=savedOnly?0:result.length-aiCandidates.length;if(!savedOnly)result=result.filter(l=>l.externalOrder||!aiFilter||aiFilter.isVisible(l));visibleResult=result;const forYou=!!aiFilter?.homeActive()&&!aiFilter.showingAll();if(['home','search','saved'].includes(currentRoute.type))gridUI.update(result,JSON.stringify([preview,savedOnly,side,query,place,nearbyFilter,shipsTo,$('sort').value,feedTags,feedAuthors,feedNetwork,contextKey,aiFilter?.enabled(),forYou,photosOnly()]),forYou&&currentRoute.type==='home'&&$('sort').value==='suggested');mapUI?.refresh();$('saved-count').textContent=String(saved.size);$('page-title').textContent=savedOnly?'Saved listings':query?'Search results':forYou?'For you':'Listings';$('result-count').textContent=result.length+' '+(result.length===1?'listing':'listings');
 const orderSearch=currentRoute.type==='search'&&matchesLiteralSearch('bitcoin btc sats satoshis',query);

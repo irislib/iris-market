@@ -146,22 +146,27 @@ impl State {
         let saved_count = saved_listings.len();
         let query = self.query.to_lowercase();
         let interests = ranking::saved_interests(&listings);
+        // Snapshots repeat for every update. Normalize the search once and
+        // each listing's text only when the search or that text changes.
+        let phrase = literal_search::normalize(&query);
         listings.retain(|l| {
             (self.side == "all" || l.side == self.side)
                 && (l.external_order.is_none() || !query.is_empty())
                 && (self.ai_search && l.external_order.is_none()
-                    || query.is_empty()
-                    || literal_search::matches_literal_search(
-                        &format!(
-                            "{} {} {} {} {}",
-                            l.title,
-                            l.description,
-                            l.location,
-                            l.category,
-                            l.tags.join(" ")
-                        ),
-                        &query,
-                    ))
+                    || phrase.is_empty()
+                    || l.search_text_cache.literal(l, &self.query, || {
+                        literal_search::matches_normalized(
+                            &literal_search::normalize(&format!(
+                                "{} {} {} {} {}",
+                                l.title,
+                                l.description,
+                                l.location,
+                                l.category,
+                                l.tags.join(" ")
+                            )),
+                            &phrase,
+                        )
+                    }))
         });
         for listing in &mut listings {
             listing.direct_match = self.ai_search

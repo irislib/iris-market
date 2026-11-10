@@ -14,6 +14,7 @@ struct SearchTextEvidence {
     key: Option<(u64, String)>,
     direct: Option<bool>,
     lexical: Option<f64>,
+    literal: Option<bool>,
 }
 impl SearchTextCache {
     fn evidence(
@@ -27,6 +28,7 @@ impl SearchTextCache {
             &listing.description,
             &listing.category,
             &listing.tags,
+            &listing.location,
         )
             .hash(&mut hash);
         let key = (hash.finish(), query.to_owned());
@@ -48,6 +50,17 @@ impl SearchTextCache {
         *self
             .evidence(listing, query)
             .direct
+            .get_or_insert_with(compute)
+    }
+    pub(crate) fn literal(
+        &self,
+        listing: &Listing,
+        query: &str,
+        compute: impl FnOnce() -> bool,
+    ) -> bool {
+        *self
+            .evidence(listing, query)
+            .literal
             .get_or_insert_with(compute)
     }
     pub(crate) fn lexical(

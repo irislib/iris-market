@@ -291,6 +291,13 @@ mod tests {
                 0.75
             );
         }
+        assert!(next.search_text_cache.literal(&next, "bicycle", || true));
+        assert!(
+            next.search_text_cache
+                .literal(&next, "bicycle", || panic!("Repeated literal matching"))
+        );
+        next.location = "Helsinki".into();
+        assert!(!next.search_text_cache.literal(&next, "bicycle", || false));
         assert!(!next.search_text_cache.direct(&next, "desk", || false));
         next.title = "Desk".into();
         assert!(next.search_text_cache.direct(&next, "desk", || true));

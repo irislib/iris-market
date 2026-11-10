@@ -135,7 +135,6 @@ pub fn parse(event: &Event, id: &str) -> Result<Listing> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::{listing, store::Store};
     use nostr::{EventBuilder, Keys, Kind, Tag, Timestamp};
     #[test]

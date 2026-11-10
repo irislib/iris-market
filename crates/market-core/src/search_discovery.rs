@@ -309,6 +309,7 @@ async fn read_page(
     bus.client().unsubscribe(&id).await;
     (complete, unsupported)
 }
+#[allow(clippy::too_many_arguments)]
 async fn relay_window(
     state: Arc<Mutex<State>>,
     request: Request,

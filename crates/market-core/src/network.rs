@@ -200,10 +200,11 @@ pub(crate) async fn run(state: Arc<Mutex<State>>, notify: Arc<Notify>, stopped: 
                 .into();
                 s.revision += 1;
             }
-            if {
+            let changed = {
                 let s = state.lock().unwrap();
                 s.buying_request != buying_request || s.map_cells != queried_cells
-            } {
+            };
+            if changed {
                 continue;
             }
             tokio::select! { _=notify.notified()=>{}, _=tokio::time::sleep(Duration::from_secs(20))=>{} }

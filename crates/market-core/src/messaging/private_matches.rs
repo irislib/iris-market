@@ -443,26 +443,26 @@ impl Book {
                 listing,
                 title,
                 expires_at,
-            } if current(expires_at, now) && valid_summary(&title) => {
-                if listing.len() <= 350
-                    && valid_address(&listing)
-                    && self
-                        .sent
-                        .get(&entry)
-                        .is_some_and(|r| r.peer == peer && r.entry.expires_at == expires_at)
-                    && self.public_leads.len() < CAP
-                {
-                    self.public_leads.insert(
-                        format!("{entry}/{listing}"),
-                        PublicLead {
-                            helper: peer,
-                            entry,
-                            listing,
-                            title,
-                            expires_at,
-                        },
-                    );
-                }
+            } if current(expires_at, now)
+                && valid_summary(&title)
+                && listing.len() <= 350
+                && valid_address(&listing)
+                && self
+                    .sent
+                    .get(&entry)
+                    .is_some_and(|r| r.peer == peer && r.entry.expires_at == expires_at)
+                && self.public_leads.len() < CAP =>
+            {
+                self.public_leads.insert(
+                    format!("{entry}/{listing}"),
+                    PublicLead {
+                        helper: peer,
+                        entry,
+                        listing,
+                        title,
+                        expires_at,
+                    },
+                );
             }
             _ => {}
         }

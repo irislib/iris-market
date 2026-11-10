@@ -70,10 +70,10 @@ async fn subscribe(
                 };
                 if matches!(result, Ok(true)) {
                     state.revision += 1;
-                    if event.kind.as_u16() != listing::LISTING_KIND {
-                        if let Some(feed) = &state.profile_listings {
-                            feed.collection_changed();
-                        }
+                    if event.kind.as_u16() != listing::LISTING_KIND
+                        && let Some(feed) = &state.profile_listings
+                    {
+                        feed.collection_changed();
                     }
                 }
             }),

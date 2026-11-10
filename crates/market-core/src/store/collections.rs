@@ -16,6 +16,9 @@ pub(super) fn schema(db: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// A verified collection event, its parsed data and whether it is still queued.
+type CollectionRow = (Arc<Event>, Arc<Data>, bool);
+
 impl Store {
     pub(crate) fn ingest_collection(
         &mut self,
@@ -123,7 +126,7 @@ impl Store {
         id: Option<&str>,
         owner: &str,
         at: u64,
-    ) -> Result<Vec<(Arc<Event>, Arc<Data>, bool)>> {
+    ) -> Result<Vec<CollectionRow>> {
         PublicKey::from_hex(author)?;
         let mut statement = self.db.prepare("SELECT raw,EXISTS(SELECT 1 FROM outbox WHERE event_id=c.event_id)
             FROM collections c WHERE author=?1 AND (?2 IS NULL OR identifier=?2)

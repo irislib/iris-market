@@ -3,7 +3,7 @@ import {element as node} from './dom.ts';
 import {imageUrl,createStaticImage} from './media.ts';
 import {art} from './art.ts';
 import {renderDescription} from './description.ts';
-import {listingURL} from './routes.ts';
+import {listingURL,validListingId} from './routes.ts';
 import {listingPublishedAt,type ListingDates} from './listing-dates.ts';
 import {relativeExpiry} from './expiry.ts';
 import {courierListingType} from './transport-type.ts';
@@ -15,6 +15,40 @@ interface ListingPageOptions {
   priceNode:(listing:ListingPresentation,className:string)=>HTMLElement;authorRow?:(listing:ListingPresentation)=>HTMLElement;
   isPreview?:boolean;owner?:string;onCloseBitcoin?:(listing:ListingPresentation)=>Promise<void>;onEdit?:(listing:ListingPresentation)=>void;onToast?:(message:string)=>void;draftPreview?:boolean;localImage?:string;
 }
+function listingShare(url:string, onToast:(message:string)=>void) {
+  const share=node('button','Share','button secondary listing-share');
+  share.type='button';
+  async function copyLink() {
+    try { await navigator.clipboard.writeText(url); onToast('Link copied'); }
+    catch { onToast('Copy the address from your browser'); }
+  }
+  if (typeof navigator.share === 'function' && (!navigator.canShare || navigator.canShare({url}))) {
+    const choices=node('div',undefined,'listing-share-choices');
+    choices.popover='auto';
+    choices.setAttribute('role','group');
+    choices.setAttribute('aria-label','Share listing');
+    share.popoverTargetElement=choices;
+    const copy=node('button','Copy link'),send=node('button','Share via…');
+    copy.autofocus=true;
+    copy.onclick=()=>{ choices.hidePopover(); void copyLink(); };
+    send.onclick=async()=>{
+      choices.hidePopover();
+      try { await navigator.share({url}); }
+      catch (error) { if (!(error instanceof Error && error.name==='AbortError')) onToast('Could not share this listing'); }
+    };
+    choices.ontoggle=event=>{
+      if (event.newState!=='open') return;
+      const rect=share.getBoundingClientRect();
+      choices.style.left=Math.max(8,Math.min(rect.left,innerWidth-choices.offsetWidth-8))+'px';
+      choices.style.top=(rect.bottom+6+choices.offsetHeight<=innerHeight-8 ? rect.bottom+6 : Math.max(8,rect.top-choices.offsetHeight-6))+'px';
+    };
+    choices.append(copy,send);
+    return [share,choices];
+  }
+  share.onclick=copyLink;
+  return [share];
+}
+
 export function renderListingPage(listing:ListingPresentation,{saved=false,onSave=()=>{},onBuy=()=>{},onProfile=()=>{},priceNode,authorRow=()=>null,isPreview=false,owner=undefined,onEdit=undefined,onCloseBitcoin=undefined,onToast=()=>{},draftPreview=false,localImage=undefined}:ListingPageOptions) {
   const wrap=node('article',undefined,'detail-layout');
   const media=node('div',undefined,'detail-media');
@@ -66,8 +100,8 @@ export function renderListingPage(listing:ListingPresentation,{saved=false,onSav
     actions.append(close);
   }
   const save=node('button',saved?'♥ Saved':'♡ Save','button secondary');save.setAttribute('aria-pressed',String(saved));save.onclick=()=>onSave(listing);
-  const share=node('button','Copy link','button secondary');share.onclick=async()=>{try{await navigator.clipboard.writeText(listingURL(listing.id,location.href));onToast('Link copied');}catch{onToast('Copy the address from your browser');}};
-  actions.append(save,share);
+  actions.append(save);
+  if (validListingId(listing.id)) actions.append(...listingShare(listingURL(listing.id), onToast));
   if(listing.externalOrder){
     const q=listing.externalOrder,terms=node('dl',undefined,'order-terms');
     for(const [label,value] of [['Payment method',q.methods],['Settlement',q.layer],

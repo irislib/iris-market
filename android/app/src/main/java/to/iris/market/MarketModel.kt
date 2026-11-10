@@ -25,6 +25,9 @@ import to.iris.market.core.MarketApp
 import to.iris.market.core.generateSecretKey
 import to.iris.market.core.MarketDeviceLink
 import to.iris.market.core.publicKeyForSecret
+import to.iris.market.core.MarketSignerPairing
+import to.iris.market.core.SignerApproval
+import to.iris.market.core.registerRemoteIdentityDevice
 import to.iris.market.core.registerIdentityDevice
 
 data class Listing(
@@ -224,6 +227,22 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
     fun dismissProfileSetup() { mutableProfileSetupRequested.value = false }
     private val alert = MutableStateFlow<String?>(null)
     val notice = alert.asStateFlow()
+    private val approval = MutableStateFlow<String?>(null)
+    val signerApproval = approval.asStateFlow()
+    fun dismissSignerApproval() { approval.value = null }
+    @Volatile private var pairing: MarketSignerPairing? = null
+    private fun signerObserver(generation: Long) = object : SignerApproval {
+        override fun showApproval(url: String) {
+            viewModelScope.launch {
+                if (accountGeneration == generation) approval.value = url
+            }
+        }
+    }
+    fun cancelSignerPairing() {
+        pairing?.cancel()
+        pairing = null
+        approval.value = null
+    }
     @Volatile private var active = true
     private var operationCount = 0
     @Volatile private var accountGeneration = 0L
@@ -358,6 +377,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
             directory.mkdirs()
             pushDirectory=directory.absolutePath;pushDeviceSecret=bundle.getString("device")
             core=MarketApp.withIdentity(directory.absolutePath,owner,bundle.optional("secret"),bundle.getString("device"),bundle.optional("authorization"))
+            bundle.optional("signer")?.let { core?.attachRemoteSigner(it, signerObserver(accountGeneration)) }
         } else {
             base.mkdirs()
             pushDirectory=base.absolutePath;pushDeviceSecret=legacy
@@ -416,20 +436,29 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
             }
         }
     }
-    fun signIn(secret: String, done:()->Unit) {
+    fun signIn(secret: String? = null, signerLink: String? = null, done:()->Unit) {
         cancelLocalAI()
         if(preview||working.value)return
+        val request = signerLink?.let { MarketSignerPairing() }
+        pairing = request
+        val generation = accountGeneration
         viewModelScope.launch {
             working.value=true;alert.value=null
             try {
+                val paired = if (request != null) withContext(Dispatchers.IO) {
+                    request.pair(signerLink, signerObserver(generation))
+                } else null
+                if (generation != accountGeneration || request != null && pairing !== request) return@launch
                 val saved=withContext(Dispatchers.IO) {
                     mutex.withLock {
-                        val owner=publicKeyForSecret(secret)
+                        check(generation == accountGeneration && (request == null || pairing === request))
+                        val owner = paired?.owner ?: publicKeyForSecret(requireNotNull(secret))
                         val prior=secure.get("account-$owner")
                         val legacy=secure.get("identity")
                         val usesLegacy=legacy.isNotBlank()&&publicKeyForSecret(legacy)==owner
                         val bundle=if(prior.isNotBlank()) JSONObject(prior) else JSONObject().put("owner",owner).put("device",if(usesLegacy)legacy else generateSecretKey()).put("legacy",usesLegacy)
                         bundle.put("secret",secret)
+                        bundle.put("signer",paired?.credential)
                         val relays=JSONObject(state.value.settings).optJSONArray("relays")?.toString() ?: "[]"
                         // Durable local identity and core open do not await relay discovery.
                         secure.put("account-$owner",bundle.toString());secure.put("active-account",owner)
@@ -437,17 +466,21 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
                         NativeEnrollment(owner,bundle.getString("device"),relays,accountGeneration)
                     }
                 }
+                pairing = null; dismissSignerApproval()
                 done()
                 viewModelScope.launch(Dispatchers.IO) {
                     try {
                         // No core mutex is held during the blocking enrollment call.
-                        val proof=registerIdentityDevice(secret,saved.device,saved.relays)
+                        val proof = if (paired != null) {
+                            registerRemoteIdentityDevice(paired.credential, saved.device, saved.relays, signerObserver(saved.generation))
+                        } else registerIdentityDevice(requireNotNull(secret),saved.device,saved.relays)
                         ensureActive()
                         mutex.withLock {
                             ensureActive()
                             if(accountGeneration!=saved.generation || secure.get("active-account")!=saved.owner)return@withLock
                             val current=JSONObject(secure.get("account-${saved.owner}"))
                             if(current.getString("device")!=saved.device)return@withLock
+                            approval.value = null
                             current.put("authorization",proof);secure.put("account-${saved.owner}",current.toString())
                             // Core verifies the published proof on its isolated owner-roster
                             // stream; the UI never overrides messagingReady.
@@ -462,8 +495,15 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
                     }
                 }
             } catch(e:CancellationException) {throw e}
-            catch(_:Exception) {alert.value="Could not save this profile. Check the key and try again."}
-            finally {working.value=operationCount>0}
+            catch(_:Exception) {
+                if (generation == accountGeneration && (request == null || pairing === request))
+                    alert.value = if (request != null) "Could not connect. Check the link and approve the request in your signer." else "Could not save this profile. Check the key and try again."
+            }
+            finally {
+                if (pairing === request) { pairing=null; approval.value=null }
+                request?.close()
+                working.value=operationCount>0
+            }
         }
     }
     private data class NativeEnrollment(val owner:String,val device:String,val relays:String,val generation:Long)

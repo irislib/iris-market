@@ -358,7 +358,19 @@ pub fn project(events: &[Event], target: &str, product: bool, now: u64) -> Vec<R
     result
 }
 pub fn build_profile(keys: &Keys, target: &str, rating: u8, body: &str, now: u64) -> Result<Event> {
-    let author = keys.public_key().to_hex();
+    let event =
+        profile_builder(keys.public_key(), target, rating, body, now)?.sign_with_keys(keys)?;
+    parse_profile(&event, target, now)?;
+    Ok(event)
+}
+fn profile_builder(
+    owner: nostr::PublicKey,
+    target: &str,
+    rating: u8,
+    body: &str,
+    now: u64,
+) -> Result<EventBuilder> {
+    let author = owner.to_hex();
     ensure!(
         key(target)
             && target != author
@@ -392,13 +404,10 @@ pub fn build_profile(keys: &Keys, target: &str, rating: u8, body: &str, now: u64
         .into_iter()
         .map(Tag::parse)
         .collect::<std::result::Result<Vec<_>, _>>()?;
-    let event = EventBuilder::new(Kind::Custom(7368), "")
+    Ok(EventBuilder::new(Kind::Custom(7368), "")
         .allow_self_tagging()
         .tags(tags)
-        .custom_created_at(Timestamp::from(now))
-        .sign_with_keys(keys)?;
-    parse_profile(&event, target, now)?;
-    Ok(event)
+        .custom_created_at(Timestamp::from(now)))
 }
 fn merged(old: Vec<Event>, new: Vec<Event>) -> Vec<Event> {
     let mut events: BTreeMap<_, _> = old
@@ -570,13 +579,15 @@ impl crate::Market {
         Ok(serde_json::to_string(&rows)?)
     }
     pub fn publish_review(&self, target: String, rating: u8, body: String) -> Result<String> {
+        let draft = {
+            let state = self.state.lock().unwrap();
+            ensure!(!state.demo, "Leave Preview to publish a review.");
+            profile_builder(state.owner, &target, rating, &body, crate::listing::now())?
+                .build(state.owner)
+        };
+        let event = self.sign_owner_event(draft)?;
+        parse_profile(&event, &target, crate::listing::now())?;
         let mut s = self.state.lock().unwrap();
-        ensure!(!s.demo, "Leave Preview to publish a review.");
-        let keys = s
-            .owner_keys
-            .as_ref()
-            .context("Sign in with your profile key to publish a review.")?;
-        let event = build_profile(keys, &target, rating, &body, crate::listing::now())?;
         let cache_key = format!("profile:{target}");
         let events = merged(s.store.review_events(&cache_key)?, vec![event.clone()]);
         s.store.queue_event(&event)?;

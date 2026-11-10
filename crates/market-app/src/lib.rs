@@ -1,3 +1,4 @@
+mod remote_signer;
 #[cfg(feature = "cashu-wallet")]
 mod wallet;
 use nostr::{JsonUtil, Keys, PublicKey};

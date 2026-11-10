@@ -305,6 +305,31 @@ final class MarketUITests: XCTestCase {
     }
 
     /// The test owner pre-seeds both account stores with a localhost relay that never replies.
+    func testExistingProfileRemoteSigner() throws {
+        // The dedicated simulator is seeded with an empty store and loopback relays.
+        guard let link = ProcessInfo.processInfo.environment["MARKET_LOCAL_SIGNER_FIXTURE"],
+              link.contains("127.0.0.1") else { throw XCTSkip("Requires the isolated signer fixture") }
+        app.terminate(); app.launchArguments = []; app.launch()
+        let create = app.buttons["createListing"]
+        XCTAssertTrue(create.waitForExistence(timeout: 15)); create.tap()
+        let existing = app.buttons["Existing profile"]
+        XCTAssertTrue(existing.waitForExistence(timeout: 12))
+        XCTAssertFalse(app.buttons["Remote signer"].exists)
+        existing.tap()
+        let remote = app.buttons["Remote signer"]
+        XCTAssertTrue(remote.waitForExistence(timeout: 10))
+        capture("market-existing-profile"); remote.tap()
+        let connection = app.secureTextFields["Signer connection link"]
+        XCTAssertTrue(connection.waitForExistence(timeout: 8))
+        capture("market-remote-signer")
+        connection.tap(); connection.typeText(link)
+        let connect = app.buttons["Connect signer"]
+        XCTAssertTrue(connect.isEnabled); connect.tap()
+        XCTAssertTrue(connection.waitForNonExistence(timeout: 30))
+        app.terminate(); app.launch()
+        XCTAssertTrue(create.waitForExistence(timeout: 15)); create.tap()
+        XCTAssertTrue(app.textFields["listingTitle"].waitForExistence(timeout: 10))
+    }
     func testLocalSignInDoesNotWaitForRelay() throws {
         guard ProcessInfo.processInfo.environment["MARKET_LOCAL_SIGNIN_UI_TEST"] == "1" else { throw XCTSkip("Needs the isolated silent local relay") }
         app.terminate(); app.launchArguments = []; app.launch()

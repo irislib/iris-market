@@ -238,6 +238,13 @@ fun MarketAppView(model: MarketModel, appearance: Appearance, changeAppearance: 
     if (profileSetupRequested) ModalBottomSheet(onDismissRequest = model::dismissProfileSetup, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = Cream) {
         ProfileSetupView(model, busy, model::dismissProfileSetup)
     }
+    val approval by model.signerApproval.collectAsStateWithLifecycle()
+    val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
+    approval?.let { url ->
+        AlertDialog(onDismissRequest=model::dismissSignerApproval, title={Text("Approve in your signer")},
+            confirmButton={TextButton(onClick={ model.dismissSignerApproval(); uriHandler.openUri(url) }) {Text("Open signer")}},
+            dismissButton={TextButton(onClick=model::dismissSignerApproval) {Text("Close")}})
+    }
     notice?.let { text -> AlertDialog(onDismissRequest = model::dismissNotice,
         title = { Text("Couldn’t finish that") }, text = { Text(text) },
         confirmButton = { TextButton(onClick = model::dismissNotice) { Text("OK") } }) }

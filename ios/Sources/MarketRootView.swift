@@ -28,9 +28,9 @@ struct MarketRootView: View {
     }
     var body: some View {
         #if os(macOS)
-        desktopBody
+        desktopBody.safeAreaInset(edge: .top) { MarketSignerApprovalLink() }
         #else
-        mobileBody
+        mobileBody.safeAreaInset(edge: .top) { MarketSignerApprovalLink() }
         #endif
     }
     private var mobileBody: some View {

@@ -197,7 +197,7 @@ struct NewListingView: View {
                 }
                 Section {
                     if store.demo { Label("Preview mode: publishing is turned off.", systemImage: "eye").font(.system(size: 13)).foregroundStyle(MarketTheme.muted) }
-                    else if !store.snapshot.canSign { Text("Sign in with your profile’s secret key to publish listings.").font(.system(size: 13)).foregroundStyle(MarketTheme.muted) }
+                    else if !store.snapshot.canSign { Text("Sign in with your signer or secret key to publish listings.").font(.system(size: 13)).foregroundStyle(MarketTheme.muted) }
                     else { Text("Your listing will be public, and people can contact you privately. Keep exact addresses and private contact details out of your listing.").font(.system(size: 13)).foregroundStyle(MarketTheme.muted).fixedSize(horizontal: false, vertical: true) }
                     MarketInlineError()
                     Button { reviewPublish = true } label: { HStack { Spacer(); Text("Review listing").fontWeight(.semibold); Spacer() }.padding(.vertical, 8) }

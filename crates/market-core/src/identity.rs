@@ -192,16 +192,24 @@ pub async fn register_device(
 ) -> Result<Event> {
     crate::network::validate_relays(relays)?;
     let owner = Keys::parse(owner_secret).context("Invalid profile secret")?;
+    register_with_signer(owner.public_key(), device_secret, relays, async |draft| {
+        Ok(draft.sign_with_keys(&owner)?)
+    })
+    .await
+}
+
+pub async fn register_with_signer(
+    owner: PublicKey,
+    device_secret: &str,
+    relays: &[String],
+    sign: impl AsyncFnOnce(nostr::UnsignedEvent) -> Result<Event>,
+) -> Result<Event> {
+    crate::network::validate_relays(relays)?;
     let device = Keys::parse(device_secret).context("Invalid device secret")?;
-    let previous = fetch_authorization_complete(relays, owner.public_key()).await?;
-    let draft = prepare_registration(
-        owner.public_key(),
-        device.public_key(),
-        &previous,
-        crate::listing::now(),
-    )?;
-    let event = draft.sign_with_keys(&owner)?;
-    let current = fetch_authorization_complete(relays, owner.public_key()).await?;
+    let previous = fetch_authorization_complete(relays, owner).await?;
+    let draft = prepare_registration(owner, device.public_key(), &previous, crate::listing::now())?;
+    let event = sign(draft).await?;
+    let current = fetch_authorization_complete(relays, owner).await?;
     ensure!(
         current.iter().map(|event| event.id).collect::<Vec<_>>()
             == previous.iter().map(|event| event.id).collect::<Vec<_>>(),

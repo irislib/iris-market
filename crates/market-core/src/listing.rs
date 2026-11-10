@@ -141,6 +141,17 @@ pub fn build(
     created_at: u64,
     closed: bool,
 ) -> Result<Event> {
+    let event = builder(d, identifier, created_at, closed)?.sign_with_keys(keys)?;
+    anyhow::ensure!(event.as_json().len() <= 65536, "Listing is too large");
+    Ok(event)
+}
+
+pub(crate) fn builder(
+    d: &Draft,
+    identifier: &str,
+    created_at: u64,
+    closed: bool,
+) -> Result<EventBuilder> {
     validate(d)?;
     let mut tags = vec![
         vec!["d".into(), identifier.into()],
@@ -201,14 +212,9 @@ pub fn build(
         None => LISTING_KIND,
     };
     let tags: Result<Vec<Tag>, _> = tags.into_iter().map(Tag::parse).collect();
-    let event = EventBuilder::new(Kind::Custom(kind), d.description.clone())
+    Ok(EventBuilder::new(Kind::Custom(kind), d.description.clone())
         .tags(tags?)
-        .custom_created_at(Timestamp::from(created_at))
-        .sign_with_keys(keys)?;
-    if event.as_json().len() > 65536 {
-        bail!("Listing is too large");
-    }
-    Ok(event)
+        .custom_created_at(Timestamp::from(created_at)))
 }
 
 pub fn parse(event: &Event, at: u64) -> Result<Listing> {

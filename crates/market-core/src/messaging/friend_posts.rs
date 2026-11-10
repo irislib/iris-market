@@ -312,12 +312,12 @@ impl Messaging {
         .map_err(anyhow::Error::msg)
     }
 
-    pub(crate) fn accept_friend_post(
-        &mut self,
-        store: &mut Store,
+    pub(crate) fn prepare_friend_post(
+        &self,
+        store: &Store,
         id: &str,
         vouches: &BTreeSet<Vouch>,
-    ) -> Result<()> {
+    ) -> Result<Option<nostr::UnsignedEvent>> {
         let inbox = &self.state.friend_posts;
         let item = inbox.requests.get(id).context("Unknown friend post")?;
         let coordinate = listing::coordinate(
@@ -328,7 +328,7 @@ impl Messaging {
         // The public insert and outbox entry commit together. A retry after a
         // crash sees the same coordinate, even if it has since been closed.
         if store.has_listing(&coordinate)? {
-            return Ok(());
+            return Ok(None);
         }
         let at = now();
         ensure!(
@@ -340,14 +340,9 @@ impl Messaging {
             "This request is outside your current policy"
         );
         let draft = item.request.public_draft(vouches)?;
-        let keys = self
-            .owner_keys
-            .as_ref()
-            .context("Approve listing signing with your profile key")?;
-        let event = listing::build(keys, &draft, &item.listing_identifier, at, false)?;
-        let contact = self.public_contact_event().map_err(anyhow::Error::msg)?;
-        store.ingest_with_contact(&event, at, &contact)?;
-        Ok(())
+        let event =
+            listing::builder(&draft, &item.listing_identifier, at, false)?.build(self.owner);
+        Ok(Some(event))
     }
 }
 
@@ -384,7 +379,7 @@ mod tests {
     fn admission_binds_authenticated_sender_recipient_policy_and_expiry() {
         let dir = tempfile::tempdir().unwrap();
         let mut helper = Messaging::open(dir.path(), Keys::generate()).unwrap();
-        let mut store = Store::open(&dir.path().join("public.sqlite")).unwrap();
+        let store = Store::open(&dir.path().join("public.sqlite")).unwrap();
         let owner = helper.owner;
         let origin = Keys::generate().public_key();
         let stranger = Keys::generate().public_key();
@@ -424,7 +419,7 @@ mod tests {
         helper.receive_friend_post(origin, origin, &inner);
         assert!(
             helper
-                .accept_friend_post(&mut store, &id, &BTreeSet::new())
+                .prepare_friend_post(&store, &id, &BTreeSet::new())
                 .is_err()
         );
         assert!(store.pending().unwrap().is_empty());

@@ -137,22 +137,18 @@ fn product_references(event: &Event) -> impl Iterator<Item = &str> {
     })
 }
 
-pub(crate) fn save(
-    state: &mut State,
+pub(crate) fn prepare(
+    state: &State,
     id: Option<String>,
     previous_event_id: Option<String>,
     name: &str,
     ids: &[String],
-) -> Result<()> {
+) -> Result<(nostr::UnsignedEvent, Option<nostr::EventId>)> {
     ensure!(!state.demo, "Leave Preview to publish a collection");
     ensure!(
         !state.profile_name_required,
         "Finish profile setup before publishing"
     );
-    let keys = state
-        .owner_keys
-        .as_ref()
-        .context("Approve collection signing with your profile key")?;
     let at = listing::now();
     let owner = state.owner.to_hex();
     let previous = match (&id, &previous_event_id) {
@@ -235,13 +231,6 @@ pub(crate) fn save(
     let event = EventBuilder::new(Kind::Custom(KIND), content)
         .tags(tags)
         .custom_created_at(Timestamp::from(timestamp))
-        .sign_with_keys(keys)?;
-    ensure!(
-        state
-            .store
-            .ingest_collection(&event, at, true, previous.as_ref().map(|e| e.id))?,
-        "Could not save the latest collection revision"
-    );
-    state.status = "Collection saved · queued".into();
-    Ok(())
+        .build(state.owner);
+    Ok((event, previous.map(|event| event.id)))
 }

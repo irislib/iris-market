@@ -120,6 +120,7 @@ extension View {
 struct MarketInlineError: View {
     @EnvironmentObject private var store: MarketStore
     var body: some View {
+        MarketSignerApprovalLink()
         if let issue = store.alert {
             Text(issue).font(.system(size: 13)).foregroundStyle(.red).frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -147,5 +148,15 @@ struct IrisMark: View {
             let gradient = LinearGradient(colors: [Color(red: 0.52, green: 0.35, blue: 0.86), Color(red: 0.78, green: 0.35, blue: 0.65), Color(red: 0.95, green: 0.54, blue: 0.35)], startPoint: .bottomLeading, endPoint: .topTrailing)
             ZStack { path.fill(gradient); path.rotation(.degrees(180), anchor: .center).fill(gradient) }
         }.accessibilityHidden(true)
+    }
+}
+
+struct MarketSignerApprovalLink: View {
+    @EnvironmentObject private var store: MarketStore
+    @Environment(\.openURL) private var openURL
+    var body: some View {
+        if let url = store.signerApprovalURL {
+            Button("Open signer to approve") { store.signerApprovalURL = nil; openURL(url) }
+        }
     }
 }

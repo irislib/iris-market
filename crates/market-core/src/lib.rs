@@ -21,6 +21,7 @@ pub mod public_cache;
 mod public_reconcile;
 pub mod ranking;
 pub mod rates;
+pub mod remote_signer;
 pub mod reviews;
 mod search_discovery;
 mod search_plan;
@@ -46,6 +47,7 @@ pub(crate) struct State {
     store: store::Store,
     owner: nostr::PublicKey,
     owner_keys: Option<Keys>,
+    remote_signer: Option<(remote_signer::RemoteSigner, remote_signer::Approval)>,
     settings: Settings,
     rates: rates::RateBook,
     ai_configured: bool,
@@ -287,7 +289,7 @@ impl State {
                 .as_ref()
                 .map(|pending| pending.batch.clone()),
             public_key: self.owner.to_hex(),
-            can_sign: self.owner_keys.is_some(),
+            can_sign: self.owner_keys.is_some() || self.remote_signer.is_some(),
             ai_configured: self.ai_configured,
             profile_name_required: self.profile_name_required,
             messaging_ready: self
@@ -589,6 +591,7 @@ impl Market {
             store,
             owner,
             owner_keys,
+            remote_signer: None,
             settings,
             rates,
             ai_configured,
@@ -675,6 +678,51 @@ impl Market {
         })
     }
     /// Keep origin-to-listing links and private posting rules out of ordinary snapshots.
+    pub fn attach_remote_signer(
+        &self,
+        signer: remote_signer::RemoteSigner,
+        approval: remote_signer::Approval,
+    ) -> Result<()> {
+        let mut state = self.state.lock().unwrap();
+        anyhow::ensure!(
+            state.owner == signer.owner(),
+            "Signer does not match this profile"
+        );
+        state.remote_signer = Some((signer, approval));
+        state.revision += 1;
+        Ok(())
+    }
+
+    /// Sign outside the state lock so incoming events and snapshots keep working
+    /// while the user reviews a request in their signer.
+    fn sign_owner_event(&self, draft: nostr::UnsignedEvent) -> Result<nostr::Event> {
+        let remote = {
+            let state = self.state.lock().unwrap();
+            anyhow::ensure!(
+                state.owner == draft.pubkey && !state.demo,
+                "Invalid signing profile"
+            );
+            if let Some(keys) = &state.owner_keys {
+                return Ok(draft.sign_with_keys(keys)?);
+            }
+            state
+                .remote_signer
+                .clone()
+                .context("Connect a signer to approve this action")?
+        };
+        let handle = self
+            .runtime
+            .lock()
+            .unwrap()
+            .as_ref()
+            .context("Profile is closed")?
+            .handle()
+            .clone();
+        let event = handle.block_on(remote.0.sign(draft, &remote.1))?;
+        anyhow::ensure!(!self.stopped.load(Ordering::Acquire), "Profile is closed");
+        Ok(event)
+    }
+
     pub fn private_match_candidates(&self, entry: &str) -> Result<String> {
         let s = self.state.lock().unwrap();
         let messaging = s
@@ -984,11 +1032,15 @@ impl Market {
                         serde_json::to_string(&metadata)?,
                     )
                     .custom_created_at(nostr::Timestamp::from(at))
-                    .sign_with_keys(
-                        s.owner_keys
-                            .as_ref()
-                            .context("Approve this change with your profile key")?,
-                    )?;
+                    .build(s.owner);
+                    drop(s);
+                    let event = self.sign_owner_event(event)?;
+                    s = self.state.lock().unwrap();
+                    anyhow::ensure!(
+                        s.profiles.metadata_event(&owner).map(|event| event.id)
+                            == previous.map(|event| event.id),
+                        "Your profile changed. Reopen it before editing"
+                    );
                     s.store.queue_profile_metadata(&event)?;
                     let _ = s.profiles.ingest_public(event);
                 }
@@ -1002,7 +1054,17 @@ impl Market {
                 title,
                 listing_ids,
             } => {
-                collections::save(&mut s, identifier, previous_event_id, &title, &listing_ids)?;
+                let (draft, previous) =
+                    collections::prepare(&s, identifier, previous_event_id, &title, &listing_ids)?;
+                drop(s);
+                let event = self.sign_owner_event(draft)?;
+                s = self.state.lock().unwrap();
+                anyhow::ensure!(
+                    s.store
+                        .ingest_collection(&event, listing::now(), true, previous)?,
+                    "The collection changed. Reopen it before editing"
+                );
+                s.status = "Collection saved · queued".into();
                 if let Some(feed) = &s.profile_listings {
                     feed.collection_changed();
                 }
@@ -1012,15 +1074,21 @@ impl Market {
                 if s.demo {
                     bail!("Leave Preview to publish your own listing");
                 }
-                let event = listing::build(
-                    s.owner_keys
-                        .as_ref()
-                        .context("Approve listing signing with your profile key")?,
+                anyhow::ensure!(
+                    s.messaging.as_ref().is_some_and(|m| m.can_send()),
+                    "Approve this device before publishing a listing"
+                );
+                let draft = listing::builder(
                     &draft,
                     &uuid::Uuid::new_v4().to_string(),
                     listing::now(),
                     false,
-                )?;
+                )?
+                .build(s.owner);
+                drop(s);
+                let event = self.sign_owner_event(draft)?;
+                s = self.state.lock().unwrap();
+
                 let contact = s
                     .messaging
                     .as_mut()
@@ -1046,15 +1114,21 @@ impl Market {
                     "Only the order coordinator can close this quote"
                 );
                 let identifier = previous.tags.identifier().context("Invalid listing")?;
-                let event = listing::build(
-                    s.owner_keys
-                        .as_ref()
-                        .context("Approve listing signing with your profile key")?,
+                let draft = listing::builder(
                     &listing::draft_from(&l),
                     identifier,
                     listing::now().max(l.created_at + 1),
                     true,
-                )?;
+                )?
+                .build(s.owner);
+                drop(s);
+                let event = self.sign_owner_event(draft)?;
+                s = self.state.lock().unwrap();
+                anyhow::ensure!(
+                    s.store.event(&id)?.id == previous.id,
+                    "This listing changed. Reopen it before closing"
+                );
+
                 s.store.ingest(&event, listing::now(), true)?;
                 self.notify.notify_one();
             }
@@ -1236,13 +1310,37 @@ impl Market {
                 self.notify.notify_waiters();
             }
             Command::AcceptFriendPost { id, vouches } => {
-                let State {
-                    messaging, store, ..
-                } = &mut *s;
-                messaging
-                    .as_mut()
+                let draft = s
+                    .messaging
+                    .as_ref()
                     .context("Private messaging unavailable")?
-                    .accept_friend_post(store, &id, &vouches)?;
+                    .prepare_friend_post(&s.store, &id, &vouches)?;
+                if let Some(draft) = draft {
+                    drop(s);
+                    let event = self.sign_owner_event(draft)?;
+                    s = self.state.lock().unwrap();
+                    let current = s
+                        .messaging
+                        .as_ref()
+                        .context("Private messaging unavailable")?
+                        .prepare_friend_post(&s.store, &id, &vouches)?;
+                    if let Some(current) = current {
+                        anyhow::ensure!(
+                            current.tags == event.tags
+                                && current.content == event.content
+                                && current.kind == event.kind,
+                            "This request changed. Review it again"
+                        );
+                        let contact = s
+                            .messaging
+                            .as_mut()
+                            .unwrap()
+                            .public_contact_event()
+                            .map_err(anyhow::Error::msg)?;
+                        s.store
+                            .ingest_with_contact(&event, listing::now(), &contact)?;
+                    }
+                }
                 s.status = "Friend post accepted".into();
                 self.notify.notify_waiters();
             }

@@ -106,7 +106,7 @@ import org.json.JSONObject
         if(state.demo) Surface(color=Sand,shape=RoundedCornerShape(14.dp)) {
             Text("This is Preview. Switch to your live market to publish a listing.",Modifier.padding(14.dp),style=MaterialTheme.typography.bodySmall)
         } else Text("This listing will be public. Keep personal contact details and exact addresses out of the description.",color=Muted,style=MaterialTheme.typography.bodySmall)
-        if(!state.demo && !state.canSign) Text("Sign in with your profile’s secret key to publish listings.",color=Muted,style=MaterialTheme.typography.bodySmall)
+        if(!state.demo && !state.canSign) Text("Sign in with your signer or secret key to publish listings.",color=Muted,style=MaterialTheme.typography.bodySmall)
         if(escrowEnabled) {
             ToolSwitch(if(side=="offer")"Allow buyers to propose escrow" else "Allow sellers to propose escrow","The other trader can suggest a provider. You and the provider decide whether to accept each invitation.",offerEscrow){offerEscrow=it}
             if(offerEscrow) {

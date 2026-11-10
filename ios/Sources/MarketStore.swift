@@ -24,6 +24,22 @@ final class MarketStore: ObservableObject {
     private var deviceLink: MarketDeviceLink?
     private var linkingSecret: String?
     private var linkPolling = false
+    private var pairing: MarketSignerPairing?
+    @Published var signerApprovalURL: URL?
+    private func signerObserver() -> MarketSignerObserver {
+        let generation = accountGeneration
+        return MarketSignerObserver { [weak self] url in
+            guard let self, self.accountGeneration == generation else { return }
+            self.signerApprovalURL = URL(string: url)
+        }
+    }
+    func cancelSignerPairing() {
+        guard let pairing else { return }
+        pairing.cancel()
+        self.pairing = nil
+        signerApprovalURL = nil
+        busy = false
+    }
     private var accountGeneration = 0
     private let aiIntentGate = NativeAIIntentGate()
     private let aiPreferenceQueue = DispatchQueue(label: "to.iris.market.ai-preference", qos: .userInitiated)
@@ -140,6 +156,8 @@ final class MarketStore: ObservableObject {
         app = nil; ready = false; activeOrderID = nil; dismissProfileSetup(); stopPolling(); accountGeneration += 1; operationCount = 0; busy = false
         _ = aiIntentGate.advance()
         let generation = accountGeneration
+        let observer = signerObserver()
+        signerApprovalURL = nil
         queue.async { [weak self] in
             do {
                 previous?.shutdown()
@@ -176,6 +194,9 @@ final class MarketStore: ObservableObject {
                         guard !FileManager.default.fileExists(atPath:folder.appendingPathComponent("private-messages/messages.sqlite3").path) else { throw CocoaError(.fileWriteFileExists) }
                         app = try MarketApp.withSharedPrivateStore(dataDir:folder.path,privateDataDir:shared.path,ownerPublicKey:bundle.ownerPublicKey,ownerSecret:bundle.ownerSecret,deviceSecret:bundle.deviceSecret,authorization:bundle.authorization)
                     } else { app = try MarketApp.withIdentity(dataDir: folder.path, ownerPublicKey: bundle.ownerPublicKey, ownerSecret: bundle.ownerSecret, deviceSecret: bundle.deviceSecret, authorization: bundle.authorization) }
+                    if let credential = bundle.remoteSigner {
+                        try app.attachRemoteSigner(credential: credential, observer: observer)
+                    }
                 } else {
                     try FileManager.default.createDirectory(at: baseFolder, withIntermediateDirectories: true)
                     let owner = try publicKeyForSecret(secret:secret)
@@ -732,37 +753,58 @@ final class MarketStore: ObservableObject {
         }
     }
 
-    func signIn(secret: String, completion: @escaping (Bool) -> Void) {
+    func signIn(secret: String? = nil, signerLink: String? = nil, completion: @escaping (Bool) -> Void) {
         guard !NativeTestStorage.enabled, !demo, !busy else { return }
         busy = true; alert = nil
         let relays = snapshot.settings.relays
         let attempt = accountGeneration
+        let observer = signerObserver()
+        let request = signerLink.map { _ in MarketSignerPairing() }
+        pairing = request
         queue.async { [weak self] in
             do {
-                let owner = try publicKeyForSecret(secret: secret)
+                let paired: PairedMarketSigner?
+                let owner: String
+                if let request, let signerLink {
+                    let result = try request.pair(connection: signerLink, observer: observer)
+                    paired = result
+                    owner = result.owner
+                } else if let secret {
+                    owner = try publicKeyForSecret(secret: secret)
+                    paired = nil
+                } else { throw CocoaError(.coderInvalidValue) }
                 let legacy = try SecureStore.read("identity")
                 let usesLegacy = try legacy.map { try publicKeyForSecret(secret: $0) == owner } ?? false
                 var bundle = try NativeAccountBundle.load(owner) ?? NativeAccountBundle(ownerPublicKey: owner, ownerSecret: secret, deviceSecret: usesLegacy ? legacy! : generateSecretKey(), authorization: nil, legacy: usesLegacy)
                 bundle.ownerSecret = secret
+                bundle.remoteSigner = paired?.credential
                 let saved = bundle
                 let servers = String(decoding: try JSONEncoder().encode(relays), as: UTF8.self)
                 Task { @MainActor in
-                    guard let self, self.accountGeneration == attempt else { completion(false); return }
+                    guard let self, self.accountGeneration == attempt, request == nil || self.pairing === request else { completion(false); return }
                     do {
                         // A profile is usable locally before any server replies.
+                        self.pairing = nil; self.signerApprovalURL = nil
                         try saved.save(); try SecureStore.write(owner, account: "active.account")
                         self.busy = false; self.open()
                         let generation = self.accountGeneration
                         completion(true)
+                        let enrollmentObserver = self.signerObserver()
                         self.enrollmentQueue.async { [weak self] in
                             do {
-                                let proof = try registerIdentityDevice(ownerSecret: secret, deviceSecret: saved.deviceSecret, relaysJson: servers)
+                                let proof: String
+                                if let credential = saved.remoteSigner {
+                                    proof = try registerRemoteIdentityDevice(credential: credential, deviceSecret: saved.deviceSecret, relaysJson: servers, observer: enrollmentObserver)
+                                } else if let secret {
+                                    proof = try registerIdentityDevice(ownerSecret: secret, deviceSecret: saved.deviceSecret, relaysJson: servers)
+                                } else { return }
                                 Task { @MainActor in
                                     guard let self, self.accountGeneration == generation else { return }
                                     do {
                                         guard try SecureStore.read("active.account") == owner,
                                               var current = try NativeAccountBundle.load(owner),
                                               current.deviceSecret == saved.deviceSecret else { return }
+                                        self.signerApprovalURL = nil
                                         current.authorization = proof; try current.save()
                                         // The core's isolated owner-roster stream verifies the
                                         // published proof. Never force messagingReady in the UI.
@@ -777,12 +819,12 @@ final class MarketStore: ObservableObject {
                                 }
                             }
                         }
-                    } catch { self.busy = false; self.alert = marketErrorMessage(error); completion(false) }
+                    } catch { self.pairing = nil; self.signerApprovalURL = nil; self.busy = false; self.alert = marketErrorMessage(error); completion(false) }
                 }
             } catch {
                 Task { @MainActor in
-                    guard let self, self.accountGeneration == attempt else { completion(false); return }
-                    self.busy = false; self.alert = marketErrorMessage(error); completion(false)
+                    guard let self, self.accountGeneration == attempt, request == nil || self.pairing === request else { completion(false); return }
+                    self.pairing = nil; self.signerApprovalURL = nil; self.busy = false; self.alert = marketErrorMessage(error); completion(false)
                 }
             }
         }
@@ -922,6 +964,7 @@ private struct NativeAccountBundle: Codable {
     var deviceSecret: String
     var authorization: String?
     var legacy: Bool
+    var remoteSigner: String?
     static func load(_ owner: String) throws -> NativeAccountBundle? {
         guard let value = try SecureStore.read("account.\(owner)") else { return nil }
         return try JSONDecoder().decode(Self.self, from: Data(value.utf8))
@@ -960,4 +1003,11 @@ extension MarketStore {
         guard generation == accountGeneration else { throw CancellationError() }
         return result
     }
+}
+
+
+private final class MarketSignerObserver: SignerApproval, @unchecked Sendable {
+    let callback: @MainActor @Sendable (String) -> Void
+    init(_ callback: @escaping @MainActor @Sendable (String) -> Void) { self.callback = callback }
+    func showApproval(url: String) { Task { @MainActor in callback(url) } }
 }

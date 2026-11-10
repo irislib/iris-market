@@ -18,13 +18,15 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 
 @Composable fun AccountSignInView(model: MarketModel,busy:Boolean,close:()->Unit) {
+    var showsSigner by remember { mutableStateOf(false) }
+    var signerLink by remember { mutableStateOf("") }
     var secret by remember {mutableStateOf("")}
     val invitation by model.deviceLinkUrl.collectAsState()
     val state by model.state.collectAsState()
     val initialOwner = remember {state.publicKey}
     LaunchedEffect(state.publicKey) {if(state.publicKey != initialOwner) close()}
     val context=LocalContext.current;val clipboard=LocalClipboardManager.current
-    DisposableEffect(model) {onDispose {model.closeDeviceLink()}}
+    DisposableEffect(model) {onDispose {model.closeDeviceLink();model.cancelSignerPairing()}}
     Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(24.dp),verticalArrangement=Arrangement.spacedBy(20.dp)) {
         Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {Text("Sign in",style=MaterialTheme.typography.titleLarge,modifier=Modifier.weight(1f));TextButton(onClick=close){Text("Done")}}
         if(invitation!=null) {
@@ -33,8 +35,15 @@ import androidx.compose.ui.unit.dp
             Button(onClick={context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {type="text/plain";putExtra(Intent.EXTRA_TEXT,invitation)},"Share link"))},modifier=Modifier.fillMaxWidth()) {Icon(Icons.Filled.Share,null);Spacer(Modifier.width(8.dp));Text("Share link")}
             TextButton(onClick={clipboard.setText(AnnotatedString(invitation!!))},modifier=Modifier.fillMaxWidth()){Text("Copy link")}
             Text("Waiting for approval on your other device.",color=Muted)
+        } else if (showsSigner) {
+            OutlinedTextField(value=signerLink, onValueChange={signerLink=it}, label={Text("Signer connection link")},
+                visualTransformation=PasswordVisualTransformation(), singleLine=true, modifier=Modifier.fillMaxWidth())
+            Button(onClick={model.signIn(signerLink=signerLink.trim()) { signerLink=""; close() }},
+                enabled=signerLink.isNotBlank() && !busy, modifier=Modifier.fillMaxWidth()) { Text("Connect signer") }
+            TextButton(onClick={model.cancelSignerPairing(); showsSigner=false; signerLink=""}) { Text("Back") }
         } else {
             Button(onClick={model.beginDeviceLink()},enabled=!busy,modifier=Modifier.fillMaxWidth()) {Icon(Icons.Filled.Link,null);Spacer(Modifier.width(8.dp));Text("Link this device")}
+            OutlinedButton(onClick={showsSigner=true},enabled=!busy,modifier=Modifier.fillMaxWidth()) { Text("Remote signer") }
             Text("Or sign in with your secret key",color=Muted,style=MaterialTheme.typography.bodyMedium)
             OutlinedTextField(value=secret,onValueChange={secret=it},label={Text("Secret key")},visualTransformation=PasswordVisualTransformation(),singleLine=true,modifier=Modifier.fillMaxWidth(),shape=RoundedCornerShape(16.dp))
             OutlinedButton(onClick={model.signIn(secret.trim()){secret="";close()}},enabled=secret.isNotBlank()&&!busy,modifier=Modifier.fillMaxWidth()){Text("Sign in")}

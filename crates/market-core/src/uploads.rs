@@ -1,6 +1,7 @@
 //! Explicit public listing uploads. Platforms re-encode photos to strip EXIF/GPS.
 use anyhow::{Context, Result, ensure};
-use nostr::Keys;
+use base64::Engine;
+use nostr::{Event, EventBuilder, JsonUtil, Keys, Kind, Tag};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::time::Duration;
@@ -74,18 +75,39 @@ pub fn describe(bytes: &[u8], name: &str, mime: &str) -> Result<MediaUpload> {
         is_image,
     })
 }
-async fn upload(keys: Keys, bytes: Vec<u8>, media: &MediaUpload) -> Result<()> {
-    let client = hashtree_blossom::BlossomClient::new_empty(keys)
-        .with_write_servers(vec!["https://upload.iris.to".into()])
-        .with_timeout(Duration::from_secs(15));
-    client
-        .upload(&bytes)
-        .await
-        .context("Could not upload the file. Your draft is still here.")?;
+enum UploadAuthorization {
+    Local(Keys),
+    Signed(Event),
+}
+async fn upload(auth: UploadAuthorization, bytes: Vec<u8>, media: &MediaUpload) -> Result<()> {
     let http = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(15))
         .build()?;
+    match auth {
+        UploadAuthorization::Local(keys) => {
+            let client = hashtree_blossom::BlossomClient::new_empty(keys)
+                .with_write_servers(vec!["https://upload.iris.to".into()])
+                .with_timeout(Duration::from_secs(15));
+            client
+                .upload(&bytes)
+                .await
+                .context("Could not upload the file. Your draft is still here.")?;
+        }
+        UploadAuthorization::Signed(event) => {
+            let authorization = base64::engine::general_purpose::STANDARD.encode(event.as_json());
+            http.put("https://upload.iris.to/upload")
+                .header(
+                    reqwest::header::AUTHORIZATION,
+                    format!("Nostr {authorization}"),
+                )
+                .header(reqwest::header::CONTENT_TYPE, &media.mime)
+                .body(bytes.clone())
+                .send()
+                .await?
+                .error_for_status()?;
+        }
+    }
     let expected = Sha256::digest(&bytes);
     let mut response = http.get(&media.url).send().await?.error_for_status()?;
     ensure!(
@@ -109,12 +131,24 @@ impl crate::Market {
     /// Called off the UI thread. No listing is published by uploading a selected file.
     pub fn upload_media(&self, bytes: Vec<u8>, name: String, mime: String) -> Result<String> {
         let media = describe(&bytes, &name, &mime)?;
-        let keys = {
+        let (local, owner) = {
             let s = self.state.lock().unwrap();
             ensure!(!s.demo, "Leave Preview to upload a file.");
-            s.owner_keys
-                .clone()
-                .context("Sign in with your profile key to upload.")?
+            (s.owner_keys.clone(), s.owner)
+        };
+        let auth = if let Some(keys) = local {
+            UploadAuthorization::Local(keys)
+        } else {
+            let hash = format!("{:x}", Sha256::digest(&bytes));
+            let expiry = (crate::listing::now() + 300).to_string();
+            let draft = EventBuilder::new(Kind::Custom(24242), format!("upload {hash}"))
+                .tags([
+                    Tag::parse(["t", "upload"])?,
+                    Tag::parse(["x", &hash])?,
+                    Tag::parse(["expiration", &expiry])?,
+                ])
+                .build(owner);
+            UploadAuthorization::Signed(self.sign_owner_event(draft)?)
         };
         let runtime = self
             .runtime
@@ -124,7 +158,7 @@ impl crate::Market {
             .context("App is closed")?
             .handle()
             .clone();
-        runtime.block_on(upload(keys, bytes, &media))?;
+        runtime.block_on(upload(auth, bytes, &media))?;
         Ok(serde_json::to_string(&media)?)
     }
 }

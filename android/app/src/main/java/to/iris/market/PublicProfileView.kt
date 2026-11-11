@@ -70,7 +70,7 @@ import org.json.JSONObject
                 if(!state.demo && author!=state.publicKey) OutlinedButton(onClick={message(author)}) {
                     Icon(Icons.Filled.ChatBubble,null);Spacer(Modifier.width(8.dp));Text("Message")
                 }
-                if(!profile?.about.isNullOrBlank()) Text(profile!!.about,style=MaterialTheme.typography.bodyMedium)
+                if (!profile?.about.isNullOrBlank()) TranslatedText(profile!!.about) { Text(it, style = MaterialTheme.typography.bodyMedium) }
                 profile?.website?.let { url -> TextButton(onClick={runCatching{uri.openUri(url)}}) { Text(url,maxLines=2) } }
                 if(known.isNotEmpty()) KnownFollowersLine(known.take(3),maxOf(known.size,person.connection.knownFollowers),open={history=history+author;author=it},showFollowers={
                     if (selection == 3) model.openCollection(author, null)

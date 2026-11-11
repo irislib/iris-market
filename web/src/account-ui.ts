@@ -13,6 +13,7 @@ import { createProfileWithOptionalName } from './profile-setup.ts';
 import { createUnreadTracker, conversationNotifications, readingSurface } from './notifications.ts';
 import { byId, element as domElement, formFields } from './dom.ts';
 import { createChatDrafts } from './chat-drafts.ts';
+import {translatedParagraph} from './translation-content.ts';
 import { captureInvitation } from './asset-url.ts';
 import { npubEncode } from 'nostr-tools/nip19';
 import { createMessaging } from './messaging/client.ts';
@@ -120,6 +121,7 @@ export function setupAccount({guestNotices,getMatchListings=()=>[],renderEscrowT
     if(context?.order_id){const title=state.orders?.find(o=>o.id===context.order_id)?.items.map(i=>i.title).join(', ');return title?`Order · ${title}`:'Order';}
     return context?.listing?(listingTitle(context.listing)||'Listing inquiry'):'Conversation';
   }
+  let visibleProse=new Map<string,{original:string;node:HTMLElement}>();
   function renderInbox(){
     const revision=++inboxRevision;
     syncUnread();
@@ -158,6 +160,8 @@ export function setupAccount({guestNotices,getMatchListings=()=>[],renderEscrowT
     const messages=selectedThreadKey!=='*'?allMessages.filter(m=>messageThreadKey(m)===selectedThreadKey):allMessages;
     const area=$('chat-messages'), nearBottom=area.scrollHeight-area.scrollTop-area.clientHeight<100;
     pickerState.capture(selectionKey(),area);
+    const previousProse=visibleProse;
+    visibleProse=new Map();
     area.replaceChildren(...messages.map(message=>{
       const item=el('div',undefined,`chat-message ${message.mine?'mine':''}`),body=el('div'),active=()=>inbox.open&&revision===inboxRevision&&state.status==='ready';
       const payment=parsePaymentNote(message.text);
@@ -165,6 +169,12 @@ export function setupAccount({guestNotices,getMatchListings=()=>[],renderEscrowT
       else if(containsCashu(message.text)){
         body.append(el('p','Cashu token','muted'));
         void renderCashuContent(message.text,{isActive:active,onToken:token=>{if(!active())return;inbox.hide();return onToken(token);}}).then(content=>{if(active()){body.replaceChildren(content);if(nearBottom)area.scrollTop=area.scrollHeight;}}).catch(()=>{if(active())body.replaceChildren(el('p','Token unavailable. Reopen this conversation to retry.','muted'));});
+      }else if(!message.mine && !message.system && !message.id.startsWith('notice-')){
+        // A receipt or reaction can redraw the inbox while someone reads a translation.
+        const previous=previousProse.get(message.id);
+        const prose=previous?.original===message.text ? previous : {original:message.text,node:translatedParagraph(message.text)};
+        visibleProse.set(message.id,prose);
+        body.append(prose.node);
       }else body.append(el('p',message.text));
       item.dataset.messageId=message.id;item.dataset.mine=String(message.mine);item.append(body);
       if(typeof message.orderId==='string'&&message.orderId.length<=160){const order=el('button','View order','button secondary chat-order-link');order.type='button';order.onclick=()=>{if(active()){inbox.hide();onOrder(message.orderId)}};item.append(order);}
@@ -227,7 +237,9 @@ export function setupAccount({guestNotices,getMatchListings=()=>[],renderEscrowT
   $('chat-new').onsubmit=event=>{event.preventDefault();const input=$('chat-recipient').value.trim();$('chat-error').textContent='';(async()=>{selectChat(input.includes('://')?await messaging.acceptInvite(input):normalizePublicKey(input));await messaging.open(selected);$('chat-recipient').value='';renderInbox();})().catch(error=>{$('chat-error').textContent=error.message;});};
   $('chat-send').onsubmit=event=>{event.preventDefault();const text=$('chat-text').value.trim(),peer=selected,context=selectedContext,key=selectionKey();if(!text||!peer)return;$('chat-send-button').disabled=true;$('chat-error').textContent='';messaging.send(peer,text,context).then(()=>{drafts.clear(key);if(selectionKey()===key&&$('chat-text').value.trim()===text)$('chat-text').value='';}).catch(error=>{$('chat-error').textContent=error.message;}).finally(()=>{$('chat-send-button').disabled=!state.canSend;});};
   for(const [id,mode] of [['chat-threads',true],['chat-people',false]] as const)$(id).onclick=()=>{threadMode=mode;try{localStorage.setItem('market-message-grouping',mode?'threads':'people');}catch{}if(selected)selectChat(selected);renderInbox();};
-  inbox.addEventListener('close',()=>{pickerState.reset();inboxRevision++;syncUnread();});
+  inbox.addEventListener('close',()=>{
+    pickerState.reset();inboxRevision++;visibleProse.clear();$('chat-messages').replaceChildren();syncUnread();
+  });
   const refreshUnread=()=>{if(!document.hidden)void messaging.refreshHistory().catch(()=>{});syncUnread();if(inbox.open)renderInbox();};
   const uncovered=()=>queueMicrotask(refreshUnread);
   $('chat-messages').addEventListener('scroll',scheduleSeen,{passive:true});window.addEventListener('resize',scheduleSeen);

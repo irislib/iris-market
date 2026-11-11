@@ -1,4 +1,5 @@
 import {element} from './dom.ts';
+import {translatedParagraph} from './translation-content.ts';
 import {getEventHash} from 'nostr-tools/pure';
 import {createUserRow} from './people.ts';
 import {buildReviewDraft,cachedReviews,effectiveReviews,loadReviews,mergeReviews,parseReview,rememberReview,reviewSummary} from './reviews.ts';
@@ -41,6 +42,7 @@ export function setupProfileReviews({target,query,getAccount=()=>({canSign:false
   let reviews:Review[]=[],closed=false,busy=false,formOwner:string|undefined;
   let loadController:AbortController|undefined,loading:Promise<void>|undefined,reloadAfter=false;
   let pendingKey='',accountOwner:string|undefined;
+  let shownBodies=new Map<string,HTMLElement>();
   const ownReview=(owner:string|undefined)=>effectiveReviews(reviews).find(review=>review.author===owner);
   const summaryState=():ReviewSummaryView=>{
     const value=reviewSummary(reviews);
@@ -49,13 +51,19 @@ export function setupProfileReviews({target,query,getAccount=()=>({canSign:false
   function draw(){
     const account=getAccount(),value=summaryState();summary.textContent=value.label;onSummary(value);
     write.hidden=preview||account.owner===target;write.disabled=busy;write.textContent=ownReview(account.owner)?'Edit review':'Write review';
+    const previousBodies=shownBodies;
+    shownBodies=new Map();
     list.replaceChildren();
     for(const review of effectiveReviews(reviews)){
       const card=element('article',undefined,'review-card'),identity=element('div',undefined,'review-header');
       identity.append(createUserRow(review.author,{size:32,className:'review-author',onClick:()=>onProfile(review.author)}));
       const date=element('time',new Date(review.updatedAt*1000).toLocaleDateString(), 'muted small');date.dateTime=new Date(review.updatedAt*1000).toISOString();identity.append(date);
       const rating=element('span','★'.repeat(review.rating)+'☆'.repeat(5-review.rating),'review-stars');rating.setAttribute('role','img');rating.setAttribute('aria-label',`${review.rating} out of 5 stars`);
-      card.append(identity,rating);if(review.body)card.append(element('p',review.body,'review-body'));
+      card.append(identity,rating);
+      if(review.body){
+        const body=previousBodies.get(review.id)??translatedParagraph(review.body,'review-body');
+        shownBodies.set(review.id,body);card.append(body);
+      }
       if(review.delivery==='queued')card.append(element('span','Waiting to publish','small muted'));
       list.append(card);
     }

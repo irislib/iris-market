@@ -74,7 +74,7 @@ class MainActivity : ComponentActivity() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MarketAppView(model: MarketModel, appearance: Appearance, changeAppearance: (Appearance) -> Unit, switchMode: (Boolean) -> Unit) {
+fun MarketAppView(model: MarketModel, appearance: Appearance, changeAppearance: (Appearance) -> Unit, switchMode: (Boolean) -> Unit) = TranslationHost {
     val state by model.state.collectAsStateWithLifecycle()
     val busy by model.busy.collectAsStateWithLifecycle()
     val notice by model.notice.collectAsStateWithLifecycle()

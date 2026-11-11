@@ -23,6 +23,10 @@ struct ListingDetailView: View {
             ?? store.snapshot.profileListings?.collections?.lazy.flatMap(\.members).compactMap(\.listing).first { $0.id == listing.id }
     }
     private var current: MarketListing { latest ?? listing }
+    private var formattedDescription: AttributedString {
+        guard current.externalOrder == nil else { return AttributedString(current.description) }
+        return (try? AttributedString(markdown: current.description, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(current.description)
+    }
     private var quoteAvailable: Bool { listing.externalOrder == nil || latest != nil }
     private func closeListing() {
         #if os(macOS)
@@ -42,20 +46,23 @@ struct ListingDetailView: View {
                         else { ListingPlaceholder(category: current.category) }
                     }.frame(height: 285).clipped().clipShape(RoundedRectangle(cornerRadius: 28)) }
                     HStack { Text(current.isBitcoinOffer ? (current.side == "request" ? "BUYING BITCOIN" : "SELLING BITCOIN") : (current.side == "request" ? "BUYING" : current.category.uppercased())).font(.system(size: 10, weight: .bold)).tracking(1.5).foregroundStyle(MarketTheme.green); Spacer(); Text(current.delivery == "queued" ? "Waiting to send" : current.delivery == "failed" ? "Not sent" : "").font(.caption).foregroundStyle(MarketTheme.muted) }
-                    Text(current.title).font(.system(size: 32, weight: .medium)).tracking(-0.7).foregroundStyle(MarketTheme.ink)
-                    HStack { Text(current.formattedPrice).font(.system(size: 28, weight: .semibold)); Spacer(); Label(current.location.isEmpty ? "Anywhere" : current.location, systemImage: "mappin.circle.fill").font(.system(size: 13)).foregroundStyle(MarketTheme.muted) }.foregroundStyle(MarketTheme.ink)
-                    if let terms = current.escrow?.bitcoinTerms { Text(terms).font(.subheadline).foregroundStyle(MarketTheme.muted) }
-                    TimelineView(.periodic(from: expiryClockStart, by: 60)) { context in
-                        Text(NativeListingExpiry.detail(deadline: current.expiresAt, now: Int64(context.date.timeIntervalSince1970))).font(.system(size: 13)).foregroundStyle(MarketTheme.muted).accessibilityIdentifier("listingExpiryDetail")
+                    MarketTranslation(fields: [AttributedString(current.title), formattedDescription]) { fields in
+                        VStack(alignment: .leading, spacing: 23) {
+                            Text(fields[0]).font(.system(size: 32, weight: .medium)).tracking(-0.7).foregroundStyle(MarketTheme.ink)
+                            HStack { Text(current.formattedPrice).font(.system(size: 28, weight: .semibold)); Spacer(); Label(current.location.isEmpty ? "Anywhere" : current.location, systemImage: "mappin.circle.fill").font(.system(size: 13)).foregroundStyle(MarketTheme.muted) }.foregroundStyle(MarketTheme.ink)
+                            if let terms = current.escrow?.bitcoinTerms { Text(terms).font(.subheadline).foregroundStyle(MarketTheme.muted) }
+                            TimelineView(.periodic(from: expiryClockStart, by: 60)) { context in
+                                Text(NativeListingExpiry.detail(deadline: current.expiresAt, now: Int64(context.date.timeIntervalSince1970))).font(.system(size: 13)).foregroundStyle(MarketTheme.muted).accessibilityIdentifier("listingExpiryDetail")
+                            }
+                            if let quote = current.externalOrder { Text(quote.platform).font(.subheadline).foregroundStyle(MarketTheme.muted) }
+                            else { Button { authorProfile = true } label: {
+                                UserRow(person: store.snapshot.people[current.author] ?? .unnamed(current.author))
+                            }.accessibilityIdentifier("listingAuthor") }
+                            Rectangle().fill(MarketTheme.line).frame(height: 1)
+                            Text(fields[1]).font(.system(size: 16)).lineSpacing(6).foregroundStyle(MarketTheme.ink.opacity(0.90)).textSelection(.enabled)
+                        }
                     }
-                    if let quote = current.externalOrder { Text(quote.platform).font(.subheadline).foregroundStyle(MarketTheme.muted) }
-                    else { Button { authorProfile = true } label: {
-                        UserRow(person: store.snapshot.people[current.author] ?? .unnamed(current.author))
-                    }.accessibilityIdentifier("listingAuthor") }
-                    Rectangle().fill(MarketTheme.line).frame(height: 1)
-                    if current.externalOrder != nil { Text(verbatim: current.description).textSelection(.enabled) }
-                    else { Text((try? AttributedString(markdown: current.description, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(current.description)).font(.system(size: 16)).lineSpacing(6).foregroundStyle(MarketTheme.ink.opacity(0.90))
-                    ReviewsView(target: current.reviewAddress, product: true) }
+                    if current.externalOrder == nil { ReviewsView(target: current.reviewAddress, product: true) }
                     if let relevance = current.relevance { Label(relevance.reason, systemImage: "sparkles").font(.system(size: 13)).foregroundStyle(MarketTheme.green).padding(15).frame(maxWidth: .infinity, alignment: .leading).background(MarketTheme.mint.opacity(0.4), in: RoundedRectangle(cornerRadius: 16)) }
                     MarketInlineError()
                     if store.snapshot.settings.escrowUi && current.escrow != nil && (current.isBitcoinOffer || current.side == "request") && !current.mine && !store.demo {

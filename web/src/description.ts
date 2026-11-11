@@ -46,13 +46,19 @@ export function descriptionNodes(source) {
   }
   try { return walk(Lexer.lex(value,{gfm:true,breaks:true})); } catch { return [element('p',[text(value)])]; }
 }
-export function renderDescription(source, { document:doc=globalThis.document }={}) {
+export function renderDescription(source, { document:doc=globalThis.document, prose=undefined }: {document?:Document;prose?:Text[]}={}) {
   const root=doc.createElement('div');root.className='detail-description markdown-description';
-  function create(node) {
-    if ('text' in node) return doc.createTextNode(node.text);
+  function create(node, readable=true) {
+    if ('text' in node) {
+      const text=doc.createTextNode(node.text);
+      if (prose && readable && /\p{L}/u.test(node.text)) prose.push(text);
+      return text;
+    }
     const target=doc.createElement(node.tag);
     for (const [name,value] of Object.entries(node.attributes)) target.setAttribute(name,value);
-    for (const child of node.children) target.append(create(child));
+    // Keep code and literal link addresses verbatim. Link labels remain readable prose.
+    const literalLink=node.tag==='a' && /^https?:\/\//i.test(node.children[0]?.text??'');
+    for (const child of node.children) target.append(create(child,readable && node.tag!=='code' && !literalLink));
     if (node.tag==='img') target.onerror=()=>target.replaceWith(doc.createTextNode(target.alt));
     return target;
   }

@@ -1,4 +1,5 @@
 import {orderContext} from './message-context.ts';
+import {translateListingTitle} from './translation-content.ts';
 import { createSurface } from './surface.ts';
 import { createUnreadTracker, orderNotifications, readingSurface } from './notifications.ts';
 import type { Shipment, ShipmentStop } from './orders.ts';
@@ -158,7 +159,8 @@ export function setupOrders({ escrow, onPay, onReceiveToken, account, isPreview 
     const form = node('form', undefined, 'order-review');
     const product = node('div', undefined, 'order-review-item'), image = node('img');
     image.alt = ''; image.referrerPolicy = 'no-referrer'; image.src = imageUrl(listing.imageUrl, { width: 160 }) || art(listing); image.onerror = () => { image.onerror = null; image.src = art(listing); };
-    const summary = node('div'); summary.append(node('h3', listing.title), node('p', price(listing), 'order-review-price'));
+    const summary = node('div'), title = node('h3',listing.title);
+    summary.append(title,node('p',price(listing),'order-review-price'),translateListingTitle(listing,title));
     product.append(image, summary); form.append(product, person(listing.author, 'Seller'));
     const quantity = input('Quantity', { type: 'number', value: '1', required: true, min: 1, max: 999, step: 1 });
     const note = input('Message to the seller', { type: 'textarea', maxLength: 2000, placeholder: 'Optional' }); note.field.rows = 3;
@@ -257,7 +259,8 @@ export function setupOrders({ escrow, onPay, onReceiveToken, account, isPreview 
     body.append(summary);
     const next=nextStopCard(order);if(next)body.append(next);
     for (const item of order.items || []) {
-      const itemRow = node('div', undefined, 'order-item'); itemRow.append(node('h3', item.title), node('span', `${price(item)}${item.quantity > 1 ? ' each' : ''}`, 'order-item-price'));
+      const itemRow = node('div', undefined, 'order-item'), title=node('h3',item.title);
+      itemRow.append(title,node('span', `${price(item)}${item.quantity > 1 ? ' each' : ''}`, 'order-item-price'),translateListingTitle(item,title));
       if (item.quantity > 1) itemRow.append(node('p', `Quantity ${item.quantity}`, 'small muted')); body.append(itemRow);
     }
     const arrival=orderArrival(order);

@@ -15,6 +15,8 @@ import {merchantNotices} from './messaging/merchant-notice.ts';
 import {createPrivateTransport} from './messaging/transport.ts';
 import {canNotifySeller, sellerNoticeControl} from './merchant-notice-ui.ts';
 import { renderListingPage } from './listing-page.ts';
+import { translationSettings } from './translation.ts';
+import {translateListingTitle} from './translation-content.ts';
 import { setupProductReviews } from './product-reviews-ui.ts';
 import {setupServiceAreaPicker} from './service-area-ui.ts';
 import { byId, element as domElement, formFields, setToggleLabel } from './dom.ts';
@@ -160,7 +162,13 @@ function toast(text){$('toast').textContent=text;$('toast').hidden=false;clearTi
 function save(l){gridUI.pin();if(saved.has(l.id))saved.delete(l.id);else if(saved.size<1000)saved.add(l.id);else return toast('Saved-listing limit reached');persist('market-saved-'+(preview?'preview':'live'),[...saved]);render();refreshProfileListings();if(focusedListing)openDetail(focusedListing,false);}
 function photo(l,className?:string){return createStaticImage(l.imageUrl,{width:className==='detail-art'?900:480,className,alt:l.title||'Listing photo',fallback:art(l)});}
 function internalLink(link,href,onClick){link.href=routeHref(href);link.onclick=event=>{if(event.button!==0||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey)return;event.preventDefault();onClick();};}
-function card(l){const el=node('article',undefined,'listing-card'),media=node('div',undefined,'card-image'),open=node('a',undefined,'card-open');open.setAttribute('aria-label',`View ${l.title}`);if(l.externalOrder){el.classList.add('bitcoin-order-listing');const quote=node('div',undefined,'bitcoin-card-quote');quote.append(node('strong','₿'),node('span',l.externalOrder.platform));open.append(quote);}else if(l.escrow?.trade==='bitcoin_fiat'&&!l.imageUrl){const quote=node('div',undefined,'bitcoin-card-quote');quote.append(node('strong',l.escrow.sats.toLocaleString()+' sats'),node('span',fiatMethodLabel(l.escrow.method)));open.append(quote);}else open.append(photo(l));internalLink(open,listingURL(l.id,location.href),()=>openDetail(l));const button=node('button',undefined,'save-button');button.innerHTML=bookmark;button.querySelector('path').setAttribute('fill',saved.has(l.id)?'currentColor':'none');button.setAttribute('aria-label',`${saved.has(l.id)?'Unsave':'Save'} ${l.title}`);button.setAttribute('aria-pressed',String(saved.has(l.id)));button.onclick=()=>save(l);media.append(open,button);if(l.externalOrder||l.escrow?.trade==='bitcoin_fiat')media.append(node('span',l.side==='request'?'Buying bitcoin':'Selling bitcoin','request-badge'));else if(l.side==='request')media.append(node('span','Buying','request-badge'));const title=node('a',l.title,'card-title');internalLink(title,listingURL(l.id,location.href),()=>openDetail(l));const titleRow=node('div',undefined,'card-title-row');titleRow.append(title,listingMenu(l.title,hiddenListings.has(l.id),()=>toggleHidden(l)));el.append(media,titleRow,priceNode(l,'card-price'),node('p',l.externalOrder?.methods||l.location||'Anywhere','card-location'));if(!preview&&l.author&&!l.externalOrder)el.append(authorButton(l));return el;}
+function card(l){const el=node('article',undefined,'listing-card'),media=node('div',undefined,'card-image'),open=node('a',undefined,'card-open');open.setAttribute('aria-label',`View ${l.title}`);if(l.externalOrder){el.classList.add('bitcoin-order-listing');const quote=node('div',undefined,'bitcoin-card-quote');quote.append(node('strong','₿'),node('span',l.externalOrder.platform));open.append(quote);}else if(l.escrow?.trade==='bitcoin_fiat'&&!l.imageUrl){const quote=node('div',undefined,'bitcoin-card-quote');quote.append(node('strong',l.escrow.sats.toLocaleString()+' sats'),node('span',fiatMethodLabel(l.escrow.method)));open.append(quote);}else open.append(photo(l));internalLink(open,listingURL(l.id,location.href),()=>openDetail(l));const button=node('button',undefined,'save-button');button.innerHTML=bookmark;button.querySelector('path').setAttribute('fill',saved.has(l.id)?'currentColor':'none');button.setAttribute('aria-label',`${saved.has(l.id)?'Unsave':'Save'} ${l.title}`);button.setAttribute('aria-pressed',String(saved.has(l.id)));button.onclick=()=>save(l);media.append(open,button);if(l.externalOrder||l.escrow?.trade==='bitcoin_fiat')media.append(node('span',l.side==='request'?'Buying bitcoin':'Selling bitcoin','request-badge'));else if(l.side==='request')media.append(node('span','Buying','request-badge'));const title=node('a',l.title,'card-title');internalLink(title,listingURL(l.id,location.href),()=>openDetail(l));const titleRow=node('div',undefined,'card-title-row');titleRow.append(title,listingMenu(l.title,hiddenListings.has(l.id),()=>toggleHidden(l)));el.append(media,titleRow,priceNode(l,'card-price'),node('p',l.externalOrder?.methods||l.location||'Anywhere','card-location'));if(!preview&&l.author&&!l.externalOrder)el.append(authorButton(l));
+  if(!l.externalOrder)el.append(translateListingTitle(l,title,value=>{
+    open.setAttribute('aria-label',`View ${value}`);
+    button.setAttribute('aria-label',`${saved.has(l.id)?'Unsave':'Save'} ${value}`);
+  }));
+  return el;
+}
 function authorButton(l){return createUserRow(l.author,{className:'author-button',onClick:()=>profiles.open(l.author)});}
 function routeHref(href){const url=new URL(href);const hash=locationHash(locationFilter);if(hash&&['home','search'].includes(parseMarketRoute(url.href).type))url.searchParams.set('g',hash);if(preview)url.searchParams.set('preview','1');if(['127.0.0.1','localhost'].includes(location.hostname)&&params.has('test-relay'))url.searchParams.set('test-relay',params.get('test-relay'));return url.href;}
 // Retain one browsing surface across listing and workspace navigation.
@@ -232,6 +240,7 @@ function courierCard(listing){
   const row=node('article',undefined,'courier-gig'),head=node('div',undefined,'courier-gig-head'),link=node('a',listing.title,'courier-gig-title');
   internalLink(link,listingURL(listing.id,location.href),()=>openDetail(listing));head.append(link,priceNode(listing,'courier-gig-price'));
   row.append(head,node('p',listing.location||'Area not specified','small muted'));
+  row.append(translateListingTitle(listing,link));
   if(listing.author)row.append(authorButton(listing));
   const view=node('a',listing.side==='request'?'View request':'View listing','text-button');internalLink(view,listingURL(listing.id,location.href),()=>openDetail(listing));row.append(view);return row;
 }
@@ -337,6 +346,7 @@ const gridUI=setupListingGrid({grid:$('listings'),controls:$('grid-pagination'),
     }catch{/* The feed keeps its retry state. */}finally{render()}
   }});
 refreshHiddenCount();$('restore-hidden').onclick=()=>{try{hiddenListings.clear();refreshHiddenCount();render();refreshProfileListings();toast('Listings restored');}catch{toast('Could not save this preference.');}};
+$('your-location-settings').before(translationSettings());
 const imageSettings=readImageSettings();$('image-proxy-enabled').checked=imageSettings.useProxy;$('image-proxy-url').value=imageSettings.url;
 $('image-settings-form').onsubmit=e=>{e.preventDefault();try{saveImageSettings({...readImageSettings(),useProxy:$('image-proxy-enabled').checked,url:$('image-proxy-url').value});$('image-settings-error').textContent='';refreshPeople();render();if(focusedListing)openDetail(focusedListing,false);toast('Image settings saved')}catch(error){$('image-settings-error').textContent=error.message}};
 setupPeople({getRelays:()=>relays,isPreview:()=>preview,relationshipFor:key=>graphContext?.relationFor(key),makeRelationshipBadge:createRelationshipBadge,onChange:()=>{updateFilterSummary();if(contextKey!==DEFAULT_SOCIAL_GRAPH_ROOT)$('graph-context').textContent=nameFor(contextKey)+' network'}});

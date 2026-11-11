@@ -3,6 +3,7 @@ import {element as node} from './dom.ts';
 import {imageUrl,createStaticImage} from './media.ts';
 import {art} from './art.ts';
 import {renderDescription} from './description.ts';
+import {translationFields} from './translation.ts';
 import {listingURL,validListingId} from './routes.ts';
 import {listingPublishedAt,type ListingDates} from './listing-dates.ts';
 import {relativeExpiry} from './expiry.ts';
@@ -79,7 +80,8 @@ export function renderListingPage(listing:ListingPresentation,{saved=false,onSav
   const bitcoin=listing.escrow?.trade==='bitcoin_fiat'?listing.escrow:undefined;
   if((bitcoin||listing.externalOrder) && !local && !listing.imageUrl){wrap.classList.add('detail-quote-only');media.hidden=true;}
   const context=listing.externalOrder?listing.externalOrder.platform:bitcoin?(listing.side==='request'?'Buying bitcoin':'Selling bitcoin'):draftPreview?`${listing.side==='request'?'Buying':'Selling'} · ${category}`:listing.side==='request'?`Buying${transport?` · ${category}`:''}`:category;
-  copy.append(node('div',context,'eyebrow'),node('h1',listing.title),priceNode(listing,'detail-price'),...(listing.externalOrder?[]:[node('p',listing.location||'Anywhere','detail-place')]));
+  const title=node('h1',listing.title);
+  copy.append(node('div',context,'eyebrow'),title,priceNode(listing,'detail-price'),...(listing.externalOrder?[]:[node('p',listing.location||'Anywhere','detail-place')]));
   if(bitcoin)copy.append(node('p',bitcoin.sats.toLocaleString()+' sats · '+fiatMethodLabel(bitcoin.method),'detail-quote'));
   if(!draftPreview&&!isPreview&&listing.author&&!listing.externalOrder)copy.append(authorRow(listing));
   const added=listingPublishedAt(listing),dates=node('p',undefined,'listing-dates small muted');
@@ -109,7 +111,17 @@ export function renderListingPage(listing:ListingPresentation,{saved=false,onSav
       if(value)terms.append(node('dt',label),node('dd',value));
     }
     copy.append(terms,actions);
-  }else copy.append(actions,renderDescription(listing.description));
+  }else {
+    const prose:Text[]=[];
+    const description=renderDescription(listing.description,{prose});
+    const fields=[title,...prose];
+    const control=translationFields(fields.map(field=>field.textContent),values=>{
+      fields.forEach((field,index)=>{field.textContent=values[index];});
+      image.alt=values[0];
+      if(canvasStill)stillImage.setAttribute('aria-label',values[0]);
+    });
+    copy.append(control,actions,description);
+  }
   if(isPreview)copy.append(node('p','Sample listing','small muted'));
   wrap.append(media,copy);
   if(!isPreview&&listing.rawEvent){

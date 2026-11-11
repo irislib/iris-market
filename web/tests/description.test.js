@@ -26,3 +26,22 @@ test('DOM rendering only uses text nodes and a fixed safe element vocabulary',()
   const root=renderDescription('A **desk** &amp; a [document](https://example.com/guide.pdf) <img onerror=x>',{document:doc});
   assert.equal(root.className,'detail-description markdown-description');assert.equal(calls.includes('img'),false);assert.equal(calls.includes('strong'),true);assert.equal(calls.includes('a'),true);
 });
+
+test('translation can update Markdown prose while keeping code, links and images intact',()=>{
+  const doc={
+    createTextNode:textContent=>({textContent}),
+    createElement:tag=>({tag,children:[],attributes:{},setAttribute(name,value){this.attributes[name]=value;},append(child){this.children.push(child);}}),
+  };
+  const prose=[];
+  const root=renderDescription('Katso **kuva** ja [ohje](https://example.com/ohje).\n\n`AB-123` https://example.com/tuote\n\n![Pöytä](https://example.com/kuva.jpg)',{document:doc,prose});
+  assert.deepEqual(prose.map(node=>node.textContent),['Katso ','kuva',' ja ','ohje']);
+  for(const node of prose)node.textContent='Translated';
+  const nodes=flatten(root.children);
+  const links=nodes.filter(node=>node.tag==='a');
+  assert.deepEqual(links.map(node=>[node.attributes.href,node.children[0].textContent]),[
+    ['https://example.com/ohje','Translated'],['https://example.com/tuote','https://example.com/tuote'],
+  ]);
+  assert.equal(nodes.find(node=>node.tag==='strong').children[0].textContent,'Translated');
+  assert.equal(nodes.find(node=>node.tag==='code').children[0].textContent,'AB-123');
+  assert.equal(nodes.find(node=>node.tag==='img').attributes.alt,'Pöytä');
+});

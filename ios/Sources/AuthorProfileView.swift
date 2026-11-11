@@ -35,7 +35,7 @@ struct AuthorProfileView: View {
                                 Text(profile.person.connection.followDistance == nil ? "No known connections" : profile.person.connection.description).font(.caption).foregroundStyle(MarketTheme.muted)
                             }
                         }
-                        if !profile.about.isEmpty { Text(profile.about).font(.body).textSelection(.enabled) }
+                        if !profile.about.isEmpty { MarketTranslation(fields: [AttributedString(profile.about)]) { Text($0[0]).font(.body).textSelection(.enabled) } }
                         if let website = profile.website, let url = URL(string: website) { Link(website, destination: url).font(.subheadline).lineLimit(2) }
                         let known = uniqueKnown(profile)
                         if !known.isEmpty {

@@ -50,7 +50,7 @@ internal data class MarketReview(val id:String,val author:String,val body:String
             Column(Modifier.padding(vertical=6.dp),verticalArrangement=Arrangement.spacedBy(6.dp)) {
                 UserRow(review.person)
                 Text(if(review.ratingMax==5) "★".repeat(review.rating.toInt())+"☆".repeat(5-review.rating.toInt()) else "${(review.rating*100).toInt()}% positive")
-                if(review.body.isNotEmpty())Text(review.body)
+                if (review.body.isNotEmpty()) TranslatedText(review.body) { Text(it) }
             }
         }
     }

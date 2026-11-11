@@ -205,3 +205,53 @@ button[data-alternate-label]::after { content:attr(data-alternate-label); visibi
   cursor: pointer;
 }
 .listing-share-choices button:is(:hover,:focus-visible) {background: var(--hover)}
+
+.translation-control:not([hidden]) {
+  display: inline-flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.translation-control button {
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  padding: 4px 0;
+}
+.translation-control button:is(:hover, :focus-visible) {
+  color: var(--ink);
+  text-decoration: underline;
+}
+.translation-settings {
+  border-top: 1px solid var(--line);
+  padding-top: 18px;
+  margin-top: 20px;
+}
+.translation-settings h3 {
+  font-size: 15px;
+}
+#preferences-dialog .translation-settings label:has(input[type=checkbox]) {
+  flex-direction: row-reverse;
+}
+#preferences-dialog .translation-settings select {
+  width: min(220px,55%);
+}
+.translation-read-languages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.translation-read-languages .text-button {
+  border-radius: 18px;
+  background: var(--surface);
+  padding: 6px 12px;
+}
+.market-map-choice > button {
+  width: 100%;
+}
+.market-map-choice .translation-control button {
+  min-height: 24px;
+  font-size: 12px;
+}

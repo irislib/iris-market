@@ -1,4 +1,5 @@
 import {element} from './dom.ts';
+import {translatedParagraph} from './translation-content.ts';
 import {createUserRow} from './people.ts';
 import {loadProductReviews,productReviewsFromEvents,productReviewTarget} from './product-reviews.ts';
 import type {ProductReview} from './product-reviews.ts';
@@ -19,8 +20,11 @@ export function setupProductReviews({listing,query,preview=false,onProfile=()=>{
   panel.append(header,summary,notice,retry,list);
   let closed=false,loaded=false,reviews:ProductReview[]=[],loading:Promise<void>|undefined;
   let controller:AbortController|undefined,expiryTimer:ReturnType<typeof setTimeout>|undefined;
+  let shownBodies=new Map<string,HTMLElement>();
   function draw(){
     if(closed)return;clearTimeout(expiryTimer);list.replaceChildren();
+    const previousBodies=shownBodies;
+    shownBodies=new Map();
     summary.textContent=reviews.length?`${reviews.length} ${reviews.length===1?'review':'reviews'} · Purchases not verified`:'0 reviews';
     for(const review of reviews){
       const card=element('article',undefined,'review-card'),identity=element('div',undefined,'review-header');
@@ -28,7 +32,10 @@ export function setupProductReviews({listing,query,preview=false,onProfile=()=>{
       const date=element('time',new Date(review.updatedAt*1000).toLocaleDateString(),'muted small');date.dateTime=new Date(review.updatedAt*1000).toISOString();identity.append(date);
       const recommendation=review.rating===1?'Recommends this item':review.rating===0?'Doesn’t recommend this item':`Recommendation score: ${Math.round(review.rating*100)}%`;
       card.append(identity,element('p',recommendation,'small'));
-      if(review.body)card.append(element('p',review.body,'review-body'));
+      if(review.body){
+        const body=previousBodies.get(review.id)??translatedParagraph(review.body,'review-body');
+        shownBodies.set(review.id,body);card.append(body);
+      }
       const dimensions=Object.entries(review.ratings).filter(([dimension])=>dimension!=='thumb');
       if(dimensions.length){
         const details=element('details'),heading=element('summary','Rating details');details.append(heading);

@@ -9,10 +9,11 @@ import { MAP_ROOT, GLYPH_ROOT, ATTRIBUTION, DEFAULT_CACHE_MIB } from './config.t
 import { validateServiceArea, serviceAreaBounds, serviceAreaContains, type ServiceAreas, type ServiceAreaGeometry } from '../service-area.ts'
 export { CACHE_OPTIONS, DEFAULT_CACHE_MIB } from './config.ts'
 
-export interface MapListing { id: string; title: string; imageUrl?: string | null; category?: string; priceLabel?: string; coordinates?: readonly number[]; serviceAreas?: ServiceAreas | null }
+export interface MapListing { id: string; title: string; description?: string; imageUrl?: string | null; category?: string; priceLabel?: string; coordinates?: readonly number[]; serviceAreas?: ServiceAreas | null }
 export interface MapViewport { west: number; south: number; east: number; north: number; zoom: number }
 export interface MapOverlay { setListings?(value: MapListing[]): void; beginStyleChange(dark: boolean): void; destroy(): void }
 interface ListingPreviewOptions {
+  translateTitle?: (listing: MapListing, title: HTMLElement) => HTMLElement
   getPriceLabel?: (listing: MapListing) => string | undefined
   thumbnailSettings?: ImageSettings
 }
@@ -163,7 +164,7 @@ export function mapViewport(map: maplibre.Map): MapViewport | null {
 }
 
 /** One hit test covers both the cluster label and circle without duplicate actions. */
-export function createListingInteractions(map, { getListings = () => [], getPriceLabel = listing => listing.priceLabel, thumbnailSettings, onSelect, onError = () => {}, createPopup = () => new maplibre.Popup({ className: 'market-map-popup', maxWidth: '300px', focusAfterOpen: true, closeOnClick: false, closeButton: false }), document: doc = globalThis.document }: ListingInteractionOptions = {}) {
+export function createListingInteractions(map, { getListings = () => [], getPriceLabel = listing => listing.priceLabel, translateTitle, thumbnailSettings, onSelect, onError = () => {}, createPopup = () => new maplibre.Popup({ className: 'market-map-popup', maxWidth: '300px', focusAfterOpen: true, closeOnClick: false, closeButton: false }), document: doc = globalThis.document }: ListingInteractionOptions = {}) {
   let destroyed = false, revision = 0, popup, popupContent:HTMLElement|undefined
   let thumbnailObserver: IntersectionObserver | undefined
   let hovered: {source:string;id:string|number} | undefined
@@ -198,8 +199,10 @@ export function createListingInteractions(map, { getListings = () => [], getPric
         }
       }, { root: choices, rootMargin: '64px' })
     }
+    let firstChoice:HTMLButtonElement
     for (const listing of listings) {
       const button = doc.createElement('button')
+      firstChoice ??= button
       button.type = 'button'
       if (listing.imageUrl) {
         const photo = doc.createElement('span')
@@ -224,14 +227,19 @@ export function createListingInteractions(map, { getListings = () => [], getPric
       }
       button.append(caption)
       button.onclick = () => { close(); onSelect(listing) }
-      choices.append(button)
+      if(translateTitle && listing.title){
+        const row=doc.createElement('div')
+        row.className='market-map-choice'
+        row.append(button,translateTitle(listing,title))
+        choices.append(row)
+      }else choices.append(button)
     }
     const dismiss=doc.createElement('button')
     dismiss.type='button';dismiss.className='maplibregl-popup-close-button';dismiss.textContent='×';dismiss.setAttribute('aria-label','Close listing choices');dismiss.onclick=()=>close(true)
     content.append(heading, choices, dismiss);popupContent=content
     content.addEventListener('keydown', event => { if (event.key === 'Escape') { event.stopPropagation(); close(true) } })
     popup = createPopup().setLngLat(coordinates).setDOMContent(content).addTo(map);
-    (choices.firstElementChild as HTMLElement)?.focus({ preventScroll: true })
+    firstChoice?.focus({ preventScroll: true })
   }
   async function activate(event) {
     const ticket = ++revision, features = hits(event.point)
@@ -303,7 +311,7 @@ export function createListingInteractions(map, { getListings = () => [], getPric
 }
 
 /** Construct only after the user explicitly opens the map. */
-export async function createMarketMap(container, { listings = [], dark = false, onSelect = () => {}, onError = () => {}, onViewport = () => {}, cacheMiB = DEFAULT_CACHE_MIB, createOverlay, getPriceLabel, thumbnailSettings }: MarketMapOptions = {}) {
+export async function createMarketMap(container, { listings = [], dark = false, onSelect = () => {}, onError = () => {}, onViewport = () => {}, cacheMiB = DEFAULT_CACHE_MIB, createOverlay, getPriceLabel, translateTitle, thumbnailSettings }: MarketMapOptions = {}) {
   if (!registered) { maplibre.addProtocol('pmtiles', protocol.tile); registered = true }
   maplibre.setWorkerUrl(browserAssetUrl('maplibre-gl-worker.mjs'))
   maplibre.setWorkerCount(1)
@@ -364,7 +372,7 @@ export async function createMarketMap(container, { listings = [], dark = false, 
     map.on('error', event => report(event.error))
     // Private overlays share only the basemap/cache lifecycle, never listing discovery or interactions.
     overlay = createOverlay ? createOverlay(map, currentDark) : createListingOverlay(map, currentListings, currentDark)
-    if (!createOverlay) interactions = createListingInteractions(map, { getListings: () => currentListings, getPriceLabel, thumbnailSettings, onSelect, onError: report })
+    if (!createOverlay) interactions = createListingInteractions(map, { getListings: () => currentListings, getPriceLabel, translateTitle, thumbnailSettings, onSelect, onError: report })
     const reportViewport = () => { const viewport = mapViewport(map); if (!destroyed && viewport) onViewport(viewport) }
     map.on('movestart', event => { if (event.originalEvent) fittedListings = true })
     map.on('moveend', reportViewport)

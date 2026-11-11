@@ -488,15 +488,17 @@ struct ListingCard: View {
                     Button(action: save) { Image(systemName: listing.saved ? "heart.fill" : "heart").font(.system(size: 13, weight: .medium)).foregroundStyle(MarketTheme.artworkInk).frame(width: 32, height: 32).background(.white.opacity(0.91), in: Circle()) }.buttonStyle(.plain).padding(9)
                         .accessibilityLabel(listing.saved ? "Unsave \(listing.title)" : "Save \(listing.title)")
                 }
-            Button(action: open) {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(listing.title).font(.system(size: 14, weight: .medium)).foregroundStyle(MarketTheme.ink).lineLimit(2).multilineTextAlignment(.leading).frame(maxWidth: .infinity, alignment: .leading)
-                    Text(listing.formattedPrice).font(.system(size: 18, weight: .semibold)).foregroundStyle(MarketTheme.ink)
-                    if let terms = listing.escrow?.bitcoinTerms { Text(terms).font(.caption).foregroundStyle(MarketTheme.muted) }
-                    if let order = listing.externalOrder { Text(order.methods).font(.caption).foregroundStyle(MarketTheme.muted).lineLimit(1) }
-                    else { HStack(spacing: 3) { Image(systemName: "mappin").font(.system(size: 9)); Text(listing.location.isEmpty ? "Anywhere" : listing.location).lineLimit(1) }.font(.system(size: 10)).foregroundStyle(MarketTheme.muted) }
-                }.padding(.horizontal, 2)
-            }.buttonStyle(.plain)
+            MarketTranslation(fields: [AttributedString(listing.title)], context: listing.title + "\n" + listing.description) { fields in
+                Button(action: open) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(fields[0]).font(.system(size: 14, weight: .medium)).foregroundStyle(MarketTheme.ink).lineLimit(2).multilineTextAlignment(.leading).frame(maxWidth: .infinity, alignment: .leading)
+                        Text(listing.formattedPrice).font(.system(size: 18, weight: .semibold)).foregroundStyle(MarketTheme.ink)
+                        if let terms = listing.escrow?.bitcoinTerms { Text(terms).font(.caption).foregroundStyle(MarketTheme.muted) }
+                        if let order = listing.externalOrder { Text(order.methods).font(.caption).foregroundStyle(MarketTheme.muted).lineLimit(1) }
+                        else { HStack(spacing: 3) { Image(systemName: "mappin").font(.system(size: 9)); Text(listing.location.isEmpty ? "Anywhere" : listing.location).lineLimit(1) }.font(.system(size: 10)).foregroundStyle(MarketTheme.muted) }
+                    }.padding(.horizontal, 2)
+                }.buttonStyle(.plain)
+            }
         }.accessibilityElement(children: .contain)
     }
 }

@@ -217,7 +217,10 @@ private fun rememberListLayout(): MutableState<Boolean> {
         }
     }
     val labels: @Composable () -> Unit = {
-        Text(listing.title, fontWeight=FontWeight.Medium, fontSize=15.sp, lineHeight=20.sp,maxLines=2,overflow=TextOverflow.Ellipsis)
+        val reading = if (listing.externalOrder == null) rememberTranslation(listOf(listing.title), listing.title + "\n" + listing.description)
+            else ReadingTranslation(listOf(listing.title))
+        Text(reading.text.first(), fontWeight=FontWeight.Medium, fontSize=15.sp, lineHeight=20.sp,maxLines=2,overflow=TextOverflow.Ellipsis)
+        TranslationControl(reading)
         Spacer(Modifier.height(5.dp))
         Row(verticalAlignment=Alignment.CenterVertically) {
             Text(listing.displayPrice, fontSize=17.sp, fontWeight=FontWeight.Bold)
@@ -268,7 +271,10 @@ private fun rememberListLayout(): MutableState<Boolean> {
         if(listing.externalOrder==null) ListingArt(listing,demo,Modifier.fillMaxWidth().height(245.dp).clip(RoundedCornerShape(24.dp)))
         Spacer(Modifier.height(22.dp))
         Text(if(listing.isBitcoinOffer) (if(listing.side=="request") "BUYING BITCOIN" else "SELLING BITCOIN") else listing.category.uppercase(),color=Forest,style=MaterialTheme.typography.labelSmall,letterSpacing=1.5.sp)
-        Spacer(Modifier.height(8.dp));Text(listing.title,style=MaterialTheme.typography.headlineMedium)
+        val fields = listOf(listing.title, listing.description)
+        val reading = if (listing.externalOrder == null) rememberTranslation(fields) else ReadingTranslation(fields)
+        Spacer(Modifier.height(8.dp));Text(reading.text.first(),style=MaterialTheme.typography.headlineMedium)
+        TranslationControl(reading)
         Spacer(Modifier.height(9.dp));Text(listing.displayPrice,fontSize=29.sp,fontWeight=FontWeight.SemiBold)
         listing.escrow?.bitcoinTerms?.let { Text(it,color=Muted,style=MaterialTheme.typography.bodySmall) }
         if(listing.location.isNotBlank()) Row(Modifier.padding(top=12.dp),verticalAlignment=Alignment.CenterVertically) {
@@ -283,7 +289,7 @@ private fun rememberListLayout(): MutableState<Boolean> {
         }
         Spacer(Modifier.height(22.dp));HorizontalDivider(color=Line);Spacer(Modifier.height(21.dp))
         if(listing.externalOrder!=null) Text(listing.description)
-        else { ListingDescription(listing.description); ReviewsView(listing.reviewAddress,model,product=true) }
+        else { ListingDescription(reading.text[1]); ReviewsView(listing.reviewAddress,model,product=true) }
         Spacer(Modifier.height(24.dp))
         if(demo) Text("Sample listing · Preview stays on this device.",color=Muted,style=MaterialTheme.typography.bodySmall)
         else if(listing.mine) Text(if(listing.delivery == "queued") "Your listing · Waiting to send" else if(listing.delivery == "failed") "Your listing · Not sent" else "Your listing",color=Muted,style=MaterialTheme.typography.bodySmall)

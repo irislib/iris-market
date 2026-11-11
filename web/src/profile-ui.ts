@@ -1,5 +1,6 @@
 import { setLoadingStatus } from './loading-status.ts';
 import { element as domElement } from './dom.ts';
+import {translatedParagraph} from './translation-content.ts';
 import { npubEncode } from 'nostr-tools/nip19'
 import { loadProfile, loadProfileFollowers, excludeKnownFollowers, readProfileMetadata, subscribeProfileMetadata, DEFAULT_SOCIAL_GRAPH_ROOT, DEFAULT_SOCIAL_GRAPH_LABEL } from './profiles.ts'
 import { normalizePublicKey } from './social.ts'
@@ -63,6 +64,7 @@ export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCI
   const stopListings=()=>{listingCleanup?.();listingCleanup=undefined;listingsActive=false}
   type ProfileData=Awaited<ReturnType<typeof loadProfile>>
   let currentData:ProfileData|undefined,followDistanceNote:HTMLElement|undefined
+  let bio:{owner:string;text:string;node:HTMLElement}|undefined
   type ProfileView={id:string;label:string;people?:{pubkey:string}[];empty?:string;note?:string}
   const connectionViews=(data?:ProfileData):ProfileView[]=>[
     {id:'following',label:data?`Following ${data.following.total ?? '—'}`:'Following',people:data?.following.items,empty:data?.following.total===null?'Follow list unavailable.':'This public list is empty.',note:data?.following.truncated?`Showing the first ${data.following.items.length} of ${data.following.total} follows.`:'Latest signed follow list observed on your servers.'},
@@ -173,7 +175,11 @@ export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCI
       if(observed.length>3){const others=element('button',`and ${observed.length-3} ${observed.length===4?'other':'others'}`,'text-button');others.type='button';others.onclick=openFollowersTab;row.append(others);}
       identityHost.append(row);
     }
-    if (profile.about) identityHost.append(element('p', profile.about, 'profile-about'))
+    if (profile.about) {
+      if(bio?.owner!==profile.pubkey || bio.text!==profile.about)
+        bio={owner:profile.pubkey,text:profile.about,node:translatedParagraph(profile.about,'profile-about')}
+      identityHost.append(bio.node)
+    }else bio=undefined
     if (profile.website) {
       const link = element('a', new URL(profile.website).hostname, 'profile-website')
       link.href = profile.website; link.target = '_blank'; link.rel = 'noopener noreferrer'

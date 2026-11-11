@@ -22,7 +22,7 @@ class Element {
   contains(target) { return target===this||this.children.some(child=>child.contains(target)) }
   get firstElementChild() { return this.children[0] }
 }
-function fixture(items = [listing('a'), listing('b', [25, 60.2])]) {
+function fixture(items = [listing('a'), listing('b', [25, 60.2])], options={}) {
   const handlers = new Map(), canvas = new Element('canvas'), selected = [], errors = [], popups = [], eases = [], featureStates = []
   const source = { getClusterExpansionZoom: async id => { assert.equal(id, 7); return 10 }, getClusterLeaves: async (id, limit, offset) => { assert.equal(id, 7); assert.equal(limit, 1000); assert.equal(offset, 0); return items.map(pin) } }
   const bounds = { getWest: () => 24, getSouth: () => 60, getEast: () => 26, getNorth: () => 61, contains: coordinates => coordinates[0] >= 24 && coordinates[0] <= 26 }
@@ -35,7 +35,7 @@ function fixture(items = [listing('a'), listing('b', [25, 60.2])]) {
     setFeatureState: (target, state) => featureStates.push({ target, state }),
   }
   const document=new Element('document');document.createElement=tag=>new Element(tag)
-  const api = createListingInteractions(map, { getListings: () => items, onSelect: item => selected.push(item), onError: error => errors.push(error), document, createPopup: () => {
+  const api = createListingInteractions(map, { ...options, getListings: () => items, onSelect: item => selected.push(item), onError: error => errors.push(error), document, createPopup: () => {
     const popup = { setLngLat(value) { this.coordinates = value; return this }, setDOMContent(value) { this.content = value; return this }, addTo(value) { assert.equal(value, map); return this }, remove() { this.removed = true } }
     popups.push(popup); return popup
   } })
@@ -54,6 +54,22 @@ test('coincident cluster opens keyboard-focusable choices instead of useless zoo
   assert.equal(choices.children[1].firstElementChild.firstElementChild.textContent, 'Listing b'); choices.children[1].onclick()
   assert.deepEqual(f.selected, [items[1]]); assert.equal(f.popups[0].removed, true); f.api.destroy()
 })
+
+test('translating a map choice keeps its price, selection and keyboard focus intact',async()=>{
+  const item={...listing('a'),priceLabel:'€17'};
+  const f=fixture([item],{translateTitle:(listing,title)=>{
+    const control=new Element('button');control.onclick=()=>{title.textContent='Translated';};return control;
+  }});
+  await f.click([pin(item)]);
+  const row=f.popups[0].content.children[1].firstElementChild;
+  const [open,translate]=row.children;
+  assert.equal(open.focused,true);
+  translate.onclick();
+  assert.deepEqual(f.selected,[]);
+  assert.deepEqual(open.firstElementChild.children.map(node=>node.textContent),['Translated','€17']);
+  open.onclick();assert.deepEqual(f.selected,[item]);
+  f.api.destroy();
+});
 
 test('max-zoom clusters and overlapping unclustered pins allow choosing every listing', async () => {
   const f = fixture(); f.map.zoom = 18; await f.click([cluster()]); assert.equal(f.popups.length, 1); assert.equal(f.eases.length, 0)

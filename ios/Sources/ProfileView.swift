@@ -36,6 +36,7 @@ struct ProfileView: View {
                     Toggle("Send delivery receipts", isOn: Binding(get: { store.snapshot.settings.sendDeliveryReceipts }, set: { value in var settings = store.snapshot.settings; settings.sendDeliveryReceipts = value; store.saveSettings(settings, key: "", replaceKey: false) }))
                     Toggle("Send read receipts", isOn: Binding(get: { store.snapshot.settings.sendReadReceipts }, set: { value in var settings = store.snapshot.settings; settings.sendReadReceipts = value; store.saveSettings(settings, key: "", replaceKey: false) }))
                 }.padding(20).background(MarketTheme.surface, in: RoundedRectangle(cornerRadius: 23)).disabled(store.demo || store.busy)
+                if #available(iOS 18, macOS 15, *) { MarketTranslationSettings() }
                 DisplayCurrencyPicker(store: store).pickerStyle(.menu)
                 VStack(alignment: .leading, spacing: 14) {
                     Label("Appearance", systemImage: "circle.lefthalf.filled").font(.system(size: 14, weight: .semibold)).foregroundStyle(MarketTheme.ink)

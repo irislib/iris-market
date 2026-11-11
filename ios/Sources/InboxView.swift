@@ -174,7 +174,11 @@ struct ConversationView: View {
                                         if let payment = message.cashu {
                                             PaymentMessageView(payment: payment)
                                             if message.text != "Cashu payment" && !message.text.isEmpty { Text(message.text).font(.system(size: 15)).lineSpacing(3) }
-                                        } else { Text(message.text).font(.system(size: 16)).lineSpacing(3) }
+                                        } else if message.mine || message.id.hasPrefix("notice-") {
+                                            Text(message.text).font(.system(size: 16)).lineSpacing(3)
+                                        } else {
+                                            MarketTranslation(fields: [AttributedString(message.text)]) { Text($0[0]).font(.system(size: 16)).lineSpacing(3) }
+                                        }
                                         if let id = message.orderId { Button("View order") { orderID = id }.font(.system(size: 13, weight: .semibold)) }
                                         messageFooter(message)
                                         if !(message.reactions ?? []).isEmpty {

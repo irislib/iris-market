@@ -210,7 +210,10 @@ private fun inboxContextTitle(context:MessageContext?,state:MarketSnapshot):Stri
                     Surface(color=if(m.mine) Action else White,contentColor=if(m.mine) OnInk else Ink,
                         shape=RoundedCornerShape(19.dp),modifier=Modifier.widthIn(max=290.dp)) {
                         Column(Modifier.padding(horizontal=15.dp,vertical=12.dp)) {
-                            if(m.cashu != null) PaymentMessage(m.cashu,m.mine) else Text(m.text,style=MaterialTheme.typography.bodyLarge)
+                            if (m.cashu != null) PaymentMessage(m.cashu, m.mine)
+                            else if (!m.mine && !m.id.startsWith("notice-") && !m.escrow)
+                                TranslatedText(m.text) { Text(it, style = MaterialTheme.typography.bodyLarge) }
+                            else Text(m.text, style = MaterialTheme.typography.bodyLarge)
                             m.orderId?.let { id -> TextButton(onClick={openOrder(id)},colors=ButtonDefaults.textButtonColors(contentColor=if(m.mine) OnInk else Ink)) { Text("View order") } }
                             Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(6.dp)) {
                                 if(m.createdAt>0)Text(java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT).format(java.util.Date(m.createdAt*1000)),style=MaterialTheme.typography.labelSmall)
@@ -281,6 +284,7 @@ private fun inboxContextTitle(context:MessageContext?,state:MarketSnapshot):Stri
                 }
             }
         }
+        TranslationSettings()
         NativePushToggle(model,state)
         val receiptSettings=remember(state.settings){JSONObject(state.settings)}
         Text("Message receipts",style=MaterialTheme.typography.titleMedium)

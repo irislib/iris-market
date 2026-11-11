@@ -44,7 +44,7 @@ struct ReviewsView: View {
                         UserRow(person: review.person)
                         if review.ratingMax == 5 { Text(String(repeating: "★", count: Int(review.rating)) + String(repeating: "☆", count: 5 - Int(review.rating))).accessibilityLabel("\(Int(review.rating)) of 5 stars") }
                         else { Text("\(Int((review.rating * 100).rounded()))% positive").font(.caption).foregroundStyle(MarketTheme.muted) }
-                        if !review.body.isEmpty { Text(review.body).font(.body).textSelection(.enabled) }
+                        if !review.body.isEmpty { MarketTranslation(fields: [AttributedString(review.body)]) { Text($0[0]).font(.body).textSelection(.enabled) } }
                     }.padding(.vertical, 6)
                 }
             }

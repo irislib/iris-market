@@ -52,7 +52,7 @@ class MarketFlowsTest {
         compose.onNodeWithText("Saved",useUnmergedTree=false).performClick()
         compose.onNodeWithText("A little more green").assertIsDisplayed()
         compose.onNodeWithContentDescription("Unsave A little more green").performClick()
-        compose.onNodeWithText("Browse").performClick()
+        compose.onNodeWithText("Home").performClick()
         compose.onNode(hasSetTextAction()).performTextInput("nothing-will-match-this-phrase")
         compose.onNodeWithText("A little more green").assertExists()
         compose.onNode(hasSetTextAction()).performImeAction()
@@ -105,7 +105,7 @@ class MarketFlowsTest {
         compose.onNodeWithContentDescription("Create listing").performClick()
         compose.onNodeWithText("Title").performTextInput("My reading chair")
         compose.onNodeWithText("Description").performTextInput("A cared-for oak chair.")
-        compose.onNodeWithText("Publish listing").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithText("Review listing").performScrollTo().assertIsNotEnabled()
         compose.onNodeWithText("This is Preview. Switch to your live market to publish a listing.").assertExists()
     }
     @Test fun aiSandboxInputsStaySeparateFromFeed() {

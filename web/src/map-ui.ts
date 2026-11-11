@@ -1,4 +1,5 @@
 import { setLoadingStatus } from './loading-status.ts';
+import {translateListingTitle} from './translation-content.ts';
 import { byId, element as domElement, formFields, setToggleLabel } from './dom.ts';
 import { createViewportDiscovery } from './map/discovery.ts';
 import publishedCells from './data/map-cells.json' with { type: 'json' };
@@ -35,7 +36,7 @@ export function setupMap({ getListings, getPriceLabel, onSelect, onVisibilityCha
       try {
         const { createMarketMap, listingsForViewport } = await import('./map/index.ts');
         selectForViewport=listingsForViewport;
-        const map = await createMarketMap($('map-canvas'), { listings: mappable(), getPriceLabel, dark: darkAppearance(), cacheMiB: Number($('map-cache').value), onSelect, onViewport: value => {discovery.update(value);if(instance)refresh();}, onError: () => { setLoadingStatus($('map-status'), 'Map unavailable'); } });
+        const map = await createMarketMap($('map-canvas'), { listings: mappable(), getPriceLabel, translateTitle:translateListingTitle, dark: darkAppearance(), cacheMiB: Number($('map-cache').value), onSelect, onViewport: value => {discovery.update(value);if(instance)refresh();}, onError: () => { setLoadingStatus($('map-status'), 'Map unavailable'); } });
         if (disposed) { await map.destroy(); return; }
         instance = map; await instance.setDark(darkAppearance()); refresh(); await stats();
       } catch { setLoadingStatus($('map-status'), 'Map unavailable. Close and reopen to try again.'); }

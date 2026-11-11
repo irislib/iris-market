@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Iris Market">
   <defs><linearGradient id="exchange" x1="8" y1="56" x2="56" y2="8" gradientUnits="userSpaceOnUse"><stop stop-color="#8458dc"/><stop offset=".55" stop-color="#c859a5"/><stop offset="1" stop-color="#f18a58"/></linearGradient></defs>
-  <g fill="url(#exchange)">
-    <path d="M7 32a25 25 0 0 1 40-20V7a1 1 0 0 1 1.7-.7L59 17a1.4 1.4 0 0 1 0 2L48.7 29.7A1 1 0 0 1 47 29v-6a15 15 0 0 0-30 9Z"/>
-    <path d="M57 32a25 25 0 0 1-40 20v5a1 1 0 0 1-1.7.7L5 47a1.4 1.4 0 0 1 0-2l10.3-10.7A1 1 0 0 1 17 35v6a15 15 0 0 0 30-9Z"/>
+  <g fill="url(#exchange)" stroke="url(#exchange)" stroke-width="1.2" stroke-linejoin="round">
+    <path d="M13.14 43.33A22 22 0 0 1 38.8 11.08L40.22 6.7L45.79 20.43L34.9 23.06L36.33 18.69A14 14 0 0 0 20 39.21Z"/>
+    <path d="M50.86 20.67A22 22 0 0 1 25.2 52.92L23.78 57.3L18.21 43.57L29.1 40.94L27.67 45.31A14 14 0 0 0 44 24.79Z"/>
   </g>
 </svg>

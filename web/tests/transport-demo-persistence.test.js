@@ -33,7 +33,7 @@ test('private buyer, bot identities, progressed journey and replies survive full
   buyer=openBuyer();await buyer.restore();assert.equal(buyer.state().ownerPubkey,owner);
   await until(()=>buyer.state().orders.find(item=>item.id===order.id)?.status==='delivered');
   const completed=buyer.state().orders.find(item=>item.id===order.id);assert.equal(completed.routeId,route);assert(completed.shipment.stops.every(stop=>stop.status==='completed'));assert.equal(replies().length,1);assert.deepEqual(bots.errors,[]);
-  assert.equal((await stat(directory)).mode&0o077,0);for(const name of await readdir(directory))assert.equal((await stat(join(directory,name))).mode&0o077,0);
+  assert.equal((await stat(directory)).mode&0o077,0);for(const name of await readdir(directory)){const entry=await stat(join(directory,name)).catch(error=>{if(error.code!=='ENOENT')throw error;});if(entry)assert.equal(entry.mode&0o077,0);}
  }finally{await buyer?.destroy();await bots?.close();await relay?.close();await rm(directory,{recursive:true,force:true});}
 });
 test('relay restore rejects invalid signatures and prunes expired events',async()=>{

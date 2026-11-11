@@ -30,7 +30,7 @@ HASH
 if [[ ! -x "$root/web/node_modules/.bin/esbuild" || ! -f "$web_stamp" || "$(cat "$web_stamp")" != "$web_inputs" ]]; then
   npm_flags=()
   if [[ "$offline" == true ]]; then npm_flags+=(--offline); fi
-  (cd "$root/web" && npm ci --ignore-scripts --no-audit --no-fund "${npm_flags[@]}")
+  (cd "$root/web" && npm ci --ignore-scripts --no-audit --no-fund ${npm_flags[@]+"${npm_flags[@]}"})
   printf '%s\n' "$web_inputs" > "$web_stamp"
 fi
 gradle_network=()
@@ -80,11 +80,11 @@ mkdir -p "$root/android/app/build/generated/jniLibs/arm64-v8a"
 cp "$lib" "$root/android/app/build/generated/jniLibs/arm64-v8a/"
 cd "$root/android"
 if [[ "$bootstrap" == true ]]; then
-  ANDROID_HOME="$sdk" ./gradlew "${gradle_network[@]}" --no-daemon --max-workers=2 --write-locks --write-verification-metadata sha256 :app:assembleDebug :app:assembleDebugAndroidTest
+  ANDROID_HOME="$sdk" ./gradlew ${gradle_network[@]+"${gradle_network[@]}"} --no-daemon --max-workers=2 --write-locks --write-verification-metadata sha256 :app:assembleDebug :app:assembleDebugAndroidTest
 else
   if [[ ! -f app/gradle.lockfile || ! -f gradle/verification-metadata.xml ]]; then
     echo 'Missing dependency locks/checksums. The release owner must bootstrap and review them before a normal build.' >&2
     exit 1
   fi
-  ANDROID_HOME="$sdk" ./gradlew "${gradle_network[@]}" --no-daemon --max-workers=2 --dependency-verification strict :app:assembleDebug :app:assembleDebugAndroidTest
+  ANDROID_HOME="$sdk" ./gradlew ${gradle_network[@]+"${gradle_network[@]}"} --no-daemon --max-workers=2 --dependency-verification strict :app:assembleDebug :app:assembleDebugAndroidTest
 fi

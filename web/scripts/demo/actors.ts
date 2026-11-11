@@ -147,7 +147,10 @@ export async function startDemoActors({relay,publicRelays,origin,durationMs=1200
         }
         if(frame.stage==='complete') {
           await seller.client.updateOrder(order.id,{status:'delivered'});journeys.delete(order.id);
-        } else await courier.updateOrder(order.id,{location:{coordinates:frame.position,stopId:frame.activeStopId}});
+        }
+        // Only the newest position is ever published, so replacing one that is
+        // still on its way out would retire it unsent. A fast tick must wait.
+        else if(courier.state().orders.find(item=>item.id===order.id)?.sync!=='queued')await courier.updateOrder(order.id,{location:{coordinates:frame.position,stopId:frame.activeStopId}});
       }
       const botKeys=new Set(clients.map(client=>client.state().ownerPubkey));
       for(const [client,role] of [[shop,'demo shop'],[drone,'simulated drone operator'],[driver,'simulated driver']] as const)for(const thread of client.state().conversations) {

@@ -882,3 +882,16 @@ test('All results survives queries and reloads and AI selected resumes the submi
   assert(next.calls.some(call=>call[0]==='load'));
   assert.equal(storage.getItem('market-result-view'),'ai');
 });
+
+test('Home keeps unreviewed listings on screen until its first run has finished',async()=>{
+  const rows=[{id:'wanted',title:'Wanted item'},{id:'other',title:'Other item'}];
+  let release;const held=new Promise(resolve=>{release=resolve;});
+  const client={info:{model:'deberta'},dispose(){},async classify(condition,text){await held;return {score:text.startsWith('Wanted')?.9:0};}};
+  const {ui}=fixture({rows,client,homeFeed:{enabled:true,prompt:'wanted items'}});
+  const run=ui.submit('');
+  await new Promise(resolve=>setTimeout(resolve,0));
+  assert.equal(ui.homeActive(),true);
+  assert.deepEqual(rows.filter(ui.isVisible).map(row=>row.id),['wanted','other']);
+  release();await run;
+  assert.deepEqual(rows.filter(ui.isVisible).map(row=>row.id),['wanted']);
+});

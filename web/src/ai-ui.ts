@@ -13,6 +13,8 @@ interface AIOptions {getCandidates:()=>SearchListing[];getOrderCount?:()=>number
 interface SourceRequest {epoch:number;done:boolean;more?:boolean;error?:unknown}
 export function setupAI({ getCandidates, getOrderCount=()=>0, onChange, onTextSearch, onSubmit, fetchMoreCandidates, client = new FeedFilterClient(), browserClient=new BrowserFeedFilterClient(),hasWebGPU=()=>!!globalThis.navigator&&'gpu' in globalThis.navigator,autoPrepare=true,storage:providedStorage,saveData=()=>!!(globalThis.navigator as Navigator&{connection?:{saveData?:boolean}})?.connection?.saveData,homeFeed,isHomeVisible=()=>true }:AIOptions) {
   let scores = new Map(), phase:'idle'|'loading'|'searching'='idle', generation = 0, submittedQuery='', paused=false, waitingCandidates=false;
+  // Until a home run has a few picks, or has finished, the unfiltered listings stay on screen.
+  let homeSettled=false;const homeRevealAt=6;
   let home=homeFeed?homeFeedPreferences(homeFeed):{enabled:false,prompt:''},homeContext='',homeStopped=false,homeScheduled=false,homeReviewLimit=240,homeWasVisible=isHomeVisible(),browserAvailable=false;
   const homeRequested=()=>enabled()&&home.enabled&&!submittedQuery&&isHomeVisible();
   const homeActive=()=>homeRequested()&&!!(runtime().info||homeContext||preparation||phase==='loading');
@@ -129,7 +131,7 @@ export function setupAI({ getCandidates, getOrderCount=()=>0, onChange, onTextSe
     homeStopped=!reset;
     sourceError=null;sourceErrorVisible=false;
     generation++;if(!finishCurrent)runController?.abort();runController=null;activeRun=null;sourceEpoch++;wakeCandidates?.();if(unload){prepareGeneration++;preparation=undefined;downloadFraction=undefined;client.dispose();browserClient.dispose();}phase='idle';waitingCandidates=false;paused=!reset;progress.hidden=true;$('ai-progress').textContent='';
-    if(reset){scores.clear();submittedQuery='';homeContext='';homeReviewLimit=240;sourceExhausted=false;targetMatches=24;$('ai-error').textContent='';}
+    if(reset){scores.clear();homeSettled=false;submittedQuery='';homeContext='';homeReviewLimit=240;sourceExhausted=false;targetMatches=24;$('ai-error').textContent='';}
     refresh();onChange();
   }
   function run({continuation=false,homeRun=false,automatic=false}={}):Promise<void> {
@@ -150,7 +152,7 @@ export function setupAI({ getCandidates, getOrderCount=()=>0, onChange, onTextSe
     if (!enabled()) { textSubmitted=true;onTextSearch?.($('search').value.trim()); onChange(); return; }
     if(showAll){
       const query=homeRun?'':$('search').value.trim();
-      if(submittedQuery!==query){scores.clear();sourceExhausted=false;targetMatches=24;}
+      if(submittedQuery!==query){scores.clear();homeSettled=false;sourceExhausted=false;targetMatches=24;}
       submittedQuery=query;
       refresh();onChange();return;
     }
@@ -168,7 +170,7 @@ export function setupAI({ getCandidates, getOrderCount=()=>0, onChange, onTextSe
     sourceError=null;sourceErrorVisible=false;
     paused=false;waitingCandidates=false;
     homeStopped=false;
-    if(!preserve){sourceEpoch++;submittedQuery=homeRun?'':$('search').value.trim();homeContext=homeRun?home.prompt:'';homeReviewLimit=240;scores.clear();sourceExhausted=false;targetMatches=24;}
+    if(!preserve){sourceEpoch++;submittedQuery=homeRun?'':$('search').value.trim();homeContext=homeRun?home.prompt:'';homeReviewLimit=240;scores.clear();homeSettled=false;sourceExhausted=false;targetMatches=24;}
     else if(!retrySource&&!automatic){targetMatches=matchCount()+24;if(homeRun)homeReviewLimit=reviewedCount(candidates())+240;}
     $('ai-error').textContent='';
     phase=selected.info?'searching':'loading';onChange();
@@ -183,7 +185,7 @@ export function setupAI({ getCandidates, getOrderCount=()=>0, onChange, onTextSe
       // Use the latest query, including edits made while the model was downloading.
       const query=homeRun?'':continuation?submittedQuery:$('search').value.trim();
       if(activeRun)activeRun.query=query;
-      if(query!==submittedQuery){sourceEpoch++;submittedQuery=query;scores.clear();if(!homeRun)onSubmit?.(query);onChange();}
+      if(query!==submittedQuery){sourceEpoch++;submittedQuery=query;scores.clear();homeSettled=false;if(!homeRun)onSubmit?.(query);onChange();}
       if(!enabled()||!query&&!homeRun||homeRun&&!homeActive())return;
       const model=$('ai-model').value;
       const searchHead=!homeRun&&'selectSearchHead' in selected&&!!(await selected.selectSearchHead?.(query,controller.signal));
@@ -307,6 +309,7 @@ export function setupAI({ getCandidates, getOrderCount=()=>0, onChange, onTextSe
         if(homeRun)recentReviews=recentReviews.concat(batch).slice(-2);
         position+=batch.length;unpainted+=batch.length;
         if(!painted||before===0&&visibleMatches>0||unpainted>=16||performance.now()-lastPaint>=100){
+          if(homeRun&&!homeSettled&&matchCount()>=homeRevealAt)homeSettled=true;
           onChange();painted=true;unpainted=0;lastPaint=performance.now();
           // Cached decisions can otherwise keep resolving in one microtask
           // chain, starving paint, input, Stop and a replacement query.
@@ -315,7 +318,7 @@ export function setupAI({ getCandidates, getOrderCount=()=>0, onChange, onTextSe
       }
     } catch (error) {
       if (current === generation) { paused=true;homeStopped=true;selected.dispose(); $('ai-error').textContent = `${error.message || 'Search failed'}. Choose All results to continue browsing.`; }
-    } finally { extraWorker?.dispose();releaseModel();if(runController===controller)runController=null;if (current === generation) { phase='idle';waitingCandidates=false;$('ai-progress').textContent='';refresh();onChange(); } }
+    } finally { extraWorker?.dispose();releaseModel();if(runController===controller)runController=null;if (current === generation) { if(homeRun)homeSettled=true;phase='idle';waitingCandidates=false;$('ai-progress').textContent='';refresh();onChange(); } }
   }
   $('search-mode').onclick = () => {
     const active=!enabled();preference=active?'on':'off';writeSetting(AI_MODE_STORAGE_KEY,preference);setEnabled(active);
@@ -420,5 +423,5 @@ export function setupAI({ getCandidates, getOrderCount=()=>0, onChange, onTextSe
   const planTags=(query:string,tags:readonly string[],signal?:AbortSignal)=>{const epoch=generation;return planBrowserTags(query,tags,{info:enabled()&&$('ai-model').value==='browser'?browserClient.info:null,signal,isCurrent:()=>!closed&&generation===epoch&&enabled()&&$('ai-model').value==='browser'&&submittedQuery===query});};
   function viewChanged(){const visible=isHomeVisible();if(!visible&&homeContext&&!homeStopped){stop({unload:false,finishCurrent:true});paused=false;}if(visible&&!homeWasVisible)homeStopped=false;homeWasVisible=visible;refresh();}
   document.addEventListener?.('visibilitychange',viewChanged);
-  return { ready,planTags,topicPlanning:()=>$('ai-model').value==='deberta',canPlanTags:()=>runtime()===browserClient&&!!browserClient.info,enabled,homeActive,showingAll:()=>showAll,viewChanged,submit:(query:string)=>{$('search').value=query;return run();},homeFeed:()=>({...home}),setHomeFeed:(value:HomeFeedPreferences)=>{home=homeFeedPreferences(value);if(submittedQuery){refresh();onChange();}else stop({reset:true,unload:false});},query:()=>submittedQuery, searching:()=>phase!=='idle',loadMore:()=>run({continuation:true,homeRun:homeActive()}), pagination, scoreFor, isVisible: listing => !enabled() || showAll || !curationActive() || matches(listing), refresh, stop: () => stop({reset:true}) };
+  return { ready,planTags,topicPlanning:()=>$('ai-model').value==='deberta',canPlanTags:()=>runtime()===browserClient&&!!browserClient.info,enabled,homeActive,showingAll:()=>showAll,viewChanged,submit:(query:string)=>{$('search').value=query;return run();},homeFeed:()=>({...home}),setHomeFeed:(value:HomeFeedPreferences)=>{home=homeFeedPreferences(value);if(submittedQuery){refresh();onChange();}else stop({reset:true,unload:false});},query:()=>submittedQuery, searching:()=>phase!=='idle',loadMore:()=>run({continuation:true,homeRun:homeActive()}), pagination, scoreFor, isVisible: listing => !enabled() || showAll || !curationActive() || !submittedQuery&&homeActive()&&!homeSettled || matches(listing), refresh, stop: () => stop({reset:true}) };
 }

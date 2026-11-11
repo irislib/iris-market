@@ -37,3 +37,15 @@ test('missing names retry after a bounded interval without duplicate active watc
   resetPeople();assert.equal(bootstrap[0].signal.aborted,true);
  }finally{Date.now=originalNow;resetPeople()}
 });
+
+test('rows still showing a placeholder are asked again when their watch ends, a bounded number of times',async()=>{
+ const shown='c'.repeat(64),gone='d'.repeat(64),opened=[];
+ try{
+  setupPeople({getRelays:()=>['wss://people.example'],isPreview:()=>false,loadBootstrap:async()=>{},watchMetadata:(keys,options)=>{const watch={keys,close(){options.onClose()}};opened.push(watch);return watch}});
+  roots.push(createUserRow(shown));warmProfiles([gone]);await Promise.resolve();
+  assert.deepEqual(opened.map(watch=>watch.keys),[[shown,gone]]);
+  opened[0].close();await Promise.resolve();assert.deepEqual(opened[1]?.keys,[shown],'only the row on screen is asked again');
+  opened[1].close();await Promise.resolve();assert.equal(opened.length,3);
+  opened[2].close();await Promise.resolve();assert.equal(opened.length,3,'an unanswered row is not asked forever');
+ }finally{resetPeople();roots.length=0}
+});

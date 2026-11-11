@@ -5,6 +5,8 @@ import { readProfileMetadata, watchProfileMetadata, type SocialConnection } from
 let getRelays = () => DEFAULT_RELAYS, isPreview = () => false, onChange = () => {}, pending = new Set<string>(), attempted = new Map<string,number>(), queued = false, generation = 0;
 let relationshipFor: (key:string)=>SocialConnection|undefined = () => undefined, makeRelationshipBadge: (relation:SocialConnection)=>HTMLElement|null = () => null;
 const watches = new Set<ReturnType<typeof watchProfileMetadata>>(), activeKeys=new Set<string>();
+// Rows still showing a placeholder when their watch ends are asked again, this many times at most.
+const MAX_REASKS=2,reasks=new Map<string,number>();
 let watchMetadata=watchProfileMetadata,bootstrapGeneration=-1,bootstrapController:AbortController|undefined;
 type BootstrapOptions={relays:readonly string[];signal:AbortSignal;onProgress:()=>void};
 const defaultBootstrap=async(options:BootstrapOptions)=>{const module=await import('./profile-bootstrap.ts');await module.seedProfileMetadata(options);};
@@ -60,7 +62,7 @@ function paintRelationship(row:HTMLElement) {
   const badge = makeRelationshipBadge(relation);
   if (badge) { badge.dataset.personRelationship = ''; row.prepend(badge); }
 }
-export function resetPeople() { generation++;bootstrapController?.abort();bootstrapController=undefined; pending.clear(); attempted.clear();activeKeys.clear(); queued = false; for (const watch of watches) watch.close(); watches.clear(); }
+export function resetPeople() { generation++;bootstrapController?.abort();bootstrapController=undefined; pending.clear(); attempted.clear();activeKeys.clear();reasks.clear(); queued = false; for (const watch of watches) watch.close(); watches.clear(); }
 export function warmProfiles(keys) {
   if (isPreview()) return;
   seedProfiles();
@@ -80,8 +82,19 @@ function drain(run:number) {
     let watch:ReturnType<typeof watchProfileMetadata>,closed=false;
     watch = watchMetadata(batch, { relays:getRelays(), onChange() {
       if (generation === run) { refreshPeople(); onChange(); }
-    }, onClose() { closed=true;watches.delete(watch);if(generation===run){for(const key of batch)activeKeys.delete(key);schedule();} } });
+    }, onClose() { closed=true;watches.delete(watch);if(generation===run){for(const key of batch)activeKeys.delete(key);reask(batch);schedule();} } });
     if(!closed)watches.add(watch);
   }
+}
+function reask(keys:string[]) {
+  const shown=new Set<string>();
+  for (const node of document.querySelectorAll<HTMLElement>('[data-person-avatar]')) shown.add(node.dataset.personAvatar);
+  for (const node of document.querySelectorAll<HTMLElement>('[data-person-name]')) shown.add(node.dataset.personName);
+  for (const key of keys) {
+    const round=reasks.get(key)??0;
+    if (round>=MAX_REASKS || !shown.has(key) || personFor(key).metadataFound || pending.size>=512) continue;
+    reasks.set(key,round+1); pending.add(key);
+  }
+  while (reasks.size > 512) reasks.delete(reasks.keys().next().value);
 }
 window.addEventListener('pagehide', resetPeople);

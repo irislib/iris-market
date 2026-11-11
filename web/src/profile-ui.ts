@@ -4,7 +4,7 @@ import {translatedParagraph} from './translation-content.ts';
 import { npubEncode } from 'nostr-tools/nip19'
 import { loadProfile, loadProfileFollowers, excludeKnownFollowers, readProfileMetadata, subscribeProfileMetadata, DEFAULT_SOCIAL_GRAPH_ROOT, DEFAULT_SOCIAL_GRAPH_LABEL } from './profiles.ts'
 import { normalizePublicKey } from './social.ts'
-import { createAvatar, createUserRow } from './people.ts'
+import { createAvatar, createUserRow, warmProfiles } from './people.ts'
 import { profileURL } from './routes.ts'
 import { setupProfileReviews } from './reviews-ui.ts'
 import type { PublishReview, ReviewAccount, ReviewQuery } from './reviews.ts'
@@ -257,6 +257,8 @@ export function setupProfiles({ page, getRelays, getContext = () => DEFAULT_SOCI
     reviews=setupProfileReviews({target:key,query:queryReviews,getAccount:getReviewAccount,publish:publishReview,preview:isPreview(),onSignIn:onReviewSignIn,onProfile:pubkey=>void open(pubkey),onSummary:value=>{if(run===generation&&reviewSummaryButton)reviewSummaryButton.textContent=value.label}})
     const displayed=renderCached(key)
     if (isPreview()) { setLoadingStatus(status, 'Profiles are available in live mode.'); return }
+    // The header is not a user row, so nothing else keeps a live lookup open for it.
+    warmProfiles([key])
     void requestFollowers()
     setLoadingStatus(status, displayed ? 'Loading connections…' : 'Loading profile…', true)
     // Metadata is useful immediately, even while graph discovery is pending.

@@ -2339,11 +2339,12 @@ dependencies = [
 
 [[package]]
 name = "nostr-pubsub-reconcile"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab7fcda5440ab9eced61db89fc259ee24cffd5f7547f1cdc08b86b15149aecb1"
+checksum = "344c370e0269d25a26749f7a07a754386f288748c972fbb89d8dc0f8ee5a1df0"
 dependencies = [
  "negentropy",
+ "sha2 0.10.9",
 ]
 
 [[package]]

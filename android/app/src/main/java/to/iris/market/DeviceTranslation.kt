@@ -1,28 +1,23 @@
 package to.iris.market
 
-import android.app.PendingIntent
 import android.content.Context
 import android.icu.util.ULocale
 import android.os.Build
-import android.os.CancellationSignal
 import android.view.textclassifier.TextClassificationManager
 import android.view.textclassifier.TextLanguage
-import android.view.translation.*
-import androidx.annotation.RequiresApi
 import androidx.compose.runtime.*
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import java.util.Locale
-import kotlin.coroutines.resume
 
 /** Android's likely-subtag data resolves regional script conventions, e.g. zh-TW → zh-Hant. */
 internal fun translationTag(locale: ULocale): String =
@@ -53,26 +48,60 @@ internal class TranslationPreferences(context: Context) {
 }
 
 internal val LocalReader = staticCompositionLocalOf<TranslationPreferences?> { null }
-@RequiresApi(31)
-internal class DeviceTranslation(private val context: Context) {
-    private val manager = context.getSystemService(TranslationManager::class.java)
-    private val classifier = context.getSystemService(TextClassificationManager::class.java)?.textClassifier
-    // Android 12 can return the same Translator for two simultaneous requests for a pair.
-    private val sessions = Mutex()
-    var pairs by mutableStateOf(emptySet<TranslationCapability>())
-        private set
-    var settingsIntent: PendingIntent? by mutableStateOf(null)
-        private set
+internal data class ReaderLanguagePair(val source: String, val target: String, val installed: Boolean)
 
-    suspend fun refresh() {
-        val (caps, settings) = withContext(Dispatchers.IO) {
-            val format = TranslationSpec.DATA_FORMAT_TEXT
-            runCatching { manager?.getOnDeviceTranslationCapabilities(format, format).orEmpty() }.getOrDefault(emptySet()) to
-                runCatching { manager?.onDeviceTranslationSettingsActivityIntent }.getOrNull()
+internal class DeviceTranslation(private val context: Context) {
+    private val classifier = context.getSystemService(TextClassificationManager::class.java)?.textClassifier
+    private val system = if (Build.VERSION.SDK_INT >= 31) SystemTranslation(context) else null
+    private val google = GoogleDeviceTranslation()
+    private val refreshMutex = Mutex()
+    private var byLanguage by mutableStateOf(emptyMap<Pair<String, String>, ReaderLanguagePair>())
+    val pairs get() = byLanguage.values
+    var targets by mutableStateOf(emptySet<String>())
+        private set
+    var scriptVariants by mutableStateOf(emptyList<String>())
+        private set
+    var usesGoogle by mutableStateOf(false)
+        private set
+    private val downloads = mutableStateMapOf<String, String>()
+
+    suspend fun refresh() = refreshMutex.withLock {
+        val systemPairs = withContext(Dispatchers.IO) {
+            if (Build.VERSION.SDK_INT >= 31) try { system?.refresh().orEmpty() } catch (_: Exception) { emptyList() }
+            else emptyList()
         }
-        pairs = caps.filter { it.state == TranslationCapability.STATE_ON_DEVICE ||
-            it.state == TranslationCapability.STATE_AVAILABLE_TO_DOWNLOAD || it.state == TranslationCapability.STATE_DOWNLOADING }.toSet()
-        settingsIntent = settings
+        val available = if (systemPairs.isEmpty()) google.pairs() else systemPairs
+        usesGoogle = systemPairs.isEmpty()
+        byLanguage = available.associateBy { it.source to it.target }
+        targets = available.map { it.target }.toSet()
+        scriptVariants = available.flatMap { listOf(it.source, it.target) }.distinct()
+            .groupBy { Locale.forLanguageTag(it).language }.values.filter { it.size > 1 }.flatten()
+    }
+
+    fun pair(source: String, target: String) = byLanguage[source to target]
+    fun downloadStatus(pair: ReaderLanguagePair) = downloads[pair.source + "/" + pair.target]
+
+    fun prepare(pair: ReaderLanguagePair, scope: CoroutineScope) {
+        val key = pair.source + "/" + pair.target
+        if (!usesGoogle) {
+            val opened = Build.VERSION.SDK_INT >= 31 && runCatching { system?.openLanguageSettings() == true }.getOrDefault(false)
+            if (!opened) downloads[key] = "Install this language pair in your device’s translation settings."
+            return
+        }
+        if (downloads[key] == "Downloading languages…") return
+        downloads[key] = "Downloading languages…"
+        scope.launch {
+            try {
+                google.download(pair)
+                refresh()
+                downloads.remove(key)
+            } catch (cancelled: CancellationException) {
+                downloads.remove(key)
+                throw cancelled
+            } catch (_: Exception) {
+                downloads[key] = "Language download failed. Try again."
+            }
+        }
     }
 
     suspend fun identify(sample: String): String? = withContext(Dispatchers.IO) {
@@ -83,52 +112,30 @@ internal class DeviceTranslation(private val context: Context) {
         translationTag(best).takeIf { result.getConfidenceScore(best) >= 0.8f }
     }
 
-    suspend fun translate(pair: TranslationCapability, fields: List<TranslationText>): List<String>? =
-        sessions.withLock {
-            val phrases = fields.flatMap { it.phrases }
-            if (phrases.isEmpty() || manager == null) return@withLock null
-            withTimeoutOrNull(15_000L) {
-                val spec = TranslationContext.Builder(pair.sourceSpec, pair.targetSpec).build()
-                val translator = suspendCancellableCoroutine<Translator?> { continuation ->
-                    manager.createOnDeviceTranslator(spec, context.mainExecutor) { translator ->
-                        continuation.resume(translator) { _, abandoned, _ -> abandoned?.destroy() }
-                    }
-                } ?: return@withTimeoutOrNull null
-                try {
-                    val request = TranslationRequest.Builder().setTranslationRequestValues(
-                        phrases.map(TranslationRequestValue::forText)
-                    ).build()
-                    val response = suspendCancellableCoroutine<TranslationResponse> { continuation ->
-                        val signal = CancellationSignal()
-                        continuation.invokeOnCancellation { signal.cancel() }
-                        translator.translate(request, signal, context.mainExecutor) {
-                            if (it.isFinalResponse && continuation.isActive) continuation.resume(it)
-                        }
-                    }
-                    if (response.translationStatus != TranslationResponse.TRANSLATION_STATUS_SUCCESS) return@withTimeoutOrNull null
-                    val values = phrases.indices.map { index ->
-                        val value = response.translationResponseValues[index]
-                        if (value?.statusCode != TranslationResponseValue.STATUS_SUCCESS) return@withTimeoutOrNull null
-                        value.text?.toString()?.takeIf(String::isNotBlank) ?: return@withTimeoutOrNull null
-                    }.iterator()
-                    fields.map { it.assemble(values) }
-                } finally { translator.destroy() }
-            }
-        }
+    suspend fun translate(pair: ReaderLanguagePair, fields: List<TranslationText>): List<String>? {
+        if (!pair.installed) return null
+        val phrases = fields.flatMap { it.phrases }
+        if (phrases.isEmpty()) return null
+        val values = if (usesGoogle) google.translate(pair, phrases)
+            else if (Build.VERSION.SDK_INT >= 31) system?.translate(pair, phrases) else null
+        if (values == null || values.size != phrases.size || values.any(String::isBlank)) return null
+        val result = values.iterator()
+        return fields.map { it.assemble(result) }
+    }
 }
 
 internal val LocalDeviceTranslation = staticCompositionLocalOf<DeviceTranslation?> { null }
+private val LocalTranslationScope = staticCompositionLocalOf<CoroutineScope?> { null }
 
 @Composable internal fun TranslationHost(content: @Composable () -> Unit) {
     val context = LocalContext.current.applicationContext
     val prefs = remember(context) { TranslationPreferences(context) }
-    val engine = remember(context) { if (Build.VERSION.SDK_INT >= 31) DeviceTranslation(context) else null }
-    if (Build.VERSION.SDK_INT >= 31 && engine != null) {
-        var refresh by remember { mutableIntStateOf(0) }
-        LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { refresh++ }
-        LaunchedEffect(engine, refresh) { engine.refresh() }
-    }
-    CompositionLocalProvider(LocalReader provides prefs, LocalDeviceTranslation provides engine, content = content)
+    val engine = remember(context) { DeviceTranslation(context) }
+    val scope = rememberCoroutineScope()
+    var refresh by remember { mutableIntStateOf(0) }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { refresh++ }
+    LaunchedEffect(engine, refresh) { engine.refresh() }
+    CompositionLocalProvider(LocalReader provides prefs, LocalDeviceTranslation provides engine, LocalTranslationScope provides scope, content = content)
 }
 
 @Composable internal fun translationTarget(): Locale {
@@ -140,6 +147,7 @@ internal data class ReadingTranslation(
     val text: List<String>,
     val action: String? = null,
     val status: String? = null,
+    val googleAttribution: Boolean = false,
     val activate: () -> Unit = {}
 )
 
@@ -148,18 +156,17 @@ internal data class ReadingTranslation(
     val engine = LocalDeviceTranslation.current
     val target = translationTarget()
     val targetTag = translationTag(ULocale.forLocale(target))
-    if (Build.VERSION.SDK_INT < 31 || prefs == null || engine == null || engine.pairs.none { translationTag(it.targetSpec.locale) == targetTag }) {
+    if (prefs == null || engine == null || targetTag !in engine.targets) {
         return ReadingTranslation(fields)
     }
     return key(fields, sample, target, prefs.languagesRead, prefs.automatic) {
-        rememberSupportedTranslation(fields, sample, engine, prefs, target, targetTag)
+        rememberSupportedTranslation(fields, sample, engine, prefs, targetTag)
     }
 }
 
-@RequiresApi(31)
 @Composable private fun rememberSupportedTranslation(
     fields: List<String>, sample: String, engine: DeviceTranslation,
-    prefs: TranslationPreferences, target: Locale, targetTag: String
+    prefs: TranslationPreferences, targetTag: String
 ): ReadingTranslation {
     val parts = remember { fields.map(::TranslationText) }
     var source by remember { mutableStateOf<String?>(null) }
@@ -171,20 +178,20 @@ internal data class ReadingTranslation(
     }
     val from = source ?: return ReadingTranslation(fields)
     if (!translationNeeded(from, targetTag, prefs.languagesRead)) return ReadingTranslation(fields)
-    val pair = engine.pairs.filter { translationTag(it.sourceSpec.locale) == from && translationTag(it.targetSpec.locale) == targetTag }
-        .maxByOrNull { (if (it.state == TranslationCapability.STATE_ON_DEVICE) 2 else 0) + (if (it.targetSpec.locale.toLanguageTag() == target.toLanguageTag()) 1 else 0) }
-        ?: return ReadingTranslation(fields)
+    val pair = engine.pair(from, targetTag) ?: return ReadingTranslation(fields)
     val sourceName = Locale.forLanguageTag(from).displayLanguage
-    if (pair.state != TranslationCapability.STATE_ON_DEVICE) {
-        val intent = engine.settingsIntent
-        var status by remember { mutableStateOf<String?>(null) }
-        return ReadingTranslation(fields, "Translate from $sourceName", status) {
-            status = if (intent == null) "Install this language pair in your device’s translation settings."
-                else try { intent.send(); null } catch (_: PendingIntent.CanceledException) { "Language settings unavailable." }
+    val manualAction = if (engine.usesGoogle) "Translate with Google" else "Translate from $sourceName"
+    var show by remember { mutableStateOf(prefs.automatic) }
+    if (!pair.installed) {
+        val scope = LocalTranslationScope.current ?: return ReadingTranslation(fields)
+        val downloadStatus = engine.downloadStatus(pair)
+        val action = if (downloadStatus == "Downloading languages…") null
+            else if (engine.usesGoogle) "Download languages to translate" else manualAction
+        return ReadingTranslation(fields, action, downloadStatus) {
+            show = true
+            engine.prepare(pair, scope)
         }
     }
-
-    var show by remember { mutableStateOf(prefs.automatic) }
     var result by remember { mutableStateOf<List<String>?>(null) }
     var status by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(show, pair) {
@@ -198,6 +205,7 @@ internal data class ReadingTranslation(
     }
     return ReadingTranslation(
         if (show) result ?: fields else fields,
-        if (show) "Show original" else "Translate from $sourceName", status
+        if (show) "Show original" else manualAction, status,
+        googleAttribution = show && result != null && engine.usesGoogle
     ) { status = null; show = !show }
 }

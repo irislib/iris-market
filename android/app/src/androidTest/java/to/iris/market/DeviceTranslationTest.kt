@@ -1,7 +1,7 @@
 package to.iris.market
 
 import android.os.Build
-import android.view.translation.TranslationCapability
+import java.util.Locale
 import androidx.test.core.app.ApplicationProvider
 import org.junit.Assert.*
 import org.junit.Assume.assumeTrue
@@ -27,10 +27,10 @@ class DeviceTranslationTest {
                 "de" to "Kann ich dieses Fahrrad morgen Nachmittag abholen?",
                 "es" to "¿Puedo recoger esta bicicleta mañana por la tarde?",
                 "fr" to "Puis-je récupérer ce vélo demain après-midi ?")
-            val pair = device.pairs.firstOrNull { it.state == TranslationCapability.STATE_ON_DEVICE &&
-                it.sourceSpec.locale.language in samples && it.targetSpec.locale.language != it.sourceSpec.locale.language }
-            assumeTrue("No installed pair for the sample languages. Installed ${device.pairs.count { it.state == TranslationCapability.STATE_ON_DEVICE }} of ${device.pairs.size} pairs.", pair != null)
-            val source = samples.getValue(requireNotNull(pair).sourceSpec.locale.language)
+            val pair = device.pairs.firstOrNull { it.installed &&
+                Locale.forLanguageTag(it.source).language in samples && Locale.forLanguageTag(it.target).language != Locale.forLanguageTag(it.source).language }
+            assumeTrue("No installed pair for the sample languages. Installed ${device.pairs.count { it.installed }} of ${device.pairs.size} pairs.", pair != null)
+            val source = samples.getValue(Locale.forLanguageTag(requireNotNull(pair).source).language)
             val text = TranslationText("$source\n[Photo](https://example.org/picture.jpg)")
             val result = device.translate(pair, listOf(text))?.singleOrNull()
             assertNotNull("Installed pair returned no translation", result)

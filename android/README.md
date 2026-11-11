@@ -39,3 +39,11 @@ AI use is optional. The provider, endpoint and exact model are configured by the
 selected public listing text and interests are sent only after opt-in. The settings snapshot
 never stores the model key. HTTP is allowed for deliberately configured local model endpoints;
 remote listing photos are HTTPS-only and bounded in size. Mesh transport is outside v0.
+
+## Translation
+
+Iris Market uses the Android system translation service where available. On phones without that service, Google Translate powers on-device translation through ML Kit. The first translation offers a language download. Once the languages are installed, **Translate with Google** works offline. [Google Translate](https://translate.google.com/) · [Google Cloud Translation](https://cloud.google.com/translate)
+
+THIS SERVICE MAY CONTAIN TRANSLATIONS POWERED BY GOOGLE. GOOGLE DISCLAIMS ALL WARRANTIES RELATED TO THE TRANSLATIONS, EXPRESS OR IMPLIED, INCLUDING ANY WARRANTIES OF ACCURACY, RELIABILITY, AND ANY IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+
+The Android attribution images are the unmodified color and white short badges at 1×, 2× and 3× from Google’s [official attribution archive](https://docs.cloud.google.com/static/translate/images/google-translate-attribution.zip). The archive SHA-256 is `1cf5975466881127a227d4c0510518a83542eacff57d0ac5240430263035ee1b`. [ML Kit usage guidelines](https://developers.google.com/ml-kit/language/translation/translation-terms)

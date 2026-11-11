@@ -70,6 +70,7 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.4")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.9.4")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
+    implementation("com.google.mlkit:translate:17.0.3")
     // Apache-2.0; exact Google Maven payloads are pinned in verification-metadata.xml.
     implementation("com.google.ai.edge.litertlm:litertlm-android:0.13.0")
     implementation(platform("androidx.compose:compose-bom:2025.09.01"))

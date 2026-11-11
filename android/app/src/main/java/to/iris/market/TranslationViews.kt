@@ -1,7 +1,9 @@
 package to.iris.market
 
 import android.icu.util.ULocale
-import android.os.Build
+import androidx.compose.foundation.Image
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.res.painterResource
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -16,6 +18,11 @@ import androidx.compose.ui.unit.dp
 import java.util.Locale
 
 @Composable internal fun TranslationControl(translation: ReadingTranslation) {
+    if (translation.googleAttribution) {
+        val badge = if (LocalContentColor.current.luminance() > 0.5f) R.drawable.powered_by_google_translate_dark
+            else R.drawable.powered_by_google_translate
+        Image(painterResource(badge), "Translated by Google", modifier = Modifier.size(width = 122.dp, height = 16.dp))
+    }
     translation.action?.let { action ->
         TextButton(onClick = translation.activate, contentPadding = PaddingValues(horizontal = 4.dp)) {
             Text(action, style = MaterialTheme.typography.labelMedium)
@@ -34,14 +41,11 @@ import java.util.Locale
     val preferences = LocalReader.current ?: return
     val engine = LocalDeviceTranslation.current
     val target = translationTarget()
-    val pairs = if (Build.VERSION.SDK_INT >= 31 && engine != null) engine.pairs else emptySet()
     val targetTag = translationTag(ULocale.forLocale(target))
-    val supportedTargets = if (Build.VERSION.SDK_INT >= 31) pairs.map { translationTag(it.targetSpec.locale) }.toSet() else emptySet()
+    val supportedTargets = engine?.targets.orEmpty()
     val supported = targetTag in supportedTargets
     val targetName = Locale.forLanguageTag(languageScriptTag(target)).displayName
-    val deviceLanguages = if (Build.VERSION.SDK_INT >= 31) pairs.flatMap {
-        listOf(translationTag(it.sourceSpec.locale), translationTag(it.targetSpec.locale))
-    }.distinct().groupBy { Locale.forLanguageTag(it).language }.values.filter { it.size > 1 }.flatten() else emptyList()
+    val deviceLanguages = engine?.scriptVariants.orEmpty()
     val languages = remember(deviceLanguages, target, preferences.languagesRead) {
         (Locale.getISOLanguages().toList() + deviceLanguages + preferences.languagesRead + languageScriptTag(target))
             .distinct().map(Locale::forLanguageTag).filter { it.language.isNotBlank() && it.displayName.isNotBlank() }

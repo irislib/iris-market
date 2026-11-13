@@ -17,7 +17,7 @@ import xml.etree.ElementTree as ET
 from PIL import Image, __version__ as PILLOW_VERSION
 
 ROOT = Path(__file__).resolve().parent.parent
-BACKGROUND = '#f7f7f9'
+BACKGROUND = '#050507'
 INFO = {'version': 1, 'author': 'xcode'}
 IOS_SLOTS = [('iphone', size, scale) for size in (20, 29, 40, 60) for scale in (2, 3)] + [
     ('ipad', size, scale) for size in (20, 29, 40, 76) for scale in (1, 2)

@@ -107,6 +107,18 @@ fn only_connected_authors_reach_home_literal_search_and_ai_candidates() {
             .iter()
             .all(|c| expected.contains(c["listing"]["author"].as_str().unwrap()))
     );
+    let filter = |network_only| {
+        call(json!({"type":"set_filter","query":"camera","side":"all","network_only":network_only}))
+    };
+    let everyone = filter(false);
+    assert_eq!(everyone["network_only"], false);
+    assert_eq!(everyone["listings"].as_array().unwrap().len(), 4);
+    assert!(everyone["local_curation"].is_null());
+    let home = call(json!({"type":"set_filter","query":"","side":"all"}));
+    assert_eq!(home["listings"].as_array().unwrap().len(), 4);
+    let reset = filter(true);
+    assert_eq!(reset["listings"].as_array().unwrap().len(), 3);
+    assert_eq!(reset["saved_listings"][0]["id"], saved);
 }
 
 #[test]

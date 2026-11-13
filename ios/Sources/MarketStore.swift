@@ -382,9 +382,9 @@ final class MarketStore: ObservableObject {
             }
         } catch { if !backgroundReview { alert = marketErrorMessage(error) }; completion?(false) }
     }
-    func filter(query: String, side: String, aiSearch: Bool = false, showAllResults: Bool? = nil, completion: ((Bool) -> Void)? = nil) {
+    func filter(query: String, side: String, aiSearch: Bool = false, showAllResults: Bool? = nil, networkOnly: Bool? = nil, completion: ((Bool) -> Void)? = nil) {
         searchContinuation.stop()
-        if localAIProgress != nil && (query != snapshot.query || side != snapshot.side || aiSearch != snapshot.aiSearch || showAllResults != nil) {
+        if localAIProgress != nil && (query != snapshot.query || side != snapshot.side || aiSearch != snapshot.aiSearch || showAllResults != nil || networkOnly != nil) {
             // set_filter invalidates the old Rust batch and discovery together.
             // A separately queued cancel could otherwise stop the new query.
             localAIRequest = UUID(); localAITask?.cancel(); localAITask = nil
@@ -392,6 +392,7 @@ final class MarketStore: ObservableObject {
         }
         searchPaused = false
         var request: [String: Any] = ["type": "set_filter", "query": query, "side": side, "ai_search": aiSearch]
+        if let networkOnly { request["network_only"] = networkOnly }
         if let showAllResults { request["show_all_results"] = showAllResults }
         command(request) { [weak self] success in
             if success, let self, self.curationActive { self.searchContinuation.start(self.searchContext); self.homeStartedContext = self.searchContext }

@@ -124,7 +124,7 @@ private fun rememberListLayout(): MutableState<Boolean> {
                     }
                     Spacer(Modifier.weight(1f))
                     TextButton(onClick={filtersSheet=true},modifier=Modifier.testTag("listingFilters")) {
-                        Text("Filters (${(if(wantsPhotos) 1 else 0) + (if(canCurate && !showAll) 1 else 0)})")
+                        Text("Filters (${(if(wantsPhotos) 1 else 0) + (if(canCurate && !showAll) 1 else 0) + (if(!state.demo && state.networkOnly) 1 else 0)})")
                     }
                 }
                 if (ai?.optBoolean("enabled")==true) Surface(color = Mint, shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth().padding(top = 5.dp)) {
@@ -174,6 +174,11 @@ private fun rememberListLayout(): MutableState<Boolean> {
                 Text("Also searched for",style=MaterialTheme.typography.titleSmall)
                 Text(state.relatedSearchTerms.joinToString(" · "),modifier=Modifier.padding(bottom=12.dp))
             }
+            if (!state.demo) Row(Modifier.fillMaxWidth(), verticalAlignment=Alignment.CenterVertically) {
+                Text("In my network", modifier=Modifier.weight(1f))
+                Switch(checked=state.networkOnly, onCheckedChange={model.filter(state.query, state.side, state.aiSearch, networkOnly=it)},
+                    modifier=Modifier.semantics { contentDescription="In my network" }.testTag("networkFilter"))
+            }
             if (ai?.optString("provider") == CompactSearchFiles.PROVIDER) {
                 Text("Compact search reviews submitted searches. Home shows all listings.", style=MaterialTheme.typography.bodySmall, color=Muted)
             } else {
@@ -193,7 +198,10 @@ private fun rememberListLayout(): MutableState<Boolean> {
                 }
             }
             TextButton(onClick={filtersSheet=false;settings()}) { Text("AI settings") }
-            TextButton(onClick={changePhotoFilter(null)},enabled=photoFilter!=null,modifier=Modifier.testTag("resetPhotoFilter")) {
+            TextButton(onClick={
+                changePhotoFilter(null)
+                if (!state.networkOnly) model.filter(state.query, state.side, state.aiSearch, networkOnly=true)
+            },enabled=photoFilter!=null || !state.networkOnly,modifier=Modifier.testTag("resetPhotoFilter")) {
                 Text("Reset")
             }
         }

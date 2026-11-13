@@ -117,6 +117,7 @@ data class MarketSnapshot(
     val profileListings: ProfileListings? = null,
     val localCuration: LocalCurationBatch? = null,
     val searchDiscovery: SearchDiscoveryStatus? = null,
+    val networkOnly: Boolean = true,
     val showAllResults: Boolean = false, val relatedSearchTerms: List<String> = emptyList(),
     val searchGeneration: Long = 0, val searchPlanPending: Boolean = false, val searchPlanTags: List<String> = emptyList(),
     val satsDisplayPrice: PriceDisplay? = null,
@@ -153,6 +154,7 @@ data class MarketSnapshot(
                 profile = o.optJSONObject("profile")?.let(PublicProfile::parse), graphContextLoaded = o.optBoolean("graph_context_loaded"),
                 profileListings = o.optJSONObject("profile_listings")?.let(ProfileListings::parse),
                 searchDiscovery = o.optJSONObject("search_discovery")?.let { SearchDiscoveryStatus(it.optBoolean("loading"),it.optBoolean("has_more")) },
+                networkOnly = o.optBoolean("network_only", true),
                 showAllResults = o.optBoolean("show_all_results"),
                 relatedSearchTerms = o.optJSONArray("related_search_terms")?.let { a -> (0 until minOf(a.length(),8)).map { a.getString(it) } }.orEmpty(),
                 searchGeneration = o.optLong("search_generation"), searchPlanPending = o.optBoolean("search_plan_pending"),
@@ -702,7 +704,10 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
             finally{operationCount-=1;working.value=operationCount>0}
         }
     }
-    fun filter(query: String, side: String, aiSearch: Boolean = false) = command(JSONObject().put("type", "set_filter").put("query", query).put("side", side).put("ai_search", aiSearch)) { if (query.isNotBlank()) searchContinuation.start(searchContext()) }
+    fun filter(query: String, side: String, aiSearch: Boolean = false, networkOnly: Boolean? = null) =
+        command(JSONObject().put("type", "set_filter").put("query", query).put("side", side).put("ai_search", aiSearch).apply {
+            networkOnly?.let { put("network_only", it) }
+        }) { if (query.isNotBlank()) searchContinuation.start(searchContext()) }
     fun selectResultView(showAll: Boolean) {
         val current=state.value
         val useAI=!showAll && current.query.isNotBlank()

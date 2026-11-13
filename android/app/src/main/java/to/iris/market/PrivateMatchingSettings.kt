@@ -148,12 +148,16 @@ private fun PrivateMatchesDialog(book: JSONObject, state: MarketSnapshot, model:
                         }
                         "interests" -> {
                             Text(row.getString("summary"), style = MaterialTheme.typography.titleSmall)
-                            if (!row.isNull("contact")) {
+                            if (!row.isNull("chat")) {
+                                Text("You have been introduced.")
+                                TextButton({ model.openMatchChat(row.getString("chat"), close) }) { Text("Open private chat") }
+                            }
+                            else if (!row.isNull("contact")) {
                                 Text("You have been introduced.")
                                 TextButton({ model.openConversation(row.getString("contact"), close) }) { Text("Open private chat") }
                             }
                             else if (row.isNull("vote")) {
-                                Text("If you both agree, your helper can share your Iris messaging identity with the other person.")
+                                Text("If you both agree, you’ll chat through a new alias made only for this match. Your profile stays private.")
                                 TextButton({ act("vote", "proposal" to id, "accept" to true) }) { Text("Agree to introduction") }
                                 TextButton({ act("vote", "proposal" to id, "accept" to false) }) { Text("Decline") }
                             } else Text(if (row.getBoolean("vote")) "You agreed. Waiting for the introduction." else "You declined.")

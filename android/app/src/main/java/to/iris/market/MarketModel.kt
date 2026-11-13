@@ -983,6 +983,12 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
             mutablePushRoute.value = NativePushRoute(peer)
         }
     }
+    /** A private-match chat already exists locally under its alias; it never contacts an account. */
+    fun openMatchChat(chat: String, onOpen: () -> Unit) {
+        if (!chat.startsWith("match:")) return
+        onOpen()
+        mutablePushRoute.value = NativePushRoute(chat)
+    }
     fun consumePushRoute(){mutablePushRoute.value=null}
     fun suppressPush(route:NativePushRoute?):Boolean {
         if(!active || route==null || activePushPeerID!=route.peerID)return false

@@ -6,7 +6,7 @@ struct PrivateMatchInbox: Decodable {
         let expiresAt: Int64
     }
     struct Pair: Decodable { let entries: [String]; let votes: [Bool?]; let introduced: Bool }
-    struct Interest: Decodable { let summary: String; let vote: Bool?; let contact: String? }
+    struct Interest: Decodable { let summary: String; let vote: Bool?; let contact: String?; let chat: String? }
     struct Lead: Decodable { let title, listing: String }
     let sent, received: [String: Entry]
     let pairs: [String: Pair]
@@ -96,7 +96,15 @@ private struct PrivateMatchesView: View {
             if let interest = inbox.interests[id] {
                 Divider()
                 Text(interest.summary).font(.headline)
-                if let contact = interest.contact {
+                if let chat = interest.chat {
+                    Text("You have been introduced.")
+                    Button("Open private chat") {
+                        // The alias chat already exists locally; it never contacts an account.
+                        dismiss()
+                        store.pushRoute = NativePushRoute(peerID: chat, threadID: nil, orderID: nil)
+                    }
+                }
+                else if let contact = interest.contact {
                     Text("You have been introduced.")
                     Button("Open private chat") {
                         store.command(["type": "contact", "author": contact]) { ok in
@@ -109,7 +117,7 @@ private struct PrivateMatchesView: View {
                 }
                 else if let vote = interest.vote { Text(vote ? "You agreed. Waiting for the introduction." : "You declined.") }
                 else {
-                    Text("If you both agree, your helper can share your Iris messaging identity with the other person.")
+                    Text("If you both agree, you’ll chat through a new alias made only for this match. Your profile stays private.")
                     Button("Agree to introduction") { act(["op":"vote","proposal":id,"accept":true]) }
                     Button("Decline") { act(["op":"vote","proposal":id,"accept":false]) }
                 }

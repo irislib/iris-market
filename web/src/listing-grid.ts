@@ -24,7 +24,7 @@ export class ListingWindow {
   }
 }
 
-export function setupListingGrid({grid, controls, button, status, makeCard, cardKey, olderState, loadOlder}) {
+export function setupListingGrid({grid, controls, button, status, makeCard, cardKey, olderState, loadOlder, discardCard = (_card: HTMLElement) => {}}) {
   const windowed = new ListingWindow();
   let items = [], viewKey, rendered = new Map(), automatic = 0, loading = false, loadGeneration = 0, disposed = false, visible = true, scrolled = false, mixSellers = false;
   // Once scrolling starts, keep cards the reader has reached in their places.
@@ -45,7 +45,7 @@ export function setupListingGrid({grid, controls, button, status, makeCard, card
       if (grid.children[index] !== entry.node) grid.insertBefore(entry.node, grid.children[index] || null);
       next.set(item.id, entry);
     }
-    for (const [id, entry] of rendered) if (!next.has(id) || next.get(id).node !== entry.node) entry.node.remove();
+    for (const [id, entry] of rendered) if (!next.has(id) || next.get(id).node !== entry.node) { entry.node.remove(); discardCard(entry.node); }
     rendered = next;
     const remote = pagination(), localMore = shown.length < items.length;
     const hasMore = localMore || remote.hasMore;

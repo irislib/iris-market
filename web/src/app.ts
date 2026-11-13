@@ -56,6 +56,7 @@ import { setupRates, formatPrice, formatWalletAmount, initialCurrency, DEFAULT_C
 import { setupPeople, createUserRow, nameFor, warmProfiles, resetPeople, refreshPeople } from './people.ts';
 import { flushSync, mount } from 'svelte';
 import App from './shell/App.svelte';
+import { createCard, disposeCard, type CardContext } from './listing-card/card.ts';
 
 // Everything below finds the shell by id, so render it first.
 mount(App, { target: document.body });
@@ -171,19 +172,13 @@ function priceNode(listing, className) {
   return price;
 }
 
-const bookmark='<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.8 4.6a5.4 5.4 0 0 0-7.6 0L12 5.8l-1.2-1.2a5.4 5.4 0 0 0-7.6 7.6L12 21l8.8-8.8a5.4 5.4 0 0 0 0-7.6Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>';
 const node = domElement;
 function toast(text){$('toast').textContent=text;$('toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').hidden=true,2500);}
 function save(l){gridUI.pin();if(saved.has(l.id))saved.delete(l.id);else if(saved.size<1000)saved.add(l.id);else return toast('Saved-listing limit reached');persist('market-saved-'+(preview?'preview':'live'),[...saved]);render();refreshProfileListings();if(focusedListing)openDetail(focusedListing,false);}
 function photo(l,className?:string){return createStaticImage(l.imageUrl,{width:className==='detail-art'?900:480,className,alt:l.title||'Listing photo',fallback:art(l)});}
 function internalLink(link,href,onClick){link.href=routeHref(href);link.onclick=event=>{if(event.button!==0||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey)return;event.preventDefault();onClick();};}
-function card(l){const el=node('article',undefined,'listing-card'),media=node('div',undefined,'card-image'),open=node('a',undefined,'card-open');open.setAttribute('aria-label',`View ${l.title}`);if(l.externalOrder){el.classList.add('bitcoin-order-listing');const quote=node('div',undefined,'bitcoin-card-quote');quote.append(node('strong','₿'),node('span',l.externalOrder.platform));open.append(quote);}else if(l.escrow?.trade==='bitcoin_fiat'&&!l.imageUrl){const quote=node('div',undefined,'bitcoin-card-quote');quote.append(node('strong',l.escrow.sats.toLocaleString()+' sats'),node('span',fiatMethodLabel(l.escrow.method)));open.append(quote);}else open.append(photo(l));internalLink(open,listingURL(l.id,location.href),()=>openDetail(l));const button=node('button',undefined,'save-button');button.innerHTML=bookmark;button.querySelector('path').setAttribute('fill',saved.has(l.id)?'currentColor':'none');button.setAttribute('aria-label',`${saved.has(l.id)?'Unsave':'Save'} ${l.title}`);button.setAttribute('aria-pressed',String(saved.has(l.id)));button.onclick=()=>save(l);media.append(open,button);if(l.externalOrder||l.escrow?.trade==='bitcoin_fiat')media.append(node('span',l.side==='request'?'Buying bitcoin':'Selling bitcoin','request-badge'));else if(l.side==='request')media.append(node('span','Buying','request-badge'));const title=node('a',l.title,'card-title');internalLink(title,listingURL(l.id,location.href),()=>openDetail(l));const titleRow=node('div',undefined,'card-title-row');titleRow.append(title,listingMenu(l.title,hiddenListings.has(l.id),()=>toggleHidden(l)));el.append(media,titleRow,priceNode(l,'card-price'),node('p',l.externalOrder?.methods||l.location||'Anywhere','card-location'));if(!preview&&l.author&&!l.externalOrder)el.append(authorButton(l));
-  if(!l.externalOrder)el.append(translateListingTitle(l,title,value=>{
-    open.setAttribute('aria-label',`View ${value}`);
-    button.setAttribute('aria-label',`${saved.has(l.id)?'Unsave':'Save'} ${value}`);
-  }));
-  return el;
-}
+const cardContext:CardContext={saved:id=>saved.has(id),hidden:id=>hiddenListings.has(id),preview:()=>preview,href:l=>routeHref(listingURL(l.id,location.href)),open:l=>openDetail(l),save,toggleHidden,quote:bitcoinQuote,price:priceFor,photo:l=>photo(l),author:authorButton};
+function card(l){return createCard(l,cardContext);}
 function authorButton(l){return createUserRow(l.author,{className:'author-button',onClick:()=>profiles.open(l.author)});}
 function routeHref(href){const url=new URL(href);const hash=locationHash(locationFilter);if(hash&&['home','search'].includes(parseMarketRoute(url.href).type))url.searchParams.set('g',hash);if(preview)url.searchParams.set('preview','1');if(['127.0.0.1','localhost'].includes(location.hostname)&&params.has('test-relay'))url.searchParams.set('test-relay',params.get('test-relay'));return url.href;}
 // Retain one browsing surface across listing and workspace navigation.
@@ -357,7 +352,7 @@ async function loadGraph(){
   try{const result=await loadCurationContext({relays,contextPubkey:contextKey,targetAuthors:listings.map(item=>item.author),signal:active.signal});if(active!==graphAbort)return;graphContext=result;rootChoice.observe(result);if(result.contextPubkey!==contextKey)return;setLoadingStatus($('curation-status'),result.coverage.rootLoaded?`${result.coverage.directFollows} follows · ${result.coverage.bootstrap?'snapshot + live updates':'partial network'}`:'Connections unavailable');render();}catch(error){if(error.name!=='AbortError')setLoadingStatus($('curation-status'),'Connections unavailable');}
 }
 const curatedGrid=()=>aiFilter?.enabled()&&(aiFilter.query()||aiFilter.homeActive())&&!aiFilter.showingAll();
-const gridUI=setupListingGrid({grid:$('listings'),controls:$('grid-pagination'),button:$('load-more'),status:$('grid-progress'),makeCard:card,
+const gridUI=setupListingGrid({grid:$('listings'),controls:$('grid-pagination'),button:$('load-more'),status:$('grid-progress'),makeCard:card,discardCard:disposeCard,
   cardKey:l=>JSON.stringify([l.eventId||l.id,priceFor(l).primary,saved.has(l.id),hiddenListings.has(l.id),graphContext?.relationFor(l.author),readImageSettings()]),
   olderState:()=>{
     if(preview||savedOnly||!client)return {hasMore:false};
@@ -386,7 +381,7 @@ function renderProfileListings(pubkey,host){
   button.type='button';controls.append(button,status);host.replaceChildren(grid,empty,controls);
   let feed,disposed=false,rows=listings.filter(l=>l.author===pubkey);
   const update=()=>{if(disposed)return;const visible=rows.filter(l=>!hiddenListings.has(l.id));empty.hidden=visible.length>0;view.update(visible,pubkey)};
-  const view=setupListingGrid({grid,controls,button,status,makeCard:card,cardKey:l=>JSON.stringify([l.eventId||l.id,priceFor(l).primary,saved.has(l.id),hiddenListings.has(l.id)]),olderState:()=>feed?.pagination()||{hasMore:false},loadOlder:()=>feed?.loadOlder()});
+  const view=setupListingGrid({grid,controls,button,status,makeCard:card,discardCard:disposeCard,cardKey:l=>JSON.stringify([l.eventId||l.id,priceFor(l).primary,saved.has(l.id),hiddenListings.has(l.id)]),olderState:()=>feed?.pagination()||{hasMore:false},loadOlder:()=>feed?.loadOlder()});
   update();refreshProfileListings=update;
   if(!preview){
     const records=new Map<string,MarketListing>([...(client?.records?.entries()||[])].filter(([,l])=>l.author===pubkey));

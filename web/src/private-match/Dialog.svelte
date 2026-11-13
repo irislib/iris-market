@@ -13,6 +13,8 @@
   let helper = $state('')
   let summary = $state('')
   let side = $state<'offer' | 'request'>('request')
+  let draft = $state('')
+  const chat = $derived(matches.chats.find(c => c.id === matches.openChat))
 
   const until = (at: number) => new Date(at * 1000).toLocaleDateString()
   const peerNames = $derived(matches.peers.map(key => nameFor(key) + ' · ' + key.slice(-6)))
@@ -24,7 +26,7 @@
 
   function closed() {
     matches.dialogOpen = false
-    selected = helper = summary = matches.error = ''
+    selected = helper = summary = draft = matches.error = matches.openChat = ''
     side = 'request'
     compose.open = false
   }
@@ -59,9 +61,13 @@
   }
 
   const interestStatus = (p: MatchView['interests'][string]) =>
-    p.contact ? 'You have been introduced.' : p.vote === null
-      ? 'If you both agree, your helper can share your Iris messaging identity with the other person.'
+    p.chat || p.contact ? 'You have been introduced.' : p.vote === null
+      ? 'If you both agree, you’ll chat through a new alias made only for this match. Your profile stays private.'
       : p.vote ? 'You agreed. Waiting for the introduction.' : 'You declined.'
+
+  async function sendDraft() {
+    if (chat && await matches.send(chat.id, draft)) draft = ''
+  }
 </script>
 
 <dialog bind:this={dialog} class="match-dialog" aria-labelledby="private-match-heading" onclose={closed}>
@@ -89,7 +95,28 @@
     <button class="button primary" disabled={!matches.canSend} onclick={send}>Send to helper privately</button>
   </details>
   <p class="error" role="alert">{matches.error}</p>
-  <div class="match-rows">
+  {#if chat}
+    <section class="match-chat" aria-label="Private match chat">
+      <button type="button" class="button secondary" onclick={() => matches.openChat = ''}>Back</button>
+      <h3>{chat.title}</h3>
+      <p class="small muted">Via private match. You both appear as aliases made for this chat.</p>
+      <ol class="match-messages">
+        {#each chat.messages as message (message.id)}
+          <li class:mine={message.mine}>
+            {message.text}
+            {#if message.mine && message.delivery === 'pending'}<span class="small muted"> · Queued</span>{/if}
+          </li>
+        {/each}
+      </ol>
+      {#if chat.connected}
+        <textarea bind:value={draft} placeholder="Write a message" aria-label="Message" maxlength="8000"></textarea>
+        <button type="button" class="button primary" disabled={!draft.trim() || !matches.canSend} onclick={sendDraft}>Send</button>
+      {:else}
+        <p class="small muted">Connecting privately. You can write once the other person’s app says hello.</p>
+      {/if}
+    </section>
+  {/if}
+  <div class="match-rows" hidden={!!chat}>
     {#if matches.dialogOpen && matches.view}
       {@const v = matches.view}
       {#if matches.helperView}
@@ -138,7 +165,9 @@
               <button type="button" class="button secondary" onclick={() => void matches.act({op: 'vote', proposal, accept: true})}>Agree to introduction</button>
               <button type="button" class="button secondary" onclick={() => void matches.act({op: 'vote', proposal, accept: false})}>Decline</button>
             {/if}
-            {#if p.contact}
+            {#if p.chat}
+              <button type="button" class="button secondary" onclick={() => matches.openChat = p.chat}>Open private chat</button>
+            {:else if p.contact}
               <button type="button" class="button secondary" onclick={() => { dialog.close(); void matches.api.openChat(p.contact) }}>Open private chat</button>
             {/if}
           </div>

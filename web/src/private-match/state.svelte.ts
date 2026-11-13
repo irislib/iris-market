@@ -1,4 +1,5 @@
 import type {MatchAction, MatchView} from '../private-matches.ts'
+import type {AliasChat} from './aliases.ts'
 
 export type PrivateMatchApi = {
   state(): {ownerPubkey?: string; status: string; canSend?: boolean; conversations: {pubkey: string}[]}
@@ -7,12 +8,16 @@ export type PrivateMatchApi = {
   messaging: {
     privateMatchView(): MatchView | null
     privateMatch(action: MatchAction, listing?: unknown): Promise<void>
+    privateMatchChats?(): AliasChat[]
+    privateMatchSend?(chat: string, text: string): Promise<void>
   }
 }
 
 // Shared by the settings toggle, the Messages link and the dialog.
 export class PrivateMatchState {
   view = $state.raw<MatchView | null>(null)
+  chats = $state.raw<AliasChat[]>([])
+  openChat = $state('')
   owner = $state('')
   ready = $state(false)
   canSend = $state(false)
@@ -36,7 +41,18 @@ export class PrivateMatchState {
     this.canSend = !!state.canSend
     this.peers = state.conversations.map(c => c.pubkey)
     this.view = this.api.messaging.privateMatchView()
+    this.chats = this.api.messaging.privateMatchChats?.() ?? []
     if (!this.view) this.dialogOpen = false
+    if (!this.dialogOpen) this.openChat = ''
+  }
+
+  async send(chat: string, text: string) {
+    if (this.busy) return false
+    this.busy = true
+    this.error = ''
+    try { await this.api.messaging.privateMatchSend?.(chat, text); return true }
+    catch (e) { this.error = e instanceof Error ? e.message : 'Could not send this message.'; return false }
+    finally { this.busy = false; this.sync() }
   }
 
   open() {

@@ -169,6 +169,12 @@ button[data-alternate-label]::after { content:attr(data-alternate-label); visibi
 .match-card { overflow-wrap: anywhere; }
 .match-card p { margin: 4px 0 10px; }
 .match-card .button + .button { margin-left: 4px; }
+.match-chat { padding: 14px 0; border-top: 1px solid var(--line); }
+.match-chat h3 { margin: 12px 0 2px; overflow-wrap: anywhere; }
+.match-messages { list-style: none; margin: 12px 0; padding: 0; display: grid; gap: 6px; }
+.match-messages li { justify-self: start; max-width: 85%; padding: 8px 12px; border-radius: 14px; background: var(--soft); overflow-wrap: anywhere; white-space: pre-wrap; }
+.match-messages li.mine { justify-self: end; background: var(--accent); color: var(--on-accent); }
+.match-chat textarea { width: 100%; min-height: 4rem; margin-bottom: 8px; }
 .match-card .match-card { margin-top: 12px; padding-left: 12px; border-left: 2px solid var(--line); }
 
 .listing-share::before {

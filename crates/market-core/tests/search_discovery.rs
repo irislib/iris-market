@@ -1,4 +1,5 @@
 //! Search admission over a loopback relay; no public network or provider key.
+mod support;
 use futures_util::{SinkExt, StreamExt};
 use iris_market_core::{
     Market, listing,
@@ -152,7 +153,9 @@ fn submitted_search_streams_tags_without_eose_and_pages_when_nip50_is_unsupporte
             ..Default::default()
         })
         .unwrap();
-    let app = Market::open(dir.path(), &iris_market_core::generate_secret_key(), false).unwrap();
+    let viewer = Keys::generate();
+    support::cache_follows(dir.path(), &viewer, &[keys.public_key()]);
+    let app = Market::open(dir.path(), &viewer.secret_key().to_secret_hex(), false).unwrap();
     let start = Instant::now();
     let initial: Value = serde_json::from_str(
         &app.command(r#"{"type":"set_filter","query":"MEAT","side":"all","ai_search":false}"#)
@@ -354,7 +357,9 @@ fn relay_cursors_resume_independently_and_partial_pages_retry_the_same_boundary(
             ..Default::default()
         })
         .unwrap();
-    let app = Market::open(dir.path(), &iris_market_core::generate_secret_key(), false).unwrap();
+    let viewer = Keys::generate();
+    support::cache_follows(dir.path(), &viewer, &[keys.public_key()]);
+    let app = Market::open(dir.path(), &viewer.secret_key().to_secret_hex(), false).unwrap();
     app.command(r#"{"type":"set_filter","query":"needle","side":"all"}"#)
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(12);

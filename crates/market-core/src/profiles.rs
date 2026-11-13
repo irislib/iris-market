@@ -268,8 +268,8 @@ impl Profiles {
             );
         }
     }
-    pub(crate) fn home_relation(&self, author: &str) -> (Option<u32>, usize) {
-        let graph = self.home_graph.get_or_init(|| {
+    fn discovery_graph(&self) -> &SocialGraph {
+        self.home_graph.get_or_init(|| {
             let root = self.home_root();
             let use_snapshot = root == DEFAULT_ROOT
                 && self
@@ -303,12 +303,20 @@ impl Profiles {
             };
             graph.recalculate_follow_distances();
             std::sync::Arc::new(graph)
-        });
+        })
+    }
+
+    pub(crate) fn in_listing_network(&self, author: &str) -> bool {
+        self.discovery_graph().get_follow_distance(author) < 1000
+    }
+
+    pub(crate) fn home_relation(&self, author: &str) -> (Option<u32>, usize) {
+        let graph = self.discovery_graph();
         let graph =
             if graph.get_root() == DEFAULT_ROOT && self.graph.get_follow_distance(author) < 1000 {
                 &self.graph
             } else {
-                graph.as_ref()
+                graph
             };
         let distance = graph.get_follow_distance(author);
         let known = graph

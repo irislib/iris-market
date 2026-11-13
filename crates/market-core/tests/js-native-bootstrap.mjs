@@ -58,7 +58,7 @@ try {
   await seller.publishEvent({kind:30402,created_at:Math.floor(Date.now()/1000),tags:[['d','fresh-native-test'],['title','Fresh native delivery'],['price','12','EUR'],['location','Synthetic test']],content:'Private localhost integration fixture.'});
   await waitFor(()=>[...events.values()].some(event=>event.kind===30402));
   child=spawn('cargo',['test','--locked','-p','iris-market-core','--test','js_interop','fresh_native_profile_orders_with_strict_js_peer','--','--ignored','--exact'],{
-    cwd:fileURLToPath(new URL('../../../',import.meta.url)),stdio:['ignore','inherit','inherit'],env:{...process.env,CARGO_BUILD_JOBS:'2',MARKET_NATIVE_RELAY:relay,MARKET_NATIVE_SILENT_RELAY:`ws://127.0.0.1:${silentServer.address().port}`,...(legacy?{MARKET_TEST_OWNER_KEY_SESSION:'1'}:{})}
+    cwd:fileURLToPath(new URL('../../../',import.meta.url)),stdio:['ignore','inherit','inherit'],env:{...process.env,CARGO_BUILD_JOBS:'2',MARKET_NATIVE_RELAY:relay,MARKET_NATIVE_SELLER:seller.state().ownerPubkey,MARKET_NATIVE_SILENT_RELAY:`ws://127.0.0.1:${silentServer.address().port}`,...(legacy?{MARKET_TEST_OWNER_KEY_SESSION:'1'}:{})}
   });
   const timer=setTimeout(()=>child.kill('SIGTERM'),90000);
   const code=await new Promise((resolve,reject)=>{child.on('error',reject);child.on('exit',resolve);});clearTimeout(timer);

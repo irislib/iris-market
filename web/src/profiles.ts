@@ -44,7 +44,15 @@ export interface CurationContext {
   rankRelationFor: (pubkey: string) => { distance: number | null; knownFollowerCount: number; source: string; stale?: boolean; partial: boolean }
   coverage: GraphCoverage; graph: SocialGraph | null; lists: Map<string, FollowRecord>
 }
-interface ProfileStore { rankingBootstrap?: Awaited<ReturnType<typeof loadGraphBootstrap>>; graphSyncAt?: number; graphSync?: Promise<unknown>; profiles: Map<string, ProfileRecord>; follows: Map<string, FollowRecord>; contexts: Map<string, {result: CurationContext; loadedAt: number}> }
+interface ProfileStore {
+  onFollows: Set<(record?: FollowRecord, evicted?: string) => void>
+  rankingBootstrap?: Awaited<ReturnType<typeof loadGraphBootstrap>>
+  graphSyncAt?: number
+  graphSync?: Promise<unknown>
+  profiles: Map<string, ProfileRecord>
+  follows: Map<string, FollowRecord>
+  contexts: Map<string, {result: CurationContext; loadedAt: number}>
+}
 
 // Established visitor root from iris-client/src/utils/socialGraph.ts.
 export const DEFAULT_SOCIAL_GRAPH_ROOT = '336f319763657d6b0e65a5b5876719e8c8dcdcf9396852be71ee26b73368b29b'
@@ -182,7 +190,9 @@ export function queryProfileRecords(filters: ProfileFilter[], { relays = DEFAULT
           const event = verifyProfileRecord(frame[2], { now: now() })
           if (!filters.some(filter => matches(event, filter))) return
           const coordinate = `${event.kind}:${event.pubkey}`
-          if (newer(event, winners.get(coordinate))) { winners.set(coordinate, event); if(event.kind===0)cacheProfileMetadata(event,{relays:servers,now:now()}); }
+          if (!newer(event, winners.get(coordinate))) return
+          winners.set(coordinate, event)
+          cacheProfileReply(event, filters, servers, now())
         } catch { /* Untrusted or oversized events do not enter the record cache. */ }
       }
       socket.onerror = socket.onclose = () => settle(connection, false)
@@ -209,7 +219,8 @@ async function queryWorkerProfileRecords(filters:ProfileFilter[], runtime:Public
         try{
           const event=verifyProfileRecord(raw,{now:now()});if(!filters.some(filter=>matches(event,filter)))return;
           const coordinate=`${event.kind}:${event.pubkey}`;if(!newer(event,winners.get(coordinate)))return;
-          winners.set(coordinate,event);if(event.kind===0)cacheProfileMetadata(event,{relays,now:now()});
+          winners.set(coordinate,event)
+          cacheProfileReply(event, filters, relays, now())
         }catch{/* Invalid records cannot replace a verified profile. */}
       },
       onEose(status){completed=status.sources.filter(source=>source.complete).length;if(!grace)grace=setTimeout(()=>finish(!completed&&!winners.size?new Error('Could not load public profile records'):undefined),PROFILE_LIMITS.settleGraceMs);},
@@ -225,25 +236,37 @@ function storeFor(relays: readonly string[]): ProfileStore {
   const key = relayKey(relays)
   if (!caches.has(key)) {
     if (caches.size >= 3) caches.delete(caches.keys().next().value)
-    caches.set(key, { profiles: new Map(), follows: new Map(), contexts: new Map() })
+    caches.set(key, { profiles: new Map(), follows: new Map(), contexts: new Map(), onFollows: new Set() })
   }
   return caches.get(key)
 }
-function ingest(store, events, now) {
+// Tag-filtered historical lists need a subsequent author lookup to confirm current follows.
+function cacheProfileReply(event: NostrEvent, filters: ProfileFilter[], relays: readonly string[], now: number) {
+  if (event.kind === 0 || filters.some(filter => filter.authors?.includes(event.pubkey) && !filter['#p'])) {
+    ingest(storeFor(relays), [event], now)
+  }
+}
+
+function ingest(store, events: NostrEvent[], now: number) {
   for (const event of events) {
     const map = event.kind === 0 ? store.profiles : store.follows
     if (!newer(event, map.get(event.pubkey)?.event)) continue
+    const evicted = !map.has(event.pubkey) && map.size >= 512 ? map.keys().next().value : undefined
+    if (evicted) map.delete(evicted)
     try {
       const value = event.kind === 0 ? { event, profile: parseProfileEvent(event, { now }) } : parseFollowEvent(event, { now })
-      if (!map.has(event.pubkey) && map.size >= 512) map.delete(map.keys().next().value)
       map.set(event.pubkey, value)
     } catch {
       // A newer signed but unsupported revision must not resurrect an older
       // profile or follow list from this session's cache.
-      if (!map.has(event.pubkey) && map.size >= 512) map.delete(map.keys().next().value)
       map.set(event.pubkey, event.kind === 0 ? { event, profile: null } : { event, follows: null })
     }
-    if (event.kind === 3) store.contexts.clear()
+    if (event.kind === 3) {
+      store.contexts.clear()
+      const record = store.follows.get(event.pubkey)
+      if (store.rankingBootstrap) overlayFollowList(store.rankingBootstrap.graph, record)
+      for (const update of store.onFollows) update(record, evicted)
+    }
     else {
       rememberProfile(event);
       for(const [key,cached] of caches)if(cached===store)for(const listener of metadataObservers.get(key)??[]) { try{listener(person(store,event.pubkey));}catch{/* A view cannot break cache admission. */} }
@@ -296,14 +319,37 @@ async function buildGraph(root: string, lists: Map<string, FollowRecord>) {
 
 // The binary is discovery/ranking evidence only. Signed observed lists replace
 // its projections even when the snapshot carries a newer unverified timestamp.
-async function overlayVerifiedLists(graph: SocialGraph, lists: Map<string, FollowRecord>) {
+function overlayFollowList(graph: SocialGraph, record: FollowRecord) {
+  const {pubkey} = record.event
   const internal = graph.getInternalData()
-  for (const [author, record] of lists) {
-    internal.followListCreatedAt.delete(internal.ids.id(author))
-    if (record.follows) graph.handleEvent(record.event, true, Infinity)
-    else for (const followed of graph.getFollowedByUser(author)) graph.removeFollower(author, followed)
+  internal.followListCreatedAt.delete(internal.ids.id(pubkey))
+  if (record.follows && !graph.isOvermuted(pubkey, Infinity)) graph.handleEvent(record.event, true, Infinity)
+  else for (const followed of graph.getFollowedByUser(pubkey)) graph.removeFollower(pubkey, followed)
+}
+
+/** Local membership updates as signed lists or the default discovery snapshot arrive. */
+export function watchListingNetwork(root: string, relays: readonly string[], onChange: () => void) {
+  const store = storeFor(relays), signed = new SocialGraph(root)
+  for (const record of store.follows.values()) overlayFollowList(signed, record)
+  let pending = false
+  const update = (record?: FollowRecord, evicted?: string) => {
+    if (evicted) for (const followed of signed.getFollowedByUser(evicted)) signed.removeFollower(evicted, followed)
+    if (record) overlayFollowList(signed, record)
+    if (pending) return
+    pending = true
+    queueMicrotask(() => { pending = false; if (store.onFollows.has(update)) onChange() })
   }
-  await graph.recalculateFollowDistances(1000, 100000, () => {})
+  store.onFollows.add(update)
+  return {
+    distance(author: string): number | null {
+      const observed = signed.getFollowDistance(author)
+      if (observed < 1000) return observed
+      if (root !== DEFAULT_SOCIAL_GRAPH_ROOT || store.follows.get(root)?.follows === null) return null
+      const distance = store.rankingBootstrap?.graph.getFollowDistance(author)
+      return distance < 1000 ? distance : null
+    },
+    close() { store.onFollows.delete(update) },
+  }
 }
 
 function relevantFollowLists(direct, targetAuthors, graph) {
@@ -327,7 +373,25 @@ export async function loadCurationContext({ relays = DEFAULT_RELAYS, contextPubk
   if (cached && now() - cached.loadedAt < 120) return cached.result
   const options = { relays, signal, WebSocketImpl, runtime, now, timeoutMs }
   const warnings: string[] = [], selected = new Map<string, FollowRecord>()
-  const bootstrapTask = root === DEFAULT_SOCIAL_GRAPH_ROOT ? (store.rankingBootstrap ? Promise.resolve(store.rankingBootstrap) : bootstrapLoader({ root, signal, fresh: usesDefaultPublicRelays(relays) && !WebSocketImpl && !runtime && typeof window !== 'undefined' }).catch(error => ({ error }))) : Promise.resolve(null)
+  async function seedDiscovery() {
+    if (root !== DEFAULT_SOCIAL_GRAPH_ROOT) return null
+    if (store.rankingBootstrap) return store.rankingBootstrap
+    try {
+      const fresh = usesDefaultPublicRelays(relays) && !WebSocketImpl && !runtime && typeof window !== 'undefined'
+      const bootstrap = await bootstrapLoader({root, signal, fresh})
+      if (signal?.aborted || bootstrap?.graph?.getRoot() !== root) return null
+      if (!store.rankingBootstrap) {
+        for (const record of store.follows.values()) overlayFollowList(bootstrap.graph, record)
+        store.rankingBootstrap = bootstrap
+        for (const update of store.onFollows) update()
+      }
+      return store.rankingBootstrap
+    } catch {
+      warnings.push('Saved network unavailable; using signed live lists.')
+      return null
+    }
+  }
+  const bootstrapTask = seedDiscovery()
   let completed = 0
   try {
     const response = await queryProfileRecords([{ kinds: [0, 3], authors: [root], limit: 2 }], options)
@@ -337,15 +401,12 @@ export async function loadCurationContext({ relays = DEFAULT_RELAYS, contextPubk
   const loadedBootstrap = await bootstrapTask
   if (signal?.aborted) throw abortError()
   const bootstrap = loadedBootstrap?.graph?.getRoot() === root ? loadedBootstrap : null
-  if (bootstrap) store.rankingBootstrap = bootstrap
-  if (loadedBootstrap?.error) warnings.push('Saved network unavailable; using signed live lists.')
   const rootRecord = store.follows.get(root)
   const rootList = rootRecord?.follows ? rootRecord : null
   if (rootRecord && !rootList) warnings.push('The root follow list is unavailable within the supported limits.')
   if (rootList) selected.set(root, rootList)
   // A newer unsupported signed root list must not revive old snapshot edges.
   const rankingGraph = rootRecord && !rootList ? null : bootstrap?.graph ?? null
-  if (rankingGraph) await overlayVerifiedLists(rankingGraph, store.follows)
   const direct = rootList?.follows ?? (rankingGraph ? [...rankingGraph.getFollowedByUser(root)].sort() : [])
   const secondHop = relevantFollowLists(direct, targets, rankingGraph)
   if (secondHop.length) {
@@ -358,7 +419,6 @@ export async function loadCurationContext({ relays = DEFAULT_RELAYS, contextPubk
   }
   if (signal?.aborted) throw abortError()
   const graph = rootList ? await buildGraph(root, selected) : null
-  if (rankingGraph) await overlayVerifiedLists(rankingGraph, store.follows)
   // Refresh the retained discovery graph without changing the independently
   // verified relationship badges or waiting on a remote graph for presentation.
   if (rankingGraph && bootstrapLoader === loadGraphBootstrap && !WebSocketImpl && !runtime &&
@@ -449,7 +509,8 @@ export async function loadProfileFollowers(pubkey:string, options:CurationOption
       if(!events.length&&!report.sources.some(source=>source.complete&&servers.includes(source.id)))
         throw new Error('No server completed the public follower lookup.');
     }
-    ingest(store,events,now());return events;
+    if (filter.authors) ingest(store,events,now());
+    return events;
   };
   const inbound=await query({kinds:[3],'#p':[target],limit:PROFILE_LIMITS.inbound});
   const candidates=[...new Set(inbound.filter(event=>event.pubkey!==target&&event.tags.some(tag=>tag[0]==='p'&&tag[1]===target)).map(event=>event.pubkey))].sort().slice(0,PROFILE_LIMITS.inbound);

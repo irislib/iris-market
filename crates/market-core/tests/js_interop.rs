@@ -1,4 +1,5 @@
 //! Opt-in, file-driven cross-language wire test. Uses no network and only synthetic identities.
+mod support;
 use iris_market_core::messaging::Messaging;
 use nostr::{Event, Keys};
 use serde::Deserialize;
@@ -157,7 +158,10 @@ fn fresh_native_profile_orders_with_strict_js_peer() {
             ..Default::default()
         })
         .unwrap();
-    let secret = iris_market_core::generate_secret_key();
+    let viewer = Keys::generate();
+    let seller = env::var("MARKET_NATIVE_SELLER").unwrap().parse().unwrap();
+    support::cache_follows(directory.path(), &viewer, &[seller]);
+    let secret = viewer.secret_key().to_secret_hex();
     let market = if legacy {
         Market::open(directory.path(), &secret, false)
     } else {

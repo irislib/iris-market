@@ -153,7 +153,8 @@ impl State {
         // each listing's text only when the search or that text changes.
         let phrase = literal_search::normalize(&query);
         listings.retain(|l| {
-            (self.side == "all" || l.side == self.side)
+            (self.demo || l.mine || self.profiles.in_listing_network(&l.author))
+                && (self.side == "all" || l.side == self.side)
                 && (l.external_order.is_none() || !query.is_empty())
                 && (self.ai_search && l.external_order.is_none()
                     || phrase.is_empty()

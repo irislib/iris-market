@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { finalizeEvent, getPublicKey } from 'nostr-tools/pure'
 import { SocialGraph } from 'nostr-social-graph'
-import { DEFAULT_SOCIAL_GRAPH_ROOT, PROFILE_LIMITS, parseProfileEvent, parseFollowEvent, verifyProfileRecord, queryProfileRecords, socialConnection, excludeKnownFollowers, loadProfile, loadProfileFollowers, subscribeProfileMetadata, loadCurationContext, clearProfileCache, escrowCandidates, cacheProfileMetadata, readProfileMetadata, discoverySyncRelays } from '../src/profiles.ts'
+import { DEFAULT_SOCIAL_GRAPH_ROOT, PROFILE_LIMITS, parseProfileEvent, parseFollowEvent, verifyProfileRecord, queryProfileRecords, socialConnection, excludeKnownFollowers, loadProfile, loadProfileFollowers, subscribeProfileMetadata, loadCurationContext, watchListingNetwork, clearProfileCache, escrowCandidates, cacheProfileMetadata, readProfileMetadata, discoverySyncRelays } from '../src/profiles.ts'
 import { DEFAULT_RELAYS, validateRelays } from '../src/market.ts'
 import { closePublicRuntimes } from '../src/nostr-runtime.ts'
 
@@ -197,6 +197,49 @@ test('curation contexts reuse a bounded cached graph and skip per-listing querie
   for (const key of keys) first.relationFor(key)
   assert.equal(Socket.sockets.length, reads)
   assert.equal(first.relationFor(keys[2]).distance, 2)
+})
+
+test('listing network admits reachable authors as signed lists arrive and retracts an unfollow', async () => {
+  clearProfileCache()
+  const Socket = controlledSocket(), opts = options(Socket)
+  let updates = 0
+  const network = watchListingNetwork(keys[0], opts.relays, () => updates++)
+  const read = queryProfileRecords([{kinds:[3], authors:[keys[0],keys[1],keys[3]]}], opts)
+  const socket = Socket.sockets[0]
+  socket.open()
+  assert.equal(network.distance(keys[0]), 0)
+  socket.event(follows(3, [keys[0]]))
+  socket.event(follows(1, [keys[2]]))
+  assert.equal(network.distance(keys[2]), null)
+  socket.event(follows(0, [keys[1]]))
+  assert.deepEqual(keys.slice(0,4).map(network.distance), [0,1,2,null])
+  socket.event({...follows(0, [keys[3]], now+1), content:'forged'})
+  assert.equal(network.distance(keys[3]), null)
+  socket.event(follows(1, [], now+1))
+  assert.equal(network.distance(keys[2]), null)
+  await Promise.resolve()
+  assert.equal(updates, 1)
+  network.close()
+  socket.eose()
+  await read
+})
+
+test('the default feed can use its discovery snapshot while every relay is silent', async () => {
+  clearProfileCache()
+  const Socket = controlledSocket(), opts = options(Socket), stop = new AbortController()
+  const arrived = Promise.withResolvers()
+  const network = watchListingNetwork(DEFAULT_SOCIAL_GRAPH_ROOT, opts.relays, arrived.resolve)
+  const personal = watchListingNetwork(keys[4], opts.relays, () => {})
+  const loading = loadCurationContext({...opts, signal:stop.signal, contextPubkey:DEFAULT_SOCIAL_GRAPH_ROOT,
+    bootstrapLoader:discoveryBootstrap([[DEFAULT_SOCIAL_GRAPH_ROOT,keys[1]],[keys[1],keys[2]]])})
+  await arrived.promise
+  assert.equal(network.distance(keys[2]), 2)
+  assert.equal(network.distance(keys[3]), null)
+  assert.equal(personal.distance(keys[2]), null)
+  stop.abort()
+  await assert.rejects(loading, {name:'AbortError'})
+  network.close()
+  personal.close()
 })
 
 test('a newer unsupported signed follow list cannot resurrect older cached trust', async () => {

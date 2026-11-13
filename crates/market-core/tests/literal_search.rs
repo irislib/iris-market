@@ -1,5 +1,6 @@
+mod support;
 use iris_market_core::{
-    Market, generate_secret_key, listing,
+    Market, listing,
     model::{Draft, Settings},
     store::Store,
 };
@@ -64,8 +65,15 @@ fn verified_listing_words_and_tags_match_without_changing_ai_or_side_state() {
         .unwrap()
         .save_settings(&settings)
         .unwrap();
-    let app = Market::open(directory.path(), &generate_secret_key(), false).unwrap();
     let seller = Keys::generate();
+    let viewer = Keys::generate();
+    support::cache_follows(directory.path(), &viewer, &[seller.public_key()]);
+    let app = Market::open(
+        directory.path(),
+        &viewer.secret_key().to_secret_hex(),
+        false,
+    )
+    .unwrap();
     for (id, input) in [
         (
             "bike",

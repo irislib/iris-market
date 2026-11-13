@@ -1,3 +1,4 @@
+mod support;
 use iris_market_core::{
     Market, listing,
     model::{Draft, Settings},
@@ -35,6 +36,77 @@ fn offline(dir: &std::path::Path) {
             ..Default::default()
         })
         .unwrap();
+}
+
+fn open_following(dir: &std::path::Path, seller: &Keys) -> Market {
+    let viewer = Keys::generate();
+    support::cache_follows(dir, &viewer, &[seller.public_key()]);
+    Market::open(dir, &viewer.secret_key().to_secret_hex(), false).unwrap()
+}
+
+#[test]
+fn only_connected_authors_reach_home_literal_search_and_ai_candidates() {
+    let dir = tempfile::tempdir().unwrap();
+    offline(dir.path());
+    let viewer = Keys::generate();
+    let friend = Keys::generate();
+    let seller = Keys::generate();
+    let stranger = Keys::generate();
+    support::cache_follows(dir.path(), &viewer, &[friend.public_key()]);
+    support::cache_follows(dir.path(), &friend, &[seller.public_key()]);
+    // An incoming follow alone gives the stranger no path from the viewer.
+    support::cache_follows(dir.path(), &stranger, &[viewer.public_key()]);
+    let app = Market::open(dir.path(), &viewer.secret_key().to_secret_hex(), false).unwrap();
+    for author in [&viewer, &friend, &seller, &stranger] {
+        app.ingest_event(
+            &listing::build(author, &draft(), "camera", listing::now(), false).unwrap(),
+        )
+        .unwrap();
+    }
+    let saved = format!("{}:camera", stranger.public_key());
+    let call = |command: Value| -> Value {
+        serde_json::from_str(&app.command(&command.to_string()).unwrap()).unwrap()
+    };
+    let state = call(json!({"type":"save","id":saved}));
+    assert_eq!(state["saved_listings"][0]["id"], saved);
+    let mut settings = state["settings"].clone();
+    settings["ai"]["enabled"] = json!(true);
+    settings["ai"]["provider"] = json!("apple");
+    call(json!({"type":"set_settings","settings":settings}));
+    let expected: std::collections::BTreeSet<_> = [&viewer, &friend, &seller]
+        .iter()
+        .map(|keys| keys.public_key().to_hex())
+        .collect();
+    for sort in ["newest", "suggested"] {
+        call(json!({"type":"set_sort","sort":sort}));
+        for (query, ai) in [("", false), ("camera", false), ("camera", true)] {
+            let state =
+                call(json!({"type":"set_filter","query":query,"side":"all","ai_search":ai}));
+            let authors: std::collections::BTreeSet<_> = state["listings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|l| l["author"].as_str().unwrap().to_owned())
+                .collect();
+            assert_eq!(expected, authors, "{sort} / {query} / ai={ai}");
+            assert_eq!(state["listings"].as_array().unwrap().len(), expected.len());
+        }
+    }
+    let batch = call(json!({"type":"begin_local_curation"}));
+    assert_eq!(
+        batch["local_curation"]["candidates"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+    assert!(
+        batch["local_curation"]["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| expected.contains(c["listing"]["author"].as_str().unwrap()))
+    );
 }
 
 #[test]
@@ -199,8 +271,8 @@ fn configurable_model_produces_a_yes_no_decision_without_removing_the_listing() 
     });
     let dir = tempfile::tempdir().unwrap();
     offline(dir.path());
-    let app = Market::open(dir.path(), &iris_market_core::generate_secret_key(), false).unwrap();
     let seller = Keys::generate();
+    let app = open_following(dir.path(), &seller);
     app.ingest_event(&listing::build(&seller, &draft(), "x", listing::now(), false).unwrap())
         .unwrap();
     let mut settings = Settings {
@@ -584,8 +656,8 @@ fn display_currency_projects_browse_saved_and_author_without_mutating_signed_pri
     )
     .unwrap();
     store.save_exchange_rates(&book).unwrap();
-    let app = Market::open(dir.path(), &iris_market_core::generate_secret_key(), false).unwrap();
     let seller = Keys::generate();
+    let app = open_following(dir.path(), &seller);
     let mut d = draft();
     d.currency = "USD".into();
     d.price = "66".into();
@@ -750,8 +822,8 @@ fn connection_probe_has_dedicated_sanitized_result_and_clears_stale_messages() {
 fn ai_search_mode_cannot_override_explicit_off_and_disabling_restores_literal_search() {
     let dir = tempfile::tempdir().unwrap();
     offline(dir.path());
-    let app = Market::open(dir.path(), &iris_market_core::generate_secret_key(), false).unwrap();
     let seller = Keys::generate();
+    let app = open_following(dir.path(), &seller);
     app.ingest_event(&listing::build(&seller, &draft(), "camera", listing::now(), false).unwrap())
         .unwrap();
     let filter = json!({"type":"set_filter","query":"bicycle","side":"all","ai_search":true});
@@ -889,10 +961,8 @@ fn delayed_remote_cancellation(switch_provider: bool) {
         });
         let dir = tempfile::tempdir().unwrap();
         offline(dir.path());
-        let app = Arc::new(
-            Market::open(dir.path(), &iris_market_core::generate_secret_key(), false).unwrap(),
-        );
         let seller = Keys::generate();
+        let app = Arc::new(open_following(dir.path(), &seller));
         for id in ["camera-one", "camera-two"] {
             app.ingest_event(
                 &listing::build(&seller, &draft(), id, listing::now(), false).unwrap(),
@@ -1030,9 +1100,11 @@ fn sandbox_returns_decisions_while_feed_ai_is_off_without_saving_test_text() {
     });
     let dir = tempfile::tempdir().unwrap();
     offline(dir.path());
-    let secret = iris_market_core::generate_secret_key();
-    let app = Market::open(dir.path(), &secret, false).unwrap();
+    let viewer = Keys::generate();
+    let secret = viewer.secret_key().to_secret_hex();
     let seller = Keys::generate();
+    support::cache_follows(dir.path(), &viewer, &[seller.public_key()]);
+    let app = Market::open(dir.path(), &secret, false).unwrap();
     app.ingest_event(
         &listing::build(&seller, &draft(), "sandbox-feed", listing::now(), false).unwrap(),
     )
@@ -1211,18 +1283,10 @@ fn sandbox_refuses_active_feed_work_and_clear_does_not_cancel_curate() {
     });
     let dir = tempfile::tempdir().unwrap();
     offline(dir.path());
-    let app = Arc::new(
-        Market::open(dir.path(), &iris_market_core::generate_secret_key(), false).unwrap(),
-    );
+    let seller = Keys::generate();
+    let app = Arc::new(open_following(dir.path(), &seller));
     app.ingest_event(
-        &listing::build(
-            &Keys::generate(),
-            &draft(),
-            "active-feed",
-            listing::now(),
-            false,
-        )
-        .unwrap(),
+        &listing::build(&seller, &draft(), "active-feed", listing::now(), false).unwrap(),
     )
     .unwrap();
     let mut settings = Settings {
@@ -1349,8 +1413,8 @@ fn remote_systemone_fixture(fail: bool) -> (String, std::thread::JoinHandle<usiz
 
 fn remote_systemone_market(path: &std::path::Path, endpoint: String, count: usize) -> Market {
     offline(path);
-    let app = Market::open(path, &iris_market_core::generate_secret_key(), false).unwrap();
     let seller = Keys::generate();
+    let app = open_following(path, &seller);
     for index in 0..count {
         app.ingest_event(
             &listing::build(

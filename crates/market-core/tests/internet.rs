@@ -1,11 +1,12 @@
 //! Two independent app profiles communicate through a real WebSocket Nostr relay.
+mod support;
 use futures_util::{SinkExt, StreamExt};
 use iris_market_core::{
     Market,
     model::{Draft, Settings},
     store::Store,
 };
-use nostr::{Event, Filter, JsonUtil};
+use nostr::{Event, Filter, JsonUtil, Keys};
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
@@ -88,18 +89,16 @@ fn two_profiles_publish_discover_and_exchange_private_enquiries_over_internet_tr
             })
             .unwrap();
     }
+    let alice_keys = Keys::generate();
+    let bob_keys = Keys::generate();
+    support::cache_follows(b_dir.path(), &bob_keys, &[alice_keys.public_key()]);
     let alice = Market::open(
         a_dir.path(),
-        &iris_market_core::generate_secret_key(),
+        &alice_keys.secret_key().to_secret_hex(),
         false,
     )
     .unwrap();
-    let bob = Market::open(
-        b_dir.path(),
-        &iris_market_core::generate_secret_key(),
-        false,
-    )
-    .unwrap();
+    let bob = Market::open(b_dir.path(), &bob_keys.secret_key().to_secret_hex(), false).unwrap();
     let d = Draft {
         title: "A real signed listing".into(),
         description: "Relay integration fixture".into(),
@@ -334,7 +333,9 @@ fn buying_backfills_typed_requests_beyond_latest_three_hundred() {
             ..Default::default()
         })
         .unwrap();
-    let app = Market::open(dir.path(), &iris_market_core::generate_secret_key(), false).unwrap();
+    let viewer = Keys::generate();
+    support::cache_follows(dir.path(), &viewer, &[seller.public_key()]);
+    let app = Market::open(dir.path(), &viewer.secret_key().to_secret_hex(), false).unwrap();
     wait_until(|| {
         snapshot(&app)["listings"]
             .as_array()

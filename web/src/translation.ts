@@ -1,4 +1,6 @@
+import {flushSync, mount} from 'svelte';
 import {element} from './dom.ts';
+import Settings from './ai-view/TranslationSettings.svelte';
 
 type Availability = 'unavailable' | 'downloadable' | 'downloading' | 'available';
 type Pair = {sourceLanguage: string; targetLanguage: string};
@@ -65,55 +67,43 @@ const languageCodes = 'af am ar as az be bg bn bs ca cs cy da de el en es et eu 
 function languageName(code: string) {
   return new Intl.DisplayNames(navigator.languages, {type: 'language'}).of(code) || code;
 }
-function choice(value: string, label: string) {
-  const option = element('option', label);
-  option.value = value;
-  return option;
+/** What the translation settings show; recomputed after each preference change. */
+export function translationSettingsView() {
+  const prefs = current(), languages = navigator.languages;
+  const all = [...new Set([...languageCodes, ...languages, prefs.target, ...prefs.read].map(canonical).filter(Boolean))];
+  const sorted = all.map(code => ({code, name: languageName(code)})).sort((a,b) => a.name.localeCompare(b.name));
+  return {
+    auto: prefs.auto,
+    target: canonical(preferences.target),
+    deviceLabel: languageName(new Intl.Locale(languages[0] || navigator.language).language) + ' (device)',
+    targets: sorted,
+    readable: sorted.filter(({code}) => ![prefs.target, ...prefs.read].some(other => sameLanguage(code, other))),
+    read: prefs.read.map(code => ({code, name: languageName(code)})),
+    supported: !!models().Translator && !!models().LanguageDetector,
+  };
+}
+export function setAutoTranslate(auto: boolean) {
+  if (auto && models().LanguageDetector?.create && models().Translator &&
+      new URLSearchParams(location.search).get('preview') !== '1') {
+    // First-use downloads can require a gesture. Later failures stay recoverable at the item.
+    void getDetector().catch(() => {});
+  }
+  update({auto});
+}
+export const setTranslationTarget = (target: string) => update({target});
+export function addReadLanguage(code: string) { if (code) update({read: [...current().read, code]}); }
+export const removeReadLanguage = (code: string) => update({read: current().read.filter(other => !sameLanguage(code, other))});
+export function onTranslationPreferences(listener: () => void) {
+  changes.addEventListener('change', listener);
+  return () => changes.removeEventListener('change', listener);
 }
 export function translationSettings(): HTMLElement {
-  const box = element('section', undefined, 'translation-settings');
-  box.append(element('h3', 'Translation'));
-  const auto = element('input'); auto.type = 'checkbox';
-  const autoLabel = element('label'); autoLabel.append(auto, ' Always translate');
-  const target = element('select'), targetLabel = element('label', 'Translate into ');
-  targetLabel.append(target);
-  const readPicker = element('select'), readLabel = element('label', 'Languages I read ');
-  readLabel.append(readPicker);
-  const list = element('div', undefined, 'translation-read-languages');
-  function paint() {
-    const prefs = current(), languages = navigator.languages;
-    const all = [...new Set([...languageCodes, ...languages, prefs.target, ...prefs.read].map(canonical).filter(Boolean))];
-    const sorted = all.map(code => ({code, name: languageName(code)})).sort((a,b) => a.name.localeCompare(b.name));
-    auto.checked = prefs.auto;
-    target.replaceChildren(choice('', languageName(new Intl.Locale(languages[0] || navigator.language).language) + ' (device)'),
-      ...sorted.map(item => choice(item.code, item.name)));
-    target.value = canonical(preferences.target);
-    readPicker.replaceChildren(choice('', 'Add a language…'), ...sorted
-      .filter(({code}) => ![prefs.target, ...prefs.read].some(other => sameLanguage(code, other)))
-      .map(item => choice(item.code, item.name)));
-    list.replaceChildren(...prefs.read.map(code => {
-      const name = languageName(code), remove = element('button', name + ' ×', 'text-button');
-      remove.type = 'button'; remove.setAttribute('aria-label', 'Remove ' + name);
-      remove.onclick = () => update({read: current().read.filter(other => !sameLanguage(code, other))});
-      return remove;
-    }));
-  }
-  auto.onchange = () => {
-    if (auto.checked && models().LanguageDetector?.create && models().Translator &&
-        new URLSearchParams(location.search).get('preview') !== '1') {
-      // First-use downloads can require a gesture. Later failures stay recoverable at the item.
-      void getDetector().catch(() => {});
-    }
-    update({auto: auto.checked});
-  };
-  target.onchange = () => update({target: target.value});
-  readPicker.onchange = () => { if (readPicker.value) update({read: [...current().read, readPicker.value]}); };
-  box.append(autoLabel, targetLabel, readLabel, list);
-  if (!models().Translator || !models().LanguageDetector)
-    box.append(element('p', 'On-device translation is unavailable in this browser.', 'small muted'));
+  const host = document.createElement('div');
   // The settings page belongs to the app shell for its lifetime.
-  changes.addEventListener('change', paint);
-  paint();
+  mount(Settings, {target: host});
+  flushSync();
+  const box = host.firstElementChild as HTMLElement;
+  box.remove();
   return box;
 }
 

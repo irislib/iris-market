@@ -80,10 +80,6 @@ impl Messaging {
         for authors in authors.chunks(512) {
             filters.push(serde_json::json!({"kinds":[MESSAGE_EVENT_KIND],"authors":authors}));
         }
-        // Legacy owner=device profiles must not register their public account as an inbox tag.
-        if self.keys.public_key() != self.owner {
-            filters.push(serde_json::json!({"kinds":[MESSAGE_EVENT_KIND],"#p":[self.keys.public_key().to_hex()]}));
-        }
         let mut invite_keys = BTreeSet::new();
         if let Some(key) = self.engine.local_invite_response_pubkey() {
             invite_keys.insert(key.to_hex());

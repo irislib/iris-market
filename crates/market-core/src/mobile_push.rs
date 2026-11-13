@@ -83,21 +83,20 @@ fn private_filter(value: &serde_json::Value) -> bool {
     {
         return false;
     }
-    let kinds = value.get("kinds").and_then(|v| v.as_array());
-    if kinds.is_none_or(|ks| {
-        ks.len() != 1
-            || !ks[0].as_u64().is_some_and(|k| {
-                k == iris_chat_protocol::MESSAGE_EVENT_KIND as u64
-                    || k == iris_chat_protocol::INVITE_RESPONSE_KIND as u64
-            })
-    }) {
-        return false;
-    }
-    let Some(keys) = value
-        .get("authors")
-        .or_else(|| value.get("#p"))
+    let selector = match value
+        .get("kinds")
         .and_then(|v| v.as_array())
-    else {
+        .map(Vec::as_slice)
+    {
+        Some([kind]) if kind.as_u64() == Some(iris_chat_protocol::MESSAGE_EVENT_KIND as u64) => {
+            "authors"
+        }
+        Some([kind]) if kind.as_u64() == Some(iris_chat_protocol::INVITE_RESPONSE_KIND as u64) => {
+            "#p"
+        }
+        _ => return false,
+    };
+    let Some(keys) = value.get(selector).and_then(|v| v.as_array()) else {
         return false;
     };
     !keys.is_empty()

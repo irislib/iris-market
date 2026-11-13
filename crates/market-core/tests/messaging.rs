@@ -51,7 +51,15 @@ fn invitation_messages_restart_and_wire_privacy() {
         .unwrap();
     let queued = b.pending_outbound();
     assert!(!queued.is_empty());
+    assert!(a.subscriptions().iter().all(|sub| {
+        let filter = serde_json::to_value(&sub.filter).unwrap();
+        filter["kinds"] != serde_json::json!([1060]) || filter.get("#p").is_none()
+    }));
     for event in &queued {
+        if event.kind.as_u16() == 1060 {
+            assert!(event.tags.public_keys().next().is_none());
+            assert!(!event.as_json().contains(&ak.public_key().to_hex()));
+        }
         assert!(!event.as_json().contains(&bk.public_key().to_hex()));
         assert!(!event.as_json().contains("lovely lamp"));
     }

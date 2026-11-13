@@ -161,6 +161,15 @@ struct QueuedPublish {
     peer_id: String,
     #[serde(default)]
     recipient_device_owner: Option<PublicKey>,
+    #[serde(default)]
+    recipient_device: Option<PublicKey>,
+}
+
+impl QueuedPublish {
+    fn obsolete_message(&self) -> bool {
+        self.event.kind.as_u16() as u32 == MESSAGE_EVENT_KIND
+            && (self.recipient_device.is_none() || self.event.tags.public_keys().next().is_some())
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -271,7 +280,13 @@ impl Messaging {
             engine,
             state,
         };
-        if this.history_due(now())
+        let obsolete = this
+            .state
+            .outbox
+            .values()
+            .any(QueuedPublish::obsolete_message);
+        if obsolete
+            || this.history_due(now())
             || this
                 .state
                 .merchant_notices
@@ -279,6 +294,28 @@ impl Messaging {
                 .any(|n| n.needs_history())
         {
             this.transaction(|this| {
+                if obsolete {
+                    let mut affected = std::collections::BTreeSet::new();
+                    this.state.outbox.retain(|_, queued| {
+                        if !queued.obsolete_message() {
+                            return true;
+                        }
+                        affected.extend(queued.inner_id.iter().cloned());
+                        false
+                    });
+                    for queued in this.state.outbox.values() {
+                        if let Some(id) = &queued.inner_id {
+                            affected.remove(id);
+                        }
+                    }
+                    for thread in this.state.conversations.values_mut() {
+                        for msg in &mut thread.messages {
+                            if msg.mine && msg.delivery == "pending" && affected.contains(&msg.id) {
+                                msg.delivery = "failed".into();
+                            }
+                        }
+                    }
+                }
                 for (seller, row) in &mut this.state.merchant_notices {
                     if row.needs_history() {
                         this.state
@@ -1463,15 +1500,6 @@ impl Messaging {
                 });
             }
         }
-        // Cold-delivery envelopes disclose only the recipient. The sender uses
-        // unlinkable session keys. Keep this scope separate from session authors.
-        result.push(PrivateSubscription {
-            scope: "private-cold-inbox".into(),
-            filter: Filter::new()
-                .kind(Kind::from(MESSAGE_EVENT_KIND as u16))
-                .pubkey(self.keys.public_key())
-                .limit(256),
-        });
         for author in self.engine.known_message_author_pubkeys() {
             result.push(PrivateSubscription {
                 scope: format!("private-session-{}", author.to_hex()),
@@ -1509,11 +1537,10 @@ impl Messaging {
         let Ok(peer) = PublicKey::from_hex(&queued.peer_id) else {
             return false;
         };
-        let recipient = if queued.event.kind.as_u16() as u32 == MESSAGE_EVENT_KIND {
-            queued.event.tags.public_keys().next().copied()
-        } else {
-            None
-        };
+        if queued.obsolete_message() {
+            return false;
+        }
+        let recipient = queued.recipient_device;
         let owner = queued.recipient_device_owner.unwrap_or(peer);
         if let Some(heads) = self.state.authorization_heads.get(&owner.to_hex()) {
             if heads.len() != 1 {
@@ -1658,6 +1685,13 @@ impl Messaging {
     fn queue_effects(&mut self, effects: Vec<ProtocolEffect>) -> MessagingResult<()> {
         for effect in effects {
             let ProtocolEffect::Publish(publish) = effect;
+            let recipient_device = publish.carrier.pairwise_device();
+            if !publish.is_publishable()
+                || (publish.event.kind.as_u16() as u32 == MESSAGE_EVENT_KIND
+                    && recipient_device.is_none())
+            {
+                return Err("Refusing an invalid direct message carrier".into());
+            }
             let event = publish.event;
             event
                 .verify()
@@ -1685,18 +1719,14 @@ impl Messaging {
             // Own-device copies have the conversation peer in chat_id. Retain
             // the actual destination owner before a later revocation removes
             // that device from the current roster.
-            let recipient_device_owner = if event.kind.as_u16() as u32 == MESSAGE_EVENT_KIND {
-                event.tags.public_keys().next().and_then(|device| {
-                    if self
+            let recipient_device_owner = if recipient_device.is_some_and(|device| {
+                device == self.keys.public_key()
+                    || self
                         .engine
                         .known_device_identity_pubkeys_for_owner(self.owner)
-                        .contains(device)
-                    {
-                        Some(self.owner)
-                    } else {
-                        PublicKey::from_hex(&publish.chat_id).ok()
-                    }
-                })
+                        .contains(&device)
+            }) {
+                Some(self.owner)
             } else {
                 PublicKey::from_hex(&publish.chat_id).ok()
             };
@@ -1722,6 +1752,7 @@ impl Messaging {
                     inner_id: publish.inner_event_id,
                     peer_id: publish.chat_id,
                     recipient_device_owner,
+                    recipient_device,
                 },
             );
         }
@@ -2177,6 +2208,50 @@ fn message_millis(rumor: &UnsignedEvent) -> u64 {
 #[cfg(test)]
 mod chronology_tests {
     use super::*;
+    #[test]
+    fn upgrade_retires_legacy_ciphertext_and_keeps_the_pending_message_in_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let owner = Keys::generate();
+        let peer = Keys::generate().public_key();
+        let mut chat = Messaging::open(dir.path(), owner.clone()).unwrap();
+        let mut message = fixture_message("legacy-id", "saved locally", 100);
+        message.mine = true;
+        message.delivery = "pending".into();
+        let event = nostr::EventBuilder::new(Kind::from(1060), "old ciphertext")
+            .sign_with_keys(&Keys::generate())
+            .unwrap();
+        chat.transaction(|chat| {
+            chat.ensure_conversation(&peer.to_hex())?;
+            chat.state
+                .conversations
+                .get_mut(&peer.to_hex())
+                .unwrap()
+                .messages
+                .push(message);
+            chat.state.outbox.insert(
+                event.id.to_hex(),
+                QueuedPublish {
+                    event,
+                    expires_at: None,
+                    inner_id: Some("legacy-id".into()),
+                    peer_id: peer.to_hex(),
+                    recipient_device_owner: Some(peer),
+                    recipient_device: None,
+                },
+            );
+            Ok(())
+        })
+        .unwrap();
+        drop(chat);
+        let reopened = Messaging::open(dir.path(), owner).unwrap();
+        assert!(reopened.state.outbox.is_empty());
+        let stored = &reopened.state.conversations[&peer.to_hex()].messages[0];
+        assert_eq!(
+            (stored.text.as_str(), stored.delivery.as_str()),
+            ("saved locally", "failed")
+        );
+    }
+
     fn fixture_message(id: &str, text: &str, seconds: u64) -> Message {
         Message {
             expires_at: None,

@@ -243,8 +243,8 @@ test('extension login keeps the owner key outside the vault and rejects a differ
 
 
 test('queued ciphertext cannot be retried to a device removed by a newer peer roster', () => {
-  const owner = '1'.repeat(64), device = '2'.repeat(64), event = { kind: 1060, tags: [['p', device]] };
-  const context = { recipientOwnerPubkey: owner, createdAt: 1 };
+  const owner = '1'.repeat(64), device = '2'.repeat(64), event = { kind: 1060, tags: [['v','2'],['header','sealed']] };
+  const context = { recipientOwnerPubkey: owner, recipientDeviceOwnerPubkey:owner, recipientDevicePubkey:device, createdAt: 1 };
   assert.equal(canPublishToDevice(event, context, [{ ownerPubkey: owner, appKeys: new AppKeys([{ identityPubkey: device, createdAt: 1 }]) }]), true);
   assert.equal(canPublishToDevice(event, context, [{ ownerPubkey: owner, appKeys: new AppKeys([]) }]), false);
 });

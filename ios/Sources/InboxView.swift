@@ -167,19 +167,6 @@ struct ConversationView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 4)
                 #endif
-                if store.snapshot.needsChatDeviceApproval == true {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Approve this device so people can send you replies.")
-                        Button(store.snapshot.approvingChatDevice == true ? "Checking device approval…" : "Approve chat device") {
-                            store.command(["type": "approve_chat_device"])
-                        }
-                        .disabled(store.snapshot.approvingChatDevice == true)
-                    }
-                    .font(.subheadline)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 8)
-                }
                 if let id = context?.orderId {
                     Button { orderID = id } label: { Text(inboxContextTitle(context, snapshot: store.snapshot)).font(.system(size: 14, weight: .medium)).lineLimit(2).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.vertical, 12) }
                 } else if context?.listing != nil { Text(inboxContextTitle(context, snapshot: store.snapshot)).font(.system(size: 13)).foregroundStyle(MarketTheme.muted).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.vertical, 12) }

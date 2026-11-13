@@ -2,7 +2,7 @@ import {createServer} from 'node:http';
 import {readFile} from 'node:fs/promises';
 import {fstatSync,statSync} from 'node:fs';
 import {resolve} from 'node:path';
-import {DEFAULT_RELAYS} from '../../src/market.ts';
+import {DEFAULT_PRIVATE_RELAYS} from '../../src/public-relays.ts';
 import {startDemoActors} from './actors.ts';
 import {maintainLocalModel} from './ollama.ts';
 
@@ -16,7 +16,7 @@ if(!Number.isInteger(descriptor)||descriptor<3)throw new Error('Start public dem
 const held=fstatSync(descriptor),expected=statSync(resolve(stateDir,'service.lock'));
 if(held.ino!==expected.ino||held.dev!==expected.dev)throw new Error('Invalid demo service lock.');
 const password=await readFile(process.env.MARKET_DEMO_SECRET_FILE!,'utf8');
-const publicRelays=[...DEFAULT_RELAYS];
+const publicRelays=[...DEFAULT_PRIVATE_RELAYS];
 if(publicRelays.some(relay=>new URL(relay).protocol!=='wss:'))throw new Error('Public demo relays require WSS.');
 let actors:Awaited<ReturnType<typeof startDemoActors>>|undefined,closing=false;
 const localModel=maintainLocalModel(process.env.MARKET_DEMO_MODEL??'',{expectedDigest:process.env.MARKET_DEMO_MODEL_DIGEST,openApp:process.env.MARKET_DEMO_MANAGE_OLLAMA==='1'});

@@ -208,7 +208,14 @@ test('a sender sibling acknowledgement cannot mark the seller delivery sent', {t
  await first.createAccount();await waitFor(()=>first.state().canSend);
  await sibling.loginWithKey({key:first.exportKey()});await sellerApp.createAccount();
  await waitFor(()=>[first,sibling,sellerApp].every(value=>value.state().canSend)&&first.state().devices.length===2);
- bus.publishHook=async event=>{if(event.kind!==1060)return;const recipient=event.tags.find(tag=>tag[0]==='p')?.[1];if(recipient===sellerApp.state().devicePubkey)throw Error('seller unavailable');if(recipient===sibling.state().devicePubkey){copying=true;await copyGate;}};
+ bus.publishHook=async event=>{
+   if(event.kind!==1060)return;
+   assert(!event.tags.some(tag=>tag[0]==='p'));
+   const row=await first.testVault.get('v1/runtime-outbox/'+event.id);
+   const recipient=row?.context?.recipientDevicePubkey;
+   if(recipient===sellerApp.state().devicePubkey)throw Error('seller unavailable');
+   if(recipient===sibling.state().devicePubkey){copying=true;await copyGate;}
+ };
  const owner=sellerApp.state().ownerPubkey,order=await first.requestOrder({...listing,author:owner,id:`${owner}:ack-test`});
  await waitFor(()=>copying&&first.state().conversations.some(chat=>chat.messages.some(message=>message.orderId===order.id)));
  releaseCopy();await waitFor(()=>sibling.state().orders.some(item=>item.id===order.id));

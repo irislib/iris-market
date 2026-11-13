@@ -77,11 +77,16 @@ test('queued public publication keeps its exact event across restart until ackno
 });
 
 test('unknown or revoked destination devices never receive queued ciphertext',()=>{
-  const owner='1'.repeat(64),device='2'.repeat(64),event={kind:1060,tags:[['p',device]]};
-  const context={recipientOwnerPubkey:owner};
-  assert.equal(canPublishToDevice(event,context,[]),false);
-  assert.equal(canPublishToDevice(event,undefined,[]),false);
-  assert.equal(canPublishToDevice(event,context,[{ownerPubkey:owner,appKeys:new AppKeys([])}]),false);
+  const owner='1'.repeat(64),device='2'.repeat(64),event={kind:1060,tags:[['v','2'],['header','sealed']]};
+  const direct={recipientOwnerPubkey:owner,recipientDeviceOwnerPubkey:owner,recipientDevicePubkey:owner};
+  const delegated={...direct,recipientDevicePubkey:device};
+  const records=new Map([[owner,{appKeysCreatedAt:0,devices:new Map([[owner,{activeSession:{}}],[device,{activeSession:{}}]])}]]);
+  assert.equal(canPublishToDevice(event,direct,[],records),true);
+  assert.equal(canPublishToDevice(event,direct,[]),false);
+  assert.equal(canPublishToDevice(event,delegated,[],records),false);
+  assert.equal(canPublishToDevice(event,undefined,[],records),false);
+  assert.equal(canPublishToDevice(event,direct,[{ownerPubkey:owner,appKeys:new AppKeys([])}],records),false);
+  assert.equal(canPublishToDevice({...event,tags:[['p',owner]]},direct,[],records),false);
 });
 
 test('public review is durable before silent relays reply, isolated from private messages and restored exactly', {timeout:3000},async t=>{

@@ -142,8 +142,8 @@ fn fresh_native_profile_orders_with_strict_js_peer() {
     assert_eq!(url.scheme(), "ws");
     assert_eq!(url.host_str(), Some("127.0.0.1"));
     let mut relays = vec![relay];
-    let legacy = env::var_os("MARKET_TEST_LEGACY_APPROVAL").is_some();
-    if !legacy && let Ok(silent) = env::var("MARKET_NATIVE_SILENT_RELAY") {
+    let legacy = env::var_os("MARKET_TEST_OWNER_KEY_SESSION").is_some();
+    if let Ok(silent) = env::var("MARKET_NATIVE_SILENT_RELAY") {
         let url = url::Url::parse(&silent).unwrap();
         assert_eq!(url.scheme(), "ws");
         assert_eq!(url.host_str(), Some("127.0.0.1"));
@@ -185,13 +185,6 @@ fn fresh_native_profile_orders_with_strict_js_peer() {
     market.command(&json!({"type":"request_order","listing_id":id,"quantity":1,"note":"Synthetic native order"}).to_string()).unwrap();
     if legacy {
         assert_eq!(snapshot()["needs_chat_device_approval"], true);
-        let end = Instant::now() + Duration::from_secs(25);
-        while !std::path::Path::new(&env::var("MARKET_TEST_REPLY_QUEUED").unwrap()).exists() {
-            assert!(Instant::now() < end, "The shop did not queue its reply");
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        assert_eq!(snapshot()["orders"][0]["status"], "requested");
-        market.command(r#"{"type":"approve_chat_device"}"#).unwrap();
     }
     let end = Instant::now() + Duration::from_secs(40);
     loop {
@@ -214,7 +207,7 @@ fn fresh_native_profile_orders_with_strict_js_peer() {
     if legacy {
         let reopened = Market::open(directory.path(), &secret, false).unwrap();
         let state: Value = serde_json::from_str(&reopened.snapshot().unwrap()).unwrap();
-        assert_eq!(state["needs_chat_device_approval"], false);
+        assert_eq!(state["needs_chat_device_approval"], true);
         assert_eq!(state["orders"][0]["status"], "accepted");
         reopened.shutdown();
     }

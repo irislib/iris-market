@@ -22,7 +22,7 @@ import {createChatControls,applyChatControl,messageReactions,deliveryRank,type R
 import { marketplaceToolEnabled } from '../marketplace-flags.ts';
 import { createOrderBook, isOrderMessage } from '../orders.ts';
 import type { Event, UnsignedEvent, VerifiedEvent } from 'nostr-tools';
-import type { NostrPublishContext, Rumor, OnEventMeta } from 'nostr-double-ratchet';
+import type { NostrPublishContext, Rumor, OnEventMeta, UserRecord } from 'nostr-double-ratchet';
 import type { Vault } from './vault.ts';
 import type { PrivateTransport } from './transport.ts';
 import type { DeliveryPlace, OrderListing, OrderPatch, OrderRequestOptions, OrderView } from '../orders.ts';
@@ -34,7 +34,7 @@ type AccountSigner=(event:UnsignedEvent)=>Event|Promise<Event>;
 interface BrowserSigner {getPublicKey():Promise<string>;signEvent:AccountSigner}
 interface MessagingOptions {developerMint?:string;getRelays?:()=>string[];getPublicRelays?:()=>string[];onChange?:(state:MessagingState)=>void;vault?:Vault;transportFactory?:()=>PrivateTransport;extension?:()=>BrowserSigner|undefined}
 interface SignerLoginOptions {password?:string;bunkerLink?:string;signal?:AbortSignal;onConnectionLink?:(url:string)=>void;onAuthUrl?:(url:string)=>void;onCommitting?:()=>void}
-type PublicationContext=NostrPublishContext&{recipientDeviceOwnerPubkey?:string;wireDeadline?:number};
+type PublicationContext=NostrPublishContext&{recipientDeviceOwnerPubkey?:string;recipientDevicePubkey?:string;wireDeadline?:number};
 
 class PendingRelayAcceptance extends Error {}
 
@@ -60,12 +60,42 @@ function secretBytes(value) {
   throw new Error('Enter a valid private key.');
 }
 
-export function canPublishToDevice(event, context, snapshots) {
-  if (event.kind !== 1060) return true;
-  if (!context?.recipientOwnerPubkey) return false;
-  const target = event.tags.find(tag => tag[0] === 'p')?.[1];
-  const roster = snapshots.find(snapshot => snapshot.ownerPubkey === (context.recipientDeviceOwnerPubkey ?? context.recipientOwnerPubkey));
-  return !!roster?.appKeys.getDevice(target);
+/** Bind an outgoing ratchet signer to its device while NDR hands off the envelope.
+ * This binding stays in the encrypted outbox even if the session subsequently rotates. */
+function publicationContext(event:UnsignedEvent, context:PublicationContext, records:Map<string,UserRecord>):PublicationContext {
+  if (event.kind !== 1060 || context?.groupId) return context;
+  for (const [owner, record] of records) {
+    for (const [device, entry] of record.devices) {
+      const sessions = [entry.activeSession, ...entry.inactiveSessions];
+      if (sessions.some(session => session?.state.ourCurrentNostrKey?.publicKey === event.pubkey)) {
+        return {
+          ...context,
+          recipientOwnerPubkey: context?.recipientOwnerPubkey ?? owner,
+          createdAt: context?.createdAt ?? event.created_at,
+          recipientDeviceOwnerPubkey: owner,
+          recipientDevicePubkey: device,
+        };
+      }
+    }
+  }
+  return context;
+}
+
+function authorizedDestination(context:PublicationContext, snapshots, records?:Map<string,UserRecord>) {
+  const owner = context?.recipientDeviceOwnerPubkey, device = context?.recipientDevicePubkey;
+  if (!context?.recipientOwnerPubkey || !owner || !device) return false;
+  const roster = snapshots.find(snapshot => snapshot.ownerPubkey === owner);
+  if (roster) return !!roster.appKeys.getDevice(device);
+  // A direct owner-key handshake authenticates the account itself. Only a signed
+  // roster can authorize a different device, and a known roster always wins.
+  const record = records?.get(owner);
+  return owner === device && owner === context.recipientOwnerPubkey &&
+    record?.appKeysCreatedAt === 0 && !!record.devices.get(device)?.activeSession;
+}
+
+export function canPublishToDevice(event, context:PublicationContext, snapshots, records?:Map<string,UserRecord>) {
+  return event.kind !== 1060 || (!event.tags.some(tag => tag[0] === 'p') &&
+    authorizedDestination(context,snapshots,records));
 }
 
 export function messageProjection(rumor:Rumor, from:string, meta:OnEventMeta, owner:string, retention:Retention=follow):{pubkey:string;message:ChatMessage}|null {
@@ -251,6 +281,42 @@ export function createMessaging({ developerMint, getRelays=()=>[], getPublicRela
     }
     check(attempt);
     await pruneOrderQueues();check(attempt);
+    // Older NDR versions sealed replies with a public recipient tag. Only re-seal
+    // an exact retained rumor for its original, still-authenticated direct session.
+    // If the vault lacks either piece of evidence, preserve the pending record.
+    const oldOutboxKeys = await vault.list('v1/runtime-outbox/');
+    const recovering = new Map<string,string>();
+    let recoveryBusy = false, sessionsReady = false;
+    const recoverPreviousOutbox = async () => {
+      if (!sessionsReady || recoveryBusy || !canSend() || !oldOutboxKeys.length) return;
+      recoveryBusy = true;
+      try {
+        while (oldOutboxKeys.length && canSend()) {
+          check(attempt);
+          const key = oldOutboxKeys.shift()!;
+          const old = await vault.get<{event:VerifiedEvent;innerEventId:string;context:PublicationContext}>(key);
+          const peer = old?.context?.recipientOwnerPubkey, id = old?.innerEventId;
+          if (!peer || !id || old.event.kind !== 1060 || old.context.groupId ||
+              !old.event.tags.some(tag => tag[0] === 'p' && tag[1] === peer) || !verifiedPrivateEvent(old.event)) continue;
+          const records = runtime.getSessionManager()?.getUserRecords();
+          if (!records) continue;
+          const destination = publicationContext(old.event,old.context,records);
+          if (destination?.recipientDevicePubkey !== peer || destination.recipientDeviceOwnerPubkey !== peer ||
+              !authorizedDestination(destination,runtime.getKnownAppKeysSnapshots(),records)) continue;
+          const retained = await vault.get<{targetKey:string;event:Rumor}>(`v1/discovery-queue/${id}/${account.owner}`);
+          const rumor = retained?.event;
+          if (retained?.targetKey !== account.owner || !rumor || rumor.id !== id || getEventHash(rumor) !== id ||
+              (rumor.pubkey !== runtime.getState().currentDevicePubkey && rumor.pubkey !== account.owner) ||
+              rumor.tags.some(tag => tag[0] === 'l') || rumor.tags.find(tag => tag[0] === 'p')?.[1] !== peer ||
+              (getExpirationTimestampSeconds(rumor) ?? Infinity) <= now() || !orders.canPublish(id)) continue;
+          check(attempt);
+          recovering.set(id,key);
+          try {
+            await runtime.sendEvent(peer,rumor,undefined,{includeLocalSiblings:false});
+          } finally { recovering.delete(id); }
+        }
+      } finally { recoveryBusy = false; }
+    };
     outbox = createPersistentNostrOutbox({ storage: privateStorage, concurrency: 3,
       publish: async (event, _innerId, context:PublicationContext) => {
         check(attempt);
@@ -258,7 +324,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], getPublicRela
         // Their IDs remain in the private book so NDR's exact retry can be dropped.
         if ((context?.wireDeadline??wireDeadlines.get(_innerId)?.end??Infinity)<=now() || _innerId && orders && !orders.canPublish(_innerId)) return event;
         if ([1059, 1060].includes(event.kind) && (!authorizationChecked || !runtime?.getState().isCurrentDeviceRegistered || !hasMetadataPrivacyVersion(event))) throw new Error('This device is not authorized to send.');
-        if (!canPublishToDevice(event, context, runtime?.getKnownAppKeysSnapshots() ?? [])) throw new Error('The receiving device was removed.');
+        if (!canPublishToDevice(event, context, runtime?.getKnownAppKeysSnapshots() ?? [], runtime?.getSessionManager()?.getUserRecords())) throw new Error('The receiving device was removed.');
         const options={signal:controller.signal,onAccepted:()=>{if(attempt===generation)void outbox.retry().catch(report);}};
         const receipt = await (transport.dispatch ? transport.dispatch(event,options) : transport.publish(event,options));
         check(attempt);
@@ -279,21 +345,8 @@ export function createMessaging({ developerMint, getRelays=()=>[], getPublicRela
         }
       }, onError:failure=>{if(!(failure.error instanceof PendingRelayAcceptance))report();},
     });
-    const publicationContext = (event:UnsignedEvent, context:PublicationContext):PublicationContext => {
-      if (event.kind !== 1060) return context;
-      const target = event.tags.find(tag => tag[0] === 'p')?.[1];
-      // The library's recipientOwnerPubkey names the conversation, including
-      // sender copies. Check the actual destination device against its own roster.
-      const actualOwner = runtime?.getKnownAppKeysSnapshots().find(snapshot => snapshot.appKeys.getDevice(target))?.ownerPubkey;
-      if (actualOwner) return { ...context, recipientOwnerPubkey: context?.recipientOwnerPubkey ?? actualOwner, recipientDeviceOwnerPubkey: actualOwner, createdAt: context?.createdAt ?? now() };
-      if (context) return context;
-      for (const [recipientOwnerPubkey, record] of runtime?.getSessionUserRecords() ?? []) {
-        if (record.devices.has(target) || record.appKeys?.getAllDevices().some(device=>device.identityPubkey===target)) return { recipientOwnerPubkey, createdAt: now() };
-      }
-      return context;
-    };
     const outboundContext=(event:UnsignedEvent, id:string|undefined, context:PublicationContext):PublicationContext=>{
-      const result=publicationContext(event,context),end=wireDeadlines.get(id)?.end;
+      const result=publicationContext(event,context,runtime?.getSessionManager()?.getUserRecords() ?? new Map()),end=wireDeadlines.get(id)?.end;
       return result && end!==undefined ? {...result,wireDeadline:end} : result;
     };
     const observedAuthorization = new Map([[account.proof.id, account.proof]]);
@@ -320,14 +373,26 @@ export function createMessaging({ developerMint, getRelays=()=>[], getPublicRela
         observeAuthorization(event);
         Promise.resolve(callback(event)).then(() => {
           if (attempt === generation && status === 'ready' && authorizationChecked) {
-            if (!wasAuthorized) void runtime.republishInvite().catch(report);
+            if (!wasAuthorized) {
+              void runtime.republishInvite().catch(report);
+              void recoverPreviousOutbox().catch(report);
+            }
             void outbox.retry().catch(report); scheduleBackground();
           }
         }).catch(report);
       } }, { signal: controller.signal }).close,
       nostrFetch: async filter => (await transport.query([filter], { signal: controller.signal })).events,
       nostrSign: signing,
-      nostrEnqueue: (event, id, context) => outbox.enqueue(event,id, outboundContext(event,id,context)),
+      nostrEnqueue: async (event, id, context) => {
+        const destination = outboundContext(event,id,context);
+        await outbox.enqueue(event,id,destination);
+        const oldKey = recovering.get(id);
+        if (oldKey && destination?.recipientDevicePubkey && destination.recipientDevicePubkey === destination.recipientOwnerPubkey &&
+            destination?.recipientDeviceOwnerPubkey === destination?.recipientOwnerPubkey) {
+          check(attempt);
+          await vault.del(oldKey);
+        }
+      },
       nostrPublish: (event, id, context) => outbox.publish(event,id, outboundContext(event,id,context)),
       onPublishError:failure=>{if(!(failure.error instanceof PendingRelayAcceptance))report();}, appKeysFetchTimeoutMs: 6000, appKeysFastTimeoutMs: 1500,
     });
@@ -388,6 +453,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], getPublicRela
     for (const event of runtime.getKnownAppKeysEvents()) if (event.pubkey === account.owner) observedAuthorization.set(event.id, event);
     await runtime.initForOwner(account.owner);
     check(attempt);
+    sessionsReady = true;
     if (!justAuthorized) {
       try {
         const latest = await fetchSignerRoster(account.owner, getRelays(), controller.signal, transport);
@@ -397,6 +463,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], getPublicRela
     }
     check(attempt); chatStatus = authorizationChecked ? 'ready' : chatStatus; notify();
     if (authorizationChecked && runtime.getState().isCurrentDeviceRegistered) {
+      void recoverPreviousOutbox().catch(report);
       void runtime.republishInvite().catch(report);
       void outbox.retry().catch(report);
     }

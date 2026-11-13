@@ -198,6 +198,13 @@ struct ConnectionSettingsView: View {
                 Section("Your profile") {
                     LabeledContent("Identity", value: store.demo ? "Preview profile" : "Stored securely on this device")
                     Button { MarketPlatform.copyToClipboard(store.snapshot.publicKey) } label: { Label("Copy profile ID", systemImage: "doc.on.doc") }
+                    if store.snapshot.needsChatDeviceApproval == true {
+                        Button(store.snapshot.approvingChatDevice == true ? "Registering chat device…" : "Publish chat device registration") {
+                            store.command(["type": "approve_chat_device"])
+                        }
+                        .disabled(store.snapshot.approvingChatDevice == true)
+                        Text("Optional for older chat apps that look up a signed device list.").font(.caption).foregroundStyle(MarketTheme.muted)
+                    }
                 }
                 Section("Photos") {
                     Toggle("Use image proxy", isOn: $settings.imageProxy.enabled)

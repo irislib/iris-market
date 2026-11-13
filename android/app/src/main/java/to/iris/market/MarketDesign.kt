@@ -79,13 +79,13 @@ private val DarkColors = darkColorScheme(
 
 @Composable fun IrisMark(modifier: Modifier = Modifier) {
     val paths = remember { listOf(
-        PathParser().parsePathString("M7 32a25 25 0 0 1 40-20V7a1 1 0 0 1 1.7-.7L59 17a1.4 1.4 0 0 1 0 2L48.7 29.7A1 1 0 0 1 47 29v-6a15 15 0 0 0-30 9Z").toPath(),
-        PathParser().parsePathString("M57 32a25 25 0 0 1-40 20v5a1 1 0 0 1-1.7.7L5 47a1.4 1.4 0 0 1 0-2l10.3-10.7A1 1 0 0 1 17 35v6a15 15 0 0 0 30-9Z").toPath()
+        PathParser().parsePathString("M10.14 45.13A25.5 25.5 0 0 1 39.88 7.75L41.49 2.8L47.13 19.3L34.72 23.63L36.33 18.69A14 14 0 0 0 20 39.21Z").toPath(),
+        PathParser().parsePathString("M53.86 18.87A25.5 25.5 0 0 1 24.12 56.25L22.51 61.2L16.87 44.7L29.28 40.37L27.67 45.31A14 14 0 0 0 44 24.79Z").toPath()
     ) }
     Canvas(modifier) {
         val scale = minOf(size.width, size.height) / 64f
         withTransform({ scale(scale, scale, pivot = Offset.Zero) }) {
-            val gradient = Brush.linearGradient(listOf(Color(0xFF8458DC), Color(0xFFC859A5), Color(0xFFF18A58)), Offset(8f,56f), Offset(56f,8f))
+            val gradient = Brush.sweepGradient(listOf(Color(0xFFF43F5E), Color(0xFFF75E34), Color(0xFFF98216), Color(0xFFFAB615), Color(0xFFB1CA2E), Color(0xFF33C658), Color(0xFF14BD9A), Color(0xFF0BB1D7), Color(0xFF2A93EB), Color(0xFF4F78F6), Color(0xFF7E62F6), Color(0xFFB750B6), Color(0xFFF43F5E)), Offset(32f,32f))
             paths.forEach { drawPath(it, gradient) }
         }
     }

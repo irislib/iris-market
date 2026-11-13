@@ -68,6 +68,8 @@ import Darwin
         }
         if let unavailable = OnDeviceAI.unavailableReason { print(unavailable); exit(1) }
         var examples = [
+            Example(query:"bicycle", listing:["description":"City bicycle in working condition."], expected:true),
+            Example(query:"bicycle", listing:["description":"A postcard showing a city bicycle in working condition. Only the postcard is for sale."], expected:false),
             Example(query:"meat", listing:["title":"Grass-fed beef", "description":"Fresh beef steaks sold by the kilogram."], expected:true),
             Example(query:"meat", listing:["title":"Office desk", "description":"Wooden desk for a home office."], expected:false),
             Example(query:"meat", listing:["title":"U", "description":"U"], expected:false),
@@ -96,14 +98,14 @@ import Darwin
             let started = Date()
             do {
                 let decision = try await OnDeviceAI.review(interests:query,listing:listing,homeFeed:example.homeFeed == true)
-                print("\(listing["title"]!): show=\(decision.show), relevance=\(decision.score), elapsed=\(Date().timeIntervalSince(started))s")
+                print("\(listing["title"] ?? "Description-only sample"): show=\(decision.show), relevance=\(decision.score), elapsed=\(Date().timeIntervalSince(started))s")
                 guard (0...1).contains(decision.score), example.expected.map({ decision.show == $0 }) ?? true else {
                     print("Unexpected relevance for the synthetic example")
                     exit(1)
                 }
             } catch {
                 if example.allowsListingFailure == true && OnDeviceAI.isListingFailure(error) {
-                    print("\(listing["title"]!): listing-specific refusal; remains unreviewed and does not abort the feed")
+                    print("\(listing["title"] ?? "Description-only sample"): listing-specific refusal; remains unreviewed and does not abort the feed")
                     continue
                 }
                 print("Local inference failed (\(String(reflecting: type(of: error)))): \(OnDeviceAI.failureMessage(error)); \(String(reflecting: error))")

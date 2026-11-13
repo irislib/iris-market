@@ -140,7 +140,7 @@ struct MarketRootView: View {
                     desktopTab(.settings)
                 }
                 if store.demo { Text("Preview").font(.caption).foregroundStyle(MarketTheme.muted) }
-            }.padding(16).background(MarketTheme.surface).navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 260)
+            }.buttonStyle(.plain).padding(16).background(MarketTheme.surface).navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 260)
         } detail: {
             NavigationStack {
                 Group {
@@ -158,7 +158,7 @@ struct MarketRootView: View {
                         case .transport: CourierWorkspaceView()
                         }
                     }
-                }.frame(maxWidth: .infinity, maxHeight: .infinity).background(MarketTheme.paper)
+                }.buttonStyle(.plain).frame(maxWidth: .infinity, maxHeight: .infinity).background(MarketTheme.paper)
                     .navigationTitle(selected != nil ? "Listing" : (tab == .browse && !store.snapshot.query.isEmpty ? "Search results" : tab.rawValue))
                     .marketPage(isPresented: $compose) { NewListingView().marketListingEditorSheetScope() }
                     .marketPage(isPresented: $aiSettings) { AISettingsView(settings: store.snapshot.settings).marketSheetScope() }
@@ -285,6 +285,10 @@ struct BrowseView: View {
         if store.searchPaused { return "Search paused" }
         return searching || unfinishedSearch ? "No matches yet" : "0 matches"
     }
+    private func setNetworkOnly(_ enabled: Bool) {
+        store.filter(query: store.snapshot.query, side: store.snapshot.side, aiSearch: store.snapshot.aiSearch, networkOnly: enabled)
+    }
+    private var networkOnly: Bool { store.snapshot.networkOnly ?? true }
     private var wantsPhotos: Bool { NativePhotoFilter.wantsPhotos(choice: photoFilter, query: store.snapshot.query, side: store.snapshot.side, map: showMap) }
     var body: some View {
         let requireMatch = curationActive && !showAllMatches
@@ -313,7 +317,7 @@ struct BrowseView: View {
                     filterChip("Selling", value: "offer", symbol: "tag.fill")
                     filterChip("Buying", value: "request", symbol: "hand.wave.fill")
                     Spacer()
-                    Button("Filters (\((wantsPhotos ? 1 : 0) + (requireMatch ? 1 : 0)))") { filtersPresented = true }
+                    Button("Filters (\((wantsPhotos ? 1 : 0) + (requireMatch ? 1 : 0) + (!store.demo && networkOnly ? 1 : 0)))") { filtersPresented = true }
                         .font(.subheadline).accessibilityIdentifier("listingFilters")
                 }
                 if searching {
@@ -377,7 +381,10 @@ struct BrowseView: View {
             .refreshable { store.command(["type": "refresh"]) }
             .marketPage(isPresented: $aiSettings) { AISettingsView(settings: store.snapshot.settings).marketSheetScope() }
             .sheet(isPresented: $filtersPresented) {
-                ListingFiltersView(hasPhotos: Binding(get: { wantsPhotos }, set: { photoFilter = $0 }), canReset: photoFilter != nil, reset: { photoFilter = nil }, ai: store.snapshot.settings.ai)
+                ListingFiltersView(hasPhotos: Binding(get: { wantsPhotos }, set: { photoFilter = $0 }),
+                    canReset: photoFilter != nil || !networkOnly,
+                    reset: { photoFilter = nil; if !networkOnly { setNetworkOnly(true) } },
+                    setNetworkOnly: setNetworkOnly, ai: store.snapshot.settings.ai)
                     .modifier(MarketSheetScope())
             }
     }
@@ -405,6 +412,7 @@ private struct ListingFiltersView: View {
     @Binding var hasPhotos: Bool
     let canReset: Bool
     let reset: () -> Void
+    let setNetworkOnly: (Bool) -> Void
     @State var ai: AISettings
 
     var body: some View {
@@ -421,6 +429,10 @@ private struct ListingFiltersView: View {
                     Text("Also searched for").font(.headline)
                     Text(terms.joined(separator: " · ")).font(.subheadline)
                 }
+            }
+            if !store.demo {
+                Toggle("In my network", isOn: Binding(get: { store.snapshot.networkOnly ?? true }, set: setNetworkOnly))
+                    .toggleStyle(.switch).accessibilityIdentifier("networkFilter")
             }
             Toggle(isOn: $hasPhotos) { Label("Has photos", systemImage: "photo") }
                 .toggleStyle(.switch).padding(16)

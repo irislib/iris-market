@@ -20,6 +20,7 @@ struct MarketSnapshot: Decodable {
     var searchDiscovery: SearchDiscoveryStatus?
     var searchGeneration: UInt64?
     var relatedSearchTerms: [String]?
+    var networkOnly: Bool?
     var showAllResults: Bool?
     var searchPlanTags: [String]?
     var searchPlanPending: Bool?

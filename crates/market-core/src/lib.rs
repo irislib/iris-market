@@ -81,6 +81,7 @@ pub(crate) struct State {
     search_request: u64,
     search_terms: Vec<String>,
     show_all_results: bool,
+    network_only: bool,
     search_plan_applied: bool,
     search_plan_locked: bool,
     search_discovery: search_discovery::Discovery,
@@ -153,7 +154,10 @@ impl State {
         // each listing's text only when the search or that text changes.
         let phrase = literal_search::normalize(&query);
         listings.retain(|l| {
-            (self.demo || l.mine || self.profiles.in_listing_network(&l.author))
+            (!self.network_only
+                || self.demo
+                || l.mine
+                || self.profiles.in_listing_network(&l.author))
                 && (self.side == "all" || l.side == self.side)
                 && (l.external_order.is_none() || !query.is_empty())
                 && (self.ai_search && l.external_order.is_none()
@@ -275,6 +279,7 @@ impl State {
             search_plan_pending: plan_pending,
             related_search_terms: search_plan::related_terms(&self.query, &self.search_terms),
             show_all_results: self.show_all_results,
+            network_only: self.network_only,
             exchange_rates: self.rates.snapshot(listing::now()),
             sats_display_price: self.rates.convert(
                 "1",
@@ -597,6 +602,7 @@ impl Market {
         }
         let mut state = State {
             show_all_results: store.show_all_results()?,
+            network_only: true,
             store,
             owner,
             owner_keys,
@@ -922,12 +928,14 @@ impl Market {
                 side,
                 ai_search,
                 show_all_results,
+                network_only,
             } => {
                 if query.len() > 300 || !["all", "offer", "request"].contains(&side.as_str()) {
                     bail!("Invalid search");
                 }
                 // Search mode cannot bypass the durable provider opt-in. Native
                 // clients separately gate platform model availability.
+                let network_only = network_only.unwrap_or(s.network_only);
                 let show_all = show_all_results.unwrap_or(s.show_all_results);
                 let ai_search =
                     ai_search && !show_all && s.settings.ai.enabled && !query.trim().is_empty();
@@ -935,6 +943,7 @@ impl Market {
                     || s.ai_search != ai_search
                     || s.side != side
                     || s.show_all_results != show_all
+                    || s.network_only != network_only
                 {
                     if s.show_all_results != show_all {
                         s.store.change_result_view(show_all)?;
@@ -949,6 +958,7 @@ impl Market {
                         self.notify.notify_waiters();
                     }
                 }
+                s.network_only = network_only;
                 s.query = query;
                 s.side = side;
                 s.ai_search = ai_search;

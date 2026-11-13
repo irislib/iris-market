@@ -85,7 +85,7 @@ extension View {
 
     @ViewBuilder func marketWindowFrame() -> some View {
         #if os(macOS)
-        frame(minWidth: 720, minHeight: 600).buttonStyle(.plain)
+        frame(minWidth: 720, minHeight: 600)
         #else
         self
         #endif

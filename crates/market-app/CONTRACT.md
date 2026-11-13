@@ -25,7 +25,7 @@ Snapshot shape (snake_case JSON):
 ```
 
 Actions use a `type` discriminator:
-- `{"type":"set_filter","query":"","side":"all","ai_search":false}`; side all/offer/request. AI mode uses the same query as the model condition and keeps unreviewed candidates visible; ordinary mode performs text matching. Query/mode changes clear previous decisions.
+- `{"type":"set_filter","query":"","side":"all","ai_search":false}`; side all/offer/request. Optional `network_only` selects the audience for Home and search. It starts true, and omitting the field keeps the current selection. AI mode uses the same query as the model condition and keeps unreviewed candidates visible; ordinary mode performs text matching. Query/mode changes clear previous decisions.
 - `{"type":"set_sort","sort":"suggested"}`; Suggested or Newest. Suggested combines verified social distance, freshness, locally saved category interests and author diversity. Snapshot listings contain current filters. Saved tab may locally select `saved`.
 - `{"type":"load_profile","author":"hex-or-npub"}` starts a bounded public profile fetch and updates `profile`. `people` contains display metadata/relationships for listing authors. The fixed visitor graph root is Sirius Business; only signed kind-0/kind-3 events are used. Follower results are observed/partial; badges express graph relationships, not identity verification.
 - `{"type":"load_context"}` refreshes the bounded default graph; live startup also warms it once. Preview never requests public profiles.

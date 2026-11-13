@@ -1,17 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createDraftFiles,renderComposerPreview} from '../src/composer-preview.ts';
-import {listingDraft} from '../src/composer.ts';
+import './support/dom.mjs';
+const {createDraftFiles,renderComposerPreview}=await import('../src/composer-preview.ts');
+const {listingDraft}=await import('../src/composer.ts');
 
-class Element {
- constructor(tag,text=''){this.tag=tag;this.textContent=text;this.children=[];this.dataset={};this.attributes=new Map();}
- append(...nodes){this.children.push(...nodes);}
- setAttribute(name,value){this.attributes.set(name,value);}
- remove(){}
-}
-const document={createElement:tag=>new Element(tag),createTextNode:text=>new Element('#text',text)};
-Object.defineProperty(globalThis,'document',{value:document,configurable:true});
-const all=node=>[node,...node.children.flatMap(all)];
+const all=node=>[node,...node.querySelectorAll('*')];
 const values={title:'Oak desk',description:'Solid **oak**, ready to collect.',price:'95',currency:'EUR',location:'Helsinki',side:'offer',category:'home'};
 
 test('preview creates local URLs only for passive raster photos and revokes each exactly once',()=>{
@@ -29,7 +22,9 @@ test('preview failure releases URLs already created and does not change selected
 
 test('preview reuses the safe detail presentation without publishing, purchasing, saving or link-sharing actions',()=>{
  const draft=listingDraft(values),root=renderComposerPreview(draft,[{name:'desk.png',size:1234,image:'blob:local-desk'},{name:'guide.pdf',size:1024}]);
- const nodes=all(root);assert(nodes.some(node=>node.tag==='h1'&&node.textContent==='Oak desk'));assert(nodes.some(node=>node.tag==='strong'));
- assert.equal(nodes.find(node=>node.className==='detail-art').src,'blob:local-desk');assert(nodes.some(node=>node.textContent==='guide.pdf'));
- assert.equal(nodes.some(node=>node.tag==='button'),false);assert.equal(nodes.some(node=>node.textContent==='Sample listing'),false);assert(!JSON.stringify(draft).includes('blob:'));
+ const nodes=all(root);assert(nodes.some(node=>node.tagName==='H1'&&node.textContent==='Oak desk'));assert(nodes.some(node=>node.tagName==='STRONG'));
+ assert.equal(nodes.find(node=>node.className==='detail-art').getAttribute('src'),'blob:local-desk');assert(nodes.some(node=>node.textContent==='guide.pdf'));
+ assert.equal(root.className,'post-preview-content');
+ assert.deepEqual([...root.querySelectorAll('.post-preview-files figure')].map(node=>node.textContent),['desk.png2 KB','guide.pdf1 KB']);
+ assert.equal(nodes.some(node=>node.tagName==='BUTTON'),false);assert.equal(nodes.some(node=>node.textContent==='Sample listing'),false);assert(!JSON.stringify(draft).includes('blob:'));
 });

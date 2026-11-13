@@ -1,12 +1,12 @@
-import {locationFromTags} from './map/geohash.ts';
-import {pinPreview} from './map/listing-pin.ts';
+import { flushSync, mount } from 'svelte';
 import { readEscrowOffer } from './escrow-offer.ts';
 import {element} from './dom.ts';
 import {formatPrice} from './currency.ts';
-import {renderListingPage} from './listing-page.ts';
+import Preview from './composer-view/Preview.svelte';
 
 const rasterTypes=new Set(['image/jpeg','image/png','image/webp']);
 export interface DraftFile {name:string;size:number;image?:string}
+export type PriceNode=(listing,className:string)=>HTMLElement;
 
 /** These URLs never enter a public event. Release them when leaving the preview. */
 export function createDraftFiles(files:File[],urls:Pick<typeof URL,'createObjectURL'|'revokeObjectURL'>=URL) {
@@ -21,24 +21,21 @@ export function createDraftFiles(files:File[],urls:Pick<typeof URL,'createObject
   }catch(error){for(const url of created)urls.revokeObjectURL(url);throw error;}
 }
 
-export function renderComposerPreview(draft,files:DraftFile[],{priceNode=(listing,className)=>element('p',formatPrice(listing,{preferredCurrency:listing.currency}).primary,className)}={}) {
+export const defaultPriceNode:PriceNode=(listing,className)=>element('p',formatPrice(listing,{preferredCurrency:listing.currency}).primary,className);
+
+/** The listing as the detail page would show it, read from the unsigned draft. */
+export function previewListing(draft) {
   const tag=(name:string)=>draft.tags.find(value=>value[0]===name);
   const quote=readEscrowOffer(draft.kind,draft.tags);
-  const listing={escrow:quote.escrow,title:tag('title')[1],side:quote.side??tag('market')?.[1],category:tag('t')[1],price:quote.price??tag('price')?.[1],currency:quote.currency??tag('price')?.[2],location:tag('location')?.[1]??'',imageUrl:tag('image')?.[1],description:draft.content,tags:draft.tags.filter(tag=>tag[0]==='t').map(tag=>tag[1]),expiration:tag('expiration')?Number(tag('expiration')[1]):undefined};
-  const selected=listing.imageUrl?undefined:files.find(file=>file.image)?.image;
-  const root=element('div',undefined,'post-preview-content');
-  root.append(renderListingPage(listing,{priceNode,draftPreview:true,localImage:selected}));
-  const cell=locationFromTags(draft.tags);
-  if(cell)root.append(element('p',pinPreview(draft.tags,cell.geohash),'small'));
-  if(files.length){
-    const attachments=element('div',undefined,'post-preview-files');
-    for(const file of files){
-      const item=element('figure');
-      if(file.image){const image=element('img');image.src=file.image;image.alt=file.name;image.onerror=()=>image.remove();item.append(image);}
-      const label=element('figcaption'),size=file.size>=1024*1024?`${(file.size/(1024*1024)).toFixed(1)} MB`:`${Math.max(1,Math.ceil(file.size/1024))} KB`;
-      label.append(element('span',file.name),element('small',size,'muted'));item.append(label);attachments.append(item);
-    }
-    root.append(attachments);
-  }
-  return root;
+  return {escrow:quote.escrow,title:tag('title')[1],side:quote.side??tag('market')?.[1],category:tag('t')[1],price:quote.price??tag('price')?.[1],currency:quote.currency??tag('price')?.[2],location:tag('location')?.[1]??'',imageUrl:tag('image')?.[1],description:draft.content,tags:draft.tags.filter(tag=>tag[0]==='t').map(tag=>tag[1]),expiration:tag('expiration')?Number(tag('expiration')[1]):undefined};
+}
+
+export const draftFileSize=(size:number)=>size>=1024*1024?`${(size/(1024*1024)).toFixed(1)} MB`:`${Math.max(1,Math.ceil(size/1024))} KB`;
+
+/** A detached preview root; the composer renders the same component in place. */
+export function renderComposerPreview(draft,files:DraftFile[],{priceNode=defaultPriceNode}:{priceNode?:PriceNode}={}):HTMLElement {
+  const host=document.createElement('div');
+  mount(Preview,{target:host,props:{draft,files,priceNode}});
+  flushSync();
+  return host.querySelector('.post-preview-content');
 }

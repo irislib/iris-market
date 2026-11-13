@@ -1,21 +1,17 @@
-import {encodeLocationHash,locationHash} from './map/geohash.ts';
-import {exactListingPoint,listingPin} from './map/listing-pin.ts';
-import {currentPosition} from './location-filter.ts';
-import {composerTradeTools} from './marketplace-tools.ts';
+import { flushSync, mount } from 'svelte';
+import {locationHash} from './map/geohash.ts';
+import {listingPin} from './map/listing-pin.ts';
 import {BITCOIN_KIND,BITCOIN_TAGS,offerTags} from './escrow-offer.ts';
 import { createSurface } from './surface.ts';
-import { byId, element as domElement, formFields } from './dom.ts';
-import { LISTING_KIND, parseEvent } from './market.ts';
 import { nhashDecode, toHex } from '@hashtree/core';
-import { createDraftFiles, renderComposerPreview } from './composer-preview.ts';
 import {listingPublishedAt} from './listing-dates.ts';
-import {EXPIRY_CHOICES,expiryFromChoice,relativeExpiry} from './expiry.ts';
-import {courierListingType,isTransportTag,transportTypeTags} from './transport-type.ts';
-import {COUNTRY_CODES} from './shipping.ts';
+import {expiryFromChoice} from './expiry.ts';
+import {isTransportTag,transportTypeTags} from './transport-type.ts';
 import {deliveryDraft,validateDelivery} from './delivery.ts';
-import {serviceAreaTags,parseServiceAreas} from './service-area.ts';
-import {setupServiceAreaPicker} from './service-area-ui.ts';
+import {serviceAreaTags} from './service-area.ts';
 import {formatPrice} from './currency.ts';
+import Composer from './composer-view/Composer.svelte';
+import {ComposerState,type ComposerOptions} from './composer-view/state.svelte.ts';
 
 export function deliveryPreviewLabel(value,currency='EUR',locale=undefined):string|null {
   const delivery=validateDelivery(value);if(!delivery)return null;
@@ -135,153 +131,23 @@ export function createAttachmentSelection(upload) {
   };
 }
 
-export function setupComposer({account,isPreview,onPublished,defaultCurrency=()=> 'EUR',loadUploader=()=>import('./uploads.ts'),page=undefined,onNavigate=()=>{},onClose=()=>{},priceNode=undefined}) {
+export function setupComposer(options:ComposerOptions) {
+  const {account,page=undefined,onNavigate=()=>{},onClose=()=>{}}=options;
   const dialog=createSurface({className:'composer-dialog',label:'Post a listing',pageHost:page,onOpen:onNavigate,onClose});
-  const countryNames=new Intl.DisplayNames([navigator.language||'en'],{type:'region'});
-  dialog.innerHTML=`<button class="dialog-close icon-button" id="post-close" aria-label="Close listing editor">×</button><h2>Post a listing</h2><form id="post-form"><div class="post-side-tabs" role="radiogroup" aria-label="Listing type"><button type="button" role="radio" data-post-side="offer" aria-checked="true">Selling</button><button type="button" role="radio" data-post-side="request" aria-checked="false" tabindex="-1">Buying</button></div><input type="hidden" name="side" value="offer"><label>Category<select name="category"><option value="other">Other</option><option value="home">Home</option><option value="tech">Tech</option><option value="services">Services</option><option value="transport">Transport</option><option value="work">Work</option></select></label><label id="post-transport-type" hidden>Transport type<select name="transportType" disabled><option value="">Not specified</option><option value="parcel">Delivery</option><option value="passenger">Passenger ride</option><option value="both">Both</option></select></label><label>Title<input name="title" maxlength="160" required autocomplete="off"></label><label>Description<textarea name="description" rows="4" maxlength="12000"></textarea></label><div class="form-pair"><label>Price<input name="price" inputmode="decimal" placeholder="Negotiable"></label><label>Currency<input name="currency" maxlength="12" autocapitalize="characters"></label></div><label>Location <span class="muted">· optional</span><input name="location" maxlength="160" placeholder="City, area or #geohash" autocomplete="off"></label><details id="post-map-pin"><summary>Map pin</summary><label>Precision<select name="pinPrecision"><option value="3">Region</option><option value="4" selected>District</option><option value="5">City</option><option value="6">Neighborhood</option><option value="7">Block</option><option value="exact">Exact coordinates</option></select></label><label>Coordinates or geohash<input name="pinCoordinates" maxlength="80" placeholder="Latitude, longitude or #geohash" autocomplete="off"></label><button id="post-add-area" class="text-button" type="button">Use my location</button><p class="small muted" id="post-pin-hint">Only the selected area will be public.</p></details><label>Tags <span class="muted">· optional</span><input name="tags" maxlength="488" autocomplete="off"></label><details><summary>Delivery</summary><label><input type="checkbox" name="shippingEnabled"> Offer delivery</label><p class="small muted" id="post-delivery-hint">Choose destinations and a fixed delivery cost.</p><button type="button" id="post-remove-delivery" class="text-button" hidden>Remove existing delivery</button><fieldset id="post-delivery-fields" hidden disabled><legend class="sr-only">Delivery destinations and cost</legend><label>Delivers to<select id="post-country-add"><option value="">Add a country…</option>${COUNTRY_CODES.map(code=>`<option value="${code}">${countryNames.of(code)} (${code})</option>`).join('')}</select></label><div id="post-delivery-countries"></div><label>Delivery cost<input name="shippingPrice" inputmode="decimal" placeholder="0 for free delivery"></label><p class="small muted">In the listing currency. Your location is separate.</p></fieldset></details><label>Expires in<select name="expiration">${EXPIRY_CHOICES.map(option=>`<option value="${option.value}">${option.label}</option>`).join('')}<option value="keep" hidden disabled>Keep current</option></select></label><label>Photos & files<input id="post-files" type="file" multiple aria-describedby="post-file-help"></label><p id="post-file-help" class="small muted">Up to 4 files · 8 MB each</p><ul id="post-file-list" class="post-file-list"></ul><details class="post-image-link"><summary>Image link</summary><label><span class="sr-only">Image link</span><input name="image" type="url" placeholder="https://…" autocomplete="off"></label></details><button id="post-submit" class="button primary">Preview listing</button></form><section id="post-preview" hidden><div id="post-preview-content"></div><p class="small muted">Your listing and attached files will be public.</p><div class="post-preview-actions"><button id="post-edit" type="button" class="button secondary">Edit</button><button id="post-publish" type="button" class="button primary">Publish listing</button></div></section><p id="post-progress" class="small muted" role="status"></p><p id="post-error" class="error" role="alert"></p>`;
-  const form=dialog.querySelector('form'),submit=dialog.querySelector<HTMLButtonElement>('#post-submit'),error=dialog.querySelector('#post-error'),progress=dialog.querySelector('#post-progress'),fileInput=dialog.querySelector<HTMLInputElement>('#post-files'),fileList=dialog.querySelector('#post-file-list');
-  const preview=dialog.querySelector<HTMLElement>('#post-preview'),previewContent=dialog.querySelector('#post-preview-content'),editButton=dialog.querySelector<HTMLButtonElement>('#post-edit'),publish=dialog.querySelector<HTMLButtonElement>('#post-publish');
-  const sideButtons=[...dialog.querySelectorAll<HTMLButtonElement>('[data-post-side]')];
-  const tradeTools=composerTradeTools(form);
-  let draftId=crypto.randomUUID(),editing=null,pendingEvent,pendingShipping,shippingTouched=false,busy=false,pendingOpen=false,currencyTouched=false,uploader,uploadController,filePosition;
-  let reviewedValues:Record<string,unknown>|undefined,reviewOwner:string|undefined,localFiles:ReturnType<typeof createDraftFiles>|undefined;
-  let areaTouched=false,areaPreview:ReturnType<typeof setupServiceAreaPicker>|undefined;
-  const selectedCountries=new Set<string>();let removeExistingDelivery=false,initialTransportType='',preservedTransportTags:string[]=[];
-  const deliveryFields=dialog.querySelector<HTMLFieldSetElement>('#post-delivery-fields'),countryAdd=dialog.querySelector<HTMLSelectElement>('#post-country-add'),countryList=dialog.querySelector<HTMLDivElement>('#post-delivery-countries'),removeDelivery=dialog.querySelector<HTMLButtonElement>('#post-remove-delivery');
-  const addArea=dialog.querySelector<HTMLButtonElement>('#post-add-area');
-  const pinField = formFields(form).pinCoordinates, precision = form.querySelector<HTMLSelectElement>('[name=pinPrecision]');
-  let pinTouched = false, pinRequest = 0;
-  function paintPin() {
-    dialog.querySelector('#post-pin-hint').textContent = precision.value === 'exact'
-      ? 'Publishing shares these coordinates with everyone.' : 'Only the selected area will be public.';
-  }
-  function changePin(){pinTouched=true;pinRequest++;paintPin();pendingEvent=null;pendingShipping=null;}
-  pinField.oninput=changePin;
-  precision.onchange=()=>{
-    const legacyHash=locationHash(formFields(form).location.value);
-    if(!pinTouched && !pinField.value.trim() && legacyHash)pinField.value='#'+legacyHash;
-    changePin();
+  const composer=new ComposerState(options,dialog);
+  mount(Composer,{target:dialog,props:{composer}});
+  flushSync();
+  composer.attach();
+  // Callers read the dialog right after these calls.
+  const sync=<T,>(value:T)=>{flushSync();return value;};
+  account.onReady(()=>{if(composer.pendingOpen)sync(composer.open());});
+  document.getElementById('post-button').onclick=()=>sync(composer.open());
+  window.addEventListener('pagehide',()=>composer.destroy());
+  return {
+    open:()=>sync(composer.open()),
+    edit:listing=>sync(composer.edit(listing)),
+    prefill:values=>sync(composer.prefill(values)),
+    closeBitcoin:listing=>composer.closeBitcoin(listing),
+    hide:(settings:{preservePending?:boolean}={})=>sync(composer.hide(settings)),
   };
-  addArea.onclick=async()=>{
-    const request=++pinRequest, id=draftId, selected=precision.value;
-    try {
-      const {coords}=await currentPosition(navigator.geolocation,selected==='exact');
-      if(request!==pinRequest||id!==draftId||!dialog.open||form.hidden||busy)return;
-      pinField.value=selected==='exact' ? coords.latitude.toFixed(7)+', '+coords.longitude.toFixed(7)
-        : '#'+encodeLocationHash(coords.longitude,coords.latitude,Number(selected));
-      pinField.dispatchEvent(new Event('input',{bubbles:true}));
-      error.textContent='';
-    } catch {if(request===pinRequest&&id===draftId)error.textContent='Location unavailable. Enter coordinates or a geohash instead.';}
-  };
-  function changedDelivery(){shippingTouched=true;pendingEvent=null;pendingShipping=null;}
-  function controlState(){return composerControlState({busy,editing:!!editing,shippingEnabled:formFields(form).shippingEnabled.checked,category:formFields(form).category.value});}
-  function paintDelivery(){const enabled=formFields(form).shippingEnabled.checked;deliveryFields.hidden=!enabled;deliveryFields.disabled=controlState().deliveryDisabled;countryList.replaceChildren();for(const code of selectedCountries){const button=document.createElement('button');button.type='button';button.className='text-button';button.textContent=`${countryNames.of(code)} ×`;button.setAttribute('aria-label',`Remove ${countryNames.of(code)}`);button.onclick=()=>{selectedCountries.delete(code);changedDelivery();paintDelivery();};countryList.append(button);}for(const option of countryAdd.options)option.disabled=selectedCountries.has(option.value);}
-  formFields(form).shippingEnabled.onchange=()=>{changedDelivery();paintDelivery();};
-  countryAdd.onchange=()=>{if(countryAdd.value){selectedCountries.add(countryAdd.value);countryAdd.value='';changedDelivery();paintDelivery();}};
-  removeDelivery.onclick=()=>{removeExistingDelivery=true;formFields(form).shippingEnabled.checked=false;changedDelivery();paintDelivery();removeDelivery.hidden=true;dialog.querySelector('#post-delivery-hint').textContent='Existing delivery will be removed when you publish.';};
-  const areaPicker=setupServiceAreaPicker({onChange:()=>{areaTouched=true;pendingEvent=null;pendingShipping=null;}});
-  const areaEditor=domElement('details',undefined,'post-service-areas');areaEditor.append(domElement('summary','Transport areas'),areaPicker.element);
-  formFields(form).location.closest('label').after(areaEditor);
-  function syncAreaEditor(){const transport=formFields(form).category.value==='transport';dialog.querySelector<HTMLElement>('#post-transport-type').hidden=!transport;formFields(form).transportType.disabled=controlState().transportDisabled;areaEditor.hidden=formFields(form).category.value!=='transport'&&!areaTouched&&!editing?.serviceAreas;if(dialog.open&&!form.hidden&&!areaEditor.hidden&&areaEditor.open)void areaPicker.show();else areaPicker.hide();}
-  areaEditor.ontoggle=syncAreaEditor;
-  formFields(form).category.addEventListener('change',syncAreaEditor);
-  const selection=createAttachmentSelection(async(file,options)=>{
-    if(!uploader){const module=await loadUploader();uploader=module.createMediaUploader({signEvent:draft=>account.messaging.signEvent(draft),getCacheMiB:()=>Number(byId('map-cache')?.value)||128,onProgress:step=>{const phase={preparing:'Preparing',uploading:'Uploading',verifying:'Checking',complete:'Checking'}[step.phase]||'Uploading';progress.textContent=`${phase} file ${filePosition.index+1} of ${filePosition.total}…`;}});}
-    return uploader.upload(file,options);
-  });
-  function releasePreview(){localFiles?.close();localFiles=undefined;void areaPreview?.destroy();areaPreview=undefined;previewContent.replaceChildren();}
-  function paintSide(){for(const button of sideButtons){const selected=button.dataset.postSide===formFields(form).side.value;button.setAttribute('aria-checked',String(selected));button.tabIndex=selected?0:-1;}}
-  function chooseSide(button:HTMLButtonElement){if(busy)return;formFields(form).side.value=button.dataset.postSide;pendingEvent=null;pendingShipping=null;paintSide();}
-  for(const button of sideButtons){button.onclick=()=>chooseSide(button);button.onkeydown=event=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;event.preventDefault();const next=event.key==='Home'?sideButtons[0]:event.key==='End'?sideButtons[1]:sideButtons.find(other=>other!==button);chooseSide(next);next.focus();};}
-  function paintFiles(){fileList.replaceChildren(...selection.items().map((entry,index)=>{const row=document.createElement('li'),name=document.createElement('span'),remove=document.createElement('button');name.textContent=entry.file.name;remove.type='button';remove.className='text-button';remove.textContent='Remove';remove.disabled=busy;remove.setAttribute('aria-label',`Remove ${entry.file.name}`);remove.onclick=()=>{selection.remove(index);pendingEvent=null;pendingShipping=null;paintFiles()};row.append(name,remove);return row}));}
-  function syncKeepOption(){const keep=formFields(form).expiration.querySelector<HTMLOptionElement>('option[value=keep]');keep.hidden=!editing;keep.disabled=controlState().keepDisabled;keep.textContent=editing?`Keep current (${relativeExpiry(editing.expiration)?.replace(/^Expires /,'')||'never'})`:'Keep current';}
-  const setBusy=value=>{busy=value;for(const field of form.elements)(field as HTMLInputElement).disabled=value;editButton.disabled=value;publish.disabled=value;paintFiles();if(!value){paintDelivery();syncAreaEditor();syncKeepOption();tradeTools.sync(!!editing);}publish.textContent=value?'Saving…':(editing?'Save changes':'Publish listing');};
-  function showEditor(){tradeTools.sync(!!editing);syncKeepOption();releasePreview();reviewedValues=undefined;reviewOwner=undefined;form.hidden=false;preview.hidden=true;dialog.classList.remove('showing-preview');dialog.querySelector('h2').textContent=editing?'Edit listing':'Post a listing';error.textContent='';progress.textContent='';syncAreaEditor();}
-  function drawPreview(){
-    releasePreview();
-    const draft=pendingEvent||(editing?revisedListingDraft(reviewedValues,editing):listingDraft(reviewedValues,{identifier:draftId}));
-    localFiles=createDraftFiles(selection.items().map(item=>item.file));
-    const delivery=deliveryPreviewLabel(reviewedValues.shipping,String(reviewedValues.currency||'EUR'));if(delivery)previewContent.append(domElement('p',delivery,'small muted'));
-    previewContent.append(renderComposerPreview(draft,localFiles.items,{priceNode}));
-    form.hidden=true;preview.hidden=false;dialog.classList.add('showing-preview');dialog.querySelector('h2').textContent='Preview';publish.textContent=editing?'Save changes':'Publish listing';
-    areaPicker.hide();const areas=parseServiceAreas(draft.tags);if(areas){areaPreview=setupServiceAreaPicker({value:areas,readOnly:true});const media=previewContent.querySelector('.detail-media');if(!draft.tags.some(tag=>tag[0]==='image')&&!localFiles.items.some(file=>file.image)&&media){media.classList.add('detail-area-media');media.replaceChildren(areaPreview.element);}else previewContent.append(areaPreview.element);void areaPreview.show();}
-  }
-  editButton.onclick=()=>{showEditor();formFields(form).title.focus();};
-  dialog.querySelector<HTMLButtonElement>('#post-close').onclick=()=>dialog.close();
-  dialog.addEventListener('close',()=>{pinRequest++;uploadController?.abort();releasePreview();areaPicker.hide();});
-  form.addEventListener('input',event=>{if((event.target as HTMLInputElement).name.startsWith('shipping'))shippingTouched=true;pendingEvent=null;pendingShipping=null;if((event.target as HTMLInputElement).name==='currency')currencyTouched=true;});
-  fileInput.onchange=()=>{try{selection.add(fileInput.files);pendingEvent=null;pendingShipping=null;error.textContent='';paintFiles()}catch(cause){error.textContent=cause.message}finally{fileInput.value=''}};
-  form.onsubmit=event=>{
-    event.preventDefault();if(busy)return;
-    const values:Record<string,unknown>=Object.fromEntries(new FormData(form));error.textContent='';progress.textContent='';
-    if(!pinTouched && (editing || !pinField.value.trim())){delete values.pinCoordinates;delete values.pinPrecision;}
-    try{Object.assign(values,tradeTools.choices());
-      if(editing&&(values.transportType===undefined||values.transportType===initialTransportType)){if(values.transportType===initialTransportType)delete values.transportType;values.tags=[...String(values.tags||'').split(','),...preservedTransportTags];}else if(editing&&values.transportType==='')values.transportType='none';if(!editing||formFields(form).shippingEnabled.checked||removeExistingDelivery)values.shipping=validateDelivery(formFields(form).shippingEnabled.checked?{countries:[...selectedCountries],price:formFields(form).shippingPrice.value.trim()}:null);if(areaTouched)values.serviceAreas=areaPicker.validate();reviewedValues=values;reviewOwner=account.state().ownerPubkey;drawPreview();const heading=dialog.querySelector('h2');heading.tabIndex=-1;heading.focus();heading.scrollIntoView({block:'start'});}
-    catch(cause){releasePreview();reviewedValues=undefined;error.textContent=cause.message;}
-  };
-  publish.onclick=async()=>{
-    if(busy||!reviewedValues)return;
-    if(!account.state().canSign){pendingOpen=true;account.showAccount({posting:true});return;}
-    error.textContent='';progress.textContent='';
-    const owner=account.state().ownerPubkey;
-    try{if(isPreview())throw new Error('Switch to the live market to post.');if(reviewOwner&&reviewOwner!==owner)throw new Error('Your profile changed. Edit and preview the listing again.');if(editing&&editing.author!==owner)throw new Error('Sign in with the profile that owns this listing.');}
-    catch(cause){error.textContent=cause.message;return;}
-    const values={...reviewedValues};if(pendingEvent&&pendingEvent.pubkey!==owner||pendingShipping&&pendingShipping.pubkey!==owner){pendingEvent=null;pendingShipping=null;}uploadController=new AbortController();const active=uploadController;setBusy(true);
-    try {
-      const files=await selection.uploadAll({signal:active.signal,onFile:(index,total)=>{filePosition={index,total}}});
-      if(active.signal.aborted)throw new DOMException('Upload cancelled','AbortError');
-      if(account.state().ownerPubkey!==owner)throw new Error('Your profile changed. Edit and preview the listing again.');
-      if(!pendingEvent && account.state().mode!=='local')publish.textContent='Waiting for signature…';
-      const publication=await signedListingPublication(values,{
-        previous:editing,identifier:draftId,attachments:files,pendingEvent,pendingShipping,
-        onShipping:event=>{pendingShipping=event;},signEvent:draft=>account.messaging.signEvent(draft),
-      });
-      const signed=publication.event;
-      parseEvent(signed);
-      pendingEvent=signed;pendingShipping=publication.shipping;
-      if(active.signal.aborted)throw new DOMException('Upload cancelled','AbortError');
-      publish.textContent='Saving…';progress.textContent='';
-      const receipts=await account.messaging.publishSignedEvents([...(pendingShipping?[pendingShipping]:[]),signed]);
-      const showSaved=dialog.open;
-      pendingEvent=null;pendingShipping=null;editing=null;draftId=crypto.randomUUID();
-      form.reset();pinTouched=false;pinRequest++;paintPin();dialog.querySelector<HTMLDetailsElement>('#post-map-pin').open=false;
-      shippingTouched=false;selectedCountries.clear();removeExistingDelivery=false;removeDelivery.hidden=true;paintDelivery();
-      selection.clear();currencyTouched=false;areaPicker.setValue(null);areaTouched=false;areaEditor.open=false;
-      showEditor();paintSide();dialog.hide();
-      onPublished(signed,receipts.at(-1),showSaved);
-    } catch(cause){error.textContent=cause.name==='AbortError'?'Upload stopped. Your draft and selected files are still here.':cause.message||'Could not publish. Your draft is still here.';}
-    finally{uploadController=null;setBusy(false);progress.textContent='';}
-  };
-  function open(){tradeTools.sync(!!editing);pendingOpen=false;account.closeAccount();if(!reviewedValues&&!currencyTouched&&formFields(form).currency.value!==defaultCurrency()){formFields(form).currency.value=defaultCurrency();pendingEvent=null;pendingShipping=null;}error.textContent='';paintSide();if(reviewedValues)drawPreview();dialog.showModal();syncAreaEditor();}
-  function edit(listing){if(listing.author!==account.state().ownerPubkey)return;editing=listing;tradeTools.setEditingOffer(listing.escrow);draftId=listing.identifier;pendingEvent=null;pendingShipping=null;selection.clear();paintFiles();const fields=formFields(form);for(const key of ['side','title','description','price','currency','location'])fields[key].value=listing[key]??'';const exact=exactListingPoint(listing.originalTags||[],listing.geohash);
-    pinRequest++;pinTouched=false;
-    for(const option of [...precision.options])if(option.dataset.previous)option.remove();
-    const originalPrecision=String(listing.geohash?.length||4);
-    if(!exact&&![...precision.options].some(option=>option.value===originalPrecision)){const option=new Option(originalPrecision+' characters',originalPrecision);option.dataset.previous='true';precision.add(option);}
-    precision.value=exact?'exact':originalPrecision;
-    pinField.value=exact?exact[1]+', '+exact[0]:listing.geohash?'#'+listing.geohash:'';
-    paintPin();dialog.querySelector<HTMLDetailsElement>('#post-map-pin').open=!!listing.geohash;
-    fields.category.value=String(listing.category).toLowerCase();if(!fields.category.value)fields.category.value='other';fields.image.value=listing.imageUrl||'';initialTransportType=listing.category==='transport'?courierListingType(listing)||'':'';preservedTransportTags=(listing.tags||[]).filter(isTransportTag);fields.transportType.value=initialTransportType;fields.tags.value=(listing.tags||[]).filter(tag=>tag!==listing.category&&(listing.category!=='transport'||!isTransportTag(tag))).join(', ');fields.expiration.value='keep';fields.shippingEnabled.checked=false;fields.shippingPrice.value='';selectedCountries.clear();shippingTouched=false;removeExistingDelivery=false;removeDelivery.hidden=!listing.originalTags?.some(tag=>tag[0]==='shipping_option');paintDelivery();dialog.querySelector('#post-delivery-hint').textContent=listing.originalTags?.some(tag=>tag[0]==='shipping_option')?'Existing delivery options are kept unless you change these fields.':'Choose destinations and a fixed delivery cost.';areaPicker.setValue(listing.serviceAreas??null);areaTouched=false;areaEditor.open=!!listing.serviceAreas;currencyTouched=true;showEditor();open();}
-  function hasAreaDraft(){try{return !!areaPicker.validate();}catch{return true;}}
-  function prefill(values){
-    const fields=formFields(form);
-    if(busy||editing||reviewedValues||pinField.value.trim()||shippingTouched||selectedCountries.size||fields.shippingEnabled.checked||fields.shippingPrice.value.trim()||fields.transportType.value||selection.items().length||hasAreaDraft()||['title','description','price','location','image','tags','expiration'].some(key=>fields[key].value.trim())){
-      open();error.textContent='Your current draft is still here. Finish it before starting another listing.';return false;
-    }
-    // A service announcement is an ordinary editable listing; publishing still
-    // requires the normal explicit preview and Publish action.
-    for(const key of ['side','category','title','description','price','location'])fields[key].value=String(values[key]??'');
-    const incomingTags=Array.isArray(values.tags)?values.tags:String(values.tags||'').split(',');fields.transportType.value=values.category==='transport'?courierListingType({tags:incomingTags})||'':'';fields.tags.value=incomingTags.filter(tag=>values.category!=='transport'||!isTransportTag(tag)).join(', ');
-    areaPicker.setValue(values.serviceAreas??null);areaTouched=Object.hasOwn(values,'serviceAreas');areaEditor.open=!!values.serviceAreas;
-    showEditor();open();return true;
-  }
-  account.onReady(()=>{if(pendingOpen)open();});document.getElementById('post-button').onclick=open;
-  window.addEventListener('pagehide',()=>{uploadController?.abort();releasePreview();void areaPicker.destroy();void uploader?.close()});
-  async function closeBitcoin(listing){
-    if(isPreview()||!account.state().canSign||listing.author!==account.state().ownerPubkey)throw Error('Sign in with the profile that posted this offer.');
-    const event=await account.messaging.signEvent(closedBitcoinDraft(listing));
-    const receipt=await account.messaging.publishSignedEvent(event);
-    onPublished(event,receipt);
-  }
-  return {open,edit,prefill,closeBitcoin,hide:({preservePending=false}={})=>{if(!preservePending)pendingOpen=false;dialog.hide();}};
 }

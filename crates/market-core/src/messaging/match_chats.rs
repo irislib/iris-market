@@ -21,6 +21,12 @@ const ROOT: &str = "https://market.iris.to/invite";
 const CAP: usize = 128;
 pub(crate) const PREFIX: &str = "match:";
 pub(crate) const HELLO: &str = "Hi! Our helper introduced us privately.";
+/// A profile reveal travels only inside the encrypted alias chat. Its proof
+/// uses an ephemeral kind so a relay would never keep it if one were leaked.
+const REVEAL_TAG: &str = "iris-market/reveal";
+const REVEAL_KIND: u16 = 27_412;
+pub(crate) const REVEALED: &str = "Shared their profile";
+pub(crate) const SHARED: &str = "You shared your profile";
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(super) struct Alias {
@@ -38,6 +44,19 @@ pub(super) struct Alias {
     session: Option<SessionState>,
     #[serde(default)]
     messages: Vec<Message>,
+    /// This person chose to show their profile in this chat.
+    #[serde(default)]
+    shared: bool,
+    /// The other person's verified profile, once they chose to share it.
+    #[serde(default)]
+    revealed: Option<PublicKey>,
+}
+
+/// What the match view shows about a local alias chat; never key material.
+pub(super) struct AliasStatus {
+    pub(super) connected: bool,
+    pub(super) shared: bool,
+    pub(super) revealed: Option<PublicKey>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -141,6 +160,8 @@ impl Messaging {
                 early: Vec::new(),
                 session: None,
                 messages: Vec::new(),
+                shared: false,
+                revealed: None,
             },
         );
         Ok(url)
@@ -251,9 +272,33 @@ impl Messaging {
         else {
             return Ok(());
         };
-        let text = inner.content.trim();
+        let reveals: Vec<_> = inner
+            .tags
+            .iter()
+            .map(|t| t.as_slice())
+            .filter(|t| t[0] == REVEAL_TAG)
+            .collect();
+        let revealed = match reveals.as_slice() {
+            [] => None,
+            [[_, proof]] => {
+                // Only a proof bound to exactly these two aliases counts.
+                match reveal_owner(proof, alias.peer, alias.pubkey) {
+                    Some(owner) => Some(owner),
+                    None => return Ok(()),
+                }
+            }
+            _ => return Ok(()),
+        };
+        let text = if revealed.is_some() {
+            REVEALED
+        } else {
+            inner.content.trim()
+        };
         if inner.kind != Kind::from(14) || text.is_empty() || text.len() > MAX_MESSAGE_BYTES {
             return Ok(());
+        }
+        if revealed.is_some() {
+            alias.revealed = revealed;
         }
         let created_at = inner.created_at.as_secs().min(now() + 60);
         let id = inner.id.map(|id| id.to_hex()).unwrap_or(event.id.to_hex());
@@ -280,6 +325,49 @@ impl Messaging {
     }
 
     pub(super) fn alias_send(&mut self, chat: Uuid, text: &str) -> MessagingResult<()> {
+        self.alias_send_tagged(chat, text, text, None)
+    }
+
+    /// Explicit only: proves to this chat's other alias that this account
+    /// stands behind our alias. Nothing else links the two.
+    pub(super) fn reveal_alias(&mut self, chat: Uuid) -> MessagingResult<()> {
+        let alias = self
+            .state
+            .aliases
+            .chats
+            .get(&chat)
+            .ok_or("This private match has ended")?;
+        if alias.shared {
+            return Ok(());
+        }
+        let peer = alias.peer.ok_or("Wait until you are connected")?;
+        let owner = self
+            .owner_keys
+            .as_ref()
+            .ok_or("Share your profile from the device that holds your profile key")?;
+        let proof = nostr::EventBuilder::new(Kind::from(REVEAL_KIND), "")
+            .tags([
+                nostr::Tag::parse(["alias", &alias.pubkey.to_hex()]).map_err(protocol_error)?,
+                nostr::Tag::public_key(peer),
+            ])
+            .sign_with_keys(owner)
+            .map_err(protocol_error)?;
+        let tag = nostr::Tag::parse([REVEAL_TAG, &proof.as_json()]).map_err(protocol_error)?;
+        self.alias_send_tagged(chat, REVEALED, SHARED, Some(tag))?;
+        if let Some(alias) = self.state.aliases.chats.get_mut(&chat) {
+            alias.shared = true;
+        }
+        Ok(())
+    }
+
+    fn alias_send_tagged(
+        &mut self,
+        chat: Uuid,
+        content: &str,
+        local_text: &str,
+        extra: Option<nostr::Tag>,
+    ) -> MessagingResult<()> {
+        let text = local_text;
         if self.state.outbox.len() + self.state.aliases.outbox.len() >= MAX_OUTBOX {
             return Err("Connect to send queued messages before sending more".into());
         }
@@ -309,6 +397,10 @@ impl Messaging {
             .to_string(),
         )
         .map_err(protocol_error)?;
+        rumor.content = content.to_owned();
+        if let Some(tag) = extra {
+            rumor.tags.push(tag);
+        }
         rumor.ensure_id();
         let id = rumor.id.ok_or("Missing message identity")?.to_hex();
         let plan = session
@@ -463,6 +555,19 @@ impl Messaging {
             })
     }
 
+    pub(super) fn alias_status(&self, chat: Uuid) -> Option<AliasStatus> {
+        self.state.aliases.chats.get(&chat).map(|c| AliasStatus {
+            connected: c
+                .session
+                .as_ref()
+                .is_some_and(|s| Session::from_state(s.clone()).can_send())
+                && c.peer.is_some(),
+            shared: c.shared,
+            revealed: c.revealed,
+        })
+    }
+
+    #[cfg(test)]
     pub(super) fn alias_connected(&self, chat: Uuid) -> bool {
         self.state
             .aliases
@@ -472,9 +577,221 @@ impl Messaging {
     }
 }
 
+/// The account that signed a reveal bound to sender alias `from` and recipient `to`.
+fn reveal_owner(proof: &str, from: Option<PublicKey>, to: PublicKey) -> Option<PublicKey> {
+    let proof = Event::from_json(proof).ok()?;
+    let tags: Vec<_> = proof.tags.iter().map(|t| t.as_slice()).collect();
+    let alias = from?.to_hex();
+    (proof.verify().is_ok()
+        && proof.kind == Kind::from(REVEAL_KIND)
+        && proof.created_at.as_secs() <= now() + 300
+        && proof.pubkey != from?
+        && tags.len() == 2
+        && tags.contains(&["alias".to_owned(), alias].as_slice())
+        && tags.contains(&["p".to_owned(), to.to_hex()].as_slice()))
+    .then_some(proof.pubkey)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The web implementation (web/src/private-match/aliases.ts) behind JSON lines.
+    struct WebPeer {
+        child: std::process::Child,
+        input: std::process::ChildStdin,
+        output: std::io::BufReader<std::process::ChildStdout>,
+    }
+    impl WebPeer {
+        fn start() -> Option<Self> {
+            use std::process::{Command, Stdio};
+            let web = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web");
+            if !web.join("node_modules/nostr-double-ratchet").exists() {
+                assert!(
+                    std::env::var_os("IRIS_REQUIRE_WEB_INTEROP").is_none(),
+                    "web dependencies are missing"
+                );
+                eprintln!("skipping web interop: run npm ci in web/");
+                return None;
+            }
+            let mut child = Command::new("node")
+                .arg("tests/support/alias-peer.mjs")
+                .current_dir(web)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .ok()?;
+            let input = child.stdin.take()?;
+            let output = std::io::BufReader::new(child.stdout.take()?);
+            Some(Self {
+                child,
+                input,
+                output,
+            })
+        }
+        fn ask(&mut self, query: serde_json::Value) -> serde_json::Value {
+            use std::io::{BufRead, Write};
+            writeln!(self.input, "{query}").unwrap();
+            let mut line = String::new();
+            self.output.read_line(&mut line).unwrap();
+            let reply: serde_json::Value = serde_json::from_str(&line).unwrap();
+            assert!(reply.get("error").is_none(), "web peer: {reply}");
+            reply
+        }
+        fn events(reply: &serde_json::Value) -> Vec<Event> {
+            let mut events: Vec<Event> = reply["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|e| Event::from_json(e.to_string()).unwrap())
+                .collect();
+            events.sort_by_key(|e| e.kind.as_u16());
+            events
+        }
+    }
+    impl Drop for WebPeer {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+        }
+    }
+
+    fn web_interop(core_accepts: bool) {
+        let Some(mut web) = WebPeer::start() else {
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let mut core = Messaging::open(dir.path(), Keys::generate()).unwrap();
+        let end = now() + 3600;
+        // Roles follow key order, so draw aliases until the wanted role comes up.
+        let (chat, web_alias, web_url) = (0..64)
+            .find_map(|_| {
+                let chat = Uuid::new_v4();
+                core.create_alias(chat, "Two-seat cargo bike", end).unwrap();
+                let reply =
+                    web.ask(serde_json::json!({"op":"create","title":"Bike","expires_at":end}));
+                let theirs = PublicKey::from_hex(reply["pubkey"].as_str().unwrap()).unwrap();
+                let ours = core.state.aliases.pubkey(chat).unwrap();
+                ((ours.to_hex() < theirs.to_hex()) == core_accepts)
+                    .then(|| (chat, theirs, reply["url"].as_str().unwrap().to_owned()))
+            })
+            .expect("alias order");
+        let core_alias = core.state.aliases.pubkey(chat).unwrap();
+        let core_url = invite_url(&core.state.aliases.chats[&chat].invite, ROOT).unwrap();
+        let id = format!("{PREFIX}{chat}");
+
+        core.transaction(|c| c.alias_introduced(chat, web_alias, &web_url))
+            .unwrap();
+        let reply = web
+            .ask(serde_json::json!({"op":"introduced","peer":core_alias.to_hex(),"url":core_url}));
+        let exchange = |core: &mut Messaging, web: &mut WebPeer, reply: &serde_json::Value| {
+            for event in WebPeer::events(reply) {
+                core.receive(&event).unwrap();
+            }
+            let mut outbound = core.pending_outbound();
+            outbound.sort_by_key(|e| e.kind.as_u16());
+            let mut last = serde_json::Value::Null;
+            for event in outbound {
+                assert_ne!(event.pubkey, core.owner);
+                last = web.ask(serde_json::json!({"op":"deliver","event":event}));
+                core.acknowledge_published(&event.id.to_hex()).unwrap();
+            }
+            last
+        };
+        exchange(&mut core, &mut web, &reply);
+        let texts = |core: &Messaging| -> Vec<String> {
+            core.conversations()
+                .into_iter()
+                .find(|c| c.id == id)
+                .map(|c| c.messages.into_iter().map(|m| m.text).collect())
+                .unwrap_or_default()
+        };
+        assert!(core.alias_connected(chat));
+        assert_eq!(texts(&core), [HELLO]);
+
+        let reply = web.ask(serde_json::json!({"op":"send","text":"Written on the web"}));
+        exchange(&mut core, &mut web, &reply);
+        assert!(texts(&core).contains(&"Written on the web".to_owned()));
+
+        core.send(&id, "Written in the core").unwrap();
+        let state = exchange(&mut core, &mut web, &serde_json::json!({"events":[]}));
+        assert_eq!(state["connected"], true);
+        let seen: Vec<_> = state["texts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t.as_str().unwrap())
+            .collect();
+        assert_eq!(seen, [HELLO, "Written on the web", "Written in the core"]);
+    }
+
+    #[test]
+    fn only_a_reveal_bound_to_both_aliases_names_an_account() {
+        let owner = Keys::generate();
+        let (from, to) = (Keys::generate().public_key(), Keys::generate().public_key());
+        let proof = |kind: u16, alias: PublicKey, p: PublicKey, signer: &Keys| {
+            nostr::EventBuilder::new(Kind::from(kind), "")
+                .tags([
+                    nostr::Tag::parse(["alias", &alias.to_hex()]).unwrap(),
+                    nostr::Tag::public_key(p),
+                ])
+                .sign_with_keys(signer)
+                .unwrap()
+                .as_json()
+        };
+        let good = proof(REVEAL_KIND, from, to, &owner);
+        assert_eq!(
+            reveal_owner(&good, Some(from), to),
+            Some(owner.public_key())
+        );
+        // Replayed into another chat, or before the peer is known: ignored.
+        assert_eq!(reveal_owner(&good, Some(to), from), None);
+        assert_eq!(reveal_owner(&good, None, to), None);
+        let other = Keys::generate().public_key();
+        assert_eq!(reveal_owner(&good, Some(from), other), None);
+        assert_eq!(
+            reveal_owner(&proof(1, from, to, &owner), Some(from), to),
+            None
+        );
+        // An alias cannot vouch for itself.
+        let alias = Keys::generate();
+        let own = proof(REVEAL_KIND, alias.public_key(), to, &alias);
+        assert_eq!(reveal_owner(&own, Some(alias.public_key()), to), None);
+        let mut forged: serde_json::Value = serde_json::from_str(&good).unwrap();
+        forged["pubkey"] = serde_json::json!(other.to_hex());
+        assert_eq!(reveal_owner(&forged.to_string(), Some(from), to), None);
+    }
+
+    #[test]
+    fn core_accepts_a_web_alias_and_both_can_write() {
+        web_interop(true);
+    }
+
+    #[test]
+    fn web_accepts_a_core_alias_and_both_can_write() {
+        web_interop(false);
+    }
+
+    #[test]
+    fn web_shaped_wires_parse_in_the_core() {
+        let url = invite_url(
+            &Invite::create_new(Keys::generate().public_key(), None, Some(1)).unwrap(),
+            ROOT,
+        )
+        .unwrap();
+        let alias = Keys::generate().public_key();
+        let proposal = Uuid::new_v4();
+        // Exactly as web/src/private-matches.ts serializes them.
+        for raw in [
+            serde_json::json!({"op":"vote","proposal":proposal,"accept":true,"expires_at":5,"invite":url}),
+            serde_json::json!({"op":"vote","proposal":proposal,"accept":false,"expires_at":5}),
+            serde_json::json!({"op":"introduce","proposal":proposal,"contact":alias,"expires_at":5,"invite":url}),
+            serde_json::json!({"op":"introduce","proposal":proposal,"contact":alias,"expires_at":5}),
+        ] {
+            let wire: super::super::private_matches::Wire =
+                serde_json::from_value(raw.clone()).unwrap_or_else(|e| panic!("{raw}: {e}"));
+            assert_eq!(serde_json::to_value(wire).unwrap(), raw);
+        }
+    }
 
     #[test]
     fn aliases_are_fresh_unlinkable_and_never_persist_their_secret() {

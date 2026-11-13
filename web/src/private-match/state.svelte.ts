@@ -18,6 +18,10 @@ export class PrivateMatchState {
   view = $state.raw<MatchView | null>(null)
   chats = $state.raw<AliasChat[]>([])
   openChat = $state('')
+  /** New messages per alias chat since it was last opened on this device. */
+  unread = $state.raw<Record<string, number>>({})
+  unreadTotal = $derived(Object.values(this.unread).reduce((a, b) => a + b, 0))
+  private read: Record<string, number> = {}
   owner = $state('')
   ready = $state(false)
   canSend = $state(false)
@@ -35,7 +39,7 @@ export class PrivateMatchState {
   sync() {
     const state = this.api.state()
     const owner = state.ownerPubkey ?? ''
-    if (this.owner !== owner) this.dialogOpen = false
+    if (this.owner !== owner) { this.dialogOpen = false; this.read = {} }
     this.owner = owner
     this.ready = state.status === 'ready'
     this.canSend = !!state.canSend
@@ -44,6 +48,29 @@ export class PrivateMatchState {
     this.chats = this.api.messaging.privateMatchChats?.() ?? []
     if (!this.view) this.dialogOpen = false
     if (!this.dialogOpen) this.openChat = ''
+    if (this.openChat) this.markRead(this.openChat)
+    this.countUnread()
+  }
+
+  private storageKey() { return 'market-private-match-read/' + this.owner }
+
+  markRead(chat: string) {
+    const last = Math.max(0, ...(this.chats.find(c => c.id === chat)?.messages.map(m => m.created_at_ms) ?? []))
+    if ((this.read[chat] ?? 0) >= last) return
+    this.read = {...this.read, [chat]: last}
+    // A per-device convenience only; message history stays in the encrypted vault.
+    try { localStorage.setItem(this.storageKey(), JSON.stringify(this.read)) } catch {}
+    this.countUnread()
+  }
+
+  private countUnread() {
+    if (!Object.keys(this.read).length) try { this.read = JSON.parse(localStorage.getItem(this.storageKey()) ?? '{}') ?? {} } catch {}
+    const next: Record<string, number> = {}
+    for (const chat of this.chats) {
+      const count = chat.messages.filter(m => !m.mine && m.created_at_ms > (this.read[chat.id] ?? 0)).length
+      if (count) next[chat.id] = count
+    }
+    this.unread = next
   }
 
   async send(chat: string, text: string) {

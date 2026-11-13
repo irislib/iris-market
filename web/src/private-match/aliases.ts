@@ -5,16 +5,20 @@
 import {hkdf} from '@noble/hashes/hkdf.js'
 import {sha256} from '@noble/hashes/sha2.js'
 import {bytesToHex,hexToBytes,randomBytes} from '@noble/hashes/utils.js'
-import {getPublicKey,type VerifiedEvent} from 'nostr-tools'
+import {getPublicKey,verifyEvent,type VerifiedEvent,type EventTemplate} from 'nostr-tools'
 import {Invite,Session,decryptInviteResponse,createSessionFromAccept,serializeSessionState,deserializeSessionState,hasMetadataPrivacyVersion} from 'nostr-double-ratchet'
 
 export const PREFIX='match:', HELLO='Hi! Our helper introduced us privately.'
+// A profile reveal travels only inside the encrypted alias chat. Its proof uses
+// an ephemeral kind so a relay would never keep it if one were leaked.
+export const REVEAL_KIND=27412, REVEALED='Shared their profile', SHARED='You shared your profile'
+const REVEAL_TAG='iris-market/reveal'
 const INFO=new TextEncoder().encode('iris-market/private-match-alias-v1'), ROOT='https://market.iris.to/invite'
 const MAX_TEXT=8*1024, MAX_MESSAGES=10_000
 export type AliasMessage={id:string;text:string;mine:boolean;created_at:number;created_at_ms:number;delivery:'pending'|'sent'|'received'}
-export type Alias={salt:string;pubkey:string;invite:string;title:string;expires_at:number;peer?:string;early:VerifiedEvent[];session?:string;messages:AliasMessage[]}
+export type Alias={salt:string;pubkey:string;invite:string;title:string;expires_at:number;peer?:string;early:VerifiedEvent[];session?:string;messages:AliasMessage[];shared?:boolean;revealed?:string}
 export type AliasJob={chat:string;event:VerifiedEvent;inner?:string}
-export type AliasChat={id:string;title:string;connected:boolean;messages:AliasMessage[]}
+export type AliasChat={id:string;title:string;connected:boolean;messages:AliasMessage[];shared:boolean;revealed:string|null}
 
 export const aliasSecret=(device:Uint8Array,salt:string)=>hkdf(sha256,device,hexToBytes(salt),INFO,32)
 
@@ -50,13 +54,39 @@ export function authors(alias:Alias):string[]{
 }
 export const responseKey=(alias:Alias)=>Invite.deserialize(alias.invite).inviterEphemeralPublicKey
 
-export function send(alias:Alias,chat:string,text:string,at=Date.now()):AliasJob{
+export function send(alias:Alias,chat:string,text:string,at=Date.now(),extra?:string[],local=text):AliasJob{
   if(!canSend(alias))throw Error('Waiting for the other person to say hello.')
   const s=session(alias),created_at=Math.floor(at/1000)
-  const {event,innerEvent}=s.sendEvent({kind:14,content:text,pubkey:alias.pubkey,created_at,tags:[['p',alias.peer!],['ms',String(at)]]})
+  const tags=[['p',alias.peer!],['ms',String(at)],...(extra?[extra]:[])]
+  const {event,innerEvent}=s.sendEvent({kind:14,content:text,pubkey:alias.pubkey,created_at,tags})
   alias.session=serializeSessionState(s.state)
-  alias.messages.push({id:innerEvent.id,text,mine:true,created_at,created_at_ms:at,delivery:'pending'})
+  alias.messages.push({id:innerEvent.id,text:local,mine:true,created_at,created_at_ms:at,delivery:'pending'})
   return {chat,event,inner:innerEvent.id}
+}
+
+/** The statement the profile key signs; it names exactly these two aliases. */
+export function revealDraft(alias:Alias,at=Math.floor(Date.now()/1000)):EventTemplate{
+  if(!alias.peer)throw Error('Wait until you are connected.')
+  return {kind:REVEAL_KIND,created_at:at,content:'',tags:[['alias',alias.pubkey],['p',alias.peer]]}
+}
+
+/** The account that signed a reveal bound to sender alias `from` and recipient `to`. */
+export function revealOwner(proof:unknown,from:string|undefined,to:string,at=Math.floor(Date.now()/1000)):string|null{
+  try{
+    // Re-parse: verification results cached on an object must never carry over.
+    const e=JSON.parse(typeof proof==='string'?proof:JSON.stringify(proof))
+    const tags=JSON.stringify([...e.tags].map(t=>[...t]).sort())
+    return from&&verifyEvent(e)&&e.kind===REVEAL_KIND&&e.created_at<=at+300&&e.pubkey!==from&&
+      tags===JSON.stringify([['alias',from],['p',to]].sort())?e.pubkey:null
+  }catch{return null}
+}
+
+export function sendReveal(alias:Alias,chat:string,proof:VerifiedEvent,at=Date.now()):AliasJob{
+  if(alias.shared)throw Error('You already shared your profile.')
+  if(revealOwner(proof,alias.pubkey,alias.peer!,Math.floor(at/1000))!==proof.pubkey)throw Error('This profile proof is not for this chat.')
+  const job=send(alias,chat,REVEALED,at,[REVEAL_TAG,JSON.stringify(proof)],SHARED)
+  alias.shared=true
+  return job
 }
 
 /** The helper named the other alias. The lower key accepts and says hello. */
@@ -94,7 +124,12 @@ export function receive(alias:Alias,event:VerifiedEvent,at=Math.floor(Date.now()
   const s=session(alias),rumor=s.receiveEvent(event)
   if(!rumor)return false
   alias.session=serializeSessionState(s.state)
-  const text=typeof rumor.content==='string'?rumor.content.trim():''
+  const reveals=rumor.tags.filter(t=>t[0]===REVEAL_TAG)
+  // Only a proof bound to exactly these two aliases names an account.
+  const owner=reveals.length===1&&reveals[0].length===2?revealOwner(reveals[0][1],alias.peer,alias.pubkey,at):null
+  if(reveals.length&&!owner)return true
+  if(owner)alias.revealed=owner
+  const text=owner?REVEALED:typeof rumor.content==='string'?rumor.content.trim():''
   if(rumor.kind!==14||!text||new TextEncoder().encode(text).length>MAX_TEXT||alias.messages.length>=MAX_MESSAGES||alias.messages.some(m=>m.id===rumor.id))return true
   const created_at=Math.min(rumor.created_at,at+60),ms=Number(rumor.tags.find(t=>t[0]==='ms')?.[1])
   const created_at_ms=Number.isSafeInteger(ms)&&Math.floor(ms/1000)===rumor.created_at?Math.min(ms,(at+60)*1000):created_at*1000

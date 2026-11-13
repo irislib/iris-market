@@ -17,14 +17,15 @@ type Side='offer'|'request'
 export type Entry={id:string;side:Side;summary:string;expires_at:number}
 export type Row=Entry&{peer:string}
 type Pair={entries:[string,string];votes:[boolean|null,boolean|null];expires_at:number;introduced:boolean;invites?:[string|null,string|null]}
-type Interest={helper:string;entry:string;summary:string;expires_at:number;vote:boolean|null;contact:string|null;invite?:string|null}
-type InterestView=Omit<Interest,'invite'>&{chat:string|null}
+type Interest={helper:string;entry:string;summary:string;expires_at:number;vote:boolean|null;contact:string|null;invite?:string|null;alias?:boolean}
+type InterestView=Omit<Interest,'invite'|'alias'>&{chat:string|null;connected:boolean;shared_profile:boolean;revealed:string|null}
 type Lead={helper:string;entry:string;listing:string;title:string;expires_at:number}
 export type MatchView={sent:Record<string,Row>;received:Record<string,Row>;pairs:Record<string,Omit<Pair,'invites'>>;interests:Record<string,InterestView>;public_leads:Record<string,Lead>}
 export type MatchAction=
   |{op:'enable';enabled:boolean}|{op:'share';helper:string;side:Side;summary:string}
   |{op:'withdraw';entry:string}|{op:'suggest';left:string;right:string}
   |{op:'vote';proposal:string;accept:boolean}|{op:'introduce';proposal:string}|{op:'send_public';entry:string;listing:string}
+  |{op:'reveal';proposal:string}
 type Wire=
   |{op:'share';entry:Entry}|{op:'withdraw';entry:string;expires_at:number}
   |{op:'suggest';proposal:string;entry:string;summary:string;expires_at:number}
@@ -87,7 +88,7 @@ function incoming(b:Book,me:string,peer:string,w:Wire,at:number,created:number){
       if(!uuid(w.proposal)||!key(w.contact)||[me,peer].includes(w.contact))return
       if(w.invite!==undefined&&aliases.aliasOf(w.invite)!==w.contact)return
       const p=b.interests[w.proposal]
-      if(p?.helper===peer&&p.vote===true&&p.expires_at===w.expires_at&&!p.contact){p.contact=w.contact;p.invite=w.invite??null}
+      if(p?.helper===peer&&p.vote===true&&p.expires_at===w.expires_at&&!p.contact){p.contact=w.contact;p.invite=w.invite??null;p.alias=w.invite!==undefined}
       break
     }
     case 'public_listing':{
@@ -117,6 +118,7 @@ function act(b:Book,me:string,a:MatchAction,at:number,send:Send,publicItem?:List
     b.enabled=a.enabled;return
   }
   requireMatch(b.enabled,'Enable private matching in Settings first.')
+  requireMatch(a.op!=='reveal','Share your profile from the private match chat.')
   switch(a.op){
     case 'share':{
       requireMatch(key(a.helper)&&a.helper!==me&&summary(a.summary)&&['offer','request'].includes(a.side)&&Object.keys(b.sent).length<CAP,'Choose another helper and a short summary.')
@@ -149,7 +151,8 @@ function act(b:Book,me:string,a:MatchAction,at:number,send:Send,publicItem?:List
       peers.forEach((peer,i)=>send(peer,keys
         ?{op:'introduce',proposal:a.proposal,contact:keys[1-i],expires_at:p.expires_at,invite:[x,y][1-i]}
         :{op:'introduce',proposal:a.proposal,contact:peers[1-i],expires_at:p.expires_at},p.expires_at))
-      p.introduced=true;break
+      // The helper needs the invitations only to forward them.
+      p.introduced=true;p.invites=[null,null];break
     }
     case 'send_public':{
       const r=b.received[a.entry],l=publicItem
@@ -188,10 +191,11 @@ export function createMatchBook(vault:Vault,owner:string,device:string,notify:()
     if(!deviceSecret)return
     for(const [id,p] of Object.entries(b.interests)){
       const alias=b.aliases?.[id]
-      if(!alias||alias.peer||alias.session||!p.contact||!p.invite)continue
+      if(!alias||alias.peer||alias.session||!p.alias||!p.contact||!p.invite)continue
       const secret=deviceSecret()
-      try{b.aliasJobs!.push(...await aliases.introduced(secret,alias,id,p.contact,p.invite))}
-      catch{/* A bad introduction leaves the alias waiting; it never blocks delivery. */}
+      // A bad introduction leaves the alias waiting; it never blocks delivery.
+      try{b.aliasJobs!.push(...await aliases.introduced(secret,alias,id,p.contact,p.invite));if(alias.peer)p.invite=null}
+      catch{}
       finally{secret.fill(0)}
     }
   }
@@ -202,8 +206,10 @@ export function createMatchBook(vault:Vault,owner:string,device:string,notify:()
       const b=structuredClone(book);prune(b,now())
       // Invitations are private capabilities; views name only the local chat.
       const pairs=Object.fromEntries(Object.entries(b.pairs).map(([id,{invites:_,...p}])=>[id,p]))
-      const interests=Object.fromEntries(Object.entries(b.interests).map(([id,{invite,...p}])=>
-        [id,{...p,contact:invite?null:p.contact,chat:invite&&p.contact?chatId(id):null}]))
+      const interests=Object.fromEntries(Object.entries(b.interests).map(([id,{invite:_,alias,...p}])=>{
+        const chat=alias&&p.contact?chatId(id):null,a=b.aliases?.[id]
+        return [id,{...p,contact:alias?null:p.contact,chat,connected:!!chat&&!!a&&aliases.canSend(a),shared_profile:!!a?.shared,revealed:a?.revealed??null}]
+      }))
       const {sent,received,public_leads}=b;return {sent,received,pairs,interests,public_leads}
     },
     action:(action:MatchAction,listing?:Listing)=>write(b=>{
@@ -269,8 +275,19 @@ export function createMatchBook(vault:Vault,owner:string,device:string,notify:()
     }),
     aliasChats():AliasChat[]{
       return Object.entries(book.aliases??{}).filter(([,a])=>a.peer||a.session)
-        .map(([id,a])=>({id:chatId(id),title:a.title,connected:aliases.canSend(a),messages:structuredClone(a.messages)}))
+        .map(([id,a])=>({id:chatId(id),title:a.title,connected:aliases.canSend(a),messages:structuredClone(a.messages),shared:!!a.shared,revealed:a.revealed??null}))
     },
+    /** The statement your profile key signs before an explicit reveal. */
+    revealDraft(proposal:string){
+      const alias=book.aliases?.[proposal],p=book.interests[proposal]
+      requireMatch(alias&&p?.alias&&p.contact&&!alias.shared,'This private match has ended.')
+      return aliases.revealDraft(alias)
+    },
+    aliasReveal:(proposal:string,proof:VerifiedEvent)=>write(b=>{
+      const alias=b.aliases?.[proposal];requireMatch(alias&&b.interests[proposal]?.alias,'This private match has ended.')
+      requireMatch(b.jobs.length+b.aliasJobs!.length<256,'Connect to send queued messages before sending more.')
+      b.aliasJobs!.push(aliases.sendReveal(alias,proposal,proof))
+    }),
     aliasSend:(chat:string,text:string)=>write(b=>{
       const alias=aliasFor(b,chat);requireMatch(alias,'This private match has ended.')
       const clean=text.trim();requireMatch(clean&&new TextEncoder().encode(clean).length<=8*1024,'Write a message of up to 8 KB.')

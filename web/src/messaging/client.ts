@@ -714,6 +714,11 @@ export function createMessaging({ developerMint, getRelays=()=>[], getPublicRela
     async privateMatch(action:MatchAction,listing?:Parameters<typeof matches.action>[1]){
       requireReady();
       if(action.op!=='enable'&&!canSend())throw Error('Authorize this device before sending a private match.');
+      if(action.op==='reveal'){
+        // Explicit only: the profile key vouches for this chat's alias, nothing else.
+        const proof=await signing(matches.revealDraft(action.proposal));
+        await matches.aliasReveal(action.proposal,proof);void syncMatches();return;
+      }
       await matches.action(action,listing);scheduleBackground();
     },
     async restore() {

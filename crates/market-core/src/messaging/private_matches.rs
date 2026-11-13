@@ -61,9 +61,12 @@ struct Interest {
     expires_at: u64,
     vote: Option<bool>,
     contact: Option<PublicKey>,
-    /// Present when `contact` is the other person's per-match alias.
+    /// The other person's alias invitation, kept only until it is used.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     invite: Option<String>,
+    /// `contact` is the other person's per-match alias, not their account.
+    #[serde(default)]
+    alias: bool,
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct PublicLead {
@@ -89,7 +92,7 @@ pub(super) struct Book {
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
-enum Wire {
+pub(super) enum Wire {
     Share {
         entry: Entry,
     },
@@ -151,6 +154,10 @@ pub enum Action {
         invite: Option<String>,
     },
     Introduce {
+        proposal: Uuid,
+    },
+    /// Explicitly show your profile to the other person in an alias chat.
+    Reveal {
         proposal: Uuid,
     },
     SendPublic {
@@ -218,7 +225,7 @@ impl Book {
             return Err("Enable private matching in Settings first".into());
         }
         match action {
-            Action::Enable { .. } => unreachable!(),
+            Action::Enable { .. } | Action::Reveal { .. } => unreachable!(),
             Action::Share {
                 helper,
                 side,
@@ -365,6 +372,8 @@ impl Book {
                     ));
                 }
                 p.introduced = true;
+                // The helper needs the invitations only to forward them.
+                p.invites = [None, None];
             }
             Action::SendPublic { entry, listing } => {
                 let row = self.received.get(&entry).ok_or("Entry expired")?;
@@ -447,6 +456,7 @@ impl Book {
                         vote: None,
                         contact: None,
                         invite: None,
+                        alias: false,
                     });
                 }
             }
@@ -487,6 +497,7 @@ impl Book {
                         .as_deref()
                         .is_none_or(|url| alias_of(url) == Some(contact))
                 {
+                    p.alias = invite.is_some();
                     p.contact = Some(contact);
                     p.invite = invite;
                 }
@@ -593,6 +604,18 @@ impl Messaging {
     ) -> MessagingResult<()> {
         if !matches!(action, Action::Enable { .. }) {
             self.require_authorization()?;
+        }
+        if let Action::Reveal { proposal } = action {
+            if !self
+                .state
+                .matches
+                .interests
+                .get(&proposal)
+                .is_some_and(|p| p.alias && p.contact.is_some())
+            {
+                return Err("This private match has ended".into());
+            }
+            return self.transaction(|m| m.reveal_alias(proposal));
         }
         let mut action = action;
         self.transaction(move |m| {
@@ -718,12 +741,17 @@ impl Messaging {
             .matches
             .interests
             .iter()
+            .filter(|(_, p)| p.alias)
             .filter_map(|(id, p)| Some((*id, p.contact?, p.invite.clone()?)))
-            .filter(|(id, ..)| !self.alias_connected(*id))
             .collect();
         for (chat, contact, invite) in introduced {
             // A bad introduction leaves the alias waiting; it never blocks delivery.
-            let _ = self.alias_introduced(chat, contact, &invite);
+            if self.alias_introduced(chat, contact, &invite).is_ok()
+                && let Some(p) = self.state.matches.interests.get_mut(&chat)
+            {
+                // Once used, the other person's invitation is not kept.
+                p.invite = None;
+            }
         }
     }
     pub(crate) fn matching_view(&self) -> Option<serde_json::Value> {
@@ -747,14 +775,18 @@ impl Messaging {
             .interests
             .iter()
             .map(|(id, p)| {
-                let alias = p.invite.is_some();
+                let alias = p.alias;
                 let chat = (alias && p.contact.is_some())
                     .then(|| format!("{}{id}", super::match_chats::PREFIX));
+                let status = self.alias_status(*id);
                 (
                     id,
                     serde_json::json!({"helper":p.helper,"entry":p.entry,"summary":p.summary,
                         "expires_at":p.expires_at,"vote":p.vote,
-                        "contact":if alias { None } else { p.contact },"chat":chat}),
+                        "contact":if alias { None } else { p.contact },"chat":chat,
+                        "connected":chat.is_some() && status.as_ref().is_some_and(|s| s.connected),
+                        "shared_profile":status.as_ref().is_some_and(|s| s.shared),
+                        "revealed":status.and_then(|s| s.revealed)}),
                 )
             })
             .collect();
@@ -990,6 +1022,49 @@ mod tests {
                 assert!(!raw.contains(&owner.to_hex()));
             }
         }
+        // The helper keeps no invitation after introducing, nor does either person once used.
+        assert_eq!(
+            chats[helper].state.matches.pairs[&proposal].invites,
+            [None, None]
+        );
+        for person in [seeker, offerer] {
+            assert!(
+                chats[person].state.matches.interests[&proposal]
+                    .invite
+                    .is_none()
+            );
+        }
+
+        // Showing a profile is a separate, explicit action, verified by the other side.
+        chats[seeker]
+            .matching_action(Action::Reveal { proposal }, None)
+            .unwrap();
+        flush(&mut chats, &mut published);
+        let theirs = chats[offerer].matching_view().unwrap();
+        assert_eq!(
+            theirs["interests"][proposal.to_string()]["revealed"],
+            owners[seeker].to_hex()
+        );
+        assert!(theirs["interests"][proposal.to_string()]["shared_profile"] == false);
+        let mine = chats[seeker].matching_view().unwrap();
+        assert!(mine["interests"][proposal.to_string()]["shared_profile"] == true);
+        assert!(mine["interests"][proposal.to_string()]["revealed"].is_null());
+        let last = |c: &Messaging| {
+            let thread = c
+                .conversations()
+                .into_iter()
+                .find(|c| c.id == chat_id)
+                .unwrap();
+            thread.messages.last().unwrap().text.clone()
+        };
+        assert_eq!(last(&chats[offerer]), super::super::match_chats::REVEALED);
+        assert_eq!(last(&chats[seeker]), super::super::match_chats::SHARED);
+        for event in &published {
+            for owner in &owners {
+                assert!(!event.as_json().contains(&owner.to_hex()));
+            }
+        }
+
         // Alias traffic uses its own receive scopes, apart from account scopes.
         for person in [seeker, offerer] {
             let scopes = chats[person].subscriptions();

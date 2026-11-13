@@ -89,10 +89,10 @@ test('introductions connect per-match aliases, never the accounts',async()=>{
   const {generateSecretKey,getPublicKey,matchFilters}=await import('nostr-tools')
   const {HELLO}=await import('../src/private-match/aliases.ts')
   const people=['seeker','offerer','helper'].map(()=>{const secret=generateSecretKey();return {secret,owner:getPublicKey(secret)}})
-  const books=[]
+  const books=[],stores=[]
   for(const {secret,owner} of people){
-    let saved
-    const vault={get:async()=>structuredClone(saved),put:async(_,v)=>{saved=structuredClone(v)}}
+    const store={saved:undefined};stores.push(store)
+    const vault={get:async()=>structuredClone(store.saved),put:async(_,v)=>{store.saved=structuredClone(v)}}
     const book=createMatchBook(vault,owner,owner,()=>{},()=>{},undefined,()=>Uint8Array.from(secret))
     await book.load();books.push(book)
   }
@@ -147,6 +147,40 @@ test('introductions connect per-match aliases, never the accounts',async()=>{
   for(const event of published)for(const owner of [seeker,offerer,helperKey]){
     assert.notEqual(event.pubkey,owner);assert.ok(!JSON.stringify(event).includes(owner))
   }
+  // Nobody keeps an invitation after using or forwarding it.
+  for(const store of stores)assert.ok(!JSON.stringify(store.saved.interests).includes('invite#')&&!JSON.stringify(store.saved.pairs).includes('invite#'))
+  assert.equal(a.view().interests[proposal].connected,true)
+
+  // Showing a profile is explicit, signed by the profile key and bound to this chat.
+  const {finalizeEvent}=await import('nostr-tools')
+  const forged=finalizeEvent({...a.revealDraft(proposal),tags:[['alias',getPublicKey(generateSecretKey())],['p',getPublicKey(generateSecretKey())]]},people[0].secret)
+  await assert.rejects(a.aliasReveal(proposal,forged),/not for this chat/)
+  await a.aliasReveal(proposal,finalizeEvent(a.revealDraft(proposal),people[0].secret))
+  await relay()
+  assert.equal(b.view().interests[proposal].revealed,seeker)
+  assert.equal(b.view().interests[proposal].shared_profile,false)
+  assert.equal(a.view().interests[proposal].shared_profile,true)
+  assert.equal(a.view().interests[proposal].revealed,null)
+  assert.equal(b.aliasChats()[0].messages.at(-1).text,'Shared their profile')
+  assert.equal(a.aliasChats()[0].messages.at(-1).text,'You shared your profile')
+  assert.throws(()=>a.revealDraft(proposal),/ended/)
+  for(const event of published)assert.ok(!JSON.stringify(event).includes(seeker))
+})
+
+test('a reveal names an account only when bound to both aliases of the chat',async()=>{
+  const {generateSecretKey,getPublicKey,finalizeEvent}=await import('nostr-tools')
+  const {revealOwner,REVEAL_KIND}=await import('../src/private-match/aliases.ts')
+  const owner=generateSecretKey(),from=getPublicKey(generateSecretKey()),to=getPublicKey(generateSecretKey()),other=getPublicKey(generateSecretKey())
+  const at=Math.floor(Date.now()/1000)
+  const sign=(tags,kind=REVEAL_KIND,key=owner)=>finalizeEvent({kind,created_at:at,content:'',tags},key)
+  assert.equal(revealOwner(sign([['alias',from],['p',to]]),from,to),getPublicKey(owner))
+  assert.equal(revealOwner(JSON.stringify(sign([['p',to],['alias',from]])),from,to),getPublicKey(owner))
+  assert.equal(revealOwner(sign([['alias',from],['p',to]]),to,from),null)
+  assert.equal(revealOwner(sign([['alias',from],['p',other]]),from,to),null)
+  assert.equal(revealOwner(sign([['alias',from],['p',to]]),undefined,to),null)
+  assert.equal(revealOwner(sign([['alias',from],['p',to]],1),from,to),null)
+  assert.equal(revealOwner(sign([['alias',from],['p',to],['x','y']]),from,to),null)
+  assert.equal(revealOwner({...sign([['alias',from],['p',to]]),pubkey:other},from,to),null)
 })
 
 test('helpers refuse to introduce an alias to an account',async()=>{

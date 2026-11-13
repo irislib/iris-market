@@ -175,6 +175,15 @@ button[data-alternate-label]::after { content:attr(data-alternate-label); visibi
 .match-messages li { justify-self: start; max-width: 85%; padding: 8px 12px; border-radius: 14px; background: var(--soft); overflow-wrap: anywhere; white-space: pre-wrap; }
 .match-messages li.mine { justify-self: end; background: var(--accent); color: var(--on-accent); }
 .match-chat textarea { width: 100%; min-height: 4rem; margin-bottom: 8px; }
+.match-label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 2px; }
+.match-who { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 6px 0; color: var(--muted); }
+.match-who svg, .match-open svg { width: 18px; height: 18px; flex: none; }
+.match-who strong { color: var(--ink); }
+.match-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.match-confirm { margin-top: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.match-confirm p { margin: 0 0 10px; }
+.match-confirm .button + .button { margin-left: 6px; }
+.match-queued { font-size: 12px; opacity: .8; }
 .match-card .match-card { margin-top: 12px; padding-left: 12px; border-left: 2px solid var(--line); }
 
 .listing-share::before {

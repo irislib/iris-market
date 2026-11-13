@@ -68,5 +68,12 @@ test('three profiles privately match pending entries through encrypted delivery 
   assert(encrypted.length>0);
   for(const secret of ['cargo bike','Still available','Wonderful'])assert(!JSON.stringify(bus.frames).includes(secret));
   assert(bus.frames.filter(e=>[1059,1060].includes(e.kind)).every(e=>![buyerId,sellerId,helperId].includes(e.pubkey)));
+  // An explicit reveal is signed by the profile key and verified by the other side.
+  await buyer.privateMatch({op:'reveal',proposal});
+  await wait(()=>seller.privateMatchView().interests[proposal].revealed===buyerId);
+  assert.equal(buyer.privateMatchView().interests[proposal].shared_profile,true);
+  assert.equal(seller.privateMatchView().interests[proposal].revealed,buyerId);
+  assert.equal(buyer.privateMatchView().interests[proposal].revealed,null);
+  assert(!JSON.stringify(bus.frames.filter(e=>[1059,1060].includes(e.kind))).includes(buyerId),'the reveal stays inside the encrypted chat');
   assert(encrypted.every(e=>!e.tags.some(([tag,key])=>tag==='p'&&[buyerId,sellerId,helperId].includes(key))));
 });

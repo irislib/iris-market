@@ -54,6 +54,12 @@ import { setupWallet } from './wallet-ui.ts';
 import { setupOrders } from './orders-ui.ts';
 import { setupRates, formatPrice, formatWalletAmount, initialCurrency, DEFAULT_CURRENCY, CURRENCIES } from './currency.ts';
 import { setupPeople, createUserRow, nameFor, warmProfiles, resetPeople, refreshPeople } from './people.ts';
+import { flushSync, mount } from 'svelte';
+import App from './shell/App.svelte';
+
+// Everything below finds the shell by id, so render it first.
+mount(App, { target: document.body });
+flushSync();
 setupTheme();
 setupHeaderMenu();
 void registerPwa();

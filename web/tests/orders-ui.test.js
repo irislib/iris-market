@@ -1,44 +1,42 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {window,settle} from './support/dom.mjs';
+import {flushSync} from 'svelte';
+globalThis.Event=window.Event;
 
-class Element extends EventTarget {
-  constructor(tag){super();this.tag=tag;this.children=[];this.attributes=new Map();this.dataset={};this.className='';this.textContent='';this.value='';this.hidden=false;this.scrollTop=0;this.classList={add:(name)=>this.classList.toggle(name,true),toggle:(name,on)=>{const values=new Set(this.className.split(' ').filter(Boolean));on?values.add(name):values.delete(name);this.className=[...values].join(' ');}};}
-  append(...children){for(const child of children){child.remove();child.parent=this;this.children.push(child);}}
-  remove(){if(this.parent)this.parent.children=this.parent.children.filter(child=>child!==this);this.parent=undefined;}
-  replaceChildren(...children){for(const child of [...this.children])child.remove();this.append(...children);}
-  setAttribute(name,value){this.attributes.set(name,String(value));}
-  get childElementCount(){return this.children.length;}
-  getAttribute(name){return this.attributes.get(name)??null;}
-  removeAttribute(name){this.attributes.delete(name);}
-  querySelectorAll(selector){return this.children.flatMap(child=>[...(matches(child,selector)?[child]:[]),...child.querySelectorAll(selector)]);}
-  querySelector(selector){return this.querySelectorAll(selector)[0]??null;}
-  click(){if(!this.disabled)return this.onclick?.();}
-  focus(){document.activeElement=this;}
-}
-function matches(node,selector){if(selector==='[data-order-action]')return 'orderAction'in node.dataset;if(selector==='[data-person-relationship]')return 'personRelationship'in node.dataset;if(selector==='dialog[open]')return node.tag==='dialog'&&node.open;if(selector.startsWith('.'))return node.className.split(' ').includes(selector.slice(1));return node.tag===selector;}
-const doc=new EventTarget();doc.body=new Element('body');doc.documentElement={dataset:{appearance:'light'}};doc.createElement=tag=>new Element(tag);doc.visibilityState='visible';doc.hasFocus=()=>true;doc.querySelectorAll=selector=>doc.body.querySelectorAll(selector);
-const win=new EventTarget(),geo={calls:[],cleared:[],watchPosition(success,failure,options){this.calls.push({success,failure,options});return this.calls.length;},clearWatch(id){this.cleared.push(id);}};
-Object.defineProperties(globalThis,{document:{value:doc,configurable:true},window:{value:win,configurable:true},navigator:{value:{geolocation:geo},configurable:true},matchMedia:{value:()=>({matches:false,addEventListener(){},removeEventListener(){}}),configurable:true},HTMLElement:{value:Element,configurable:true},HTMLInputElement:{value:Element,configurable:true}});
+// Assertions follow clicks directly, so apply Svelte's updates synchronously.
+const nativeClick=HTMLElement.prototype.click;
+HTMLElement.prototype.click=function(){nativeClick.call(this);flushSync();};
+let visibility='visible';
+Object.defineProperty(document,'visibilityState',{get:()=>visibility,configurable:true});
+document.hasFocus=()=>true;
+document.documentElement.dataset.appearance='light';
+const geo={calls:[],cleared:[],watchPosition(success,failure,options){this.calls.push({success,failure,options});return this.calls.length;},clearWatch(id){this.cleared.push(id);}};
+Object.defineProperty(navigator,'geolocation',{value:geo,configurable:true});
+globalThis.matchMedia=()=>({matches:false,addEventListener(){},removeEventListener(){}});
 const {setupPeople}=await import('../src/people.ts');setupPeople({getRelays:()=>[],isPreview:()=>true});
 const {setupOrders}=await import('../src/orders-ui.ts');
-const all=node=>[node,...node.children.flatMap(all)],find=(node,text)=>all(node).find(child=>child.textContent===text),settle=()=>new Promise(resolve=>setImmediate(resolve));
+const all=node=>[node,...node.querySelectorAll('*')];
+// The innermost element whose whole text matches.
+const find=(node,text)=>all(node).filter(element=>element.textContent===text).at(-1);
+const submit=form=>{form.dispatchEvent(new SubmitEvent('submit',{bubbles:true,cancelable:true}));flushSync();};
 const buyer='b'.repeat(64),seller='a'.repeat(64),courier='c'.repeat(64);
 function fixture({signedOut=false,delivered=false,eta=undefined,buyerView=false,offers=[],payment=undefined,escrow}={}){
-  doc.visibilityState='visible';geo.calls=[];geo.cleared=[];
+  visibility='visible';geo.calls=[];geo.cleared=[];
   let state={status:signedOut?'empty':'ready',ownerPubkey:signedOut?undefined:buyerView?buyer:courier,orders:[],conversations:[]},reads=0,signIns=0;
   const listeners=new Set(),updates=[],reviews=[],announced=[],deliveries=[],payments=[];
   const job={id:'job',buyer,seller,payment,items:[{id:'item',title:'Private parcel',price:'10',currency:'EUR',quantity:1}],status:delivered?'delivered':'accepted',createdAt:100,updatedAt:100,shipment:{eta,stops:[{id:'pickup',label:'Pickup',address:'Private pickup',status:'pending',...(buyerView?{}:{courierPubkey:courier})}]},archived:false,sync:'queued',locationFresh:false};state.orders=[job];
   const account={state:()=>state,showAccount:()=>signIns++,closeAccount(){},onState:fn=>{listeners.add(fn);return()=>listeners.delete(fn);},messaging:{requestDelivery:async(id,service,destination)=>{deliveries.push({id,service,destination});const result={...job,id:'delivery',seller:service.author,deliveryRequest:{pickup:job.shipment.stops[0],destination}};state.orders.push(result);return result;},updateOrder:async(id,patch)=>{updates.push({id,patch});}}};
-  const page=new Element('main');doc.body.append(page);
+  const page=document.createElement('main');document.body.append(page);
   const ui=setupOrders({account,page,escrow,onPay:order=>payments.push(order),onReview:key=>reviews.push(key),courier:{getListings:()=>{reads++;return[...offers,{id:'public',author:seller,title:'Public parcel request',tags:['parcel'],category:'transport',side:'request',status:'active'}];},onListing(){},onAnnounce:value=>announced.push(value)}});
-  return{ui,page,job,updates,reviews,announced,deliveries,payments,get reads(){return reads;},get signIns(){return signIns;},setState:patch=>{state={...state,...patch};for(const fn of listeners)fn(state);},cleanup(){win.dispatchEvent(new Event('pagehide'));page.remove();}};
+  return{ui,page,job,updates,reviews,announced,deliveries,payments,get reads(){return reads;},get signIns(){return signIns;},setState:patch=>{state={...state,...patch};for(const fn of listeners)fn(state);},cleanup(){window.dispatchEvent(new window.Event('pagehide'));page.remove();}};
 }
 
 test('arrival countdown advances without network updates or replacing controls and disappears on completion',t=>{
   t.mock.timers.enable({apis:['Date','setInterval'],now:1000000});
   const f=fixture({eta:1120});try{
     f.ui.open('job');const headline=find(f.page,'About 2 min'),button=find(f.page,'Share live location');assert(headline);
-    t.mock.timers.tick(75000);assert.equal(headline.textContent,'Less than a minute');assert.equal(find(f.page,'Share live location'),button);
+    t.mock.timers.tick(75000);assert.equal(headline.textContent,'Less than a minute');assert(find(f.page,'Share live location')===button);
     t.mock.timers.tick(45000);assert.equal(headline.textContent,'Taking longer than expected');
     f.job.status='delivered';f.setState({});assert.equal(find(f.page,'Estimated arrival'),undefined);
   }finally{f.cleanup();}
@@ -54,7 +52,7 @@ test('signed-out courier workspace shows real public work without unlocking priv
 test('public courier refresh does not rebuild an open private job or start location sharing',()=>{
   const f=fixture();try{
     f.ui.open('job','deliveries');const button=find(f.page,'Share live location'),reads=f.reads;
-    f.ui.refreshCourier();assert.equal(f.reads,reads);assert.equal(find(f.page,'Share live location'),button);assert.equal(geo.calls.length,0);
+    f.ui.refreshCourier();assert.equal(f.reads,reads);assert(find(f.page,'Share live location')===button);assert.equal(geo.calls.length,0);
   }finally{f.cleanup();}
 });
 
@@ -72,11 +70,11 @@ test('provider gets prominent next-stop directions and an arrival action without
 test('live location is explicitly per-job, stoppable, and stale callbacks cannot resume it',async()=>{
   const f=fixture();try{
     f.ui.open('job','deliveries');assert.equal(geo.calls.length,0);find(f.page,'Share live location').click();assert.equal(geo.calls.length,1);
-    assert.equal(find(f.page,'Stop sharing location').attributes.get('aria-pressed'),'true');
+    assert.equal(find(f.page,'Stop sharing location').getAttribute('aria-pressed'),'true');
     const callback=geo.calls[0].success;callback({coords:{longitude:25.123456,latitude:60.123456}});await settle();
     assert.deepEqual(f.updates[0],{id:'job',patch:{location:{coordinates:[25.12346,60.12346],stopId:'pickup'}}});
     f.ui.refreshCourier();assert.equal(geo.cleared.length,0);find(f.page,'Stop sharing location').click();await settle();
-    assert.deepEqual(geo.cleared,[1]);assert.deepEqual(f.updates.at(-1),{id:'job',patch:{location:null}});assert.equal(find(f.page,'Share live location').attributes.get('aria-pressed'),'false');
+    assert.deepEqual(geo.cleared,[1]);assert.deepEqual(f.updates.at(-1),{id:'job',patch:{location:null}});assert.equal(find(f.page,'Share live location').getAttribute('aria-pressed'),'false');
     const count=f.updates.length;callback({coords:{longitude:1,latitude:2}});await settle();assert.equal(f.updates.length,count);
   }finally{f.cleanup();}
 });
@@ -85,7 +83,7 @@ test('leaving or hiding a job stops its GPS watch and clears the shared position
   for(const reason of ['route','background']){
     const f=fixture();try{
       f.ui.open('job','deliveries');find(f.page,'Share live location').click();
-      if(reason==='route')f.ui.hide();else{doc.visibilityState='hidden';doc.dispatchEvent(new Event('visibilitychange'));}
+      if(reason==='route')f.ui.hide();else{visibility='hidden';document.dispatchEvent(new window.Event('visibilitychange'));}
       await settle();assert.deepEqual(geo.cleared,[1]);assert.deepEqual(f.updates.at(-1),{id:'job',patch:{location:null}});
     }finally{f.cleanup();}
   }
@@ -101,7 +99,7 @@ test('lock ends the GPS session without using the now-locked signer',async()=>{
 test('completed-job review actions pass only the chosen public profile, never private shipment data',()=>{
   const f=fixture({delivered:true});try{
     f.ui.open('job','deliveries');assert.equal(find(f.page,'Share live location'),undefined);
-    const buttons=all(f.page).filter(node=>node.tag==='button'&&node.textContent==='Review');assert.equal(buttons.length,2);
+    const buttons=all(f.page).filter(node=>node.tagName==='BUTTON'&&node.textContent==='Review');assert.equal(buttons.length,2);
     buttons[0].click();assert.deepEqual(f.reviews,[buyer]);assert.equal(f.page.children[0].open,false);assert.deepEqual(f.updates,[]);assert.deepEqual(f.announced,[]);
   }finally{f.cleanup();}
 });
@@ -112,10 +110,10 @@ test('ordinary buyer order books a separate courier after reviewing private dest
   const f=fixture({buyerView:true,offers:[service]});try{
     f.ui.open('job');assert(find(f.page,'Arrange delivery'));find(f.page,'Arrange delivery').click();
     const address=all(f.page).find(el=>el.getAttribute('aria-label')==='Destination address or meeting point');address.value='A private meeting point';
-    f.ui.refreshCourier();assert.equal(address.value,'A private meeting point');
-    const choose=all(f.page).find(el=>el.tag==='button'&&el.className.includes('order-service-option'));choose.click();
+    f.ui.refreshCourier();assert.equal(address.value,'A private meeting point');assert(address.isConnected);
+    const choose=all(f.page).find(el=>el.tagName==='BUTTON'&&el.className.includes('order-service-option'));choose.click();
     assert(find(f.page,'Only this delivery provider receives your destination. The merchant receives their identity and a pickup reference.'));
-    const form=all(f.page).find(el=>el.className==='order-delivery-form');form.onsubmit({preventDefault(){}});await settle();
+    const form=all(f.page).find(el=>el.className==='order-delivery-form');submit(form);await settle();
     assert.equal(f.deliveries.length,1);assert.equal(f.deliveries[0].id,'job');assert.equal(f.deliveries[0].service.author,courier);assert.equal(f.deliveries[0].destination.address,'A private meeting point');assert.equal(geo.calls.length,0);
   }finally{f.cleanup();}
 });
@@ -133,17 +131,17 @@ test('escrow checkout preserves the draft, requests no direct order, and respond
   const f=fixture({buyerView:true,escrow});try{
     f.ui.buy({id:seller+':camera',author:seller,title:'Camera',price:'20',currency:'SATS',status:'active',side:'offer',escrow:{trade:'goods'}});
     const form=all(f.page).find(el=>el.className==='order-review'),inputs=all(form);
-    const quantity=inputs.find(el=>el.type==='number'),note=inputs.find(el=>el.tag==='textarea'),protect=inputs.find(el=>el.type==='checkbox');
-    assert(!protect.checked);quantity.value='3';note.value='Pickup on Saturday';protect.checked=true;protect.onchange();
-    assert(find(form,'Choose escrow provider'));form.onsubmit({preventDefault(){}});await settle();
-    assert.deepEqual(requests,[{quantity:3,note:'Pickup on Saturday'}]);assert.equal(find(f.page,'Choose escrow provider').parent,form);
-    enabled=false;win.dispatchEvent(new Event('market-tools-change'));
-    assert.equal(protect.parent.hidden,true);assert.equal(protect.checked,false);assert.equal(quantity.value,'3');assert(find(form,'Request order'));
+    const quantity=inputs.find(el=>el.type==='number'),note=inputs.find(el=>el.tagName==='TEXTAREA'),protect=inputs.find(el=>el.type==='checkbox');
+    assert(!protect.checked);quantity.value='3';note.value='Pickup on Saturday';protect.checked=true;protect.dispatchEvent(new window.Event('change',{bubbles:true}));flushSync();
+    assert(find(form,'Choose escrow provider'));submit(form);await settle();
+    assert.deepEqual(requests,[{quantity:3,note:'Pickup on Saturday'}]);assert(find(f.page,'Choose escrow provider').parentElement===form);
+    enabled=false;window.dispatchEvent(new window.Event('market-tools-change'));
+    assert.equal(protect.parentElement.hidden,true);assert.equal(protect.checked,false);assert.equal(quantity.value,'3');assert(find(form,'Request order'));
   }finally{f.cleanup();}
 });
 
 test('linked orders expose escrow and suppress direct payment for both traders',()=>{
-  const escrow={showJobs:()=>false,linked:()=>{const button=new Element('button');button.textContent='Open escrow';return button;}};
+  const escrow={showJobs:()=>false,linked:()=>{const button=document.createElement('button');button.textContent='Open escrow';return button;}};
   for(const owner of [buyer,seller]){const f=fixture({buyerView:true,payment:{amount:'10',mint:'https://testnut.cashu.space',status:'requested'},escrow});try{
     f.job.escrowTradeId='d'.repeat(64);f.job.escrowProvider=courier;f.setState({ownerPubkey:owner});f.ui.open('job');
     assert(find(f.page,'Open escrow'));assert(!find(f.page,'Pay'));assert(!find(f.page,'Confirm payment received'));
@@ -153,9 +151,9 @@ test('linked orders expose escrow and suppress direct payment for both traders',
 
 test('provider jobs are reachable from Orders, including after the ordinary orders list is empty',()=>{
   let enabled=true;
-  const escrow={showJobs:()=>enabled,jobs:host=>{const message=new Element('p');message.textContent='Private invitation';host.append(message);}};
+  const escrow={showJobs:()=>enabled,jobs:host=>{const message=document.createElement('p');message.textContent='Private invitation';host.append(message);}};
   const f=fixture({escrow});try{
     f.setState({orders:[]});f.ui.open();find(f.page,'Escrow jobs').click();assert(find(f.page,'Private invitation'));
-    enabled=false;win.dispatchEvent(new Event('market-tools-change'));assert(!find(f.page,'Escrow jobs'));assert(!find(f.page,'Private invitation'));
+    enabled=false;window.dispatchEvent(new window.Event('market-tools-change'));assert(!find(f.page,'Escrow jobs'));assert(!find(f.page,'Private invitation'));
   }finally{f.cleanup();}
 });

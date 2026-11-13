@@ -8,7 +8,7 @@
   },
   "scripts": {
     "build": "npm run check && vite build && vite build --mode downloads",
-    "test": "node --test tests/*.test.js",
+    "test": "node --import ./tests/support/svelte.mjs --test tests/*.test.js",
     "test:built-graph": "node --test scripts/check-built-graph.mjs",
     "dev": "vite",
     "demo:transport": "node scripts/demo/server.ts",
@@ -42,6 +42,7 @@
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "6.2.4",
     "esbuild": "0.25.12",
+    "happy-dom": "20.14.6",
     "svelte": "5.57.2",
     "svelte-check": "4.7.7",
     "typescript": "5.9.3",

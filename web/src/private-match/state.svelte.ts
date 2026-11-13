@@ -23,7 +23,9 @@ export class PrivateMatchState {
   settingsError = $state('')
   busy = false
 
-  constructor(readonly api: PrivateMatchApi) {}
+  readonly api: PrivateMatchApi
+
+  constructor(api: PrivateMatchApi) { this.api = api }
 
   sync() {
     const state = this.api.state()

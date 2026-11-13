@@ -30,6 +30,15 @@ test('transport areas survive signing and edits without becoming location pins',
  assert(revisedListingDraft(values,unsupported).tags.some(t=>t[0]==='service_area'&&t[1]==='2'),'unknown extensions remain unless explicitly edited');
 });
 test('web draft signs into the same NIP99 listing shape used by live browsing',()=>{const draft=listingDraft(values,{identifier:'test-listing'});const listing=parseEvent(finalizeEvent(draft,generateSecretKey()));assert.equal(listing.price,'100.50');assert.equal(listing.currency,'EUR');assert.equal(listing.location,'Helsinki');assert.equal(listing.identifier,'test-listing');});
+test('new and revised listings identify Iris Market exactly once', () => {
+  const key = generateSecretKey();
+  const draft = listingDraft(values);
+  assert.deepEqual(draft.tags.filter(tag => tag[0] === 'client'), [['client', 'Iris Market']]);
+  const old = {...draft, tags: [...draft.tags.filter(tag => tag[0] !== 'client'), ['client', 'Older client']]};
+  const listing = parseEvent(finalizeEvent(old, key));
+  const revision = revisedListingDraft(values, listing);
+  assert.deepEqual(revision.tags.filter(tag => tag[0] === 'client'), [['client', 'Iris Market']]);
+});
 test('web composer blocks unsafe image links and invalid values before asking a signer',()=>{for(const change of [{price:'-2'},{price:'Infinity'},{image:'http://example.com/a.png'},{image:'https://a:b@example.com/a.png'},{title:''},{side:'sell'},{currency:'<EUR>'}])assert.throws(()=>listingDraft({...values,...change}));});
 
 import {nhashEncode} from '@hashtree/core';

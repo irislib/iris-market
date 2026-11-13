@@ -308,6 +308,10 @@ impl Messaging {
             None => self.owner == self.keys.public_key(),
         }
     }
+    pub fn needs_legacy_device_approval(&self) -> bool {
+        self.owner == self.keys.public_key()
+            && self.engine.signed_local_device_authorization().is_none()
+    }
     pub fn import_link_session(
         &mut self,
         event_id: &str,

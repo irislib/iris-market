@@ -148,11 +148,38 @@ struct ConversationView: View {
     }
     @State private var orderID: String?
     private var current: MarketConversation { store.snapshot.conversations.first(where: { $0.id == conversation.id }) ?? MarketConversation(id:conversation.id, name:conversation.name, messages:[]) }
+    private var person: MarketPerson { store.snapshot.people[current.id] ?? .unnamed(current.id) }
     private var visibleMessages: [MarketMessage] { threadKey == "*" ? current.messages : current.messages.filter { $0.threadKey == threadKey } }
     private var incomingIDs: [String] { visibleMessages.filter { !$0.mine && viewportIncoming.contains($0.id) }.map(\.id) }
     var body: some View {
         MarketNavigationContainer {
             VStack(spacing: 0) {
+                #if os(macOS)
+                HStack(spacing: 8) {
+                    MarketPageBackButton()
+                    UserAvatar(person: person, size: 32)
+                    UserName(person: person)
+                        .font(.headline)
+                        .accessibilityAddTraits(.isHeader)
+                    Spacer(minLength: 0)
+                }
+                .foregroundStyle(MarketTheme.ink)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 4)
+                #endif
+                if store.snapshot.needsChatDeviceApproval == true {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Approve this device so people can send you replies.")
+                        Button(store.snapshot.approvingChatDevice == true ? "Checking device approval…" : "Approve chat device") {
+                            store.command(["type": "approve_chat_device"])
+                        }
+                        .disabled(store.snapshot.approvingChatDevice == true)
+                    }
+                    .font(.subheadline)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 8)
+                }
                 if let id = context?.orderId {
                     Button { orderID = id } label: { Text(inboxContextTitle(context, snapshot: store.snapshot)).font(.system(size: 14, weight: .medium)).lineLimit(2).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.vertical, 12) }
                 } else if context?.listing != nil { Text(inboxContextTitle(context, snapshot: store.snapshot)).font(.system(size: 13)).foregroundStyle(MarketTheme.muted).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.vertical, 12) }
@@ -211,10 +238,14 @@ struct ConversationView: View {
                     Button { send() } label: { Image(systemName: "arrow.up").font(.system(size: 18, weight: .semibold)).foregroundStyle(MarketTheme.onAction).frame(width: 44, height: 44).background(MarketTheme.action, in: Circle()) }.disabled(text.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.busy || store.demo).accessibilityLabel("Send message")
                 }.padding(16)
             }.background(MarketTheme.paper).navigationTitle("").marketInlineTitle()
+                #if os(macOS)
+                .navigationBarBackButtonHidden(true)
+                #else
                 .toolbar {
-                    ToolbarItem(placement: .principal) { UserRow(person: store.snapshot.people[current.id] ?? .unnamed(current.id), size: 30) }
+                    ToolbarItem(placement: .principal) { UserRow(person: person, size: 30) }
                     ToolbarItem(placement: .cancellationAction) { MarketDoneButton { dismiss() } }
                 }
+                #endif
                 .marketPage(isPresented: Binding(get: { orderID != nil }, set: { if !$0 { orderID = nil } })) { if let orderID { OrderDetailView(orderID: orderID).marketSheetScope() } }
                 .onAppear { displayedAccount = store.snapshot.publicKey; appeared = true; foreground = scenePhase == .active; updateVisibleReadState() }
                 .onDisappear { appeared = false; foreground = false; clearActiveContext() }

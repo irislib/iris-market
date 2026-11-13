@@ -324,6 +324,8 @@ pub struct Snapshot {
     pub ai_configured: bool,
     pub profile_name_required: bool,
     pub messaging_ready: bool,
+    pub needs_chat_device_approval: bool,
+    pub approving_chat_device: bool,
     pub live_location_supported: bool,
     pub demo: bool,
     pub status: String,
@@ -352,6 +354,7 @@ pub struct Snapshot {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Command {
+    ApproveChatDevice,
     PrivateMatch {
         action: crate::messaging::private_matches::Action,
     },

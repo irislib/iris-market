@@ -8,6 +8,8 @@ struct MarketSnapshot: Decodable {
     var canSign = false
     var privateMatching: PrivateMatchInbox?
     var messagingReady = false
+    var needsChatDeviceApproval: Bool?
+    var approvingChatDevice: Bool?
     var liveLocationSupported = false
     var demo: Bool = false
     var status: String = "Opening your market…"

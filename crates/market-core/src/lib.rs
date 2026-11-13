@@ -51,6 +51,7 @@ pub(crate) struct State {
     settings: Settings,
     rates: rates::RateBook,
     ai_configured: bool,
+    approving_chat_device: bool,
     profile_name_required: bool,
     demo: bool,
     query: String,
@@ -296,6 +297,13 @@ impl State {
                 .messaging
                 .as_ref()
                 .is_some_and(|messaging| messaging.can_send()),
+            needs_chat_device_approval: self.owner_keys.is_some()
+                && !self.profile_name_required
+                && self
+                    .messaging
+                    .as_ref()
+                    .is_some_and(|m| m.needs_legacy_device_approval()),
+            approving_chat_device: self.approving_chat_device,
             live_location_supported: true,
             demo: self.demo,
             status: self.status.clone(),
@@ -595,6 +603,7 @@ impl Market {
             settings,
             rates,
             ai_configured,
+            approving_chat_device: false,
             profile_name_required,
             demo,
             query: String::new(),
@@ -798,6 +807,7 @@ impl Market {
             bail!("Profile is closed");
         }
         match command {
+            Command::ApproveChatDevice => return self.approve_chat_device(),
             Command::Curate { api_key } => return self.curate(&api_key, false, None, None, None),
             Command::CheckAi {
                 api_key,
@@ -1479,7 +1489,8 @@ impl Market {
                     .archive_order(&order_id, archived)
                     .map_err(anyhow::Error::msg)?;
             }
-            Command::Contact { .. }
+            Command::ApproveChatDevice
+            | Command::Contact { .. }
             | Command::AcceptInvite { .. }
             | Command::DiscoverEscrowProviders
             | Command::OpenCollection { .. }
@@ -1494,6 +1505,60 @@ impl Market {
             Command::Curate { .. } | Command::CheckAi { .. } => unreachable!(),
         }
         s.revision += 1;
+        Ok(())
+    }
+    fn approve_chat_device(&self) -> Result<()> {
+        let runtime = self.runtime.lock().unwrap();
+        let runtime = runtime.as_ref().context("App has closed")?;
+        let mut s = self.state.lock().unwrap();
+        ensure!(
+            !s.profile_name_required
+                && s.messaging
+                    .as_ref()
+                    .is_some_and(|m| m.needs_legacy_device_approval()),
+            "This profile does not need legacy chat approval"
+        );
+        if s.approving_chat_device {
+            return Ok(());
+        }
+        let keys = s.owner_keys.clone().context("Profile signer unavailable")?;
+        let relays = s.settings.relays.clone();
+        let state = self.state.clone();
+        let stopped = self.stopped.clone();
+        s.approving_chat_device = true;
+        s.error = None;
+        s.revision += 1;
+        runtime.spawn(async move {
+            let result = identity::legacy_device_approval(&keys, &relays).await;
+            let mut s = state.lock().unwrap();
+            if stopped.load(Ordering::Acquire) {
+                return;
+            }
+            s.approving_chat_device = false;
+            let result = result.and_then(|proof| {
+                ensure!(
+                    relays == s.settings.relays,
+                    "Message servers changed. Try again."
+                );
+                let chat = s.messaging.as_mut().context("Private chat unavailable")?;
+                if !chat.needs_legacy_device_approval() {
+                    ensure!(chat.can_send(), "This chat device has been removed");
+                    return Ok(());
+                }
+                // Keep the exact proof queued across restarts before updating the
+                // private engine. Delivery and relay acknowledgements run separately.
+                s.store.queue_event(&proof)?;
+                s.messaging
+                    .as_mut()
+                    .unwrap()
+                    .ingest_authorization(&proof)
+                    .map_err(anyhow::Error::msg)
+            });
+            if let Err(error) = result {
+                s.error = Some(error.to_string());
+            }
+            s.revision += 1;
+        });
         Ok(())
     }
     fn load_profile(&self, author: Option<String>) -> Result<()> {

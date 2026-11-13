@@ -142,7 +142,8 @@ fn fresh_native_profile_orders_with_strict_js_peer() {
     assert_eq!(url.scheme(), "ws");
     assert_eq!(url.host_str(), Some("127.0.0.1"));
     let mut relays = vec![relay];
-    if let Ok(silent) = env::var("MARKET_NATIVE_SILENT_RELAY") {
+    let legacy = env::var_os("MARKET_TEST_LEGACY_APPROVAL").is_some();
+    if !legacy && let Ok(silent) = env::var("MARKET_NATIVE_SILENT_RELAY") {
         let url = url::Url::parse(&silent).unwrap();
         assert_eq!(url.scheme(), "ws");
         assert_eq!(url.host_str(), Some("127.0.0.1"));
@@ -156,14 +157,21 @@ fn fresh_native_profile_orders_with_strict_js_peer() {
             ..Default::default()
         })
         .unwrap();
-    let market =
-        Market::open_fresh(directory.path(), &iris_market_core::generate_secret_key()).unwrap();
+    let secret = iris_market_core::generate_secret_key();
+    let market = if legacy {
+        Market::open(directory.path(), &secret, false)
+    } else {
+        Market::open_fresh(directory.path(), &secret)
+    }
+    .unwrap();
     let snapshot = || serde_json::from_str::<Value>(&market.snapshot().unwrap()).unwrap();
     assert_eq!(snapshot()["messaging_ready"], true);
     // Fresh profiles browse as guests until the explicit local setup action.
-    market
-        .command(r#"{"type":"update_profile","name":"Synthetic buyer"}"#)
-        .unwrap();
+    if !legacy {
+        market
+            .command(r#"{"type":"update_profile","name":"Synthetic buyer"}"#)
+            .unwrap();
+    }
     assert_eq!(snapshot()["profile_name_required"], false);
     let end = Instant::now() + Duration::from_secs(30);
     while snapshot()["listings"].as_array().unwrap().is_empty() {
@@ -175,6 +183,16 @@ fn fresh_native_profile_orders_with_strict_js_peer() {
     }
     let id = snapshot()["listings"][0]["id"].clone();
     market.command(&json!({"type":"request_order","listing_id":id,"quantity":1,"note":"Synthetic native order"}).to_string()).unwrap();
+    if legacy {
+        assert_eq!(snapshot()["needs_chat_device_approval"], true);
+        let end = Instant::now() + Duration::from_secs(25);
+        while !std::path::Path::new(&env::var("MARKET_TEST_REPLY_QUEUED").unwrap()).exists() {
+            assert!(Instant::now() < end, "The shop did not queue its reply");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(snapshot()["orders"][0]["status"], "requested");
+        market.command(r#"{"type":"approve_chat_device"}"#).unwrap();
+    }
     let end = Instant::now() + Duration::from_secs(40);
     loop {
         let state = snapshot();
@@ -193,6 +211,13 @@ fn fresh_native_profile_orders_with_strict_js_peer() {
         std::thread::sleep(Duration::from_millis(50));
     }
     market.shutdown();
+    if legacy {
+        let reopened = Market::open(directory.path(), &secret, false).unwrap();
+        let state: Value = serde_json::from_str(&reopened.snapshot().unwrap()).unwrap();
+        assert_eq!(state["needs_chat_device_approval"], false);
+        assert_eq!(state["orders"][0]["status"], "accepted");
+        reopened.shutdown();
+    }
 }
 
 /// Explicit opt-in diagnostic: public discovery reads only; never start Market's sender.

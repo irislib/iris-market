@@ -119,6 +119,9 @@ final class MarketStore: ObservableObject {
         #endif
         if next.revision >= snapshot.revision {
             if next.settings.ai != snapshot.settings.ai { invalidateAITest() }
+            if snapshot.approvingChatDevice == true, next.approvingChatDevice != true, let issue = next.error {
+                alert = issue
+            }
             snapshot = next
             syncPush()
             if next.profileNameRequired != true || demo { dismissProfileSetup() }

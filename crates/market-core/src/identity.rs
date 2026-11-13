@@ -198,6 +198,34 @@ pub async fn register_device(
     .await
 }
 
+/// An explicit upgrade of an owner-key chat session. Adopt an existing approval
+/// if present. A roster that excludes this device must go through regular sign-in.
+pub(crate) async fn legacy_device_approval(keys: &Keys, relays: &[String]) -> Result<Event> {
+    let owner = keys.public_key();
+    let previous = fetch_authorization_complete(relays, owner).await?;
+    if !previous.is_empty() {
+        ensure!(
+            previous.len() == 1,
+            "Conflicting device authorizations; resolve them in Iris Chat first"
+        );
+        let proof = &previous[0];
+        ensure!(
+            AppKeys::from_event(proof)?.get_device(&owner).is_some(),
+            "This device is absent from your signed device list. Sign in again to authorize it."
+        );
+        return Ok(proof.clone());
+    }
+    let proof =
+        prepare_registration(owner, owner, &[], crate::listing::now())?.sign_with_keys(keys)?;
+    ensure!(
+        fetch_authorization_complete(relays, owner)
+            .await?
+            .is_empty(),
+        "Your device list changed. Try again."
+    );
+    Ok(proof)
+}
+
 pub async fn register_with_signer(
     owner: PublicKey,
     device_secret: &str,

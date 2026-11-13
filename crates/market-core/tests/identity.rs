@@ -217,39 +217,35 @@ fn linked_devices_send_without_owner_secret_and_revoke_only_the_actual_destinati
     )
     .unwrap();
     let pending = a.pending_outbound();
-    assert!(pending.iter().any(|event| {
-        event
-            .tags
-            .public_keys()
-            .any(|key| *key == second.public_key())
-    }));
+    let delivered = |chat: &Messaging, mine: bool| {
+        chat.conversations().iter().flat_map(|chat| &chat.messages)
+            .any(|message| message.mine == mine && message.text == "Linked device without owner key")
+    };
+    assert!(!delivered(&peer, false) && !delivered(&b, true));
+    let mut peer_copy = None;
+    let mut sibling_copy = None;
     for event in &pending {
+        // Only the intended ratchet session can identify its ciphertext.
+        assert!(event.tags.public_keys().next().is_none());
+        let had_peer = delivered(&peer, false);
+        let had_sibling = delivered(&b, true);
         peer.receive(event).unwrap();
         b.receive(event).unwrap();
+        if !had_peer && delivered(&peer, false) {
+            peer_copy = Some(event.id);
+        }
+        if !had_sibling && delivered(&b, true) {
+            sibling_copy = Some(event.id);
+        }
     }
-    assert!(
-        peer.conversations()
-            .iter()
-            .flat_map(|chat| &chat.messages)
-            .any(|message| message.text == "Linked device without owner key")
-    );
-    // The logical conversation peer is unchanged for an own-sibling envelope.
-    // Removing the sibling must block that ciphertext while retaining peer delivery.
+    let peer_copy = peer_copy.expect("peer decrypted its incoming message");
+    let sibling_copy = sibling_copy.expect("sibling decrypted its own-device copy");
+    assert_ne!(peer_copy, sibling_copy);
+
     a.ingest_authorization(&roster(&owner, &[first.public_key()], time + 1))
         .unwrap();
     assert!(a.can_send());
     let remaining = a.pending_outbound();
-    assert!(!remaining.is_empty());
-    assert!(!remaining.iter().any(|event| {
-        event
-            .tags
-            .public_keys()
-            .any(|key| *key == second.public_key())
-    }));
-    assert!(remaining.iter().any(|event| {
-        event
-            .tags
-            .public_keys()
-            .any(|key| *key == peer_keys.public_key())
-    }));
+    assert!(remaining.iter().all(|event| event.id != sibling_copy));
+    assert!(remaining.iter().any(|event| event.id == peer_copy));
 }

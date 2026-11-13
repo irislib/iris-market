@@ -269,6 +269,25 @@ export function createMessaging({ developerMint, getRelays=()=>[], getPublicRela
     for(const id of retired)if(wireDeadlines.get(id)?.observed<now()-60)wireDeadlines.delete(id);
   }
   const startRuntime = async ({ justAuthorized = false } = {}) => {
+    // NDR saves its sending keys before handing off ciphertext. A received reply
+    // can advance that session between the save and the handoff. Remember only
+    // public signer/device bindings from the local session, scoped to this runtime.
+    const recentSigners = new Map<string, { owner: string; device: string }>();
+    const sessionStorage = { ...privateStorage, async put(key: string, value) {
+      await privateStorage.put(key, value);
+      if (!key.startsWith('v1/user/') || key !== 'v1/user/' + value?.publicKey) return;
+      for (const device of value.devices) {
+        for (const session of [device.activeSession, ...device.inactiveSessions]) {
+          if (!session) continue;
+          const state = JSON.parse(session.state);
+          for (const signer of [state.ourCurrentNostrKey?.publicKey, state.ourNextNostrKey?.publicKey]) {
+            if (!signer || recentSigners.has(signer)) continue;
+            recentSigners.set(signer, { owner: value.publicKey, device: device.deviceId });
+            if (recentSigners.size > 4096) recentSigners.delete(recentSigners.keys().next().value);
+          }
+        }
+      }
+    }};
     const attempt = generation;
     check(attempt);
     if (!account || !HEX.test(account.owner) || !account.proof || !account.deviceSecret) throw new Error('Chat is waiting for device approval.');
@@ -347,7 +366,12 @@ export function createMessaging({ developerMint, getRelays=()=>[], getPublicRela
     });
     const outboundContext=(event:UnsignedEvent, id:string|undefined, context:PublicationContext):PublicationContext=>{
       const result=publicationContext(event,context,runtime?.getSessionManager()?.getUserRecords() ?? new Map()),end=wireDeadlines.get(id)?.end;
-      return result && end!==undefined ? {...result,wireDeadline:end} : result;
+      const previous = event.kind === 1060 && result && !result.groupId && !result.recipientDevicePubkey
+        ? recentSigners.get(event.pubkey) : undefined;
+      const destination = previous
+        ? { ...result, recipientDeviceOwnerPubkey: previous.owner, recipientDevicePubkey: previous.device }
+        : result;
+      return destination && end !== undefined ? { ...destination, wireDeadline: end } : destination;
     };
     const observedAuthorization = new Map([[account.proof.id, account.proof]]);
     let observedAt = -1, authorizationOverflow = false;
@@ -366,7 +390,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], getPublicRela
       } catch { authorizationChecked = false; chatStatus = 'pending'; }
       notify();
     };
-    runtime = new NdrRuntime({ storage: privateStorage,
+    runtime = new NdrRuntime({ storage: sessionStorage,
       nostrSubscribe: (filter, callback) => transport.subscribe([filter], { onEvent: event => {
         if (attempt !== generation) return;
         const wasAuthorized = authorizationChecked;

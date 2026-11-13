@@ -275,7 +275,8 @@ export function createMatchBook(vault:Vault,owner:string,device:string,notify:()
     }),
     aliasChats():AliasChat[]{
       return Object.entries(book.aliases??{}).filter(([,a])=>a.peer||a.session)
-        .map(([id,a])=>({id:chatId(id),title:a.title,connected:aliases.canSend(a),messages:structuredClone(a.messages),shared:!!a.shared,revealed:a.revealed??null}))
+        .map(([id,a])=>({id:chatId(id),title:a.title,connected:aliases.canSend(a),messages:structuredClone(a.messages),shared:!!a.shared,revealed:a.revealed??null,
+          unread:a.messages.filter(m=>!m.mine&&m.created_at_ms>(a.read_ms??0)).length}))
     },
     /** The statement your profile key signs before an explicit reveal. */
     revealDraft(proposal:string){
@@ -287,6 +288,11 @@ export function createMatchBook(vault:Vault,owner:string,device:string,notify:()
       const alias=b.aliases?.[proposal];requireMatch(alias&&b.interests[proposal]?.alias,'This private match has ended.')
       requireMatch(b.jobs.length+b.aliasJobs!.length<256,'Connect to send queued messages before sending more.')
       b.aliasJobs!.push(aliases.sendReveal(alias,proposal,proof))
+    }),
+    /** Read marks stay in the encrypted vault with the chat itself. */
+    aliasRead:(chat:string)=>write(b=>{
+      const alias=aliasFor(b,chat)
+      if(alias)alias.read_ms=Math.max(alias.read_ms??0,...alias.messages.map(m=>m.created_at_ms))
     }),
     aliasSend:(chat:string,text:string)=>write(b=>{
       const alias=aliasFor(b,chat);requireMatch(alias,'This private match has ended.')

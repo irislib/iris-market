@@ -134,8 +134,11 @@ test('introductions connect per-match aliases, never the accounts',async()=>{
     assert.equal(thread.id,chat);assert.equal(thread.connected,true)
     assert.equal(thread.messages[0].text,HELLO)
   }
+  assert.equal(a.aliasChats()[0].unread,a.aliasChats()[0].messages.filter(m=>!m.mine).length)
+  await a.aliasRead(chat);assert.equal(a.aliasChats()[0].unread,0)
   await b.aliasSend(chat,'It is still available');await a.aliasSend(chat,'Great, thanks')
   await relay()
+  assert.equal(a.aliasChats()[0].unread,1,'only the new reply is unread')
   for(const book of [a,b]){
     const texts=book.aliasChats()[0].messages.map(m=>m.text)
     assert.ok(texts.includes('It is still available')&&texts.includes('Great, thanks'),texts.join('|'))

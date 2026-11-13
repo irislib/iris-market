@@ -54,8 +54,12 @@ struct InboxView: View {
                         ForEach(threads) { thread in
                             Button { selected = thread } label: {
                                 VStack(alignment: .leading, spacing: 6) {
+                                    if isPrivateMatch(thread.conversation.id) {
+                                        PrivateMatchRow(title: thread.conversation.name, subtitle: thread.messages.last?.text ?? "No messages")
+                                    } else {
                                     UserRow(person: store.snapshot.people[thread.conversation.id] ?? .unnamed(thread.conversation.id), subtitle: thread.messages.last?.text ?? "No messages", size: 48)
-                                    if grouping == "threads" { Text(title(thread)).font(.system(size: 12)).foregroundStyle(MarketTheme.muted).lineLimit(1).padding(.leading, 60) }
+                                    }
+                                    if grouping == "threads" && !isPrivateMatch(thread.conversation.id) { Text(title(thread)).font(.system(size: 12)).foregroundStyle(MarketTheme.muted).lineLimit(1).padding(.leading, 60) }
                                 }.padding(.vertical, 17)
                             }.buttonStyle(.plain)
                             Divider().overlay(MarketTheme.line)
@@ -149,6 +153,8 @@ struct ConversationView: View {
     @State private var orderID: String?
     private var current: MarketConversation { store.snapshot.conversations.first(where: { $0.id == conversation.id }) ?? MarketConversation(id:conversation.id, name:conversation.name, messages:[]) }
     private var person: MarketPerson { store.snapshot.people[current.id] ?? .unnamed(current.id) }
+    /// Alias chats have no account behind them: no profile, timers, escrow or reactions.
+    private var isMatch: Bool { isPrivateMatch(conversation.id) }
     private var visibleMessages: [MarketMessage] { threadKey == "*" ? current.messages : current.messages.filter { $0.threadKey == threadKey } }
     private var incomingIDs: [String] { visibleMessages.filter { !$0.mine && viewportIncoming.contains($0.id) }.map(\.id) }
     var body: some View {
@@ -157,16 +163,21 @@ struct ConversationView: View {
                 #if os(macOS)
                 HStack(spacing: 8) {
                     MarketPageBackButton()
+                    if isMatch { PrivateMatchRow(title: current.name, subtitle: nil).accessibilityAddTraits(.isHeader) } else {
                     UserAvatar(person: person, size: 32)
                     UserName(person: person)
                         .font(.headline)
                         .accessibilityAddTraits(.isHeader)
+                    }
                     Spacer(minLength: 0)
                 }
                 .foregroundStyle(MarketTheme.ink)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 4)
                 #endif
+                if isMatch {
+                    PrivateMatchChatBanner(chatID: conversation.id).padding(.horizontal, 18).padding(.top, 8)
+                }
                 if let id = context?.orderId {
                     Button { orderID = id } label: { Text(inboxContextTitle(context, snapshot: store.snapshot)).font(.system(size: 14, weight: .medium)).lineLimit(2).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.vertical, 12) }
                 } else if context?.listing != nil { Text(inboxContextTitle(context, snapshot: store.snapshot)).font(.system(size: 13)).foregroundStyle(MarketTheme.muted).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.vertical, 12) }
@@ -174,11 +185,15 @@ struct ConversationView: View {
                     GeometryReader { viewport in
                     ScrollView {
                         LazyVStack(spacing: 13) {
+                            if isMatch {
+                                Label("Private match", systemImage: "lock.fill").font(.system(size: 11)).foregroundStyle(MarketTheme.muted).padding(.vertical, 15)
+                            } else {
                             Label("Private conversation", systemImage: "lock.fill").font(.system(size: 11)).foregroundStyle(MarketTheme.muted).padding(.vertical, 15)
                             if !current.messages.isEmpty && current.messages.allSatisfy({$0.id.hasPrefix("notice-")}) {
                                 Text("New chat messages use your Market profile.").font(.caption).foregroundStyle(MarketTheme.muted)
                             } else { ChatTimerControl(peer:conversation.id) }
-                            if context?.orderId == nil {
+                            }
+                            if context?.orderId == nil && !isMatch {
                                 EscrowInboxCards(peer: conversation.id, listing: context?.listing)
                             }
                             ForEach(visibleMessages) { message in
@@ -229,7 +244,9 @@ struct ConversationView: View {
                 .navigationBarBackButtonHidden(true)
                 #else
                 .toolbar {
-                    ToolbarItem(placement: .principal) { UserRow(person: person, size: 30) }
+                    ToolbarItem(placement: .principal) {
+                        if isMatch { PrivateMatchRow(title: current.name, subtitle: nil) } else { UserRow(person: person, size: 30) }
+                    }
                     ToolbarItem(placement: .cancellationAction) { MarketDoneButton { dismiss() } }
                 }
                 #endif
@@ -257,7 +274,7 @@ struct ConversationView: View {
             if message.createdAt > 0 { Text(Date(timeIntervalSince1970: Double(message.createdAt)), style: .time) }
             if message.mine { Text(NativeMessagePresentation.delivery(message.delivery)) }
             Spacer(minLength: 4)
-            if message.id.hasPrefix("notice-") { Text("Anonymous notice") } else {
+            if message.id.hasPrefix("notice-") { Text("Anonymous notice") } else if isMatch { EmptyView() } else {
             Button { reactionMessageID = message.id } label: { Image(systemName: "face.smiling") }
                 .buttonStyle(.plain).accessibilityLabel("React to message").disabled(store.demo || store.busy)
                 .popover(isPresented: Binding(get: { reactionMessageID == message.id }, set: { if !$0 { reactionMessageID = nil } })) {
@@ -294,5 +311,23 @@ struct ConversationView: View {
         var request: [String: Any] = ["type": "send_message", "peer_id": conversation.id, "text": pending]
         if let context, let value = try? MarketJSON.object(context) { request["context"] = value }
         store.command(request) { store.messageDrafts.sent(pending, for: key, success: $0) }
+    }
+}
+
+func isPrivateMatch(_ id: String) -> Bool { id.hasPrefix("match:") }
+
+/// An alias chat is labeled by its match, never by a person.
+struct PrivateMatchRow: View {
+    let title: String
+    let subtitle: String?
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "theatermasks.fill").font(.system(size: subtitle == nil ? 15 : 20)).foregroundStyle(MarketTheme.onAction)
+                .frame(width: subtitle == nil ? 30 : 48, height: subtitle == nil ? 30 : 48).background(MarketTheme.action, in: Circle())
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.system(size: 16, weight: .semibold)).lineLimit(1)
+                if let subtitle { Text(subtitle).font(.system(size: 14)).foregroundStyle(MarketTheme.muted).lineLimit(1) }
+            }
+        }.accessibilityElement(children: .combine)
     }
 }

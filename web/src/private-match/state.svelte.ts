@@ -10,6 +10,7 @@ export type PrivateMatchApi = {
     privateMatch(action: MatchAction, listing?: unknown): Promise<void>
     privateMatchChats?(): AliasChat[]
     privateMatchSend?(chat: string, text: string): Promise<void>
+    privateMatchRead?(chat: string): Promise<void>
   }
 }
 
@@ -21,7 +22,6 @@ export class PrivateMatchState {
   /** New messages per alias chat since it was last opened on this device. */
   unread = $state.raw<Record<string, number>>({})
   unreadTotal = $derived(Object.values(this.unread).reduce((a, b) => a + b, 0))
-  private read: Record<string, number> = {}
   owner = $state('')
   ready = $state(false)
   canSend = $state(false)
@@ -39,7 +39,7 @@ export class PrivateMatchState {
   sync() {
     const state = this.api.state()
     const owner = state.ownerPubkey ?? ''
-    if (this.owner !== owner) { this.dialogOpen = false; this.read = {} }
+    if (this.owner !== owner) this.dialogOpen = false
     this.owner = owner
     this.ready = state.status === 'ready'
     this.canSend = !!state.canSend
@@ -52,25 +52,13 @@ export class PrivateMatchState {
     this.countUnread()
   }
 
-  private storageKey() { return 'market-private-match-read/' + this.owner }
-
   markRead(chat: string) {
-    const last = Math.max(0, ...(this.chats.find(c => c.id === chat)?.messages.map(m => m.created_at_ms) ?? []))
-    if ((this.read[chat] ?? 0) >= last) return
-    this.read = {...this.read, [chat]: last}
-    // A per-device convenience only; message history stays in the encrypted vault.
-    try { localStorage.setItem(this.storageKey(), JSON.stringify(this.read)) } catch {}
-    this.countUnread()
+    if (!this.chats.find(c => c.id === chat)?.unread) return
+    void this.api.messaging.privateMatchRead?.(chat).then(() => this.sync(), () => {})
   }
 
   private countUnread() {
-    if (!Object.keys(this.read).length) try { this.read = JSON.parse(localStorage.getItem(this.storageKey()) ?? '{}') ?? {} } catch {}
-    const next: Record<string, number> = {}
-    for (const chat of this.chats) {
-      const count = chat.messages.filter(m => !m.mine && m.created_at_ms > (this.read[chat.id] ?? 0)).length
-      if (count) next[chat.id] = count
-    }
-    this.unread = next
+    this.unread = Object.fromEntries(this.chats.filter(c => c.unread).map(c => [c.id, c.unread]))
   }
 
   async send(chat: string, text: string) {

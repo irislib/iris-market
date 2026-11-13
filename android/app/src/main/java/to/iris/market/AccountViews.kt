@@ -92,7 +92,7 @@ private fun inboxContextTitle(context:MessageContext?,state:MarketSnapshot):Stri
     return title.ifEmpty {"Listing inquiry"}
 }
 
-@Composable fun InboxView(state:MarketSnapshot,model:MarketModel,busy:Boolean,openOrder:(String)->Unit,visible:Boolean=true) {
+@Composable fun InboxView(state:MarketSnapshot,model:MarketModel,busy:Boolean,openOrder:(String)->Unit,visible:Boolean=true,openProfile:(String)->Unit={}) {
     var selected by remember(state.publicKey) { mutableStateOf<String?>(null) }
     var selectedThread by remember(state.publicKey) { mutableStateOf("*") }
     var selectedContext by remember(state.publicKey) { mutableStateOf<MessageContext?>(null) }
@@ -120,7 +120,7 @@ private fun inboxContextTitle(context:MessageContext?,state:MarketSnapshot):Stri
     }
     val conversation=state.conversations.firstOrNull{it.id==selected}
     if(conversation != null) {
-        ConversationView(if(selectedThread=="*")conversation else conversation.copy(messages=conversation.messages.filter { it.threadKey==selectedThread }),state.people[conversation.id] ?: PublicPerson.unnamed(conversation.id),model,busy,openOrder,selectedContext,state.publicKey,selectedThread,visible,inboxContextTitle(selectedContext,state)){selected=null};return
+        ConversationView(if(selectedThread=="*")conversation else conversation.copy(messages=conversation.messages.filter { it.threadKey==selectedThread }),state.people[conversation.id] ?: PublicPerson.unnamed(conversation.id),model,busy,openOrder,selectedContext,state.publicKey,selectedThread,visible,inboxContextTitle(selectedContext,state),openProfile){selected=null};return
     }
     Column(Modifier.fillMaxSize().padding(horizontal=22.dp)) {
         Row(Modifier.padding(top=15.dp,bottom=8.dp).fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
@@ -155,8 +155,9 @@ private fun inboxContextTitle(context:MessageContext?,state:MarketSnapshot):Stri
                 val c=thread.conversation
                 Surface(color=White,shape=RoundedCornerShape(20.dp),modifier=Modifier.fillMaxWidth().clickable{selected=c.id;selectedThread=thread.key;selectedContext=thread.context}) {
                     Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(6.dp)) {
-                        UserRow(state.people[c.id] ?: PublicPerson.unnamed(c.id),thread.messages.lastOrNull()?.text ?: "No messages",47.dp)
-                        if(groupByThreads)Text(inboxContextTitle(thread.context,state),color=Muted,style=MaterialTheme.typography.bodySmall,maxLines=1,overflow=TextOverflow.Ellipsis,modifier=Modifier.padding(start=59.dp))
+                        if(isPrivateMatch(c.id)) PrivateMatchRow(c.name,thread.messages.lastOrNull()?.text ?: "No messages")
+                        else UserRow(state.people[c.id] ?: PublicPerson.unnamed(c.id),thread.messages.lastOrNull()?.text ?: "No messages",47.dp)
+                        if(groupByThreads&&!isPrivateMatch(c.id))Text(inboxContextTitle(thread.context,state),color=Muted,style=MaterialTheme.typography.bodySmall,maxLines=1,overflow=TextOverflow.Ellipsis,modifier=Modifier.padding(start=59.dp))
                     }
                 }
             }
@@ -164,7 +165,9 @@ private fun inboxContextTitle(context:MessageContext?,state:MarketSnapshot):Stri
     }
 }
 
-@Composable fun ConversationView(c:Conversation,person:PublicPerson,model:MarketModel,busy:Boolean,openOrder:(String)->Unit,context:MessageContext?=null,accountID:String="",threadKey:String="*",visible:Boolean=true,contextTitle:String="Conversation",back:()->Unit) {
+@Composable fun ConversationView(c:Conversation,person:PublicPerson,model:MarketModel,busy:Boolean,openOrder:(String)->Unit,context:MessageContext?=null,accountID:String="",threadKey:String="*",visible:Boolean=true,contextTitle:String="Conversation",openProfile:(String)->Unit={},back:()->Unit) {
+    // Alias chats have no account behind them: no profile, timers, escrow or reactions.
+    val isMatch=isPrivateMatch(c.id)
     val lifecycle=LocalLifecycleOwner.current.lifecycle
     val reads=remember(model,accountID,c.id,threadKey){VisibleThreadReads(c.id,threadKey,
         accountAllowed={accountID.isNotBlank()&&model.state.value.publicKey==accountID&&!model.state.value.demo},
@@ -195,16 +198,18 @@ private fun inboxContextTitle(context:MessageContext?,state:MarketSnapshot):Stri
     Column(Modifier.fillMaxSize().padding(horizontal=18.dp).imePadding()) {
         Row(verticalAlignment=Alignment.CenterVertically) {
             IconButton(onClick=back){Icon(Icons.Filled.ArrowBack,"Back to inbox")}
-            Box(Modifier.weight(1f)) { UserRow(person,"Private conversation",32.dp) }
+            Box(Modifier.weight(1f)) { if(isMatch) PrivateMatchRow(c.name,null) else UserRow(person,"Private conversation",32.dp) }
         }
+        if(isMatch) PrivateMatchChatBanner(escrowState,model,busy,c.id,openProfile)
         context?.orderId?.let { id -> TextButton(onClick={openOrder(id)}) { Text(contextTitle) } }
         if(context?.listing!=null)Text(contextTitle,color=Muted,style=MaterialTheme.typography.bodySmall,modifier=Modifier.padding(vertical=8.dp))
         val chatMessages = escrowState.conversations.firstOrNull { it.id == c.id }?.messages.orEmpty()
-        if (chatMessages.isNotEmpty() && chatMessages.all { it.id.startsWith("notice-") }) {
+        if (isMatch) Unit
+        else if (chatMessages.isNotEmpty() && chatMessages.all { it.id.startsWith("notice-") }) {
             Text("New chat messages use your Market profile.",color=Muted,style=MaterialTheme.typography.bodySmall)
         } else { ChatTimerControl(escrowState,model,c.id) }
         LazyColumn(Modifier.weight(1f).fillMaxWidth(),state=listState,contentPadding=PaddingValues(vertical=18.dp),verticalArrangement=Arrangement.spacedBy(10.dp)) {
-            if(context?.orderId==null && escrowState.escrowInvites.isNotEmpty())item { EscrowCardsView(escrowState,model,c.id,context?.listing) }
+            if(!isMatch && context?.orderId==null && escrowState.escrowInvites.isNotEmpty())item { EscrowCardsView(escrowState,model,c.id,context?.listing) }
             items(c.messages,key={it.id}) { m ->
                 Row(Modifier.fillMaxWidth(),horizontalArrangement=if(m.mine) Arrangement.End else Arrangement.Start) {
                     Surface(color=if(m.mine) Action else White,contentColor=if(m.mine) OnInk else Ink,
@@ -218,7 +223,7 @@ private fun inboxContextTitle(context:MessageContext?,state:MarketSnapshot):Stri
                             Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(6.dp)) {
                                 if(m.createdAt>0)Text(java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT).format(java.util.Date(m.createdAt*1000)),style=MaterialTheme.typography.labelSmall)
                                 if(m.mine)Text(messageDeliveryLabel(m.delivery),style=MaterialTheme.typography.labelSmall)
-                                if(m.id.startsWith("notice-")) Text("Anonymous notice",style=MaterialTheme.typography.labelSmall) else Box {
+                                if(m.id.startsWith("notice-")) Text("Anonymous notice",style=MaterialTheme.typography.labelSmall) else if(!isMatch) Box {
                                     IconButton(onClick={reactionTarget=m.id},enabled=!busy,modifier=Modifier.size(28.dp)){Icon(Icons.Filled.AddReaction,"React to message",Modifier.size(16.dp))}
                                     DropdownMenu(expanded=reactionTarget==m.id,onDismissRequest={reactionTarget=null}){messageEmoji.forEach {emoji->DropdownMenuItem(text={Text(emoji)},onClick={react(m.id,emoji)})}}
                                 }

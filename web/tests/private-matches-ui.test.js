@@ -30,9 +30,8 @@ test('private matches dialog lists offers and sends votes through the account', 
   assert.deepEqual(calls, [{op: 'vote', proposal: 'p1', accept: true}])
 })
 
-function mountMatches({view, chats, calls = [], sent = []}) {
+function mountMatches({view, chats, calls = [], sent = [], read = () => {}}) {
   document.body.replaceChildren()
-  globalThis.localStorage?.clear()
   const helper = 'a'.repeat(64)
   const messages = document.createElement('div')
   messages.innerHTML = '<div class="chat-shell"></div>'
@@ -43,7 +42,8 @@ function mountMatches({view, chats, calls = [], sent = []}) {
     state: () => ({ownerPubkey: helper, status: 'ready', canSend: true, conversations: []}),
     onState(listener) { listeners.push(listener) }, openChat(key) { opened.push(key) },
     messaging: {privateMatchView: () => structuredClone(view()), privateMatch: async action => { calls.push(action) },
-      privateMatchChats: () => structuredClone(chats()), privateMatchSend: async (chat, text) => { sent.push([chat, text]) }},
+      privateMatchChats: () => structuredClone(chats()), privateMatchSend: async (chat, text) => { sent.push([chat, text]) },
+      privateMatchRead: async chat => read(chat)},
   }
   setupPrivateMatches(api, () => [], messages)
   return {messages, opened, update: () => listeners.forEach(l => l())}
@@ -56,9 +56,10 @@ test('an introduced match opens a labeled alias chat inside the dialog', async (
   const view = {sent: {}, received: {}, pairs: {}, public_leads: {},
     interests: {p2: {helper: 'a'.repeat(64), entry: 's2', summary: 'Two-seat cargo bike', expires_at: at, vote: true, contact: null,
       chat: 'match:p2', connected: true, shared_profile: false, revealed: null}}}
-  let chats = [{id: 'match:p2', title: 'Two-seat cargo bike', connected: true, shared: false, revealed: null, messages: [hello]}]
-  const sent = [], calls = []
-  const {messages, opened, update} = mountMatches({view: () => view, chats: () => chats, sent, calls})
+  let chats = [{id: 'match:p2', title: 'Two-seat cargo bike', connected: true, shared: false, revealed: null, unread: 1, messages: [hello]}]
+  const sent = [], calls = [], reads = []
+  const read = chat => { reads.push(chat); chats = chats.map(c => ({...c, unread: 0})) }
+  const {messages, opened, update} = mountMatches({view: () => view, chats: () => chats, sent, calls, read})
   await settle()
   // A new message is visible before the dialog is opened.
   assert.match(messages.querySelector('.match-inbox-link').textContent, /Private matches\s*1/)
@@ -70,7 +71,8 @@ test('an introduced match opens a labeled alias chat inside the dialog', async (
   button(dialog, 'Open private chat').click()
   await settle()
   assert.deepEqual(opened, [], 'never opens a chat with an account')
-  assert.doesNotMatch(messages.querySelector('.match-inbox-link').textContent, /1/, 'opening the chat marks it read')
+  assert.deepEqual(reads, ['match:p2'], 'opening the chat marks it read')
+  assert.doesNotMatch(messages.querySelector('.match-inbox-link').textContent, /1/)
   const thread = dialog.querySelector('.match-chat')
   assert.match(thread.textContent, /You appear as a private alias\. They can’t see your profile\./)
   assert.match(thread.textContent, /introduced us privately/)
@@ -95,7 +97,7 @@ test('an introduced match opens a labeled alias chat inside the dialog', async (
   await settle()
   assert.deepEqual(calls, [{op: 'reveal', proposal: 'p2'}])
 
-  chats = [{...chats[0], shared: true, revealed: 'b'.repeat(64),
+  chats = [{...chats[0], shared: true, revealed: 'b'.repeat(64), unread: 0,
     messages: [hello, {id: 'm2', text: 'Shared their profile', mine: false, created_at: 2, created_at_ms: 2000, delivery: 'received'}]}]
   update()
   await settle()
@@ -110,7 +112,7 @@ test('a match that is still connecting explains why it cannot send yet', async (
   const view = {sent: {}, received: {}, pairs: {}, public_leads: {},
     interests: {p3: {helper: 'a'.repeat(64), entry: 's3', summary: 'Garden table', expires_at: at, vote: true, contact: null,
       chat: 'match:p3', connected: false, shared_profile: false, revealed: null}}}
-  const chats = [{id: 'match:p3', title: 'Garden table', connected: false, shared: false, revealed: null, messages: []}]
+  const chats = [{id: 'match:p3', title: 'Garden table', connected: false, shared: false, revealed: null, unread: 0, messages: []}]
   const {messages} = mountMatches({view: () => view, chats: () => chats})
   await settle()
   messages.querySelector('.match-inbox-link').click()

@@ -16,9 +16,9 @@ const REVEAL_TAG='iris-market/reveal'
 const INFO=new TextEncoder().encode('iris-market/private-match-alias-v1'), ROOT='https://market.iris.to/invite'
 const MAX_TEXT=8*1024, MAX_MESSAGES=10_000
 export type AliasMessage={id:string;text:string;mine:boolean;created_at:number;created_at_ms:number;delivery:'pending'|'sent'|'received'}
-export type Alias={salt:string;pubkey:string;invite:string;title:string;expires_at:number;peer?:string;early:VerifiedEvent[];session?:string;messages:AliasMessage[];shared?:boolean;revealed?:string}
+export type Alias={salt:string;pubkey:string;invite:string;title:string;expires_at:number;peer?:string;early:VerifiedEvent[];session?:string;messages:AliasMessage[];shared?:boolean;revealed?:string;read_ms?:number}
 export type AliasJob={chat:string;event:VerifiedEvent;inner?:string}
-export type AliasChat={id:string;title:string;connected:boolean;messages:AliasMessage[];shared:boolean;revealed:string|null}
+export type AliasChat={id:string;title:string;connected:boolean;messages:AliasMessage[];shared:boolean;revealed:string|null;unread:number}
 
 export const aliasSecret=(device:Uint8Array,salt:string)=>hkdf(sha256,device,hexToBytes(salt),INFO,32)
 

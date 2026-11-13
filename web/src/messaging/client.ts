@@ -706,6 +706,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], getPublicRela
     knowsMerchantChat: (key:string) => !!runtime?.getKnownAppKeysSnapshots().some(s => s.ownerPubkey === key && s.appKeys.getAllDevices().length) || hasExistingSessionWithRecipient(runtime?.getSessionUserRecords(),key),
     privateMatchView:()=>matches?.view()??null,
     privateMatchChats:()=>matches?.aliasChats()??[],
+    async privateMatchRead(chat:string){requireReady();await matches.aliasRead(chat);},
     async privateMatchSend(chat:string,text:string){
       requireReady();
       if(!canSend())throw Error('Authorize this device before sending a private match.');

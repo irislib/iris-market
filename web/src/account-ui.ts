@@ -1,255 +1,44 @@
-import {durationLabel,follow,type Retention} from './messaging/retention.ts';
-import type {merchantNotices} from './messaging/merchant-notice.ts';
-import {editChatTimer,retentionLabel,localTimerDescription} from './chat-timers-ui.ts';
+import {flushNow} from './account/flush.ts';
+import {mount, unmount} from 'svelte';
 import {setupPrivateMatches} from './private-match-ui.ts';
-import {setupMarketplaceFlags} from './marketplace-flags.ts';
-import {createChatPickerState,revealChatPicker} from './chat-picker-state.ts';
-import {visibleChatMessageIds} from './chat-visibility.ts';
-import {configuredLocalTestMint} from './wallet/mints.ts';
-import {groupMessageThreads,messageThreadKey,type MessageContext} from './message-context.ts';
-import { createSurface } from './surface.ts';
-import { setupHeaderIdentity } from './menu.ts';
-import { createProfileWithOptionalName } from './profile-setup.ts';
-import { createUnreadTracker, conversationNotifications, readingSurface } from './notifications.ts';
-import { byId, element as domElement, formFields } from './dom.ts';
-import { createChatDrafts } from './chat-drafts.ts';
-import {translatedParagraph} from './translation-content.ts';
-import { captureInvitation } from './asset-url.ts';
-import { npubEncode } from 'nostr-tools/nip19';
-import { createMessaging } from './messaging/client.ts';
-import { createAvatar, createUserName, createUserRow, nameFor, personFor, warmProfiles, resetPeople } from './people.ts';
-import { normalizePublicKey } from './social.ts';
-import { cacheProfileMetadata } from './profiles.ts';
-import { containsCashu, parsePaymentNote, renderPaymentNote, renderCashuContent } from './cashu-content.ts';
+import {setupMarketplaceFlags} from './account/marketplace-flags-ui.ts';
+import {createSurface} from './surface.ts';
+import {setupHeaderIdentity} from './menu.ts';
+import {createAvatar, createUserName} from './people.ts';
+import AccountPanel from './account/AccountPanel.svelte';
+import Inbox from './account/Inbox.svelte';
+import MessageSettings from './account/MessageSettings.svelte';
+import {AccountController, type AccountOptions, type AccountState} from './account/controller.svelte.ts';
 
-const el = domElement;
-function dialog(markup:string, name:string, options:Parameters<typeof createSurface>[0]={}) {
-  const node=createSurface({className:'account-dialog',label:name,...options}); node.innerHTML=markup;
-  node.querySelector<HTMLButtonElement>('[data-close]').onclick=()=>node.close();
-  return node;
-}
-type AccountState = Partial<ReturnType<ReturnType<typeof createMessaging>['state']>> & {status:string;devices:Array<{pubkey:string;current:boolean}>;conversations:Array<{pubkey:string;messages:any[]}>};
-interface AccountOptions {guestNotices?:ReturnType<typeof merchantNotices>;getMatchListings?:()=>Parameters<typeof import("./private-matches.ts").matchCandidates>[2];renderEscrowTrades?:(host:HTMLElement,peer?:string,listing?:string)=>void;listingTitle?:(coordinate:string)=>string|undefined;getRelays:()=>string[];getPublicRelays?:()=>string[];isPreview:()=>boolean;onIdentity?:(key:string,status:string,previous:string,pending:any[])=>void;onProfile?:(key:string)=>void;onOrder?:(id:string)=>void;onToken?:(token:string)=>unknown;onUnread?:(count:number)=>void;accountPage?:HTMLElement;onAccountPage?:()=>void;onAccountClose?:()=>void;messagePage?:HTMLElement;onMessagePage?:(peer?:string)=>void;onMessageClose?:()=>void}
-export function setupAccount({guestNotices,getMatchListings=()=>[],renderEscrowTrades=()=>{},listingTitle=()=>undefined,getRelays,getPublicRelays=getRelays,isPreview,onIdentity=()=>{},onProfile=()=>{},onOrder=()=>{},onToken=()=>{},onUnread=()=>{},accountPage,onAccountPage=()=>{},onAccountClose=()=>{},messagePage,onMessagePage=()=>{},onMessageClose=()=>{}}:AccountOptions) {
-  const pickerState=createChatPickerState();
-  const unread=createUnreadTracker({kind:'messages',onUnread});
-  const readyListeners=new Set<()=>void>(), stateListeners=new Set<(state:AccountState)=>void>();
-  let drafts=createChatDrafts(), inboxRevision=0, pendingDraft='';
-  let selectedContext:MessageContext|undefined, selectedThreadKey='general', threadMode=true;
-  try{threadMode=localStorage.getItem('market-message-grouping')!=='people';}catch{}
-  const selectionKey=()=>selected?selected+'|'+selectedThreadKey:'';
-  const incomingInvitation=captureInvitation(location.href,document.baseURI);
-  let pendingInvite=incomingInvitation?.invite??null;
-  if(incomingInvitation)history.replaceState(null,'',incomingInvitation.cleanURL);
-  let state:AccountState={status:'signed-out',devices:[],conversations:[]}, busy=false, selected=null, pendingInbox=false, signingOnly=false, loginView='new', controller;
-  const account=dialog(`<button data-close class="dialog-close icon-button" aria-label="Close profile">×</button><h2>Your profile</h2><div id="account-person"></div><p id="account-status" class="small muted" role="status"></p><p id="account-error" class="error" role="alert"></p>
-  <div id="account-login"><form id="account-create" class="profile-start"><label for="account-name">Name <span class="muted">· optional</span></label><input id="account-name" placeholder="Name" autocomplete="nickname" autofocus maxlength="80"><button class="button primary">Continue</button></form><button id="account-existing-toggle" class="text-button profile-existing">Existing profile</button>
-  <div id="account-existing" hidden><button id="account-extension" class="button secondary">Browser extension</button><button id="account-link-device" class="button secondary">Link this device</button><details class="account-option" id="account-remote-option"><summary>Remote signer</summary><form id="account-remote"><label for="account-bunker">Connection link <span class="muted">· optional</span></label><input id="account-bunker" placeholder="bunker://…" autocomplete="off"><button class="button secondary">Connect signer</button></form><div id="account-connect" hidden><p class="small muted">Approve this link on your other device.</p><input id="account-connect-link" readonly aria-label="Signer connection link"><button id="account-copy-connect" class="text-button">Copy connection link</button><a id="account-open-connect" class="text-button" target="_blank" rel="noopener noreferrer">Open signer</a><button id="account-cancel-connect" class="text-button">Cancel</button></div></details>
-  <details class="account-option" id="account-key-option"><summary>Private key</summary><form id="account-key-form"><label for="account-key">Private key</label><input id="account-key" type="password" placeholder="nsec…" autocomplete="off" spellcheck="false" required><button class="button secondary">Continue</button></form></details><button id="account-existing-back" class="text-button">Back</button></div></div>
-  <form id="account-unlock" hidden><label for="account-password">Password</label><input id="account-password" type="password" autocomplete="current-password"><button class="button primary">Continue</button></form>
-  <div id="account-ready" hidden><button id="account-open-invite" class="button primary" hidden>Open private invitation</button><div class="account-actions"><button id="account-inbox" class="button primary">Messages</button><button id="account-profile" class="button secondary">View profile</button><button id="account-lock" class="text-button">Lock</button></div><div id="posting-signer" hidden><p class="small muted">Connect a signer to post listings.</p><button id="posting-extension" class="button secondary">Use browser signer</button><button id="posting-remote" class="text-button">Use remote signer</button></div><details class="account-option"><summary>Edit profile</summary><form id="account-edit-profile"><label>Name<input id="account-edit-name" maxlength="80" required autocomplete="nickname"></label><label>Photo link<input id="account-edit-picture" type="url" placeholder="https://…" autocomplete="off"></label><button class="button secondary">Save profile</button></form></details><details class="account-option"><summary>Linked devices</summary><div id="account-devices"></div><p class="small muted">New messages reach your authorized devices. Earlier history is not copied automatically.</p></details><details class="account-option"><summary>Profile details</summary><button id="account-copy-id" class="text-button">Copy profile ID</button><button id="account-backup" class="text-button">Copy backup key</button><button id="account-invite" class="text-button">Copy private chat invitation</button></details></div>`, 'Profile settings',{pageHost:accountPage,onOpen:onAccountPage,onClose:onAccountClose});
-  const inbox=dialog(`<button data-close class="dialog-close icon-button" aria-label="Close messages">×</button><h2>Messages</h2><div class="chat-grouping" role="group" aria-label="Group conversations"><button type="button" id="chat-threads">Threads</button><button type="button" id="chat-people">People</button></div><div class="chat-shell"><aside class="chat-sidebar"><form id="chat-new"><label class="sr-only" for="chat-recipient">User ID or private invitation</label><input id="chat-recipient" placeholder="User ID or invitation" autocomplete="off"><button class="button secondary" aria-label="Start conversation">New</button></form><div id="chat-list"></div></aside><section class="chat-main"><div id="chat-person"></div><div id="chat-messages" role="log" aria-live="polite"></div><p id="chat-status" class="small muted" role="status"></p><p id="chat-error" class="error" role="alert"></p><form id="chat-send"><label class="sr-only" for="chat-text">Message</label><textarea id="chat-text" placeholder="Message" rows="2" maxlength="8000"></textarea><button id="chat-send-button" class="button primary">Send</button></form></section></div>`, 'Messages',{pageHost:messagePage,onOpen:()=>onMessagePage(selected||undefined),onClose:onMessageClose});
-  inbox.classList.add('inbox-dialog');
-  const $=byId;
-  const headerIdentity=setupHeaderIdentity({createAvatar,createUserName,onProfile});
-  const profileCopy=value=>String(value).replace(/\baccounts\b/gi,'profiles').replace(/\baccount\b/gi,'profile');
-  let guestRows:AccountState['conversations']=[],guestPolicy:Retention=follow;
-  let guestTimer:ReturnType<typeof setTimeout>;
-  async function loadGuest() {
-    if(!guestNotices||state.status!=='signed-out')return;
-    const rows=await guestNotices.guestHistory(),policy=await guestNotices.guestRetention();
-    if(state.status!=='signed-out')return;
-    guestRows=rows;guestPolicy=policy;clearTimeout(guestTimer);
-    if(policy.mode==='expire'&&rows.length) {
-      const end=Math.min(...rows.flatMap(c=>c.messages.map(m=>m.createdAt+policy.seconds)));
-      guestTimer=setTimeout(()=>{void loadGuest().then(()=>renderInbox()).catch(()=>{});},Math.max(1,Math.min(2147483647,end*1000-Date.now())));
-    }
-  }
-  const fail=error=>{ $('account-error').textContent=profileCopy(error.message||String(error)); };
-  const withBusy=async task=>{if(busy)return;busy=true;$('account-error').textContent='';try{return await task()}catch(error){fail(error);throw error}finally{busy=false;renderAccount()}};
-  const receiptSettings=el('details',undefined,'settings-section');receiptSettings.append(el('summary','Messages'));
-  const receiptError=el('p','','error small');receiptError.setAttribute('role','alert');
-  const receiptInputs={} as Record<'delivered'|'seen',HTMLInputElement>;
-  for(const [key,title] of [['delivered','Send delivery receipts'],['seen','Send read receipts']] as const){const label=el('label',title,'checkbox-label'),input=el('input');input.type='checkbox';input.checked=true;input.onchange=()=>{receiptError.textContent='';void messaging.setReceiptPreferences({[key]:input.checked}).catch(()=>{input.checked=state.receiptPreferences?.[key]!==false;receiptError.textContent='Could not save this preference. Try again.';});};label.append(input);receiptInputs[key]=input;receiptSettings.append(label);}
-  const retentionButton=el('button','Message retention','button secondary');
-  retentionButton.type='button';retentionButton.onclick=async()=>{
-    await restored;const owner=state.ownerPubkey;
-    const guest=state.status==='signed-out';
-    if(guest)await loadGuest();
-    editChatTimer({policy:guest?guestPolicy:state.retention??follow,save:async p=>{
-      if(guest){if(state.status!=='signed-out')throw Error('Profile changed.');await guestNotices.guestHistory(p);await loadGuest();renderInbox();}else {if(state.ownerPubkey!==owner||state.status!=='ready')throw Error('Profile changed.');await messaging.setRetention(p);}
-      renderAccount();
-    }});
-  };
-  receiptSettings.append(retentionButton,receiptError);
-  receiptSettings.append(el('p','Let people know when their messages reach you or are visible on your screen. Saved per profile on this device.','small muted'));
-  document.querySelector('#preferences-dialog')?.append(receiptSettings);
-  let readFrame:number|undefined;
-  function scheduleSeen(){if(readFrame!==undefined)return;readFrame=requestAnimationFrame(()=>{readFrame=undefined;if(state.status!=='ready'||!selected)return;const ids=visibleChatMessageIds(inbox,$('chat-messages'));syncUnread();if(ids.length)void messaging.markSeen(selected,ids).catch(()=>{});});}
-  const messaging=createMessaging({developerMint:configuredLocalTestMint(),getRelays,getPublicRelays,onChange:value=>{const previous=state.ownerPubkey;state=value;if(previous&&(previous!==value.ownerPubkey||['locked','signed-out'].includes(value.status))){inboxRevision++;drafts=createChatDrafts();pendingDraft='';selected=null;selectedContext=undefined;$('chat-text').value='';$('chat-messages').replaceChildren();}syncUnread();for(const listener of stateListeners)listener(value);if(value.profileEvent)cacheProfileMetadata(value.profileEvent,{relays:getPublicRelays()});if(value.canSign)queueMicrotask(()=>{for(const listener of readyListeners)listener()});warmProfiles([value.ownerPubkey,...value.conversations.filter(c=>!c.messages.length||c.messages.some(m=>!m.id.startsWith('notice-'))).map(c=>c.pubkey)].filter(Boolean));renderAccount();renderInbox();onIdentity(value.ownerPubkey,value.status,previous,value.pendingListings||[]);if(pendingInbox&&value.status==='ready'){pendingInbox=false;account.hide();showInbox();if(selected)void messaging.open(selected).catch(error=>{$('chat-error').textContent=error.message;})}}});
-  function syncUnread(){
-    const visible=readingSurface(inbox);
-    const visibleIds=visibleChatMessageIds(inbox,$('chat-messages'));
-    unread.update(state.status==='ready'&&!isPreview()?state.ownerPubkey:null,conversationNotifications(state.conversations),visible?selected:null,visibleIds);
-  }
-  function renderAccount(){
-    const ready=state.status==='ready', locked=state.status==='locked';
-    retentionButton.disabled=isPreview()||!(ready||state.status==='signed-out'&&guestNotices);
-    retentionButton.textContent='Message retention · '+retentionLabel(ready?state.retention??follow:guestPolicy);
-    for(const key of ['delivered','seen'] as const){receiptInputs[key].checked=state.receiptPreferences?.[key]!==false;receiptInputs[key].disabled=!ready;}
-    if(locked&&state.needsLogin)loginView='existing';
-    const existing=loginView==='existing'||signingOnly;
-    $('account-open-invite').hidden=!pendingInvite;account.querySelector('h2').textContent=pendingInvite?'Private chat invitation':locked?'Continue with your profile':ready&&!signingOnly?'Your profile':'Existing profile';
-    account.querySelector('h2').hidden=!ready&&!locked&&!pendingInvite&&!existing;
-    account.classList.toggle('profile-onboarding',!ready&&!locked&&!existing&&!pendingInvite);
-    $('account-create').hidden=existing;$('account-existing-toggle').hidden=existing;$('account-existing').hidden=!existing;
-    $('account-key-option').hidden=signingOnly;$('account-link-device').hidden=signingOnly;$('account-existing-back').hidden=signingOnly;
-    $('account-login').hidden=ready&&!signingOnly||locked&&!state.needsLogin;
-    $('account-unlock').hidden=!locked||state.needsLogin;
-    $('account-password').hidden=!state.password;$('account-unlock').querySelector('label').hidden=!state.password;
-    $('account-ready').hidden=!ready||signingOnly;
-    $('account-status').textContent='';
-    $('account-person').replaceChildren(...(state.ownerPubkey?[createUserRow(state.ownerPubkey,{size:44})]:[]));
-    const ownName=$('account-person').querySelector<HTMLElement>('.user-name');if(ownName&&state.displayName){delete ownName.dataset.personName;ownName.textContent=state.displayName;}
-    $('account-backup').hidden=state.mode!=='local'; $('posting-signer').hidden=state.canSign;
-    headerIdentity.render(state);
-    $('account-devices').replaceChildren(...state.devices.map((device,index)=>{const row=el('div',undefined,'device-row');row.append(el('span',device.current?'This device':`Linked device ${index+1}`));if(!device.current&&state.canSign){const button=el('button','Revoke','text-button');button.onclick=()=>withBusy(()=>messaging.revokeDevice(device.pubkey)).catch(()=>{});row.append(button)}return row}));
-    for(const button of account.querySelectorAll<HTMLButtonElement>('form button,#account-extension,#account-link-device,#account-existing-toggle,#account-existing-back'))button.disabled=busy;
-    $('account-name').disabled=busy;
-  }
-  function contextTitle(context?:MessageContext){
-    if(context?.order_id){const title=state.orders?.find(o=>o.id===context.order_id)?.items.map(i=>i.title).join(', ');return title?`Order · ${title}`:'Order';}
-    return context?.listing?(listingTitle(context.listing)||'Listing inquiry'):'Conversation';
-  }
-  let visibleProse=new Map<string,{original:string;node:HTMLElement}>();
-  function renderInbox(){
-    const revision=++inboxRevision;
-    syncUnread();
-    if(!inbox.open)return;
-    inbox.querySelector('[data-escrow-trades]')?.remove();
-    $('chat-threads').setAttribute('aria-pressed',String(threadMode));$('chat-people').setAttribute('aria-pressed',String(!threadMode));
-    const guest=state.status==='signed-out',display=guest?guestRows:state.conversations;
-    $('chat-new').hidden=guest;
-    const rows=display.flatMap(c=>{
-      const groups=threadMode?groupMessageThreads(c.messages):[{key:'*',context:undefined,messages:c.messages}];
-      if(!groups.length)groups.push({key:'general',context:undefined,messages:[]});
-      return groups.map(group=>{
-        const context=group.context;
-        const row=createUserRow(c.pubkey,{size:36,className:'chat-row',onClick:()=>{selectChat(c.pubkey,undefined,context,group.key);renderInbox()}});
-        row.setAttribute('aria-pressed',String(selected===c.pubkey&&selectedThreadKey===group.key));
-        if(threadMode)row.append(el('span',contextTitle(context),'chat-thread-title'));
-        if(unread.unread(c.pubkey,group.messages.map(m=>m.id))){const dot=el('span',undefined,'unread-dot');dot.setAttribute('aria-hidden','true');row.append(dot,el('span','Unread messages','unread-label'));}
-        return row;
-      });
-    });
-    $('chat-list').replaceChildren(...rows);
-    $('chat-person').replaceChildren(...(selected?[createUserRow(selected,{size:36,onClick:()=>{inbox.hide();onProfile(selected)}})]:[]));
-    if(selectedContext?.order_id){const id=selectedContext.order_id,order=state.orders?.find(o=>o.id===id);const button=el('button',order?.items.map(i=>i.title).join(', ')||'View order','text-button chat-context');button.type='button';button.onclick=()=>{inbox.hide();onOrder(id)};$('chat-person').append(button);}
-    else if(selectedContext?.listing)$('chat-person').append(el('p',contextTitle(selectedContext),'small muted'));
-    if(!guest&&!selectedContext?.order_id)renderEscrowTrades(selected?$('chat-person'):inbox,selected||undefined,selectedContext?.listing);
-    const allMessages=display.find(c=>c.pubkey===selected)?.messages||[];
-    const noticeOnly=allMessages.length>0 && allMessages.every(m=>m.id.startsWith('notice-'));
-    if(selected && !guest && noticeOnly) $('chat-person').append(el('p','New chat messages use your Market profile.','small muted'));
-    if(selected && !guest && !noticeOnly) {
-      const peer=selected,seconds=state.chatTimers?.[peer]?.seconds??null;
-      const timer=el('button','Conversation timer · '+durationLabel(seconds),'text-button');
-      timer.type='button';timer.disabled=!state.canSend;
-      timer.onclick=()=>editChatTimer({seconds,save:value=>messaging.setChatTimer(peer,value)});
-      $('chat-person').append(timer,el('p',localTimerDescription(state.retention??follow)+' Each participant can keep their own copies.','small muted'));
-    }
-    const messages=selectedThreadKey!=='*'?allMessages.filter(m=>messageThreadKey(m)===selectedThreadKey):allMessages;
-    const area=$('chat-messages'), nearBottom=area.scrollHeight-area.scrollTop-area.clientHeight<100;
-    pickerState.capture(selectionKey(),area);
-    const previousProse=visibleProse;
-    visibleProse=new Map();
-    area.replaceChildren(...messages.map(message=>{
-      const item=el('div',undefined,`chat-message ${message.mine?'mine':''}`),body=el('div'),active=()=>inbox.open&&revision===inboxRevision&&state.status==='ready';
-      const payment=parsePaymentNote(message.text);
-      if(payment)body.append(renderPaymentNote(payment));
-      else if(containsCashu(message.text)){
-        body.append(el('p','Cashu token','muted'));
-        void renderCashuContent(message.text,{isActive:active,onToken:token=>{if(!active())return;inbox.hide();return onToken(token);}}).then(content=>{if(active()){body.replaceChildren(content);if(nearBottom)area.scrollTop=area.scrollHeight;}}).catch(()=>{if(active())body.replaceChildren(el('p','Token unavailable. Reopen this conversation to retry.','muted'));});
-      }else if(!message.mine && !message.system && !message.id.startsWith('notice-')){
-        // A receipt or reaction can redraw the inbox while someone reads a translation.
-        const previous=previousProse.get(message.id);
-        const prose=previous?.original===message.text ? previous : {original:message.text,node:translatedParagraph(message.text)};
-        visibleProse.set(message.id,prose);
-        body.append(prose.node);
-      }else body.append(el('p',message.text));
-      item.dataset.messageId=message.id;item.dataset.mine=String(message.mine);item.append(body);
-      if(typeof message.orderId==='string'&&message.orderId.length<=160){const order=el('button','View order','button secondary chat-order-link');order.type='button';order.onclick=()=>{if(active()){inbox.hide();onOrder(message.orderId)}};item.append(order);}
-      const metadata=el('div',undefined,'chat-message-meta'),date=new Date(message.createdAt*1000),time=el('time',date.toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'}));time.dateTime=date.toISOString();time.title=date.toLocaleString();metadata.append(time);
-      if(message.mine){const labels={queued:'Queued',sent:'Sent',delivered:'Delivered',seen:'Seen',failed:'Not sent'},status=el('span',labels[message.delivery]||'Sent','chat-delivery');status.setAttribute('aria-label','Message '+(labels[message.delivery]||'Sent').toLowerCase());metadata.append(status);}
-      if(message.id.startsWith('notice-')){metadata.prepend(el('span','Anonymous notice'));item.append(metadata);return item;}
-      const reactions=el('div',undefined,'chat-reactions');reactions.setAttribute('role','group');reactions.setAttribute('aria-label','Message reactions');
-      const react=(emoji:string)=>{if(!selected||!active())return;const openPicker=item.querySelector<HTMLDetailsElement>('.chat-reaction-picker');if(openPicker)openPicker.open=false;void messaging.react(selected,message.id,emoji).catch(error=>{$('chat-error').textContent=error.message;});};
-      for(const reaction of message.reactions||[]){const chip=el('button',reaction.emoji+' '+reaction.count,'chat-reaction-chip');chip.type='button';chip.setAttribute('aria-pressed',String(reaction.reacted_by_me));chip.setAttribute('aria-label',`${reaction.emoji}, ${reaction.count} ${reaction.count===1?'reaction':'reactions'}${reaction.reacted_by_me?', including yours':''}`);chip.disabled=!state.canSend;chip.onclick=()=>react(reaction.emoji);reactions.append(chip);}
-      const picker=el('details',undefined,'chat-reaction-picker'),toggle=el('summary','☺');picker.dataset.messageId=message.id;picker.open=pickerState.isOpen(message.id);toggle.setAttribute('aria-label','React to message');picker.append(toggle);const options=el('div',undefined,'chat-reaction-options');options.setAttribute('role','group');options.setAttribute('aria-label','Choose a reaction');
-      for(const [emoji,label] of [['👍','Thumbs up'],['❤️','Heart'],['😂','Laugh'],['🎉','Celebrate'],['😮','Surprised'],['🙏','Thanks']]){const button=el('button',emoji);button.type='button';button.setAttribute('aria-label',label);button.disabled=!state.canSend;button.onclick=()=>{picker.open=false;react(emoji);};options.append(button);}picker.append(options);picker.ontoggle=()=>{if(picker.open&&active())requestAnimationFrame(()=>{if(picker.open&&active())revealChatPicker(area,options);});};metadata.append(picker);item.append(metadata);if(reactions.childElementCount)item.append(reactions);return item;
-    }));
-    pickerState.restoreFocus(area);
-    if(!selected)area.append(el('p','Choose a conversation or enter a user ID.','muted chat-empty'));
-    if(nearBottom)area.scrollTop=area.scrollHeight;
-    $('chat-send').hidden=!selected||guest;$('chat-send-button').disabled=!state.canSend;
-    scheduleSeen();
-    $('chat-status').textContent=!selected&&pendingDraft?'Choose a conversation for your draft.':guest?'Anonymous notice history on this device.':selected&&!state.canSend?'Messages will sync when connected.':'';
-  }
-  function showAccount({posting=false}={}){if(isPreview()){$('account-error').textContent='Switch to the live market to sign in.'}signingOnly=false;if(!busy)loginView='new';renderAccount();account.showModal();if(!$('account-create').hidden)$('account-name').focus();if(posting&&readyForPostingSigner())$('account-status').textContent='Connect a signer to post.'}
-  function readyForPostingSigner(){return state.status==='ready'&&!state.canSign;}
-  async function showInbox(){if(state.status==='signed-out'&&guestNotices&&!isPreview()){await loadGuest();}if(state.status!=='ready'&&!(state.status==='signed-out'&&guestRows.length)){pendingInbox=true;showAccount();return}renderInbox();if(!inbox.open)inbox.showModal();renderInbox()}
-  function selectChat(pubkey:string,proposal?:string,context?:MessageContext,threadKey=context?messageThreadKey({context}):threadMode?'general':'*'){
-    const nextKey=pubkey+'|'+threadKey;
-    $('chat-text').value=drafts.select(nextKey,$('chat-text').value,proposal);selected=pubkey;selectedContext=context;selectedThreadKey=threadKey;if(inbox.open)onMessagePage(pubkey);
-    if(pendingDraft){const current=$('chat-text').value,next=current.trim()?current+'\n\n'+pendingDraft:pendingDraft;if(next.length<=8000){$('chat-text').value=next;drafts.select(selectionKey(),next);pendingDraft='';}else $('chat-error').textContent='Shorten this draft before adding the payment.';}
-  }
-  function composeMessage(text){
-    if(typeof text!=='string'||!text.trim()||text.length>8000)throw new Error('This message is too long to share.');
-    const current=selected?$('chat-text').value:pendingDraft,next=current.trim()?current+'\n\n'+text:text;
-    if(next.length>8000)throw new Error('Shorten this draft before adding the payment.');
-    if(selected){$('chat-text').value=next;drafts.select(selectionKey(),next);}else pendingDraft=next;
-    showInbox();if(selected)$('chat-text').focus();
-  }
-  async function openChat(pubkey:string,{draft,context}: {draft?:string;context?:MessageContext}={}){if(isPreview())throw new Error('Switch to the live market to send messages.');selectChat(normalizePublicKey(pubkey),draft,context);if(state.status==='signed-out'&&!draft&&guestNotices){await loadGuest();if(guestRows.some(c=>c.pubkey===selected)){await showInbox();return;}}
-    warmProfiles([selected]);if(state.status!=='ready'){pendingInbox=true;showAccount();return}if(draft||!state.conversations.some(c=>c.pubkey===selected&&c.messages.some(m=>m.id.startsWith('notice-'))))await messaging.open(selected);showInbox()}
-  function ensureLive(){if(isPreview())throw new Error('Switch to the live market to sign in.');}
-  const login=task=>withBusy(async()=>{ensureLive();await task();signingOnly=false;}).catch(()=>{});
-  $('account-existing-toggle').onclick=()=>{loginView='existing';$('account-error').textContent='';renderAccount();};
-  $('account-existing-back').onclick=()=>{controller?.abort();loginView='new';$('account-key').value='';$('account-error').textContent='';renderAccount();};
-  $('account-extension').onclick=()=>login(()=>signingOnly?messaging.connectExtensionSigner():messaging.loginWithExtension({}));
-  $('account-create').onsubmit=event=>{event.preventDefault();const name=$('account-name').value;login(async()=>{await createProfileWithOptionalName(messaging,name);resetPeople();warmProfiles([state.ownerPubkey]);})};
-  $('account-key-form').onsubmit=event=>{event.preventDefault();const key=$('account-key').value;$('account-key').value='';login(()=>messaging.loginWithKey({key}));};
-  $('account-unlock').onsubmit=event=>{event.preventDefault();const password=$('account-password').value;$('account-password').value='';login(()=>messaging.unlock(password));};
-  $('account-remote').onsubmit=event=>{event.preventDefault();controller?.abort();controller=new AbortController();login(async()=>{await messaging[signingOnly?'connectPostingSigner':'loginWithSigner']({bunkerLink:$('account-bunker').value.trim()||undefined,signal:controller.signal,onConnectionLink:link=>{$('account-connect').hidden=false;$('account-connect-link').value=link;$('account-open-connect').href=link;},onAuthUrl:url=>{if(new URL(url).protocol==='https:'){$('account-connect').hidden=false;$('account-open-connect').href=url;$('account-open-connect').textContent='Approve connection';}}});controller=undefined;$('account-connect').hidden=true;})};
-  $('account-link-device').onclick=()=>{$('account-remote-option').open=true;$('account-bunker').value='';$('account-remote').requestSubmit();};
-  $('account-copy-connect').onclick=()=>navigator.clipboard.writeText($('account-connect-link').value).catch(fail);
-  $('account-cancel-connect').onclick=()=>controller?.abort();account.addEventListener('close',()=>{if(state.status!=='ready')controller?.abort();});
-  $('posting-extension').onclick=()=>login(()=>messaging.connectExtensionSigner());
-  $('posting-remote').onclick=()=>{signingOnly=true;loginView='existing';renderAccount();$('account-remote-option').open=true;};
-  $('account-edit-profile').parentElement.addEventListener('toggle',event=>{if((event.currentTarget as HTMLDetailsElement).open&&state.ownerPubkey){const person=personFor(state.ownerPubkey);$('account-edit-name').value=state.displayName||person.name||'';$('account-edit-picture').value=person.pictureUrl||'';}});
-  $('account-edit-profile').onsubmit=event=>{event.preventDefault();login(async()=>{await messaging.updateProfile({name:$('account-edit-name').value,picture:$('account-edit-picture').value.trim()||undefined});resetPeople();warmProfiles([state.ownerPubkey]);$('account-status').textContent='Profile saved';});};
-  $('account-open-invite').onclick=()=>withBusy(async()=>{const peer=await messaging.acceptInvite(pendingInvite);pendingInvite=null;account.hide();await openChat(peer);}).catch(()=>{});
-  $('account-inbox').onclick=()=>{account.hide();showInbox();};
-  $('account-profile').onclick=()=>{account.hide();onProfile(state.ownerPubkey);};
-  $('account-lock').onclick=()=>login(()=>messaging.lock());
-  $('account-copy-id').onclick=()=>navigator.clipboard.writeText(npubEncode(state.ownerPubkey)).then(()=>{$('account-status').textContent='Profile ID copied';}).catch(fail);
-  $('account-backup').onclick=()=>withBusy(async()=>{await navigator.clipboard.writeText(await messaging.exportKey());$('account-status').textContent='Backup key copied. Store it privately.';}).catch(()=>{});
-  $('account-invite').onclick=()=>withBusy(async()=>{await navigator.clipboard.writeText(await messaging.inviteUrl());$('account-status').textContent='Private invitation copied.';}).catch(()=>{});
-  $('chat-new').onsubmit=event=>{event.preventDefault();const input=$('chat-recipient').value.trim();$('chat-error').textContent='';(async()=>{selectChat(input.includes('://')?await messaging.acceptInvite(input):normalizePublicKey(input));await messaging.open(selected);$('chat-recipient').value='';renderInbox();})().catch(error=>{$('chat-error').textContent=error.message;});};
-  $('chat-send').onsubmit=event=>{event.preventDefault();const text=$('chat-text').value.trim(),peer=selected,context=selectedContext,key=selectionKey();if(!text||!peer)return;$('chat-send-button').disabled=true;$('chat-error').textContent='';messaging.send(peer,text,context).then(()=>{drafts.clear(key);if(selectionKey()===key&&$('chat-text').value.trim()===text)$('chat-text').value='';}).catch(error=>{$('chat-error').textContent=error.message;}).finally(()=>{$('chat-send-button').disabled=!state.canSend;});};
-  for(const [id,mode] of [['chat-threads',true],['chat-people',false]] as const)$(id).onclick=()=>{threadMode=mode;try{localStorage.setItem('market-message-grouping',mode?'threads':'people');}catch{}if(selected)selectChat(selected);renderInbox();};
-  inbox.addEventListener('close',()=>{
-    pickerState.reset();inboxRevision++;visibleProse.clear();$('chat-messages').replaceChildren();syncUnread();
-  });
-  const refreshUnread=()=>{if(!document.hidden)void messaging.refreshHistory().catch(()=>{});syncUnread();if(inbox.open)renderInbox();};
-  const uncovered=()=>queueMicrotask(refreshUnread);
-  $('chat-messages').addEventListener('scroll',scheduleSeen,{passive:true});window.addEventListener('resize',scheduleSeen);
-  document.addEventListener('visibilitychange',refreshUnread);document.addEventListener('close',uncovered,true);window.addEventListener('focus',refreshUnread);
-  $('account-button').onclick=()=>showAccount();$('inbox-tab').onclick=showInbox;
-  const restored=isPreview()?Promise.resolve(renderAccount()):messaging.restore().then(value=>{state=value;renderAccount();if(pendingInvite)showAccount();}).catch(error=>{fail(error);if(pendingInvite)showAccount();});
-  if(!isPreview())void restored.then(async()=>{if(state.status==='signed-out'){await loadGuest();renderAccount();}}).catch(()=>{});
-  window.addEventListener('pagehide',()=>{if(readFrame!==undefined)cancelAnimationFrame(readFrame);window.removeEventListener('resize',scheduleSeen);$('chat-messages').removeEventListener('scroll',scheduleSeen);clearTimeout(guestTimer);receiptSettings.remove();document.removeEventListener('visibilitychange',refreshUnread);document.removeEventListener('close',uncovered,true);window.removeEventListener('focus',refreshUnread);controller?.abort();messaging.destroy();});
-  const api={ messaging, restored, refreshGuestHistory:async()=>{await loadGuest();if(state.status==='signed-out')renderInbox();}, state:()=>state, showAccount, showInbox, openChat, composeMessage, hideInbox:()=>inbox.hide(), closeAccount:()=>account.hide(), hideAccount:()=>account.hide(), onReady:listener=>readyListeners.add(listener), onState:listener=>{stateListeners.add(listener);return()=>stateListeners.delete(listener)} };
+export type {AccountState};
+
+export function setupAccount(options:AccountOptions) {
+  const {accountPage,onAccountPage=()=>{},onAccountClose=()=>{},messagePage,onMessagePage=()=>{},onMessageClose=()=>{},isPreview}=options;
+  const c=new AccountController(options);
+  c.account=createSurface({className:'account-dialog',label:'Profile settings',pageHost:accountPage,onOpen:onAccountPage,onClose:onAccountClose});
+  c.inbox=createSurface({className:'account-dialog',label:'Messages',pageHost:messagePage,onOpen:()=>onMessagePage(c.selected||undefined),onClose:onMessageClose});
+  c.inbox.classList.add('inbox-dialog');
+  mount(AccountPanel,{target:c.account,props:{c}});
+  mount(Inbox,{target:c.inbox,props:{c}});
+  c.headerIdentity=setupHeaderIdentity({createAvatar,createUserName,onProfile:key=>c.options.onProfile(key)});
+  const preferences=document.querySelector('#preferences-dialog');
+  const settings=preferences?mount(MessageSettings,{target:preferences,props:{c}}):undefined;
+  // Later setup reads the mounted markup (private matching anchors its link in Messages).
+  flushNow();
+  c.account.addEventListener('close',()=>{if(c.state.status!=='ready')c.controller?.abort();});
+  c.inbox.addEventListener('close',()=>c.inboxClosed());
+  const uncovered=()=>queueMicrotask(c.refreshUnread);
+  window.addEventListener('resize',c.scheduleSeen);
+  document.addEventListener('visibilitychange',c.refreshUnread);document.addEventListener('close',uncovered,true);window.addEventListener('focus',c.refreshUnread);
+  const showAccount=(settings?:{posting?:boolean})=>c.showAccount(settings);
+  const showInbox=()=>c.showInbox();
+  document.getElementById('account-button')!.onclick=()=>showAccount();document.getElementById('inbox-tab')!.onclick=showInbox;
+  const messaging=c.messaging;
+  c.restored=isPreview()?Promise.resolve(c.renderAccount()):messaging.restore().then(value=>{c.state=value as AccountState;c.renderAccount();if(c.pendingInvite)c.showAccount();}).catch(error=>{c.fail(error);if(c.pendingInvite)c.showAccount();});
+  if(!isPreview())void c.restored.then(async()=>{if(c.state.status==='signed-out'){await c.loadGuest();c.renderAccount();}}).catch(()=>{});
+  window.addEventListener('pagehide',()=>{if(c.readFrame!==undefined)cancelAnimationFrame(c.readFrame);window.removeEventListener('resize',c.scheduleSeen);clearTimeout(c.guestTimer);if(settings)void unmount(settings);document.removeEventListener('visibilitychange',c.refreshUnread);document.removeEventListener('close',uncovered,true);window.removeEventListener('focus',c.refreshUnread);c.controller?.abort();messaging.destroy();});
+  const api={ messaging, restored:c.restored, refreshGuestHistory:async()=>{await c.loadGuest();if(c.state.status==='signed-out')c.renderInbox();}, state:()=>c.state, showAccount, showInbox, openChat:(pubkey:string,settings?:Parameters<AccountController['openChat']>[1])=>c.openChat(pubkey,settings), composeMessage:(text:string)=>c.composeMessage(text), hideInbox:()=>c.inbox.hide(), closeAccount:()=>c.account.hide(), hideAccount:()=>c.account.hide(), onReady:(listener:()=>void)=>c.readyListeners.add(listener), onState:(listener:(state:AccountState)=>void)=>{c.stateListeners.add(listener);return()=>c.stateListeners.delete(listener)} };
   setupMarketplaceFlags(api);
-  setupPrivateMatches(api,getMatchListings,inbox);
+  setupPrivateMatches(api,options.getMatchListings??(()=>[]),c.inbox);
   return api;
 }

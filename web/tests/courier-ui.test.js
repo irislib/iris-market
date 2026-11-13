@@ -1,20 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {window,settle} from './support/dom.mjs';
+import {flushSync} from 'svelte';
 import {courierListingType,courierListings,courierServiceDraft,courierJobs,orderReviewParticipants,setupCourierWorkspace} from '../src/courier-ui.ts';
 import {serviceAreaCircle} from '../src/service-area.ts';
 
-class Element {
-  constructor(tag){this.tag=tag;this.children=[];this.attributes=new Map();this.dataset={};this.className='';this.textContent='';this.value='';this.hidden=false;this.classList={toggle:(name,on)=>{const names=new Set(this.className.split(' ').filter(Boolean));on?names.add(name):names.delete(name);this.className=[...names].join(' ');}};}
-  append(...children){for(const child of children){child.remove();child.parent=this;this.children.push(child);}}
-  remove(){if(this.parent)this.parent.children=this.parent.children.filter(child=>child!==this);this.parent=undefined;}
-  replaceChildren(...children){for(const child of [...this.children])child.remove();this.append(...children);}
-  setAttribute(name,value){this.attributes.set(name,String(value));}
-  click(){if(!this.disabled)return this.onclick?.();}
-  focus(){this.focused=true;}
-}
-globalThis.document={createElement:tag=>new Element(tag)};
-const all=node=>[node,...node.children.flatMap(all)];
-const find=(node,text)=>all(node).find(child=>child.textContent===text);
+// Assertions follow clicks and submits directly, so apply Svelte's updates synchronously.
+const nativeClick=window.HTMLElement.prototype.click;
+window.HTMLElement.prototype.click=function(){nativeClick.call(this);flushSync();};
+const submit=root=>{root.querySelector('form').dispatchEvent(new window.Event('submit',{bubbles:true,cancelable:true}));flushSync();};
+const all=node=>[node,...node.querySelectorAll('*')];
+// The innermost element whose whole text matches.
+const find=(node,text)=>all(node).filter(child=>child.textContent===text).at(-1);
+const areaInput=root=>root.querySelector('input');
 const author='a'.repeat(64),buyer='b'.repeat(64),courier='c'.repeat(64),outsider='d'.repeat(64);
 const pickup=serviceAreaCircle([24.94,60.17],10),serviceAreas={pickup,destination:pickup};
 const listing=(id,tags=['parcel'],extra={})=>({id,author,title:`Request ${id}`,side:'request',category:'transport',tags,location:'Helsinki',status:'active',createdAt:10,...extra});
@@ -22,8 +20,8 @@ const order=(extra={})=>({id:'order',buyer,seller:author,items:[{id:'item',title
 function fixture(options={}){
   let owner=courier,rows=[listing('parcel'),listing('ride',['passenger'])],jobs=[order()],moreCalls=0;
   const announced=[],edited=[],opened=[],reviewed=[],storage=new Map();let signIns=0;
-  let selected=null;const picker={element:new Element('section'),getValue:()=>selected,validate:()=>selected,setValue:value=>{selected=value;},async show(){this.element.hidden=false;},hide(){this.element.hidden=true;},async destroy(){this.element.remove();}};
-  const ui=setupCourierWorkspace({getListings:()=>rows,getOwner:()=>owner,getOrders:()=>jobs,onListing:item=>opened.push(item),onAnnounce:value=>announced.push(value),onEditListing:item=>edited.push(item),onReviews:key=>reviewed.push(key),onSignIn:()=>signIns++,renderOrder:job=>{const button=new Element('button');button.textContent=`Job ${job.id}`;return button;},storage:{getItem:key=>storage.get(key),setItem:(key,value)=>storage.set(key,value)},createAreaPicker:()=>picker,...options});
+  let selected=null;const picker={element:document.createElement('section'),getValue:()=>selected,validate:()=>selected,setValue:value=>{selected=value;},async show(){this.element.hidden=false;},hide(){this.element.hidden=true;},async destroy(){this.element.remove();}};
+  const ui=setupCourierWorkspace({getListings:()=>rows,getOwner:()=>owner,getOrders:()=>jobs,onListing:item=>opened.push(item),onAnnounce:value=>announced.push(value),onEditListing:item=>edited.push(item),onReviews:key=>reviewed.push(key),onSignIn:()=>signIns++,renderOrder:job=>{const button=document.createElement('button');button.textContent=`Job ${job.id}`;return button;},storage:{getItem:key=>storage.get(key),setItem:(key,value)=>storage.set(key,value)},createAreaPicker:()=>picker,...options});
   return {ui,picker,root:ui.element,announced,edited,opened,reviewed,storage,get signIns(){return signIns;},setRows:value=>{rows=value;ui.refresh();},setOwner:value=>{owner=value;ui.refresh();}};
 }
 
@@ -78,37 +76,37 @@ test('workspace defaults to parcels, preserves preference, and never treats unta
 });
 
 test('public feed refresh leaves area input mounted and typing does not apply a new filter',()=>{
-  const f=fixture(),area=all(f.root).find(node=>node.tag==='input'),form=all(f.root).find(node=>node.tag==='form');
-  area.value='Turku';f.ui.refresh();assert.equal(all(f.root).find(node=>node.tag==='input'),area);assert.equal(area.value,'Turku');assert(find(f.root,'Request parcel'));
-  form.onsubmit({preventDefault(){}});assert(find(f.root,'No matching requests'));
-  area.value='Helsinki';form.onsubmit({preventDefault(){}});assert(find(f.root,'Request parcel'));f.ui.destroy();
+  const f=fixture(),area=areaInput(f.root);
+  area.value='Turku';f.ui.refresh();assert.ok(areaInput(f.root)===area,'the same input stays mounted');assert.equal(area.value,'Turku');assert(find(f.root,'Request parcel'));
+  submit(f.root);assert(find(f.root,'No matching requests'));
+  area.value='Helsinki';submit(f.root);assert(find(f.root,'Request parcel'));f.ui.destroy();
 });
 
 test('announcing opens a draft only on explicit submit; existing service edit uses original listing',()=>{
   const f=fixture(),mine=listing('my-service',['courier','passenger'],{author:courier,side:'offer'});f.setRows([mine]);
   find(f.root,'Rides').click();find(f.root,'My service').click();assert.equal(f.announced.length,0);
-  const area=all(f.root).find(node=>node.tag==='input');area.value='Helsinki';f.ui.refresh();assert.equal(f.announced.length,0);
-  all(f.root).find(node=>node.tag==='form').onsubmit({preventDefault(){}});
+  const area=areaInput(f.root);area.value='Helsinki';f.ui.refresh();assert.equal(f.announced.length,0);
+  submit(f.root);
   assert.equal(f.announced.length,0);assert(find(f.root,'Choose a pickup area.'));f.picker.setValue(serviceAreas);
-  all(f.root).find(node=>node.tag==='form').onsubmit({preventDefault(){}});
+  submit(f.root);
   assert.equal(f.announced.length,1);assert.equal(f.announced[0].location,'Helsinki');assert.deepEqual(f.announced[0].tags,['courier','passenger']);
-  find(f.root,'Edit listing').click();assert.equal(f.edited[0],mine);find(f.root,'My reviews').click();assert.deepEqual(f.reviewed,[courier]);f.ui.destroy();
+  find(f.root,'Edit listing').click();assert.ok(f.edited[0]===mine);find(f.root,'My reviews').click();assert.deepEqual(f.reviewed,[courier]);f.ui.destroy();
 });
 
 test('signed-out work browsing stays public, private jobs require sign-in, and identity change clears drafts',()=>{
   const f=fixture();f.setOwner(undefined);assert(find(f.root,'Request parcel'));
   find(f.root,'My jobs').click();find(f.root,'Sign in to see your jobs').click();assert.equal(f.signIns,1);assert.equal(find(f.root,'Job order'),undefined);
-  f.setOwner(courier);assert(find(f.root,'Job order'));find(f.root,'My service').click();const area=all(f.root).find(node=>node.tag==='input');area.value='Unpublished area';f.picker.setValue(serviceAreas);f.setOwner(outsider);assert.equal(area.value,'');assert.equal(f.picker.getValue(),null);f.ui.hide();assert.equal(f.picker.element.hidden,true);f.ui.show();assert.equal(f.picker.element.hidden,false);f.ui.destroy();
+  f.setOwner(courier);assert(find(f.root,'Job order'));find(f.root,'My service').click();const area=areaInput(f.root);area.value='Unpublished area';f.picker.setValue(serviceAreas);f.setOwner(outsider);assert.equal(area.value,'');assert.equal(f.picker.getValue(),null);f.ui.hide();assert.equal(f.picker.element.hidden,true);f.ui.show();assert.equal(f.picker.element.hidden,false);f.ui.destroy();
 });
 
 test('pagination reveals the next local page before asking for more inventory and never retries automatically',async()=>{
   let requests=0;const f=fixture({loadMore:async()=>{requests++;throw Error('Offline');},pagination:()=>({hasMore:true})});f.setRows(Array.from({length:30},(_,i)=>listing(`item${i}`)));
-  const cards=()=>all(f.root).filter(node=>node.textContent.startsWith('Request item'));
-  assert.equal(cards().length,24);await find(f.root,'Load more').click();assert.equal(cards().length,30);assert.equal(requests,0);
-  await find(f.root,'Load more').click();assert.equal(requests,1);assert(find(f.root,'Could not load more requests. Try again.'));f.ui.refresh();assert.equal(requests,1);f.ui.destroy();
+  const cards=()=>[...f.root.querySelectorAll('.order-card-title')].filter(node=>node.textContent.startsWith('Request item'));
+  assert.equal(cards().length,24);find(f.root,'Load more').click();await settle();assert.equal(cards().length,30);assert.equal(requests,0);
+  find(f.root,'Load more').click();await settle();assert.equal(requests,1);assert(find(f.root,'Could not load more requests. Try again.'));f.ui.refresh();assert.equal(requests,1);f.ui.destroy();
 });
 
 test('preview cannot announce availability and untrusted listing text is never interpreted as markup',()=>{
-  const preview=fixture({isPreview:()=>true});find(preview.root,'My service').click();assert.equal(find(preview.root,'Offer service').disabled,true);all(preview.root).find(node=>node.tag==='form').onsubmit({preventDefault(){}});assert.equal(preview.announced.length,0);preview.ui.destroy();
-  const f=fixture();f.setRows([listing('x',['parcel'],{title:'<img src=x onerror=alert(1)>'})]);assert(find(f.root,'<img src=x onerror=alert(1)>'));assert.equal(all(f.root).some(node=>node.innerHTML),false);f.ui.destroy();
+  const preview=fixture({isPreview:()=>true});find(preview.root,'My service').click();assert.equal(find(preview.root,'Offer service').disabled,true);submit(preview.root);assert.equal(preview.announced.length,0);preview.ui.destroy();
+  const f=fixture();f.setRows([listing('x',['parcel'],{title:'<img src=x onerror=alert(1)>'})]);assert(find(f.root,'<img src=x onerror=alert(1)>'));assert.equal(f.root.querySelector('img'),null,'listing text never becomes markup');f.ui.destroy();
 });

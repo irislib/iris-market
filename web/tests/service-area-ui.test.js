@@ -1,24 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {window,settle} from './support/dom.mjs';
+import {flushSync} from 'svelte';
 import {setupServiceAreaPicker,createServiceAreaOverlay,restoreServiceAreaCircle} from '../src/service-area-ui.ts';
 import {serviceAreaCircle,serviceAreaContains} from '../src/service-area.ts';
 
-class Element extends EventTarget{
-  constructor(tag){super();this.tag=tag;this.children=[];this.attributes=new Map();this.dataset={};this.textContent='';this.value='';this.hidden=false;this.disabled=false;this.classList={toggle(){}};}
-  append(...children){for(const child of children){child.remove();child.parent=this;this.children.push(child);}}
-  replaceChildren(...children){for(const child of [...this.children])child.remove();this.append(...children);}
-  remove(){if(this.parent)this.parent.children=this.parent.children.filter(child=>child!==this);this.parent=null;}
-  setAttribute(name,value){this.attributes.set(name,String(value));}
-  getAttribute(name){return this.attributes.get(name)??null;}
-  removeAttribute(name){this.attributes.delete(name);}
-  click(){if(!this.disabled)return this.onclick?.();}
-}
-const all=node=>[node,...node.children.flatMap(all)],find=(node,text)=>all(node).find(child=>child.textContent===text);
+// Assertions follow clicks and control events directly, so apply Svelte's updates synchronously.
+const nativeClick=window.HTMLElement.prototype.click;
+window.HTMLElement.prototype.click=function(){nativeClick.call(this);flushSync();};
+const fire=(node,name)=>{node.dispatchEvent(new window.Event(name,{bubbles:true}));flushSync();};
+const all=node=>[node,...node.querySelectorAll('*')];
+// The innermost element whose whole text matches.
+const find=(node,text)=>all(node).filter(child=>child.textContent===text).at(-1);
 const label=(node,text)=>all(node).find(child=>child.getAttribute('aria-label')===text);
-const document={createElement:tag=>new Element(tag),documentElement:{dataset:{appearance:'light'}}};
-globalThis.document=document;
+document.documentElement.dataset.appearance='light';
 class MapStub{
-  listeners=new Map();sources=new Map();layers=new Map();canvas=new Element('canvas');fits=[];
+  listeners=new Map();sources=new Map();layers=new Map();canvas=document.createElement('canvas');fits=[];
   on(name,handler){if(!this.listeners.has(name))this.listeners.set(name,new Set());this.listeners.get(name).add(handler);}
   off(name,handler){this.listeners.get(name)?.delete(handler);}
   emit(name,event={}){for(const listener of this.listeners.get(name)??[])listener(event);}
@@ -48,20 +45,20 @@ test('opening an area picker never selects the initial map location or requests 
 
 test('destination requires its own choice when Same as pickup is unchecked and preserves the other boundary',async()=>{
   const f=fixture();await f.ui.show();f.click();const pickup=f.ui.getValue().pickup;
-  const checkbox=all(f.ui.element).find(node=>node.type==='checkbox');checkbox.checked=false;checkbox.onchange();assert.equal(f.ui.getValue(),null);
+  const checkbox=all(f.ui.element).find(node=>node.type==='checkbox');checkbox.checked=false;fire(checkbox,'change');assert.equal(f.ui.getValue(),null);
   find(f.ui.element,'Destination').click();f.click(25.7,61.1);const destination=f.ui.getValue().destination;
   assert.deepEqual(f.ui.getValue().pickup,pickup);assert.notDeepEqual(destination,pickup);assert.equal(f.maps[0].getSource('service-areas').data.features.length,2);
-  checkbox.checked=true;checkbox.onchange();assert.deepEqual(f.ui.getValue().destination,pickup);
-  checkbox.checked=false;checkbox.onchange();assert.deepEqual(f.ui.getValue().destination,destination);await f.ui.destroy();
+  checkbox.checked=true;fire(checkbox,'change');assert.deepEqual(f.ui.getValue().destination,pickup);
+  checkbox.checked=false;fire(checkbox,'change');assert.deepEqual(f.ui.getValue().destination,destination);await f.ui.destroy();
 });
 
 test('setValue silently preserves exact existing geometry until an explicit boundary replacement',async()=>{
   const destination=serviceAreaCircle([25,62],20),value={pickup:polygon,destination};const f=fixture();f.ui.setValue(value);await f.ui.show();
   assert.deepEqual(f.ui.getValue(),value);assert.deepEqual(f.changes,[]);
-  const radius=all(f.ui.element).find(node=>node.type==='number');radius.value='50';radius.onchange();assert.deepEqual(f.ui.getValue(),value);assert.deepEqual(f.changes,[]);
+  const radius=all(f.ui.element).find(node=>node.type==='number');radius.value='50';fire(radius,'change');assert.deepEqual(f.ui.getValue(),value);assert.deepEqual(f.changes,[]);
   f.click();assert.notDeepEqual(f.ui.getValue().pickup,polygon);assert.deepEqual(f.ui.getValue().destination,destination);
   const saved=f.ui.getValue();assert.throws(()=>f.ui.setValue({pickup:{type:'Point',coordinates:[0,0]},destination}));assert.deepEqual(f.ui.getValue(),saved);
-  radius.value='3000';radius.onchange();assert.deepEqual(f.ui.getValue(),saved);await f.ui.destroy();
+  radius.value='3000';fire(radius,'change');assert.deepEqual(f.ui.getValue(),saved);await f.ui.destroy();
 });
 
 test('location is explicit and its late callback cannot change hidden or reset areas',async()=>{
@@ -81,7 +78,7 @@ test('read-only preview draws both boundaries and cannot change them through map
 
 test('keyboard selection uses the map center and destroy removes map and canvas listeners',()=>{
   const map=new MapStub(),picked=[],overlay=createServiceAreaOverlay(map,{interactive:true,onPick:point=>picked.push(point)});map.emit('load');
-  const enter=new Event('keydown',{cancelable:true});Object.defineProperty(enter,'key',{value:'Enter'});map.canvas.dispatchEvent(enter);assert.deepEqual(picked,[[24.94,60.17]]);
+  const enter=new window.Event('keydown',{cancelable:true});Object.defineProperty(enter,'key',{value:'Enter'});map.canvas.dispatchEvent(enter);assert.deepEqual(picked,[[24.94,60.17]]);
   overlay.destroy();map.emit('click',{lngLat:{lng:1,lat:2}});map.canvas.dispatchEvent(enter);assert.equal(picked.length,1);assert.equal(map.canvas.getAttribute('aria-label'),null);
   assert.equal([...map.listeners.values()].reduce((count,list)=>count+list.size,0),0);
 });
@@ -96,14 +93,14 @@ test('map failure keeps existing areas usable and exposes an explicit retry',asy
   let attempts=0;const f=fixture({value:{pickup:polygon,destination:polygon},createMap:async()=>{attempts++;throw Error('Offline');}});
   await f.ui.show();assert(find(f.ui.element,'Map unavailable.'));assert.equal(find(f.ui.element,'Retry map').hidden,false);assert.equal(attempts,1);
   await f.ui.show();assert.equal(attempts,1,'feed refresh does not repeatedly retry a failed map');
-  assert.deepEqual(f.ui.getValue(),{pickup:polygon,destination:polygon});await find(f.ui.element,'Retry map').click();assert.equal(attempts,2);await f.ui.destroy();
+  assert.deepEqual(f.ui.getValue(),{pickup:polygon,destination:polygon});find(f.ui.element,'Retry map').click();await settle();assert.equal(attempts,2);await f.ui.destroy();
 });
 
 test('concurrent show calls share a failing map initialization and do not retry it',async()=>{
   let reject,attempts=0;const f=fixture({createMap:()=>{attempts++;return new Promise((_,fail)=>{reject=fail;});}});
   const first=f.ui.show(),second=f.ui.show(),third=f.ui.show();assert.equal(attempts,1);
   reject(Error('Offline'));await Promise.all([first,second,third]);assert.equal(attempts,1);assert.equal(find(f.ui.element,'Retry map').hidden,false);
-  const retry=find(f.ui.element,'Retry map').click();await Promise.resolve();assert.equal(attempts,2);reject(Error('Still offline'));await retry;assert.equal(attempts,2);await f.ui.destroy();
+  find(f.ui.element,'Retry map').click();await settle();assert.equal(attempts,2);reject(Error('Still offline'));await settle();assert.equal(attempts,2);assert.equal(find(f.ui.element,'Retry map').hidden,false);await f.ui.destroy();
 });
 
 test('clear removes the selected boundary, preserves an independent destination and validates partial edits',async()=>{
@@ -113,7 +110,7 @@ test('clear removes the selected boundary, preserves an independent destination 
   assert.deepEqual(f.maps[0].getSource('service-areas').data.features.map(feature=>feature.geometry),[destination]);
   find(f.ui.element,'Destination').click();find(f.ui.element,'Clear area').click();assert.equal(f.ui.validate(),null);assert.equal(f.maps[0].getSource('service-areas').data.features.length,0);
   f.ui.setValue({pickup:polygon,destination:polygon});find(f.ui.element,'Clear area').click();assert.equal(f.ui.validate(),null);assert.equal(f.maps[0].getSource('service-areas').data.features.length,0,'clearing linked pickup clears both areas');
-  f.click();const checkbox=all(f.ui.element).find(node=>node.type==='checkbox');checkbox.checked=false;checkbox.onchange();assert.throws(()=>f.ui.validate(),/Choose a destination area/);await f.ui.destroy();
+  f.click();const checkbox=all(f.ui.element).find(node=>node.type==='checkbox');checkbox.checked=false;fire(checkbox,'change');assert.throws(()=>f.ui.validate(),/Choose a destination area/);await f.ui.destroy();
 });
 
 test('map appearance follows app and system themes, including changes while opening, and removes listeners',async t=>{
@@ -138,12 +135,12 @@ test('map appearance follows app and system themes, including changes while open
 
 test('place selection creates a boundary only after choosing a suggestion and stale searches cannot change roles',async()=>{
   let resolve;const f=fixture({searchPlaces:()=>new Promise(done=>{resolve=done;})});await f.ui.show();
-  const search=label(f.ui.element,'Search places');search.value='Synthetic';search.oninput();
+  const search=label(f.ui.element,'Search places');search.value='Synthetic';fire(search,'input');
   await new Promise(done=>setTimeout(done,270));
   find(f.ui.element,'Destination').click();resolve([{name:'Synthetic place',lat:60,lng:24}]);await new Promise(done=>setTimeout(done,0));
   assert.equal(f.ui.getValue(),null);assert.equal(find(f.ui.element,'Synthetic place'),undefined);
   const pending=fixture({searchPlaces:async()=>[{name:'Synthetic place',lat:60,lng:24}]});await pending.ui.show();
-  const input=label(pending.ui.element,'Search places');input.value='Synthetic';input.oninput();await new Promise(done=>setTimeout(done,270));
+  const input=label(pending.ui.element,'Search places');input.value='Synthetic';fire(input,'input');await new Promise(done=>setTimeout(done,270));
   assert.equal(pending.ui.getValue(),null);find(pending.ui.element,'Synthetic place').click();assert.ok(serviceAreaContains(pending.ui.getValue().pickup,[24,60]));
   await pending.ui.destroy();await f.ui.destroy();
 });
@@ -159,7 +156,7 @@ test('reopening a saved circle restores its point and radius without rewriting g
 
 test('catalog failure is shown as unavailable rather than a successful empty search',async()=>{
   const f=fixture({searchPlaces:async()=>{throw new Error('Catalog download timed out');}});await f.ui.show();
-  const input=label(f.ui.element,'Search places');input.value='Synthetic absent place';input.oninput();
+  const input=label(f.ui.element,'Search places');input.value='Synthetic absent place';fire(input,'input');
   await new Promise(done=>setTimeout(done,270));
   assert(find(f.ui.element,'Place search unavailable. Choose a point on the map.'));
   assert.equal(find(f.ui.element,'No matching places. Choose a point on the map.'),undefined);

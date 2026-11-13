@@ -1,4 +1,5 @@
 import { resolve } from 'node:path'
+import { svelte } from '@sveltejs/vite-plugin-svelte'
 import { defaultClientConditions, defineConfig } from 'vite'
 import { marketAssets } from './scripts/vite-assets.ts'
 
@@ -26,7 +27,7 @@ export default defineConfig(({ command, mode }) => {
       'import.meta.env.VITE_TEST_MODE': 'false',
       'import.meta.env.VITE_TEST_BOOTSTRAP_PUBKEY': 'undefined',
     },
-    plugins: [marketAssets(downloads)],
+    plugins: [svelte(), marketAssets(downloads)],
     server: {
       host: '127.0.0.1',
       port: Number(process.env.PORT || 4173),

@@ -15,7 +15,7 @@
     "demo:public": "node scripts/demo/public-server.ts",
     "demo:public-service": "node scripts/demo/service.ts --public",
     "demo:service": "node scripts/demo/service.ts",
-    "check": "tsc --noEmit",
+    "check": "tsc --noEmit && svelte-check --tsconfig ./tsconfig.json --threshold error",
     "preview": "node scripts/serve.mjs"
   },
   "dependencies": {
@@ -40,7 +40,10 @@
     "qrcode-generator": "2.0.4"
   },
   "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "6.2.4",
     "esbuild": "0.25.12",
+    "svelte": "5.57.2",
+    "svelte-check": "4.7.7",
     "typescript": "5.9.3",
     "vite": "7.3.7",
     "wrangler": "4.154.0"

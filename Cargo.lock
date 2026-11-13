@@ -1914,9 +1914,9 @@ checksum = "791930b43c0d5973160d90a8f3894509f2b273430f5c5c73b668636d0287c5c0"
 
 [[package]]
 name = "iris-chat-protocol"
-version = "0.3.20"
+version = "0.3.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "28481ce779ee414a5e39759e33104aba1303c299e67bd9705589fd0768ebfd51"
+checksum = "c343c5b790b5b052c3e176bb071c3d313ede42dd1fb4c925b57bc93e01e70876"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

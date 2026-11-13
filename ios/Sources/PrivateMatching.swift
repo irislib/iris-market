@@ -1,25 +1,5 @@
 import SwiftUI
 
-struct PrivateMatchInbox: Decodable {
-    struct Entry: Decodable, Identifiable {
-        let id, side, summary, peer: String
-        let expiresAt: Int64
-    }
-    struct Pair: Decodable { let entries: [String]; let votes: [Bool?]; let introduced: Bool }
-    struct Interest: Decodable {
-        let summary: String; let vote: Bool?; let contact: String?; let chat: String?
-        let connected: Bool?; let sharedProfile: Bool?; let revealed: String?
-    }
-    struct Lead: Decodable { let title, listing: String }
-    let sent, received: [String: Entry]
-    let pairs: [String: Pair]
-    let interests: [String: Interest]
-    let publicLeads: [String: Lead]
-}
-struct PrivateMatchCandidate: Decodable, Identifiable {
-    let id, kind, summary: String
-}
-
 struct PrivateMatchingSettings: View {
     @EnvironmentObject private var store: MarketStore
     var body: some View {
@@ -86,7 +66,7 @@ private struct PrivateMatchesView: View {
                         }
                     }
                 }
-                TextField("Helper’s npub or public key", text: $helper)
+                TextField("Helper’s profile ID (npub…)", text: $helper)
                 TextField("Shareable summary", text: $summary)
                 Button("Send to helper privately") {
                     act(["op":"share", "helper":helper.trimmingCharacters(in:.whitespacesAndNewlines), "side":side, "summary":summary]) {

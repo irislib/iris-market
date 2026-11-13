@@ -901,6 +901,7 @@ mod tests {
             .map(|dir| Messaging::open(dir.path(), Keys::generate()).unwrap())
             .collect();
         let owners: Vec<_> = chats.iter().map(|c| c.owner).collect();
+        let chats_keys: Vec<_> = chats.iter().map(|c| c.keys.clone()).collect();
         let (seeker, offerer, helper) = (0, 1, 2);
         let mut published = Vec::new();
         for person in [seeker, offerer] {
@@ -977,6 +978,9 @@ mod tests {
                 .find(|c| c.id == chat_id)
                 .expect("introduced chat");
             assert!(thread.name.starts_with("Private match"));
+            // The snapshot keeps this label instead of looking up a profile.
+            assert!(super::super::is_match_chat(&thread.id));
+            assert!(!super::super::is_match_chat(&owners[helper].to_hex()));
             assert_eq!(thread.messages[0].text, super::super::match_chats::HELLO);
         }
         chats[offerer]
@@ -1058,6 +1062,18 @@ mod tests {
             thread.messages.last().unwrap().text.clone()
         };
         assert_eq!(last(&chats[offerer]), super::super::match_chats::REVEALED);
+        // The shown profile is fetched on its own anonymous connection, for a name.
+        assert_eq!(chats[offerer].revealed_profiles(), [owners[seeker]]);
+        assert!(chats[offerer].subscriptions().iter().any(|s| {
+            s.scope == format!("private-match-profile-{}", owners[seeker].to_hex())
+                && s.filter.match_event(
+                    &nostr::EventBuilder::metadata(&Default::default())
+                        .sign_with_keys(&chats_keys[seeker])
+                        .unwrap(),
+                    Default::default(),
+                )
+        }));
+        assert!(chats[seeker].revealed_profiles().is_empty());
         assert_eq!(last(&chats[seeker]), super::super::match_chats::SHARED);
         for event in &published {
             for owner in &owners {

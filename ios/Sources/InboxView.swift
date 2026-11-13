@@ -314,7 +314,6 @@ struct ConversationView: View {
     }
 }
 
-func isPrivateMatch(_ id: String) -> Bool { id.hasPrefix("match:") }
 
 /// An alias chat is labeled by its match, never by a person.
 struct PrivateMatchRow: View {

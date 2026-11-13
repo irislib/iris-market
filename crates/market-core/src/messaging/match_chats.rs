@@ -514,6 +514,27 @@ impl Messaging {
                 None => {}
             }
         }
+        for key in self.revealed_profiles() {
+            result.push(PrivateSubscription {
+                scope: format!("private-match-profile-{}", key.to_hex()),
+                filter: Filter::new().kind(Kind::Metadata).author(key).limit(1),
+            });
+        }
+    }
+
+    /// Profiles someone chose to show in an alias chat; fetched like order
+    /// participants, each on its own anonymous connection.
+    pub(crate) fn revealed_profiles(&self) -> Vec<PublicKey> {
+        let mut keys: Vec<_> = self
+            .state
+            .aliases
+            .chats
+            .values()
+            .filter_map(|c| c.revealed)
+            .collect();
+        keys.sort();
+        keys.dedup();
+        keys
     }
 
     pub(super) fn alias_outbound(&self) -> impl Iterator<Item = Event> + '_ {

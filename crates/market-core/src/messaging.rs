@@ -11,6 +11,10 @@ pub use retention::Retention;
 mod escrow;
 pub mod friend_posts;
 mod match_chats;
+/// Private-match alias chats are keyed by match, never by a person.
+pub(crate) fn is_match_chat(id: &str) -> bool {
+    id.starts_with(match_chats::PREFIX)
+}
 pub mod mobile_push;
 pub mod private_matches;
 mod trade_steps;

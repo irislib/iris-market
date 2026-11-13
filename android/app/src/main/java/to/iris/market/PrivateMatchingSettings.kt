@@ -86,7 +86,7 @@ private fun PrivateMatchesDialog(book: JSONObject, state: MarketSnapshot, model:
                             }
                         }
                     }
-                    OutlinedTextField(helper, { helper = it }, label = { Text("Helper’s npub or public key") })
+                    OutlinedTextField(helper, { helper = it }, label = { Text("Helper’s profile ID (npub…)") })
                     OutlinedTextField(summary, { summary = it }, label = { Text("Shareable summary") })
                     Button(enabled = !busy && summary.isNotBlank() && helper.isNotBlank(), onClick = {
                         model.command(matchAction("share", "helper" to helper.trim(), "summary" to summary,

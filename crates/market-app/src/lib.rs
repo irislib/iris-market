@@ -26,6 +26,12 @@ pub fn generate_secret_key() -> String {
     iris_market_core::generate_secret_key()
 }
 
+/// Apply message servers to a profile folder before its first open; existing profiles are unchanged.
+#[uniffi::export]
+pub fn seed_new_profile_relays(data_dir: String, relays: Vec<String>) -> Result<bool, MarketError> {
+    iris_market_core::Market::seed_new_profile_relays(Path::new(&data_dir), &relays).map_err(error)
+}
+
 #[derive(uniffi::Object)]
 pub struct MarketApp {
     inner: iris_market_core::Market,

@@ -356,6 +356,26 @@ fn ai_search_uses_one_query_without_hiding_unreviewed_candidates() {
 }
 
 #[test]
+fn seeded_relays_apply_only_to_a_profile_folder_that_was_never_opened() {
+    let dir = tempfile::tempdir().unwrap();
+    let local = vec!["ws://127.0.0.1:7777".to_string()];
+    assert!(Market::seed_new_profile_relays(dir.path(), &["ws://relay.example".into()]).is_err());
+    assert!(!dir.path().join("market.sqlite").exists());
+    assert!(Market::seed_new_profile_relays(dir.path(), &local).unwrap());
+    let secret = iris_market_core::generate_secret_key();
+    let app = Market::open_fresh(dir.path(), &secret).unwrap();
+    let state: Value = serde_json::from_str(&app.snapshot().unwrap()).unwrap();
+    assert_eq!(state["settings"]["relays"], json!(local));
+    assert_eq!(state["profile_name_required"], true);
+    app.shutdown();
+    drop(app);
+    // An existing profile keeps its own servers.
+    assert!(!Market::seed_new_profile_relays(dir.path(), &["wss://relay.example".into()]).unwrap());
+    let store = Store::open(&dir.path().join("market.sqlite")).unwrap();
+    assert_eq!(store.settings().unwrap().relays, local);
+}
+
+#[test]
 fn fresh_profile_persists_initial_roster_and_returns_ready_without_network() {
     let dir = tempfile::tempdir().unwrap();
     offline(dir.path());

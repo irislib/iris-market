@@ -1,22 +1,5 @@
 import SwiftUI
 
-struct PrivateMatchInbox: Decodable {
-    struct Entry: Decodable, Identifiable {
-        let id, side, summary, peer: String
-        let expiresAt: Int64
-    }
-    struct Pair: Decodable { let entries: [String]; let votes: [Bool?]; let introduced: Bool }
-    struct Interest: Decodable { let summary: String; let vote: Bool?; let contact: String? }
-    struct Lead: Decodable { let title, listing: String }
-    let sent, received: [String: Entry]
-    let pairs: [String: Pair]
-    let interests: [String: Interest]
-    let publicLeads: [String: Lead]
-}
-struct PrivateMatchCandidate: Decodable, Identifiable {
-    let id, kind, summary: String
-}
-
 struct PrivateMatchingSettings: View {
     @EnvironmentObject private var store: MarketStore
     var body: some View {
@@ -83,7 +66,7 @@ private struct PrivateMatchesView: View {
                         }
                     }
                 }
-                TextField("Helper’s npub or public key", text: $helper)
+                TextField("Helper’s profile ID (npub…)", text: $helper)
                 TextField("Shareable summary", text: $summary)
                 Button("Send to helper privately") {
                     act(["op":"share", "helper":helper.trimmingCharacters(in:.whitespacesAndNewlines), "side":side, "summary":summary]) {
@@ -95,8 +78,17 @@ private struct PrivateMatchesView: View {
         ForEach(inbox.interests.keys.sorted(), id: \.self) { id in
             if let interest = inbox.interests[id] {
                 Divider()
+                Text("Possible match from your helper").font(.caption).foregroundStyle(.secondary)
                 Text(interest.summary).font(.headline)
-                if let contact = interest.contact {
+                if let chat = interest.chat {
+                    Text(interest.connected == true ? "Introduced. You can chat privately." : "Introduced. Connecting privately…")
+                    Button {
+                        // The alias chat already exists locally; it never contacts an account.
+                        dismiss()
+                        store.pushRoute = NativePushRoute(peerID: chat, threadID: nil, orderID: nil)
+                    } label: { Label("Open private chat", systemImage: "bubble.left.fill") }
+                }
+                else if let contact = interest.contact {
                     Text("You have been introduced.")
                     Button("Open private chat") {
                         store.command(["type": "contact", "author": contact]) { ok in
@@ -107,9 +99,9 @@ private struct PrivateMatchesView: View {
                         }
                     }
                 }
-                else if let vote = interest.vote { Text(vote ? "You agreed. Waiting for the introduction." : "You declined.") }
+                else if let vote = interest.vote { Text(vote ? "You agreed. Waiting for the other person and your helper." : "You declined.") }
                 else {
-                    Text("If you both agree, your helper can share your Iris messaging identity with the other person.")
+                    Text("If you both agree, you’ll chat as private aliases. Your profile stays hidden unless you choose to share it.")
                     Button("Agree to introduction") { act(["op":"vote","proposal":id,"accept":true]) }
                     Button("Decline") { act(["op":"vote","proposal":id,"accept":false]) }
                 }
@@ -134,20 +126,20 @@ private struct PrivateMatchesView: View {
         Text(entry.summary).font(.headline)
         let date = Date(timeIntervalSince1970: Double(entry.expiresAt)).formatted(date: .abbreviated, time: .omitted)
         let name = store.snapshot.people[entry.peer]?.name ?? String(entry.peer.prefix(8))
-        let person = helping ? "from" : "with"
-        Text("\(entry.side == "offer" ? "Offer" : "Request") \(person) \(name) · Expires \(date)").font(.caption).foregroundStyle(.secondary)
+        Text(helping ? "\(entry.side == "offer" ? "Offer" : "Request") from \(name) · Until \(date)"
+             : "Your \(entry.side == "offer" ? "offer" : "request") · Helper: \(name) · Until \(date)").font(.caption).foregroundStyle(.secondary)
     }
     @ViewBuilder private func helperInbox(_ inbox: PrivateMatchInbox) -> some View {
         ForEach(inbox.pairs.keys.sorted(), id: \.self) { id in
             if let pair = inbox.pairs[id] {
                 Divider()
                 Text(pair.entries.compactMap { inbox.received[$0]?.summary }.joined(separator:" · ")).font(.headline)
-                if pair.introduced { Text("Introduction started") }
-                else if pair.votes.contains(false) { Text("Declined") }
+                if pair.introduced { Text("Introduced. They now chat privately, and you can’t see their messages.") }
+                else if pair.votes.contains(false) { Text("One person declined.") }
                 else if pair.votes == [true, true] {
-                    Text("Both agreed")
+                    Text("Both agreed. Introducing them shares a private alias for each, not their profiles.")
                     Button("Introduce privately") { act(["op":"introduce","proposal":id]) }
-                } else { Text("Waiting for replies") }
+                } else { Text(pair.votes.contains(true) ? "One person agreed. Waiting for the other." : "Waiting for both to reply.") }
             }
         }
         ForEach(inbox.received.keys.sorted(), id: \.self) { id in
@@ -175,3 +167,37 @@ private struct PrivateMatchesView: View {
         if inbox.received.isEmpty { Text("Offers and requests shared with you will appear here.").foregroundStyle(.secondary) }
     }
 }
+
+/// Shown at the top of an alias chat: who sees what, and an explicit, confirmed profile share.
+struct PrivateMatchChatBanner: View {
+    @EnvironmentObject private var store: MarketStore
+    let chatID: String
+    @State private var confirming = false
+    @State private var profile: String?
+    private var proposal: String { String(chatID.dropFirst("match:".count)) }
+    private var interest: PrivateMatchInbox.Interest? { store.snapshot.privateMatching?.interests[proposal] }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label(interest?.sharedProfile == true ? "You shared your profile in this chat." : "You appear as a private alias. They can’t see your profile.",
+                  systemImage: "theatermasks.fill").font(.system(size: 13)).foregroundStyle(MarketTheme.muted)
+            if let key = interest?.revealed {
+                HStack(spacing: 8) {
+                    Label("They shared their profile: \(store.snapshot.people[key]?.name ?? String(key.prefix(8)))", systemImage: "person.crop.circle.fill").font(.system(size: 13))
+                    Button("View profile") { profile = key }.font(.system(size: 13, weight: .semibold))
+                }
+            }
+            if interest?.sharedProfile != true && interest?.connected == true {
+                Button("Share my profile…") { confirming = true }.font(.system(size: 13, weight: .semibold)).disabled(store.busy || store.demo)
+                    .accessibilityIdentifier("shareMatchProfile")
+            }
+            if interest?.connected != true { Text("Connecting privately. You can write as soon as you’re connected.").font(.caption).foregroundStyle(MarketTheme.muted) }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading).padding(14).background(MarketTheme.surface, in: RoundedRectangle(cornerRadius: 16))
+        .confirmationDialog("Share your profile?", isPresented: $confirming, titleVisibility: .visible) {
+            Button("Share profile") { store.command(["type": "private_match", "action": ["op": "reveal", "proposal": proposal]]) }
+            Button("Cancel", role: .cancel) {}
+        } message: { Text("They’ll see your name, profile and public listings, and can find you outside this chat. This can’t be undone.") }
+        .marketPage(item: Binding(get: { profile.map(RevealedProfile.init) }, set: { profile = $0?.id })) { AuthorProfileView(author: $0.id).marketSheetScope() }
+    }
+}
+private struct RevealedProfile: Identifiable { let id: String }

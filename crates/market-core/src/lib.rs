@@ -207,10 +207,18 @@ impl State {
         );
         if let Some(messaging) = &self.messaging {
             for conversation in messaging.conversations() {
+                if messaging::is_match_chat(&conversation.id) {
+                    continue;
+                }
                 people.insert(
                     conversation.id.clone(),
                     self.profiles.person(&conversation.id),
                 );
+            }
+            for key in messaging.revealed_profiles() {
+                people
+                    .entry(key.to_hex())
+                    .or_insert_with(|| self.profiles.person(&key.to_hex()));
             }
             for view in messaging.orders() {
                 let order = view.order;
@@ -339,7 +347,12 @@ impl State {
                         .into_iter()
                         .map(|c| Conversation {
                             timer_seconds: m.chat_timer(&c.id),
-                            name: self.profiles.person(&c.id).name,
+                            // An alias chat keeps its match label; it has no profile.
+                            name: if messaging::is_match_chat(&c.id) {
+                                c.name.clone()
+                            } else {
+                                self.profiles.person(&c.id).name
+                            },
                             id: c.id,
                             messages: c
                                 .messages

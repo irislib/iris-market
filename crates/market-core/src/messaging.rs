@@ -10,6 +10,11 @@ mod retention;
 pub use retention::Retention;
 mod escrow;
 pub mod friend_posts;
+mod match_chats;
+/// Private-match alias chats are keyed by match, never by a person.
+pub(crate) fn is_match_chat(id: &str) -> bool {
+    id.starts_with(match_chats::PREFIX)
+}
 pub mod mobile_push;
 pub mod private_matches;
 mod trade_steps;
@@ -207,6 +212,8 @@ struct PrivateState {
     friend_posts: friend_posts::Inbox,
     #[serde(default)]
     matches: private_matches::Book,
+    #[serde(default)]
+    aliases: match_chats::Aliases,
     #[serde(default)]
     trade_steps: Vec<trade_steps::Record>,
     #[serde(default)]
@@ -751,6 +758,12 @@ impl Messaging {
         context: Option<crate::conversation_context::MessageContext>,
         escrow: Option<crate::escrow::AgreementMessage>,
     ) -> MessagingResult<()> {
+        if peer_id.starts_with(match_chats::PREFIX) {
+            if context.is_some() || escrow.is_some() {
+                return Err("Private match chats carry text only".into());
+            }
+            return self.send_alias_text(peer_id, text);
+        }
         self.require_authorization()?;
         if let Some(value) = &context {
             value.validate().map_err(str::to_string)?;
@@ -830,6 +843,9 @@ impl Messaging {
         event
             .verify()
             .map_err(|_| "Private event signature is invalid".to_string())?;
+        if let Some(result) = self.receive_alias(event) {
+            return result;
+        }
         if event.kind.as_u16() as u32 == APP_KEYS_EVENT_KIND {
             if event.pubkey != self.owner
                 && !self
@@ -1107,7 +1123,10 @@ impl Messaging {
                 thread.messages.sort_by_key(message_sort_millis);
             }
         }
-        let mut items = threads.into_values().collect::<Vec<_>>();
+        let mut items = threads
+            .into_values()
+            .chain(self.alias_conversations())
+            .collect::<Vec<_>>();
         for conversation in &mut items {
             conversation
                 .messages
@@ -1509,6 +1528,7 @@ impl Messaging {
                     .limit(256),
             });
         }
+        self.alias_subscriptions(&mut result);
         result
     }
 
@@ -1530,6 +1550,7 @@ impl Messaging {
                     .is_none_or(|id| self.state.orders.can_publish(id))
             })
             .map(|queued| queued.event.clone())
+            .chain(self.alias_outbound())
             .collect()
     }
 
@@ -1565,6 +1586,9 @@ impl Messaging {
     pub fn acknowledge_published(&mut self, event_id: &str) -> MessagingResult<()> {
         let id = event_id.to_string();
         self.transaction(|this| {
+            if this.alias_published(&id) {
+                return Ok(());
+            }
             if let Some(queued) = this.state.outbox.remove(&id)
                 && let Some(inner_id) = queued.inner_id
             {

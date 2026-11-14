@@ -48,6 +48,9 @@ struct Pair {
     votes: [Option<bool>; 2],
     expires_at: u64,
     introduced: bool,
+    /// Each person's single-use alias invitation, carried with their agreement.
+    #[serde(default)]
+    invites: [Option<String>; 2],
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -58,6 +61,12 @@ struct Interest {
     expires_at: u64,
     vote: Option<bool>,
     contact: Option<PublicKey>,
+    /// The other person's alias invitation, kept only until it is used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    invite: Option<String>,
+    /// `contact` is the other person's per-match alias, not their account.
+    #[serde(default)]
+    alias: bool,
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct PublicLead {
@@ -83,7 +92,7 @@ pub(super) struct Book {
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
-enum Wire {
+pub(super) enum Wire {
     Share {
         entry: Entry,
     },
@@ -101,11 +110,15 @@ enum Wire {
         proposal: Uuid,
         accept: bool,
         expires_at: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        invite: Option<String>,
     },
     Introduce {
         proposal: Uuid,
         contact: PublicKey,
         expires_at: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        invite: Option<String>,
     },
     PublicListing {
         entry: Uuid,
@@ -136,8 +149,15 @@ pub enum Action {
     Vote {
         proposal: Uuid,
         accept: bool,
+        /// Filled locally with this person's alias invitation, never by callers.
+        #[serde(skip)]
+        invite: Option<String>,
     },
     Introduce {
+        proposal: Uuid,
+    },
+    /// Explicitly show your profile to the other person in an alias chat.
+    Reveal {
         proposal: Uuid,
     },
     SendPublic {
@@ -205,7 +225,7 @@ impl Book {
             return Err("Enable private matching in Settings first".into());
         }
         match action {
-            Action::Enable { .. } => unreachable!(),
+            Action::Enable { .. } | Action::Reveal { .. } => unreachable!(),
             Action::Share {
                 helper,
                 side,
@@ -281,10 +301,15 @@ impl Book {
                         votes: [None, None],
                         expires_at: end,
                         introduced: false,
+                        invites: [None, None],
                     },
                 );
             }
-            Action::Vote { proposal, accept } => {
+            Action::Vote {
+                proposal,
+                accept,
+                invite,
+            } => {
                 let p = self
                     .interests
                     .get_mut(&proposal)
@@ -299,6 +324,7 @@ impl Book {
                         proposal,
                         accept,
                         expires_at: p.expires_at,
+                        invite: invite.filter(|_| accept),
                     },
                     p.expires_at,
                 ));
@@ -312,18 +338,42 @@ impl Book {
                     return Err("Both people must agree to this introduction".into());
                 }
                 let [a, b] = p.entries.map(|id| self.received[&id].peer);
-                for (peer, contact) in [(a, b), (b, a)] {
+                // Each person meets the other's per-match alias, never their account.
+                let aliases = match &p.invites {
+                    [Some(x), Some(y)] => {
+                        let alias = |url: &String| alias_of(url).map(|key| (key, url.clone()));
+                        match (alias(x), alias(y)) {
+                            (Some(x), Some(y)) if x.0 != y.0 => Some([x, y]),
+                            _ => return Err("This introduction is no longer valid".into()),
+                        }
+                    }
+                    [None, None] => None,
+                    _ => {
+                        return Err(
+                            "One person needs to update Iris Market before this introduction"
+                                .into(),
+                        );
+                    }
+                };
+                for (i, peer) in [a, b].into_iter().enumerate() {
+                    let (contact, invite) = match &aliases {
+                        Some(pair) => (pair[1 - i].0, Some(pair[1 - i].1.clone())),
+                        None => ([b, a][i], None),
+                    };
                     sends.push((
                         peer,
                         Wire::Introduce {
                             proposal,
                             contact,
                             expires_at: p.expires_at,
+                            invite,
                         },
                         p.expires_at,
                     ));
                 }
                 p.introduced = true;
+                // The helper needs the invitations only to forward them.
+                p.invites = [None, None];
             }
             Action::SendPublic { entry, listing } => {
                 let row = self.received.get(&entry).ok_or("Entry expired")?;
@@ -405,6 +455,8 @@ impl Book {
                         expires_at,
                         vote: None,
                         contact: None,
+                        invite: None,
+                        alias: false,
                     });
                 }
             }
@@ -412,13 +464,18 @@ impl Book {
                 proposal,
                 accept,
                 expires_at,
+                invite,
             } => {
+                let invite = invite.filter(|url| accept && alias_of(url).is_some());
                 if let Some(p) = self.pairs.get_mut(&proposal)
                     && p.expires_at == expires_at
                 {
                     for (i, e) in p.entries.iter().enumerate() {
-                        if self.received.get(e).is_some_and(|r| r.peer == peer) {
-                            p.votes[i].get_or_insert(accept);
+                        if self.received.get(e).is_some_and(|r| r.peer == peer)
+                            && p.votes[i].is_none()
+                        {
+                            p.votes[i] = Some(accept);
+                            p.invites[i] = invite.clone();
                         }
                     }
                 }
@@ -427,15 +484,22 @@ impl Book {
                 proposal,
                 contact,
                 expires_at,
+                invite,
             } => {
                 if let Some(p) = self.interests.get_mut(&proposal)
                     && p.helper == peer
                     && p.vote == Some(true)
                     && p.expires_at == expires_at
+                    && p.contact.is_none()
                     && contact != me
                     && contact != peer
+                    && invite
+                        .as_deref()
+                        .is_none_or(|url| alias_of(url) == Some(contact))
                 {
-                    p.contact.get_or_insert(contact);
+                    p.alias = invite.is_some();
+                    p.contact = Some(contact);
+                    p.invite = invite;
                 }
             }
             Wire::PublicListing {
@@ -468,6 +532,15 @@ impl Book {
         }
         self.prune(now);
     }
+}
+
+/// The alias a single-use private-match invitation belongs to.
+fn alias_of(url: &str) -> Option<PublicKey> {
+    if url.len() > 2048 {
+        return None;
+    }
+    let invite = parse_invite_url(url).ok()?;
+    PublicKey::from_slice(&invite.inviter_device_pubkey.to_bytes()).ok()
 }
 
 fn wire_address(id: &str) -> String {
@@ -532,7 +605,34 @@ impl Messaging {
         if !matches!(action, Action::Enable { .. }) {
             self.require_authorization()?;
         }
-        self.transaction(|m| {
+        if let Action::Reveal { proposal } = action {
+            if !self
+                .state
+                .matches
+                .interests
+                .get(&proposal)
+                .is_some_and(|p| p.alias && p.contact.is_some())
+            {
+                return Err("This private match has ended".into());
+            }
+            return self.transaction(|m| m.reveal_alias(proposal));
+        }
+        let mut action = action;
+        self.transaction(move |m| {
+            if let Action::Vote {
+                proposal,
+                accept: true,
+                invite,
+            } = &mut action
+                && let Some(p) = m.state.matches.interests.get(proposal)
+                && p.vote.is_none()
+            {
+                let (summary, end) = (p.summary.clone(), p.expires_at);
+                *invite = Some(m.create_alias(*proposal, &summary, end)?);
+            }
+            if matches!(action, Action::Enable { enabled: false }) {
+                m.state.aliases.forget_pending();
+            }
             // A locally queued summary can still be recalled before transport takes it.
             if matches!(
                 action,
@@ -636,6 +736,23 @@ impl Messaging {
                 .matches
                 .receive(self.owner, peer, wire, inner.created_at.as_secs(), now());
         }
+        let introduced: Vec<_> = self
+            .state
+            .matches
+            .interests
+            .iter()
+            .filter(|(_, p)| p.alias)
+            .filter_map(|(id, p)| Some((*id, p.contact?, p.invite.clone()?)))
+            .collect();
+        for (chat, contact, invite) in introduced {
+            // A bad introduction leaves the alias waiting; it never blocks delivery.
+            if self.alias_introduced(chat, contact, &invite).is_ok()
+                && let Some(p) = self.state.matches.interests.get_mut(&chat)
+            {
+                // Once used, the other person's invitation is not kept.
+                p.invite = None;
+            }
+        }
     }
     pub(crate) fn matching_view(&self) -> Option<serde_json::Value> {
         if !self.state.matches.enabled {
@@ -643,8 +760,38 @@ impl Messaging {
         }
         let mut book = self.state.matches.clone();
         book.prune(now());
+        // Invitations are private capabilities; views name only the local chat.
+        let pairs: BTreeMap<_, _> = book
+            .pairs
+            .iter()
+            .map(|(id, p)| {
+                (
+                    id,
+                    serde_json::json!({"entries":p.entries,"votes":p.votes,"expires_at":p.expires_at,"introduced":p.introduced}),
+                )
+            })
+            .collect();
+        let interests: BTreeMap<_, _> = book
+            .interests
+            .iter()
+            .map(|(id, p)| {
+                let alias = p.alias;
+                let chat = (alias && p.contact.is_some())
+                    .then(|| format!("{}{id}", super::match_chats::PREFIX));
+                let status = self.alias_status(*id);
+                (
+                    id,
+                    serde_json::json!({"helper":p.helper,"entry":p.entry,"summary":p.summary,
+                        "expires_at":p.expires_at,"vote":p.vote,
+                        "contact":if alias { None } else { p.contact },"chat":chat,
+                        "connected":chat.is_some() && status.as_ref().is_some_and(|s| s.connected),
+                        "shared_profile":status.as_ref().is_some_and(|s| s.shared),
+                        "revealed":status.and_then(|s| s.revealed)}),
+                )
+            })
+            .collect();
         Some(
-            serde_json::json!({"sent":book.sent,"received":book.received,"pairs":book.pairs,"interests":book.interests,"public_leads":book.public_leads}),
+            serde_json::json!({"sent":book.sent,"received":book.received,"pairs":pairs,"interests":interests,"public_leads":book.public_leads}),
         )
     }
     pub(crate) fn match_candidates(
@@ -707,6 +854,317 @@ impl Messaging {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn flush(chats: &mut [Messaging], published: &mut Vec<Event>) {
+        for _ in 0..30 {
+            let mut events = Vec::new();
+            for (sender, c) in chats.iter_mut().enumerate() {
+                c.retry().unwrap();
+                events.extend(c.pending_outbound().into_iter().map(|e| (sender, e)));
+            }
+            let settled = events.is_empty();
+            for (sender, e) in events {
+                chats[sender].acknowledge_published(&e.id.to_hex()).unwrap();
+                published.push(e);
+            }
+            // Like relays, replay stored events to each matching subscription.
+            let before: Vec<_> = chats
+                .iter()
+                .map(|c| serde_json::to_string(&c.state).unwrap())
+                .collect();
+            for e in published.iter() {
+                for c in chats.iter_mut() {
+                    if c.subscriptions()
+                        .iter()
+                        .any(|s| s.filter.match_event(e, Default::default()))
+                    {
+                        let _ = c.receive(e);
+                    }
+                }
+            }
+            let after: Vec<_> = chats
+                .iter()
+                .map(|c| serde_json::to_string(&c.state).unwrap())
+                .collect();
+            if settled && before == after {
+                return;
+            }
+        }
+        panic!("Local delivery did not settle");
+    }
+
+    #[test]
+    fn introductions_use_per_match_aliases_instead_of_accounts() {
+        let dirs = [(); 3].map(|_| tempfile::tempdir().unwrap());
+        let mut chats: Vec<_> = dirs
+            .iter()
+            .map(|dir| Messaging::open(dir.path(), Keys::generate()).unwrap())
+            .collect();
+        let owners: Vec<_> = chats.iter().map(|c| c.owner).collect();
+        let chats_keys: Vec<_> = chats.iter().map(|c| c.keys.clone()).collect();
+        let (seeker, offerer, helper) = (0, 1, 2);
+        let mut published = Vec::new();
+        for person in [seeker, offerer] {
+            let invite = chats[helper].invite().unwrap();
+            chats[person].accept_invite(&invite).unwrap();
+            flush(&mut chats, &mut published);
+        }
+        for c in chats.iter_mut() {
+            c.matching_action(Action::Enable { enabled: true }, None)
+                .unwrap();
+        }
+        for (person, side, summary) in [
+            (seeker, Side::Request, "Looking for a cargo bike"),
+            (offerer, Side::Offer, "Offering a two-seat cargo bike"),
+        ] {
+            chats[person]
+                .matching_action(
+                    Action::Share {
+                        helper: owners[helper].to_hex(),
+                        side,
+                        summary: summary.into(),
+                    },
+                    None,
+                )
+                .unwrap();
+        }
+        flush(&mut chats, &mut published);
+        let entries: Vec<_> = [seeker, offerer]
+            .map(|person| *chats[person].state.matches.sent.keys().next().unwrap())
+            .into();
+        chats[helper]
+            .matching_action(
+                Action::Suggest {
+                    left: entries[0],
+                    right: entries[1],
+                },
+                None,
+            )
+            .unwrap();
+        flush(&mut chats, &mut published);
+        let proposal = *chats[seeker].state.matches.interests.keys().next().unwrap();
+        // Introducing before both agree is refused.
+        assert!(
+            chats[helper]
+                .matching_action(Action::Introduce { proposal }, None)
+                .is_err()
+        );
+        for person in [seeker, offerer] {
+            chats[person]
+                .matching_action(
+                    Action::Vote {
+                        proposal,
+                        accept: true,
+                        invite: None,
+                    },
+                    None,
+                )
+                .unwrap();
+        }
+        flush(&mut chats, &mut published);
+        chats[helper]
+            .matching_action(Action::Introduce { proposal }, None)
+            .unwrap();
+        flush(&mut chats, &mut published);
+
+        let chat_id = format!("{}{proposal}", super::super::match_chats::PREFIX);
+        for person in [seeker, offerer] {
+            let view = chats[person].matching_view().unwrap();
+            assert_eq!(view["interests"][proposal.to_string()]["chat"], chat_id);
+            assert!(view["interests"][proposal.to_string()]["contact"].is_null());
+            let thread = chats[person]
+                .conversations()
+                .into_iter()
+                .find(|c| c.id == chat_id)
+                .expect("introduced chat");
+            assert!(thread.name.starts_with("Private match"));
+            // The snapshot keeps this label instead of looking up a profile.
+            assert!(super::super::is_match_chat(&thread.id));
+            assert!(!super::super::is_match_chat(&owners[helper].to_hex()));
+            assert_eq!(thread.messages[0].text, super::super::match_chats::HELLO);
+        }
+        chats[offerer]
+            .send(&chat_id, "It is still available")
+            .unwrap();
+        chats[seeker].send(&chat_id, "Great, thanks").unwrap();
+        flush(&mut chats, &mut published);
+        for person in [seeker, offerer] {
+            let thread = chats[person]
+                .conversations()
+                .into_iter()
+                .find(|c| c.id == chat_id)
+                .unwrap();
+            let texts: Vec<_> = thread.messages.iter().map(|m| m.text.as_str()).collect();
+            assert!(texts.contains(&"It is still available"), "{texts:?}");
+            assert!(texts.contains(&"Great, thanks"), "{texts:?}");
+            assert!(
+                thread
+                    .messages
+                    .iter()
+                    .all(|m| !m.mine || m.delivery == "sent")
+            );
+        }
+
+        // Neither person learns the other's account, in views or decrypted state.
+        for (me, other) in [(seeker, offerer), (offerer, seeker)] {
+            let visible = serde_json::json!({
+                "conversations": chats[me].conversations(),
+                "matching": chats[me].matching_view(),
+            })
+            .to_string();
+            assert!(!visible.contains(&owners[other].to_hex()));
+            assert!(!visible.contains("#%7B"), "invitation leaked into a view");
+            let private = serde_json::to_string(&chats[me].state.aliases).unwrap();
+            assert!(!private.contains(&owners[other].to_hex()));
+            assert!(!private.contains(&owners[me].to_hex()));
+        }
+        // No published event is signed by, or names, an account in plaintext.
+        for event in &published {
+            let raw = event.as_json();
+            for owner in &owners {
+                assert_ne!(event.pubkey, *owner);
+                assert!(!raw.contains(&owner.to_hex()));
+            }
+        }
+        // The helper keeps no invitation after introducing, nor does either person once used.
+        assert_eq!(
+            chats[helper].state.matches.pairs[&proposal].invites,
+            [None, None]
+        );
+        for person in [seeker, offerer] {
+            assert!(
+                chats[person].state.matches.interests[&proposal]
+                    .invite
+                    .is_none()
+            );
+        }
+
+        // Showing a profile is a separate, explicit action, verified by the other side.
+        chats[seeker]
+            .matching_action(Action::Reveal { proposal }, None)
+            .unwrap();
+        flush(&mut chats, &mut published);
+        let theirs = chats[offerer].matching_view().unwrap();
+        assert_eq!(
+            theirs["interests"][proposal.to_string()]["revealed"],
+            owners[seeker].to_hex()
+        );
+        assert!(theirs["interests"][proposal.to_string()]["shared_profile"] == false);
+        let mine = chats[seeker].matching_view().unwrap();
+        assert!(mine["interests"][proposal.to_string()]["shared_profile"] == true);
+        assert!(mine["interests"][proposal.to_string()]["revealed"].is_null());
+        let last = |c: &Messaging| {
+            let thread = c
+                .conversations()
+                .into_iter()
+                .find(|c| c.id == chat_id)
+                .unwrap();
+            thread.messages.last().unwrap().text.clone()
+        };
+        assert_eq!(last(&chats[offerer]), super::super::match_chats::REVEALED);
+        // The shown profile is fetched on its own anonymous connection, for a name.
+        assert_eq!(chats[offerer].revealed_profiles(), [owners[seeker]]);
+        assert!(chats[offerer].subscriptions().iter().any(|s| {
+            s.scope == format!("private-match-profile-{}", owners[seeker].to_hex())
+                && s.filter.match_event(
+                    &nostr::EventBuilder::metadata(&Default::default())
+                        .sign_with_keys(&chats_keys[seeker])
+                        .unwrap(),
+                    Default::default(),
+                )
+        }));
+        assert!(chats[seeker].revealed_profiles().is_empty());
+        assert_eq!(last(&chats[seeker]), super::super::match_chats::SHARED);
+        for event in &published {
+            for owner in &owners {
+                assert!(!event.as_json().contains(&owner.to_hex()));
+            }
+        }
+
+        // Alias traffic uses its own receive scopes, apart from account scopes.
+        for person in [seeker, offerer] {
+            let scopes = chats[person].subscriptions();
+            assert!(
+                scopes
+                    .iter()
+                    .any(|s| s.scope.starts_with("private-match-session-"))
+            );
+        }
+        // Reopening keeps the connected chat and nothing else.
+        let keys = chats[seeker].keys.clone();
+        drop(chats.remove(seeker));
+        let reopened = Messaging::open(dirs[seeker].path(), keys).unwrap();
+        assert!(reopened.conversations().iter().any(|c| c.id == chat_id));
+    }
+
+    #[test]
+    fn helpers_refuse_to_mix_alias_and_account_introductions() {
+        let owner = Keys::generate().public_key();
+        let (a, b) = (Keys::generate().public_key(), Keys::generate().public_key());
+        let at = 1000;
+        let mut book = Book::default();
+        book.apply(owner, Action::Enable { enabled: true }, at, None)
+            .unwrap();
+        for (peer, side) in [(a, Side::Request), (b, Side::Offer)] {
+            book.receive(
+                owner,
+                peer,
+                Wire::Share {
+                    entry: Entry {
+                        id: Uuid::new_v4(),
+                        side,
+                        summary: "Cargo bike".into(),
+                        expires_at: at + WEEK,
+                    },
+                },
+                at,
+                at,
+            );
+        }
+        let ids: Vec<_> = book.received.keys().copied().collect();
+        let sends = book
+            .apply(
+                owner,
+                Action::Suggest {
+                    left: ids[0],
+                    right: ids[1],
+                },
+                at,
+                None,
+            )
+            .unwrap();
+        let Wire::Suggest { proposal, .. } = sends[0].1.clone() else {
+            panic!()
+        };
+        let alias = Keys::generate().public_key();
+        let url = invite_url(
+            &Invite::create_new(alias, None, Some(1)).unwrap(),
+            "https://market.iris.to/invite",
+        )
+        .unwrap();
+        for (i, peer) in [book.received[&ids[0]].peer, book.received[&ids[1]].peer]
+            .into_iter()
+            .enumerate()
+        {
+            book.receive(
+                owner,
+                peer,
+                Wire::Vote {
+                    proposal,
+                    accept: true,
+                    expires_at: at + WEEK,
+                    invite: (i == 0).then(|| url.clone()),
+                },
+                at,
+                at,
+            );
+        }
+        let err = book
+            .apply(owner, Action::Introduce { proposal }, at, None)
+            .err()
+            .unwrap();
+        assert!(err.contains("update"));
+    }
 
     #[test]
     fn pending_entries_survive_restart_but_withdrawn_or_expired_entries_do_not_return() {

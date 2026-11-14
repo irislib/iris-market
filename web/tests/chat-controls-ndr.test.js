@@ -52,10 +52,28 @@ test('three profiles privately match pending entries through encrypted delivery 
   await seller.privateMatch({op:'vote',proposal,accept:true});
   await wait(()=>helper.privateMatchView().pairs[proposal].votes.every(v=>v===true));
   await helper.privateMatch({op:'introduce',proposal});
-  await wait(()=>buyer.privateMatchView().interests[proposal]?.contact===sellerId&&seller.privateMatchView().interests[proposal]?.contact===buyerId);
+  // Each person meets a per-match alias, never the other's account.
+  const chat='match:'+proposal,people=[buyer,seller];
+  await wait(()=>people.every(p=>p.privateMatchView().interests[proposal]?.chat===chat&&p.privateMatchChats()[0]?.connected));
+  for(const p of people)assert.equal(p.privateMatchView().interests[proposal].contact,null);
+  await seller.privateMatchSend(chat,'Still available');
+  await wait(()=>buyer.privateMatchChats()[0].messages.some(m=>m.text==='Still available'));
+  await buyer.privateMatchSend(chat,'Wonderful, thanks');
+  await wait(()=>seller.privateMatchChats()[0].messages.some(m=>m.text==='Wonderful, thanks'&&!m.mine));
+  await wait(()=>people.every(p=>p.privateMatchChats()[0].messages.every(m=>!m.mine||m.delivery==='sent')));
+  for(const [me,other] of [[buyer,sellerId],[seller,buyerId]])
+    assert(!JSON.stringify({state:me.state(),view:me.privateMatchView(),chats:me.privateMatchChats()}).includes(other));
   assert(bus.frames.every(e=>![14,30402,38383].includes(e.kind)));
   const encrypted=bus.frames.filter(e=>[1059,1060].includes(e.kind));
   assert(encrypted.length>0);
-  assert(!JSON.stringify(bus.frames).includes('cargo bike'));
+  for(const secret of ['cargo bike','Still available','Wonderful'])assert(!JSON.stringify(bus.frames).includes(secret));
+  assert(bus.frames.filter(e=>[1059,1060].includes(e.kind)).every(e=>![buyerId,sellerId,helperId].includes(e.pubkey)));
+  // An explicit reveal is signed by the profile key and verified by the other side.
+  await buyer.privateMatch({op:'reveal',proposal});
+  await wait(()=>seller.privateMatchView().interests[proposal].revealed===buyerId);
+  assert.equal(buyer.privateMatchView().interests[proposal].shared_profile,true);
+  assert.equal(seller.privateMatchView().interests[proposal].revealed,buyerId);
+  assert.equal(buyer.privateMatchView().interests[proposal].revealed,null);
+  assert(!JSON.stringify(bus.frames.filter(e=>[1059,1060].includes(e.kind))).includes(buyerId),'the reveal stays inside the encrypted chat');
   assert(encrypted.every(e=>!e.tags.some(([tag,key])=>tag==='p'&&[buyerId,sellerId,helperId].includes(key))));
 });

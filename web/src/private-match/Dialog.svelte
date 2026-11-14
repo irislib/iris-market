@@ -1,7 +1,7 @@
 <script lang="ts">
   import {nip19} from 'nostr-tools'
   import {nameFor} from '../people.ts'
-  import {listingURL} from '../routes.ts'
+  import {listingURL, profileURL} from '../routes.ts'
   import {matchCandidates, type MatchView} from '../private-matches.ts'
   import type {PrivateMatchState} from './state.svelte.ts'
 
@@ -13,6 +13,16 @@
   let helper = $state('')
   let summary = $state('')
   let side = $state<'offer' | 'request'>('request')
+  let draft = $state('')
+  let confirming = $state(false)
+  const chat = $derived(matches.chats.find(c => c.id === matches.openChat))
+  const proposalOf = (id: string) => id.slice('match:'.length)
+  // Filled glyphs, drawn with the text colour.
+  const icons = {
+    chat: 'M4 3h16a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H9l-5 4v-4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z',
+    mask: 'M12 4C6 4 2 5.5 2 9c0 5 4 9 7.5 9 1.1 0 1.8-.9 2.5-2 .7 1.1 1.4 2 2.5 2C18 18 22 14 22 9c0-3.5-4-5-10-5Zm-4.5 5.5c1.3 0 2.3.6 2.5 1.5-.5.8-1.5 1.3-2.5 1.3S5.5 11.8 5 11c.2-.9 1.2-1.5 2.5-1.5Zm9 0c1.3 0 2.3.6 2.5 1.5-.5.8-1.5 1.3-2.5 1.3s-2-.5-2.5-1.3c.2-.9 1.2-1.5 2.5-1.5Z',
+    person: 'M12 2a5 5 0 1 1 0 10 5 5 0 0 1 0-10Zm0 12c5 0 9 2.5 9 6v2H3v-2c0-3.5 4-6 9-6Z',
+  }
 
   const until = (at: number) => new Date(at * 1000).toLocaleDateString()
   const peerNames = $derived(matches.peers.map(key => nameFor(key) + ' · ' + key.slice(-6)))
@@ -24,7 +34,8 @@
 
   function closed() {
     matches.dialogOpen = false
-    selected = helper = summary = matches.error = ''
+    selected = helper = summary = draft = matches.error = matches.openChat = ''
+    confirming = false
     side = 'request'
     compose.open = false
   }
@@ -38,13 +49,14 @@
         summary = ''
         compose.open = false
       }
-    } catch { matches.error = 'Enter the helper’s public key.' }
+    } catch { matches.error = 'Paste your helper’s profile ID. It starts with npub.' }
   }
 
   function pairStatus(pair: MatchView['pairs'][string]) {
-    if (pair.introduced) return 'Introduction started'
-    if (pair.votes.includes(false)) return 'Declined'
-    return pair.votes.every(vote => vote === true) ? 'Both agreed' : 'Waiting for replies'
+    if (pair.introduced) return 'Introduced. They now chat privately, and you can’t see their messages.'
+    if (pair.votes.includes(false)) return 'One person declined.'
+    if (pair.votes.every(vote => vote === true)) return 'Both agreed. Introducing them shares a private alias for each, not their profiles.'
+    return pair.votes.some(vote => vote === true) ? 'One person agreed. Waiting for the other.' : 'Waiting for both to reply.'
   }
 
   function candidatesFor(v: MatchView, id: string) {
@@ -58,10 +70,31 @@
     try { return listingURL(listing.replace(/^30402:/, '')) } catch { return null }
   }
 
-  const interestStatus = (p: MatchView['interests'][string]) =>
-    p.contact ? 'You have been introduced.' : p.vote === null
-      ? 'If you both agree, your helper can share your Iris messaging identity with the other person.'
-      : p.vote ? 'You agreed. Waiting for the introduction.' : 'You declined.'
+  function interestStatus(p: MatchView['interests'][string]) {
+    if (p.chat) return p.connected ? 'Introduced. You can chat privately.' : 'Introduced. Connecting privately…'
+    if (p.contact) return 'You have been introduced.'
+    if (p.vote === null) return 'If you both agree, you’ll chat as private aliases. Your profile stays hidden unless you choose to share it.'
+    return p.vote ? 'You agreed. Waiting for the other person and your helper.' : 'You declined.'
+  }
+
+  async function sendDraft() {
+    if (chat && await matches.send(chat.id, draft)) draft = ''
+  }
+
+  async function share() {
+    if (chat && await matches.act({op: 'reveal', proposal: proposalOf(chat.id)})) confirming = false
+  }
+
+  function viewProfile(key: string) {
+    dialog.close()
+    location.assign(profileURL(key))
+  }
+
+  function openChat(id: string) {
+    confirming = false
+    matches.openChat = id
+    matches.markRead(id)
+  }
 </script>
 
 <dialog bind:this={dialog} class="match-dialog" aria-labelledby="private-match-heading" onclose={closed}>
@@ -83,13 +116,56 @@
       <option value="">Choose from your conversations</option>
       {#each matches.peers as key, i (key)}<option value={key}>{peerNames[i]}</option>{/each}
     </select>
-    <input bind:value={helper} placeholder="Helper’s npub or public key" aria-label="Helper" autocomplete="off">
+    <input bind:value={helper} placeholder="Helper’s profile ID (npub…)" aria-label="Helper" autocomplete="off">
     <textarea bind:value={summary} placeholder="e.g. Looking for a cargo bike with two seats" aria-label="Shareable summary" maxlength="200"></textarea>
-    <p class="small muted">{matches.canSend ? '' : 'Waiting for device authorization before sending.'}</p>
+    <p class="small muted">{matches.canSend ? '' : 'This device needs approval before it can send.'}</p>
     <button class="button primary" disabled={!matches.canSend} onclick={send}>Send to helper privately</button>
   </details>
   <p class="error" role="alert">{matches.error}</p>
-  <div class="match-rows">
+  {#if chat}
+    <section class="match-chat" aria-label="Private match chat">
+      <button type="button" class="text-button" onclick={() => { matches.openChat = ''; confirming = false }}>← Back to matches</button>
+      <h3>{chat.title}</h3>
+      <p class="match-who small">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d={icons.mask}/></svg>
+        <span>{chat.shared ? 'You shared your profile in this chat.' : 'You appear as a private alias. They can’t see your profile.'}</span>
+      </p>
+      {#if chat.revealed}
+        <p class="match-who small">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d={icons.person}/></svg>
+          <span>They shared their profile: <strong>{nameFor(chat.revealed)}</strong></span>
+          <button type="button" class="text-button" onclick={() => viewProfile(chat.revealed!)}>View profile</button>
+        </p>
+      {/if}
+      <ol class="match-messages" aria-live="polite">
+        {#each chat.messages as message (message.id)}
+          <li class:mine={message.mine}>
+            {message.text}
+            {#if message.mine && message.delivery === 'pending'}<span class="match-queued"> · Not sent yet</span>{/if}
+          </li>
+        {/each}
+      </ol>
+      {#if chat.connected}
+        <textarea bind:value={draft} placeholder="Write a message" aria-label="Message" maxlength="8000"></textarea>
+        <div class="match-actions">
+          <button type="button" class="button primary" disabled={!draft.trim() || !matches.canSend} onclick={sendDraft}>Send</button>
+          {#if !chat.shared && !confirming}
+            <button type="button" class="button secondary" onclick={() => confirming = true}>Share my profile…</button>
+          {/if}
+        </div>
+        {#if confirming}
+          <div class="match-confirm" role="group" aria-label="Share your profile">
+            <p>Share your profile with this person? They’ll see your name, profile and public listings, and can find you outside this chat. This can’t be undone.</p>
+            <button type="button" class="button primary" onclick={share}>Share profile</button>
+            <button type="button" class="button secondary" onclick={() => confirming = false}>Cancel</button>
+          </div>
+        {/if}
+      {:else}
+        <p class="small muted">Connecting privately. You can write as soon as you’re connected; nothing you type is shared before that.</p>
+      {/if}
+    </section>
+  {/if}
+  <div class="match-rows" hidden={!!chat}>
     {#if matches.dialogOpen && matches.view}
       {@const v = matches.view}
       {#if matches.helperView}
@@ -105,7 +181,7 @@
         {#each Object.values(v.received) as entry (entry.id)}
           <div class="match-card">
             <strong>{entry.summary}</strong>
-            <p class="small muted">{(entry.side === 'offer' ? 'Offer from ' : 'Request from ') + nameFor(entry.peer) + ' · Expires ' + until(entry.expires_at)}</p>
+            <p class="small muted">{(entry.side === 'offer' ? 'Offer from ' : 'Request from ') + nameFor(entry.peer) + ' · Until ' + until(entry.expires_at)}</p>
             <button type="button" class="button secondary" onclick={() => selected = entry.id}>Find matches</button>
             {#if selected === entry.id}
               {@const candidates = candidatesFor(v, entry.id)}
@@ -132,13 +208,20 @@
         {@const leads = Object.values(v.public_leads).map(lead => ({lead, href: leadHref(lead.listing)})).filter(l => l.href)}
         {#each Object.entries(v.interests) as [proposal, p] (proposal)}
           <div class="match-card">
+            <span class="match-label">Possible match from your helper</span>
             <strong>{p.summary}</strong>
             <p class="small muted">{interestStatus(p)}</p>
             {#if p.vote === null}
               <button type="button" class="button secondary" onclick={() => void matches.act({op: 'vote', proposal, accept: true})}>Agree to introduction</button>
               <button type="button" class="button secondary" onclick={() => void matches.act({op: 'vote', proposal, accept: false})}>Decline</button>
             {/if}
-            {#if p.contact}
+            {#if p.chat}
+              {@const unread = matches.unread[p.chat] ?? 0}
+              <button type="button" class="button secondary match-open" onclick={() => openChat(p.chat!)}>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d={icons.chat}/></svg>
+                Open private chat{#if unread}<span class="nav-unread nav-unread-count" aria-label={unread + ' new'}>{unread}</span>{/if}
+              </button>
+            {:else if p.contact}
               <button type="button" class="button secondary" onclick={() => { dialog.close(); void matches.api.openChat(p.contact) }}>Open private chat</button>
             {/if}
           </div>
@@ -153,7 +236,7 @@
         {#each Object.values(v.sent) as entry (entry.id)}
           <div class="match-card">
             <strong>{entry.summary}</strong>
-            <p class="small muted">{(entry.side === 'offer' ? 'Your offer' : 'Your request') + ' with ' + nameFor(entry.peer) + ' · Expires ' + until(entry.expires_at)}</p>
+            <p class="small muted">{(entry.side === 'offer' ? 'Your offer' : 'Your request') + ' · Helper: ' + nameFor(entry.peer) + ' · Until ' + until(entry.expires_at)}</p>
             <button type="button" class="button secondary" onclick={() => void matches.act({op: 'withdraw', entry: entry.id})}>Withdraw</button>
           </div>
         {/each}

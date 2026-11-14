@@ -421,7 +421,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], getPublicRela
       if(isPrivateMatch(rumor)||rumor.tags.some(t=>t[0]===TRADE_TAG)){
         const owner=meta?.senderOwnerPubkey,device=meta?.senderDevicePubkey??meta?.fromDeviceId;
         if(owner && device && (owner===device || runtime.getKnownAppKeysSnapshots().some(s=>s.ownerPubkey===owner&&s.appKeys.getDevice(device)))) {
-          if(isPrivateMatch(rumor))await matches?.receive(rumor,owner,device);
+          if(isPrivateMatch(rumor)){await matches?.receive(rumor,owner,device);void syncMatches();}
           else await tradeBook?.receive(rumor,owner,device);check(attempt);notify();
         }
         return;
@@ -589,8 +589,23 @@ export function createMessaging({ developerMint, getRelays=()=>[], getPublicRela
     syncingControls=(async()=>{for(const job of book.jobs()){check(attempt);attempted.add(job.rumor.id);await activeRuntime.sendEvent(job.peer,job.rumor);check(attempt);await book.handed(job.rumor.id);}})().catch(report).finally(()=>{if(attempt===generation){syncingControls=undefined;if(book.jobs().some(job=>!attempted.has(job.rumor.id)))queueMicrotask(()=>void syncControls());}});
     return syncingControls;
   }
+  // Alias scopes get their own anonymous receive connections, apart from the account's.
+  const aliasSubscriptions=new Map<string,{close():void}>();
+  function syncAliasSubscriptions(){
+    if(!matches||!transport||status!=='ready'){for(const sub of aliasSubscriptions.values())sub.close();aliasSubscriptions.clear();return;}
+    const attempt=generation,book=matches,wanted=new Map(book.aliasFilters().map(s=>[s.scope,s.filter]));
+    for(const [scope,sub] of aliasSubscriptions)if(!wanted.has(scope)){sub.close();aliasSubscriptions.delete(scope);}
+    for(const [scope,filter] of wanted){
+      if(aliasSubscriptions.has(scope))continue;
+      try{aliasSubscriptions.set(scope,transport.subscribe([filter],{onEvent:event=>{
+        if(attempt!==generation)return;
+        void book.aliasReceive(event).then(handled=>{if(handled&&attempt===generation){notify();void syncMatches();}}).catch(report);
+      }},{signal:controller?.signal}));}catch{report();}
+    }
+  }
   async function syncMatches(){
-    if(syncingMatches||!matches||!canSend()||!matches.jobs().length)return syncingMatches;
+    syncAliasSubscriptions();
+    if(syncingMatches||!matches||!canSend()||!matches.jobs().length&&!matches.aliasJobs().length)return syncingMatches;
     const attempt=generation,book=matches,activeRuntime=runtime;
     syncingMatches=(async()=>{
       for(const job of book.jobs()){
@@ -599,6 +614,14 @@ export function createMessaging({ developerMint, getRelays=()=>[], getPublicRela
         await activeRuntime.sendEvent(job.peer,job.rumor);
         check(attempt);await book.handed(job.rumor.id);
       }
+      // Each alias event goes out on its own send-only connection.
+      for(const job of book.aliasJobs()){
+        check(attempt);
+        const receipt=await transport.publish(job.event,{signal:controller?.signal});
+        check(attempt);
+        if(receipt.remoteAccepted)await book.aliasPublished(job.event.id);
+      }
+      syncAliasSubscriptions();
     })().catch(report).finally(()=>{if(attempt===generation)syncingMatches=undefined;});
     return syncingMatches;
   }
@@ -646,7 +669,8 @@ export function createMessaging({ developerMint, getRelays=()=>[], getPublicRela
     accountNotices=merchantNotices({transport,getRelays,accountVault:()=>{check(attempt);if(status!=='ready')throw Error('Unlock your profile.');return vault;},
       hasChat:key=>key===account.owner || !!runtime?.getKnownAppKeysSnapshots().some(s=>s.ownerPubkey===key&&s.appKeys.getAllDevices().length) || hasExistingSessionWithRecipient(runtime?.getSessionUserRecords(),key),
       onAccepted:(peer,at)=>saveMessage(peer,noticeMessageRow(at))});
-    matches=createMatchBook(vault,account.owner,getPublicKey(Uint8Array.from(account.deviceSecret)),notify,()=>check(attempt));
+    const deviceSecret=[...account.deviceSecret];
+    matches=createMatchBook(vault,account.owner,getPublicKey(Uint8Array.from(deviceSecret)),notify,()=>check(attempt),undefined,()=>Uint8Array.from(deviceSecret));
     await matches.load();check(attempt);
     orders=createOrderBook({vault,developerMint,owner:account.owner,device:getPublicKey(Uint8Array.from(account.deviceSecret)),notify,check:()=>check(attempt)});
     await orders.load();check(attempt);
@@ -681,9 +705,21 @@ export function createMessaging({ developerMint, getRelays=()=>[], getPublicRela
     },
     knowsMerchantChat: (key:string) => !!runtime?.getKnownAppKeysSnapshots().some(s => s.ownerPubkey === key && s.appKeys.getAllDevices().length) || hasExistingSessionWithRecipient(runtime?.getSessionUserRecords(),key),
     privateMatchView:()=>matches?.view()??null,
+    privateMatchChats:()=>matches?.aliasChats()??[],
+    async privateMatchRead(chat:string){requireReady();await matches.aliasRead(chat);},
+    async privateMatchSend(chat:string,text:string){
+      requireReady();
+      if(!canSend())throw Error('Authorize this device before sending a private match.');
+      await matches.aliasSend(chat,text);void syncMatches();
+    },
     async privateMatch(action:MatchAction,listing?:Parameters<typeof matches.action>[1]){
       requireReady();
       if(action.op!=='enable'&&!canSend())throw Error('Authorize this device before sending a private match.');
+      if(action.op==='reveal'){
+        // Explicit only: the profile key vouches for this chat's alias, nothing else.
+        const proof=await signing(matches.revealDraft(action.proposal));
+        await matches.aliasReveal(action.proposal,proof);void syncMatches();return;
+      }
       await matches.action(action,listing);scheduleBackground();
     },
     async restore() {
@@ -740,7 +776,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], getPublicRela
       const closing = outbox?.close(); runtime?.close(); transport?.close();
       await closing; await messageWrites; await vault.flush();
       ownerSecret?.fill(0); runtime = outbox = transport = ownerSecret = undefined;
-      await orders?.flush();await controls?.flush();await matches?.flush();await tradeBook?.flush();matches=undefined;syncingMatches=undefined;tradeBook=undefined;syncingTrades=undefined;controls=undefined;syncingControls=undefined;orders=undefined;syncingOrders=undefined;
+      await orders?.flush();await controls?.flush();await matches?.flush();await tradeBook?.flush();matches=undefined;syncingMatches=undefined;for(const sub of aliasSubscriptions.values())sub.close();aliasSubscriptions.clear();tradeBook=undefined;syncingTrades=undefined;controls=undefined;syncingControls=undefined;orders=undefined;syncingOrders=undefined;
       authorizationChecked = false; conversations.clear();activation=syncing=syncingProfile=undefined;clearTimeout(retryTimer);retryTimer=undefined;controller=undefined;signer=enrollmentSigner=undefined;
       return openLocal();
     },
@@ -879,7 +915,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], getPublicRela
       await closing;
       await messageWrites; await orders?.flush();await controls?.flush();await matches?.flush();await tradeBook?.flush(); await vault.flush(); vault.lock();
       ownerSecret?.fill(0); account = runtime = transport = outbox = signer = ownerSecret = undefined;
-      conversations.clear();retention=follow;chatTimers={};wireDeadlines.clear();lastChatMs=0;matches=undefined;syncingMatches=undefined;tradeBook=undefined;syncingTrades=undefined;controls=undefined;syncingControls=undefined;orders=undefined;syncingOrders=undefined;publicQueue.clear();profilePatch=undefined;enrollmentSigner=undefined;controller=undefined;authorizationChecked = false;status='locked';chatStatus='connecting';error='';notify();
+      conversations.clear();retention=follow;chatTimers={};wireDeadlines.clear();lastChatMs=0;matches=undefined;syncingMatches=undefined;for(const sub of aliasSubscriptions.values())sub.close();aliasSubscriptions.clear();tradeBook=undefined;syncingTrades=undefined;controls=undefined;syncingControls=undefined;orders=undefined;syncingOrders=undefined;publicQueue.clear();profilePatch=undefined;enrollmentSigner=undefined;controller=undefined;authorizationChecked = false;status='locked';chatStatus='connecting';error='';notify();
     },
     async destroy() { await this.lock(); },
   };

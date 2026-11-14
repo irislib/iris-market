@@ -181,7 +181,7 @@ fun MarketAppView(model: MarketModel, appearance: Appearance, changeAppearance: 
             when (tab) {
                 0 -> BrowseView(state, model, busy, selected = { selected = it }, settings = { settings = true }, photoFilter=photoFilter, changePhotoFilter={photoFilter=it})
                 1 -> SavedView(state, model, selected = { selected = it })
-                2 -> InboxView(state, model, busy, openOrder = { orderId = it }, visible = orderId==null&&selected==null&&profileAuthor==null&&!posting&&!transport&&!settings&&!walletOpen&&!profileSetupRequested)
+                2 -> InboxView(state, model, busy, openOrder = { orderId = it }, visible = orderId==null&&selected==null&&profileAuthor==null&&!posting&&!transport&&!settings&&!walletOpen&&!profileSetupRequested, openProfile = { profileAuthor = it })
                 3 -> OrdersView(state, model, busy, openOrder = { orderId = it })
                 4 -> PublicProfileView(state.publicKey, state, model, openListing={selected=it}, message={author -> model.command(org.json.JSONObject().put("type","contact").put("author",author)) {tab=2} }) {tab=0}
                 5 -> ProfileView(state, busy, { settings = true }, { switchMode(!state.demo) }, model, appearance, changeAppearance, openProfile={profileAuthor=state.publicKey},openTransport={transport=true},openWallet={walletToken=null;walletOpen=true})

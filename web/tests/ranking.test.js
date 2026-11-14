@@ -14,12 +14,12 @@ test('a large catalogue cannot occupy all first positions when other authors exi
   const first = rankListings(listings, { now }).slice(0, 3);
   assert.equal(new Set(first.map(x => x.author)).size, 3);
 });
-test('freshness and saved category interests help and are deterministic', () => {
+test('freshness helps and ties are deterministic', () => {
   const listings = [item('old', 'old', { createdAt: now - 60 * 86400 }), item('fresh'), item('saved', 'saved', { category: 'Home' }), item('chair', 'chair', { category: 'Home' })];
-  const ranked = rankListings(listings, { now, saved: new Set(['saved']) });
+  const ranked = rankListings(listings, { now });
   assert.ok(ranked.findIndex(x => x.id === 'chair') < ranked.findIndex(x => x.id === 'fresh'));
   assert.ok(ranked.findIndex(x => x.id === 'fresh') < ranked.findIndex(x => x.id === 'old'));
-  assert.deepEqual(ranked, rankListings([...listings].reverse(), { now, saved: new Set(['saved']) }));
+  assert.deepEqual(ranked, rankListings([...listings].reverse(), { now }));
 });
 test('prices and offer/request side do not buy rank; title relevance can help', () => {
   const listings = [item('a', 'a', { title: 'Table', price: '999999', side: 'offer' }), item('b', 'b', { title: 'Bicycle repair', price: '0', side: 'request' })];
@@ -27,9 +27,9 @@ test('prices and offer/request side do not buy rank; title relevance can help', 
   assert.deepEqual(rankListings(listings, { now }).map(x => x.id), rankListings(listings.map(x => ({ ...x, price: '1', side: 'offer' })), { now }).map(x => x.id));
 });
 
-test('strong query relevance outweighs friendship, freshness and saved category bias',()=>{
+test('strong query relevance outweighs friendship and freshness',()=>{
   const listings=[item('friend','known',{title:'Dining table',category:'Home'}),item('desk','stranger',{title:'Oak desk',category:'Furniture',createdAt:now-90*86400})];
-  const options={now,query:'oak desk',saved:new Set(['friend']),relationFor:key=>key==='known'?{distance:1,knownFollowerCount:999}:null};
+  const options={now,query:'oak desk',relationFor:key=>key==='known'?{distance:1,knownFollowerCount:999}:null};
   assert.equal(rankListings(listings,options)[0].id,'desk');
   assert.equal(rankListings(listings,{...options,sort:'social'})[0].id,'friend','Social is an explicit alternative ordering');
 });
@@ -68,11 +68,11 @@ test('seller diversity is bounded so relevant inventory is not buried beneath un
 });
 
 import {ListingWindow} from '../src/listing-grid.ts';
-test('bookmarking keeps the current Browse page stable when saved interests change ranking',()=>{
+test('bookmarking keeps the current Browse page stable across the full ranking',()=>{
  const listings=Array.from({length:60},(_,i)=>item(String(i).padStart(2,'0'),'author-'+i,{category:i===20?'Home':'Tech',createdAt:now-i*100}));
  const saved=new Set(),view=new ListingWindow(24),before=view.update(rankListings(listings,{saved,now}),'browse');
- assert.equal(before[20].id,'20');view.pin();saved.add('20');
- const ranked=rankListings(listings,{saved,now});assert.equal(ranked[0].id,'20');
+ assert.equal(before[20].id,'20');saved.add('20');
+ const ranked=rankListings(listings,{saved,now});assert.deepEqual(ranked,listings);
  assert.deepEqual(view.update(ranked,'browse').map(x=>x.id),before.map(x=>x.id));
  assert.equal(view.update(listings.filter(x=>saved.has(x.id)),'saved')[0].id,'20');
 });

@@ -5,7 +5,7 @@ export interface RankableListing {
 }
 export interface RankingRelation {distance?:number|null;knownFollowerCount?:number}
 export interface RankingOptions<T extends RankableListing> {
-  relationFor?:(pubkey:string)=>RankingRelation|null;saved?:ReadonlySet<string>;savedListings?:T[];query?:string;now?:number;
+  relationFor?:(pubkey:string)=>RankingRelation|null;query?:string;now?:number;
   sort?:'suggested'|'social'|'newest';aiScoreFor?:(listing:T)=>number|null|undefined;location?:readonly [number,number]|null;
 }
 const DAY=86400
@@ -68,13 +68,8 @@ const byBase=<T>(a:Scored<T>,b:Scored<T>)=>b.score-a.score||b.time-a.time||compa
 const byQueue=<T>(a:AuthorQueue<T>,b:AuthorQueue<T>)=>b.score-a.score||byBase(a.items[a.index],b.items[b.index])
 
 /** Public signals only. Graph proximity is evidence, not identity verification. */
-export function rankListings<T extends RankableListing>(listings:T[],{relationFor=()=>null,saved=new Set(),savedListings=listings,query='',now=Date.now()/1000,sort='suggested',aiScoreFor=()=>undefined,location}:RankingOptions<T>={}):T[]{
+export function rankListings<T extends RankableListing>(listings:T[],{relationFor=()=>null,query='',now=Date.now()/1000,sort='suggested',aiScoreFor=()=>undefined,location}:RankingOptions<T>={}):T[]{
   if(sort==='newest')return [...listings].sort((a,b)=>finite(b.createdAt)-finite(a.createdAt)||compare(a.id,b.id))
-  const counts=new Map<string,number>()
-  // Stable sampling and capped counts bound the influence of saved interests.
-  const examples=savedListings.filter(listing=>saved.has(listing.id)).sort((a,b)=>compare(a.id,b.id)).slice(0,512)
-  for(const listing of examples){const category=text(listing.category,80);if(category&&category!=='other')counts.set(category,Math.min(8,(counts.get(category)||0)+1))}
-  const interests=new Map([...counts].sort((a,b)=>b[1]-a[1]||compare(a[0],b[0])).slice(0,32))
   const terms=[...new Set(words(query,500).filter(term=>!stopWords.has(term)))].slice(0,16)
   const textScore = lexicalScorer(terms)
   const remainder:T[]=[]
@@ -86,11 +81,10 @@ export function rankListings<T extends RankableListing>(listings:T[],{relationFo
     const relation=relations.get(listing.author),steps=relation?.distance
     const graph=(steps===0||steps===1?2.5:steps===2?1.5:steps===3?.75:0)+Math.min(1.25,Math.log2(1+Math.max(0,finite(relation?.knownFollowerCount)))/4)
     const time=finite(listing.createdAt),freshness=time>0?2.5*Math.pow(.5,Math.max(0,finite(now)-time)/(14*DAY)):0
-    const interest=Math.min(1.5,Math.log2(1+(interests.get(text(listing.category,80))||0))*.5)
     const literal=textScore(listing)
     let ai:number|null|undefined;try{ai=aiScoreFor(listing)}catch{/* Inference failures must leave ordinary ranking usable. */}
     const relevance=typeof ai==='number'&&Number.isFinite(ai)&&ai>=0&&ai<=1?(terms.length?.85*ai+.15*literal:ai):literal
-    const score=(sort==='social'?8*relevance+16*graph:home?homeFeed.ranking.relevanceWeight*relevance+homeFeed.ranking.graphWeight*graph:32*relevance+graph)+freshness+interest+nearby(listing,location)
+    const score=(sort==='social'?8*relevance+16*graph:home?homeFeed.ranking.relevanceWeight*relevance+homeFeed.ranking.graphWeight*graph:32*relevance+graph)+freshness+nearby(listing,location)
     rows.push({listing,score,time,id:listing.id})
   }
   if(home){

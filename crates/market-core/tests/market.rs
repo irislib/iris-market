@@ -209,10 +209,21 @@ fn preview_is_explicit_and_cannot_publish_or_call_a_provider() {
         app.command(r#"{"type":"check_ai","api_key":"unused"}"#)
             .is_err()
     );
-    assert!(
-        app.command(&json!({"type":"save","id":state["listings"][0]["id"]}).to_string())
-            .is_ok()
-    );
+    let listing_ids = |snapshot: &Value| {
+        snapshot["listings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|listing| listing["id"].clone())
+            .collect::<Vec<_>>()
+    };
+    let order = listing_ids(&state);
+    let favorite = json!({"type":"save","id":order.last().unwrap()}).to_string();
+    for expected_count in [1, 0] {
+        let updated: Value = serde_json::from_str(&app.command(&favorite).unwrap()).unwrap();
+        assert_eq!(updated["saved_count"], expected_count);
+        assert_eq!(listing_ids(&updated), order);
+    }
     let state: Value = serde_json::from_str(
         &app.command(r#"{"type":"set_filter","query":"bike","side":"offer"}"#)
             .unwrap(),

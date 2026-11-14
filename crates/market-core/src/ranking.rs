@@ -109,29 +109,7 @@ fn relevance(listing: &Listing, terms: &[String], query: &str, use_ai: bool) -> 
     })
 }
 
-pub fn saved_interests(listings: &[Listing]) -> BTreeMap<String, usize> {
-    let mut interests = BTreeMap::new();
-    let mut saved: Vec<_> = listings.iter().filter(|l| l.saved).collect();
-    saved.sort_by(|a, b| a.id.cmp(&b.id));
-    for listing in saved.into_iter().take(512) {
-        let category = normalize(&listing.category);
-        if !category.is_empty() && category != "other" {
-            let count = interests.entry(category).or_insert(0usize);
-            *count = (*count + 1).min(8);
-        }
-    }
-    let mut entries: Vec<_> = interests.into_iter().collect();
-    entries.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-    entries.into_iter().take(32).collect()
-}
-pub fn rank(
-    listings: &mut Vec<Listing>,
-    profiles: &Profiles,
-    interests: &BTreeMap<String, usize>,
-    query: &str,
-    now: u64,
-    use_ai: bool,
-) {
+pub fn rank(listings: &mut Vec<Listing>, profiles: &Profiles, query: &str, now: u64, use_ai: bool) {
     let home = query.trim().is_empty();
     let weights = &crate::model::home_defaults().ranking;
     let terms = query_terms(query);
@@ -157,10 +135,6 @@ pub fn rank(
             let known = (((known_followers + 1) as f64).log2() / 4.0).min(1.25);
             let freshness = 2.5
                 * 0.5_f64.powf(now.saturating_sub(listing.created_at) as f64 / (14.0 * 86400.0));
-            let interest =
-                (((1 + interests.get(&normalize(&listing.category)).unwrap_or(&0)) as f64).log2()
-                    * 0.5)
-                    .min(1.5);
             let relevance = relevance(&listing, &terms, query, use_ai);
             let graph = trust + known;
             let priority = if home {
@@ -168,7 +142,7 @@ pub fn rank(
             } else {
                 graph + 32.0 * relevance
             };
-            (listing, priority + freshness + interest)
+            (listing, priority + freshness)
         })
         .collect();
     let by_priority = |(a, sa): &(Listing, f64), (b, sb): &(Listing, f64)| {
@@ -252,14 +226,7 @@ mod tests {
         ];
         items[1].title = " BICYCLE! ".into();
         items[2].title = "Guitar".into();
-        rank(
-            &mut items,
-            &Profiles::default(),
-            &BTreeMap::new(),
-            "",
-            100000,
-            false,
-        );
+        rank(&mut items, &Profiles::default(), "", 100000, false);
         assert_eq!(
             items.iter().map(|l| l.id.as_str()).collect::<Vec<_>>(),
             ["a", "c", "b"]
@@ -268,11 +235,9 @@ mod tests {
     #[test]
     fn cached_text_evidence_survives_snapshots_but_not_query_or_text_changes() {
         let original = listing("cache", &"a".repeat(64), 100);
-        assert!(
-            original
-                .search_text_cache
-                .direct(&original, "bicycle", || true)
-        );
+        assert!(original
+            .search_text_cache
+            .direct(&original, "bicycle", || true));
         assert_eq!(
             original
                 .search_text_cache
@@ -281,10 +246,9 @@ mod tests {
         );
         let mut next = original.clone();
         for _ in 0..20 {
-            assert!(
-                next.search_text_cache
-                    .direct(&next, "bicycle", || panic!("Repeated direct normalization"))
-            );
+            assert!(next
+                .search_text_cache
+                .direct(&next, "bicycle", || panic!("Repeated direct normalization")));
             assert_eq!(
                 next.search_text_cache
                     .lexical(&next, "bicycle", || panic!("Repeated lexical scoring")),
@@ -292,10 +256,9 @@ mod tests {
             );
         }
         assert!(next.search_text_cache.literal(&next, "bicycle", || true));
-        assert!(
-            next.search_text_cache
-                .literal(&next, "bicycle", || panic!("Repeated literal matching"))
-        );
+        assert!(next
+            .search_text_cache
+            .literal(&next, "bicycle", || panic!("Repeated literal matching")));
         next.location = "Helsinki".into();
         assert!(!next.search_text_cache.literal(&next, "bicycle", || false));
         assert!(!next.search_text_cache.direct(&next, "desk", || false));
@@ -303,12 +266,10 @@ mod tests {
         assert!(next.search_text_cache.direct(&next, "desk", || true));
         next.tags.push("bicycle".into());
         assert_eq!(next.search_text_cache.lexical(&next, "desk", || 0.5), 0.5);
-        assert!(
-            serde_json::to_value(&next)
-                .unwrap()
-                .get("search_text_cache")
-                .is_none()
-        );
+        assert!(serde_json::to_value(&next)
+            .unwrap()
+            .get("search_text_cache")
+            .is_none());
     }
     #[test]
     fn diverse_authors_remain_visible_and_order_is_deterministic() {
@@ -324,8 +285,8 @@ mod tests {
             listing("c", &c, now),
         ];
         let mut reversed = items.iter().rev().cloned().collect();
-        rank(&mut items, &p, &BTreeMap::new(), "", now, false);
-        rank(&mut reversed, &p, &BTreeMap::new(), "", now, false);
+        rank(&mut items, &p, "", now, false);
+        rank(&mut reversed, &p, "", now, false);
         assert_eq!(
             items
                 .iter()
@@ -355,14 +316,7 @@ mod tests {
         let mut first = source.clone();
         let mut reversed: Vec<_> = source.into_iter().rev().collect();
         for values in [&mut first, &mut reversed] {
-            rank(
-                values,
-                &Profiles::default(),
-                &BTreeMap::new(),
-                "",
-                1000,
-                false,
-            );
+            rank(values, &Profiles::default(), "", 1000, false);
             assert_eq!(values.len(), 1000);
             assert_eq!(
                 values
@@ -380,7 +334,7 @@ mod tests {
         );
     }
     #[test]
-    fn saved_interests_help_and_price_does_not_buy_priority() {
+    fn favorites_and_price_do_not_change_priority() {
         let p = Profiles::default();
         let mut items = vec![
             listing("a", &"a".repeat(64), 100),
@@ -389,9 +343,8 @@ mod tests {
         items[0].category = "Home".into();
         items[0].price = "1000000".into();
         items[1].saved = true;
-        let interests = saved_interests(&items);
-        rank(&mut items, &p, &interests, "", 100, false);
-        assert_eq!(items[0].id, "b");
+        rank(&mut items, &p, "", 100, false);
+        assert_eq!(items[0].id, "a");
     }
     #[test]
     fn real_scores_rank_matches_without_turning_direct_hits_into_perfect_scores() {
@@ -412,24 +365,10 @@ mod tests {
             unavailable: false,
         });
         let mut items = vec![direct, semantic];
-        rank(
-            &mut items,
-            &Profiles::default(),
-            &BTreeMap::new(),
-            "bicycle",
-            100,
-            true,
-        );
+        rank(&mut items, &Profiles::default(), "bicycle", 100, true);
         assert_eq!(items[0].id, "semantic");
         assert_eq!(items[1].relevance.as_ref().unwrap().score, Some(0.05));
-        rank(
-            &mut items,
-            &Profiles::default(),
-            &BTreeMap::new(),
-            "bicycle",
-            100,
-            false,
-        );
+        rank(&mut items, &Profiles::default(), "bicycle", 100, false);
         assert_eq!(items[0].id, "direct", "Text mode does not use AI decisions");
         let terms = query_terms("bicycle");
         assert!((lexical(&items[0], &terms) - 0.9).abs() < 1e-12);

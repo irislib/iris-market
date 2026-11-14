@@ -657,8 +657,9 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
         val generation = accountGeneration
         if (request.optString("type") in setOf("set_filter", "set_settings")) cancelLocalAI()
         val preferenceEpoch = if(request.optString("type")=="set_settings") expectedAIIntent ?: aiIntentEpoch else null
+        val showsBusy = request.optString("type") != "save"
         viewModelScope.launch {
-            operationCount += 1; working.value = true
+            if (showsBusy) { operationCount += 1; working.value = true }
             try {
                 withContext(Dispatchers.IO) {
                     mutex.withLock {
@@ -686,7 +687,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
                 val message = "Couldn’t save that change. Check the details and try again."
                 if (onError != null) onError(message) else alert.value = message
             }
-            finally { operationCount -= 1; working.value = operationCount > 0 }
+            finally { if (showsBusy) { operationCount -= 1; working.value = operationCount > 0 } }
         }
     }
     private fun disableAI(epoch: Long, requestedAI: JSONObject? = null, done: () -> Unit = {}) {

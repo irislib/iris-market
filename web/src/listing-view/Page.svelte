@@ -12,7 +12,8 @@
   import type {ListingPageOptions, ListingPresentation} from './types.ts'
 
   let {listing, options}: {listing: ListingPresentation; options: ListingPageOptions} = $props()
-  const {saved = false, onSave = () => {}, onBuy = () => {}, priceNode, authorRow = () => null, isPreview = false, owner = undefined, onEdit = undefined, onCloseBitcoin = undefined, onToast = () => {}, draftPreview = false, localImage = undefined} = options
+  const saved = $derived(options.saved ?? false)
+  const {onSave = () => {}, onBuy = () => {}, priceNode, authorRow = () => null, isPreview = false, owner = undefined, onEdit = undefined, onCloseBitcoin = undefined, onToast = () => {}, draftPreview = false, localImage = undefined} = options
 
   const hero = heroImage(listing, {draftPreview, localImage})
   let showingOriginal = $state(false)

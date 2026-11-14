@@ -1,3 +1,4 @@
+import { SvelteSet } from 'svelte/reactivity';
 import { setLoadingStatus } from './loading-status.ts';
 import {quoteAmount} from './bitcoin-orders.ts';
 import {createBitcoinOrderFeed} from './bitcoin-order-feed.ts';
@@ -79,7 +80,7 @@ const searchDiscovery=createSearchDiscovery({getClient:()=>client,getAI:()=>aiFi
 const load=(key,fallback)=>{try{return JSON.parse(localStorage.getItem(key))??fallback}catch{return fallback}};
 const persist=(key,value)=>{try{localStorage.setItem(key,JSON.stringify(value))}catch{toast('Storage is unavailable')}};
 const savedData=load('market-saved-'+(preview?'preview':'live'),[]);
-let saved=new Set((Array.isArray(savedData)?savedData:[]).filter(x=>typeof x==='string').slice(0,1000));
+const saved=new SvelteSet((Array.isArray(savedData)?savedData:[]).filter(x=>typeof x==='string').slice(0,1000));
 type FeedAudience = 'network' | 'following' | 'everyone';
 let feedAudience: FeedAudience = 'network';
 let feedTags=[], feedAuthors=null, locationFilter=decodeGeohash(params.get('g'))?'#'+params.get('g').toLowerCase():'', shipsTo='';
@@ -174,7 +175,14 @@ function priceNode(listing, className) {
 
 const node = domElement;
 function toast(text){$('toast').textContent=text;$('toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').hidden=true,2500);}
-function save(l){gridUI.pin();if(saved.has(l.id))saved.delete(l.id);else if(saved.size<1000)saved.add(l.id);else return toast('Saved-listing limit reached');persist('market-saved-'+(preview?'preview':'live'),[...saved]);render();refreshProfileListings();if(focusedListing)openDetail(focusedListing,false);}
+function save(l) {
+  if (saved.has(l.id)) saved.delete(l.id);
+  else if (saved.size < 1000) saved.add(l.id);
+  else return toast('Saved-listing limit reached');
+  persist('market-saved-'+(preview?'preview':'live'), [...saved]);
+  $('saved-count').textContent = String(saved.size);
+  if (currentRoute.type === 'saved') render();
+}
 function photo(l,className?:string){return createStaticImage(l.imageUrl,{width:className==='detail-art'?900:480,className,alt:l.title||'Listing photo',fallback:art(l)});}
 function internalLink(link,href,onClick){link.href=routeHref(href);link.onclick=event=>{if(event.button!==0||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey)return;event.preventDefault();onClick();};}
 const cardContext:CardContext={saved:id=>saved.has(id),hidden:id=>hiddenListings.has(id),preview:()=>preview,href:l=>routeHref(listingURL(l.id,location.href)),open:l=>openDetail(l),save,toggleHidden,quote:bitcoinQuote,price:priceFor,photo:l=>photo(l),author:authorButton};
@@ -213,7 +221,7 @@ const literalQuery=aiSelected?'':query;
 if(!savedOnly&&(literalQuery||nearbyFilter||place||shipsTo))result=result.filter(l=>
   (!literalQuery||(l.externalOrder?matchesLiteralSearch(l.externalOrder.search,literalQuery):listingMatchesLiteralSearch(l,literalQuery)))
   &&(nearbyFilter?listingMatchesNearby(l,nearbyFilter):cell?mapVisible||l.originalTags?.some(t=>t[0]==='g'&&t.length===2&&decodeGeohash(t[1])?.geohash.startsWith(cell)):(l.location||'').toLowerCase().includes(place))
-  &&(!shipsTo||matchesShippingDestination(shippingResolver.forListing(l),shipsTo)));if(!savedOnly&&$('sort').value==='price')result.sort((a,b)=>{const av=priceFor(a).converted,bv=priceFor(b).converted;if(av!==null&&bv!==null)return av-bv;if(av!==null)return -1;if(bv!==null)return 1;return(a.currency||'').localeCompare(b.currency||'')||(a.price===''?Infinity:Number(a.price))-(b.price===''?Infinity:Number(b.price));});if(!savedOnly&&$('sort').value!=='price')result=rankListings(result,{sort:$('sort').value as 'suggested'|'social'|'newest',saved,savedListings:listings,query,aiScoreFor:listing=>aiFilter?.scoreFor(listing),location:nearbyFilter||userLocation?.point(),relationFor:key=>graphContext?.rankRelationFor(key)||graphContext?.relationFor(key)});aiCandidates=savedOnly?[]:result.filter(l=>!l.externalOrder);structuredOrderCount=savedOnly?0:result.length-aiCandidates.length;if(!savedOnly)result=result.filter(l=>l.externalOrder||!aiFilter||aiFilter.isVisible(l));visibleResult=result;const forYou=!!aiFilter?.homeActive()&&!aiFilter.showingAll();if(['home','search','saved'].includes(currentRoute.type))gridUI.update(result,JSON.stringify([preview,savedOnly,side,query,place,nearbyFilter,shipsTo,$('sort').value,feedTags,feedAuthors,feedAudience,contextKey,aiFilter?.enabled(),forYou,photosOnly()]),forYou&&currentRoute.type==='home'&&$('sort').value==='suggested');mapUI?.refresh();$('saved-count').textContent=String(saved.size);$('page-title').textContent=savedOnly?'Saved listings':query?'Search results':forYou?'For you':'Listings';$('result-count').textContent=result.length+' '+(result.length===1?'listing':'listings');
+  &&(!shipsTo||matchesShippingDestination(shippingResolver.forListing(l),shipsTo)));if(!savedOnly&&$('sort').value==='price')result.sort((a,b)=>{const av=priceFor(a).converted,bv=priceFor(b).converted;if(av!==null&&bv!==null)return av-bv;if(av!==null)return -1;if(bv!==null)return 1;return(a.currency||'').localeCompare(b.currency||'')||(a.price===''?Infinity:Number(a.price))-(b.price===''?Infinity:Number(b.price));});if(!savedOnly&&$('sort').value!=='price')result=rankListings(result,{sort:$('sort').value as 'suggested'|'social'|'newest',query,aiScoreFor:listing=>aiFilter?.scoreFor(listing),location:nearbyFilter||userLocation?.point(),relationFor:key=>graphContext?.rankRelationFor(key)||graphContext?.relationFor(key)});aiCandidates=savedOnly?[]:result.filter(l=>!l.externalOrder);structuredOrderCount=savedOnly?0:result.length-aiCandidates.length;if(!savedOnly)result=result.filter(l=>l.externalOrder||!aiFilter||aiFilter.isVisible(l));visibleResult=result;const forYou=!!aiFilter?.homeActive()&&!aiFilter.showingAll();if(['home','search','saved'].includes(currentRoute.type))gridUI.update(result,JSON.stringify([preview,savedOnly,side,query,place,nearbyFilter,shipsTo,$('sort').value,feedTags,feedAuthors,feedAudience,contextKey,aiFilter?.enabled(),forYou,photosOnly()]),forYou&&currentRoute.type==='home'&&$('sort').value==='suggested');mapUI?.refresh();$('saved-count').textContent=String(saved.size);$('page-title').textContent=savedOnly?'Saved listings':query?'Search results':forYou?'For you':'Listings';$('result-count').textContent=result.length+' '+(result.length===1?'listing':'listings');
 const orderSearch=currentRoute.type==='search'&&matchesLiteralSearch('bitcoin btc sats satoshis',query);
 const orderState=bitcoinOrders.state(),notice=$('order-status');
 notice.hidden=!orderSearch||orders.some(l=>l.side===side)||orderState==='ready'||preview;
@@ -237,7 +245,7 @@ const escrowTrade=setupEscrowTrade({relays:()=>relays,inventory:()=>preview?[]:[
   if(latest&&!observed)throw Error('No relay could confirm this listing. Reconnect and retry.');
   return winner;
 }});
-function openDetail(l,update=true){if(update){focusedListing=l;navigate(listingURL(l.id,location.href));return;}focusedListing=l;const renderKey=JSON.stringify([l.eventId||l.id,saved.has(l.id),priceFor(l),readImageSettings(),accountUI?.state().ownerPubkey??accountUI?.state().status,marketplaceToolEnabled('escrow'),preview]);if(detailRenderKey===renderKey&&$('detail-content').childElementCount)return;detailRenderKey=renderKey;const rawOpen=$('detail-content').querySelector<HTMLDetailsElement>('.listing-raw-event')?.open;const areaKey=l.serviceAreas?JSON.stringify(l.serviceAreas):'';if(areaKey!==detailAreaKey){closeDetailAreas();detailAreaKey=areaKey;if(l.serviceAreas)detailAreaPreview=setupServiceAreaPicker({value:l.serviceAreas,readOnly:true});}const detail=renderListingPage(l,{saved:saved.has(l.id),onSave:save,onBuy:value=>{const enquiry=listingEnquiry(value,location.href);if(value.side==='request'||value.escrow?.trade==='bitcoin_fiat')void accountUI.openChat(value.author,{draft:enquiry.draft,context:listingContext(value.id)});else ordersUI.buy(value);},onProfile:key=>profiles.open(key),priceNode,authorRow:authorButton,isPreview:preview,owner:accountUI?.state().ownerPubkey,onEdit:value=>composerUI.edit?.(value),onCloseBitcoin:marketplaceToolEnabled('escrow')?value=>composerUI.closeBitcoin(value):undefined,onToast:toast});if (canNotifySeller(l,preview,accountUI?.state().ownerPubkey)) {
+function openDetail(l,update=true){if(update){focusedListing=l;navigate(listingURL(l.id,location.href));return;}focusedListing=l;const renderKey=JSON.stringify([l.eventId||l.id,priceFor(l),readImageSettings(),accountUI?.state().ownerPubkey??accountUI?.state().status,marketplaceToolEnabled('escrow'),preview]);if(detailRenderKey===renderKey&&$('detail-content').childElementCount)return;detailRenderKey=renderKey;const rawOpen=$('detail-content').querySelector<HTMLDetailsElement>('.listing-raw-event')?.open;const areaKey=l.serviceAreas?JSON.stringify(l.serviceAreas):'';if(areaKey!==detailAreaKey){closeDetailAreas();detailAreaKey=areaKey;if(l.serviceAreas)detailAreaPreview=setupServiceAreaPicker({value:l.serviceAreas,readOnly:true});}const detail=renderListingPage(l,{get saved(){return saved.has(l.id)},onSave:save,onBuy:value=>{const enquiry=listingEnquiry(value,location.href);if(value.side==='request'||value.escrow?.trade==='bitcoin_fiat')void accountUI.openChat(value.author,{draft:enquiry.draft,context:listingContext(value.id)});else ordersUI.buy(value);},onProfile:key=>profiles.open(key),priceNode,authorRow:authorButton,isPreview:preview,owner:accountUI?.state().ownerPubkey,onEdit:value=>composerUI.edit?.(value),onCloseBitcoin:marketplaceToolEnabled('escrow')?value=>composerUI.closeBitcoin(value):undefined,onToast:toast});if (canNotifySeller(l,preview,accountUI?.state().ownerPubkey)) {
   if (noticeKey!==l.author || noticeViewer!==(accountUI?.state().ownerPubkey??accountUI?.state().status)) {noticeViewer=accountUI?.state().ownerPubkey??accountUI?.state().status;noticeKey=l.author;noticeControl=sellerNoticeControl(l.author,notices,()=>currentRoute.type==='listing' && focusedListing?.author===l.author && canNotifySeller(focusedListing,preview,accountUI?.state().ownerPubkey));}
   detail.querySelector('.detail-actions')?.after(noticeControl.root);
 } else { noticeKey=undefined;noticeControl=undefined; }
@@ -353,7 +361,7 @@ async function loadGraph(){
 }
 const curatedGrid=()=>aiFilter?.enabled()&&(aiFilter.query()||aiFilter.homeActive())&&!aiFilter.showingAll();
 const gridUI=setupListingGrid({grid:$('listings'),controls:$('grid-pagination'),button:$('load-more'),status:$('grid-progress'),makeCard:card,discardCard:disposeCard,
-  cardKey:l=>JSON.stringify([l.eventId||l.id,priceFor(l).primary,saved.has(l.id),hiddenListings.has(l.id),graphContext?.relationFor(l.author),readImageSettings()]),
+  cardKey:l=>JSON.stringify([l.eventId||l.id,priceFor(l).primary,hiddenListings.has(l.id),graphContext?.relationFor(l.author),readImageSettings()]),
   olderState:()=>{
     if(preview||savedOnly||!client)return {hasMore:false};
     const general=client.pagination();
@@ -381,7 +389,7 @@ function renderProfileListings(pubkey,host){
   button.type='button';controls.append(button,status);host.replaceChildren(grid,empty,controls);
   let feed,disposed=false,rows=listings.filter(l=>l.author===pubkey);
   const update=()=>{if(disposed)return;const visible=rows.filter(l=>!hiddenListings.has(l.id));empty.hidden=visible.length>0;view.update(visible,pubkey)};
-  const view=setupListingGrid({grid,controls,button,status,makeCard:card,discardCard:disposeCard,cardKey:l=>JSON.stringify([l.eventId||l.id,priceFor(l).primary,saved.has(l.id),hiddenListings.has(l.id)]),olderState:()=>feed?.pagination()||{hasMore:false},loadOlder:()=>feed?.loadOlder()});
+  const view=setupListingGrid({grid,controls,button,status,makeCard:card,discardCard:disposeCard,cardKey:l=>JSON.stringify([l.eventId||l.id,priceFor(l).primary,hiddenListings.has(l.id)]),olderState:()=>feed?.pagination()||{hasMore:false},loadOlder:()=>feed?.loadOlder()});
   update();refreshProfileListings=update;
   if(!preview){
     const records=new Map<string,MarketListing>([...(client?.records?.entries()||[])].filter(([,l])=>l.author===pubkey));

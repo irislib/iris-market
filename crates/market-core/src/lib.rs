@@ -149,7 +149,6 @@ impl State {
         let mut saved_listings: Vec<_> = listings.iter().filter(|l| l.saved).cloned().collect();
         let saved_count = saved_listings.len();
         let query = self.query.to_lowercase();
-        let interests = ranking::saved_interests(&listings);
         // Snapshots repeat for every update. Normalize the search once and
         // each listing's text only when the search or that text changes.
         let phrase = literal_search::normalize(&query);
@@ -190,7 +189,6 @@ impl State {
             ranking::rank(
                 &mut listings,
                 &self.profiles,
-                &interests,
                 &self.query,
                 listing::now(),
                 self.ai_search || self.home_curation(),

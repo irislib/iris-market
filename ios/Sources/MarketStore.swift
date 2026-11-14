@@ -329,7 +329,8 @@ final class MarketStore: ObservableObject {
         do {
             let request = String(decoding: try JSONSerialization.data(withJSONObject: value), as: UTF8.self)
             if !backgroundReview { alert = nil }
-            operationCount += 1; busy = true
+            let showsBusy = value["type"] as? String != "save"
+            if showsBusy { operationCount += 1; busy = true }
             let generation = accountGeneration
             let gate = aiIntentGate
             let epoch = value["type"] as? String == "set_settings" ? (expectedAIIntent ?? gate.current) : nil
@@ -361,7 +362,7 @@ final class MarketStore: ObservableObject {
                         }) else {
                             Task { @MainActor in
                                 guard let self, self.accountGeneration == generation else { completion?(false); return }
-                                self.operationCount -= 1; self.busy = self.operationCount > 0; completion?(false)
+                                if showsBusy { self.operationCount -= 1; self.busy = self.operationCount > 0 }; completion?(false)
                             }; return
                         }
                         response = result
@@ -369,13 +370,14 @@ final class MarketStore: ObservableObject {
                     let next = try MarketJSON.decoder().decode(MarketSnapshot.self, from: Data(response.utf8))
                     Task { @MainActor in
                         guard self?.accountGeneration == generation else { completion?(false); return }
-                        self?.acceptSnapshot(next); self?.operationCount -= 1; self?.busy = (self?.operationCount ?? 0) > 0
+                        self?.acceptSnapshot(next)
+                        if showsBusy { self?.operationCount -= 1; self?.busy = (self?.operationCount ?? 0) > 0 }
                         if let error = next.error, !error.isEmpty { if !backgroundReview { self?.alert = error }; completion?(false) }
                         else { completion?(true) }
                     }
                 } catch { Task { @MainActor in
                     guard let self, self.accountGeneration == generation else { completion?(false); return }
-                    self.operationCount -= 1; self.busy = self.operationCount > 0
+                    if showsBusy { self.operationCount -= 1; self.busy = self.operationCount > 0 }
                     if !backgroundReview && (inferenceEpoch == nil || inferenceEpoch == self.aiIntentEpoch) { self.alert = marketErrorMessage(error); self.refreshSnapshot() }
                     completion?(false)
                 } }

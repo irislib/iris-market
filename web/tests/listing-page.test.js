@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {window} from './support/dom.mjs';
 import {flushSync} from 'svelte';
+import {SvelteSet} from 'svelte/reactivity';
+import {createCard, disposeCard} from '../src/listing-card/card.ts';
 
 const copied=[];
 Object.defineProperty(navigator,'clipboard',{value:{writeText:async text=>copied.push(text)},configurable:true});
@@ -99,4 +101,30 @@ test('bitcoin quotes without photos are quote-only; failed closes stay retryable
   const order=render({...listing,imageUrl:undefined,externalOrder:{platform:'Peach',methods:'SEPA',layer:'onchain',quantity:5000,premium:null}});
   assert.deepEqual([...order.querySelectorAll('dt')].map(node=>node.textContent),['Payment method','Settlement','Bitcoin amount']);
   assert.equal(order.querySelector('.detail-place'),null);assert.equal(order.querySelector('.detail-description'),null);assert.equal(find(order,'Buy'),undefined);
+});
+
+test('card and detail hearts stay in sync and preserve the open photo', () => {
+  const saved = new SvelteSet();
+  const toggle = () => saved.has(listing.id) ? saved.delete(listing.id) : saved.add(listing.id);
+  const detail = renderListingPage(listing, {
+    ...options, get saved() { return saved.has(listing.id); }, onSave: toggle,
+  });
+  const card = createCard(listing, {
+    saved: id => saved.has(id), save: toggle, hidden: () => false, preview: () => true,
+    href: () => '#desk', price: () => ({primary:'€95'}), quote: () => undefined,
+    photo: () => document.createElement('img'),
+  });
+  document.body.replaceChildren(card, detail);
+  const heart = card.querySelector('.save-button'), detailHeart = find(detail, '♡ Save');
+  const photo = detail.querySelector('img'), original = detail.querySelector('.image-original-toggle');
+  original.click();
+  heart.click();
+  assert.equal(detailHeart.textContent, '♥ Saved');
+  assert.equal(heart.getAttribute('aria-label'), 'Unsave Oak desk');
+  detailHeart.click();
+  assert.equal(heart.getAttribute('aria-pressed'), 'false');
+  assert.equal(detailHeart.getAttribute('aria-pressed'), 'false');
+  assert.equal(detail.querySelector('img'), photo);
+  assert.equal(original.getAttribute('aria-pressed'), 'true');
+  disposeCard(card);
 });

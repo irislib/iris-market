@@ -7,8 +7,7 @@
   import type {CardContext} from './card.ts'
 
   let {listing: l, ctx}: {listing: any; ctx: CardContext} = $props()
-  // The card is rebuilt whenever its key (price, saved, hidden) changes, so these are fixed per mount.
-  const saved = ctx.saved(l.id)
+  const saved = $derived(ctx.saved(l.id))
   const href = ctx.href(l)
   const bitcoin = !!l.externalOrder || l.escrow?.trade === 'bitcoin_fiat'
   let title = $state(l.title)

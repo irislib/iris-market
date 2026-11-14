@@ -32,7 +32,6 @@ use chacha20poly1305::{
     KeyInit, XChaCha20Poly1305, XNonce,
     aead::{Aead, Payload},
 };
-use fs2::FileExt;
 use hkdf::Hkdf;
 use iris_chat_protocol::{
     APP_KEYS_EVENT_KIND, INVITE_EVENT_KIND, INVITE_LIST_LABEL, INVITE_RESPONSE_KIND, Invite,
@@ -2081,7 +2080,7 @@ impl EncryptedStore {
         let lock = lock_options
             .open(directory.join(".writer-lock"))
             .map_err(|_| "Unable to open private message storage lock")?;
-        lock.try_lock_exclusive()
+        crate::public_cache::lock_exclusive_briefly(&lock)
             .map_err(|_| "This profile is already open in another process")?;
         let conn = Connection::open(directory.join("messages.sqlite3"))
             .map_err(|_| "Unable to open private message storage")?;

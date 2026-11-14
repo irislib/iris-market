@@ -17,6 +17,20 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+/// Take an exclusive lock, retrying for up to half a second. A child process
+/// that is starting can briefly hold an inherited copy of the descriptor before
+/// exec closes it, which must not be mistaken for another open store.
+pub(crate) fn lock_exclusive_briefly(file: &File) -> std::io::Result<()> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    loop {
+        match file.try_lock_exclusive() {
+            Ok(()) => return Ok(()),
+            Err(error) if std::time::Instant::now() >= deadline => return Err(error),
+            Err(_) => std::thread::sleep(std::time::Duration::from_millis(10)),
+        }
+    }
+}
+
 pub const MAX_PUBLIC_CACHE_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_PUBLIC_CACHE_FILE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_EVENT_BYTES: usize = 1024 * 1024;
@@ -115,9 +129,7 @@ impl PublicEventCache {
             options.mode(0o600);
         }
         let mut guard = options.open(guard_path)?;
-        guard
-            .try_lock_exclusive()
-            .context("Public cache is already open")?;
+        lock_exclusive_briefly(&guard).context("Public cache is already open")?;
         let existing_db = path.exists();
         let mut byte = *b"1";
         let fresh_guard = guard.metadata()?.len() == 0;
@@ -393,6 +405,32 @@ impl EventBus for PublicEventCache {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn brief_lock_waits_out_a_transient_holder_but_not_a_lasting_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("guard");
+        let open = || {
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&path)
+                .unwrap()
+        };
+        let holder = open();
+        holder.try_lock_exclusive().unwrap();
+        let started = std::time::Instant::now();
+        assert!(lock_exclusive_briefly(&open()).is_err());
+        assert!(started.elapsed() >= std::time::Duration::from_millis(500));
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            drop(holder);
+        });
+        lock_exclusive_briefly(&open()).unwrap();
+        releaser.join().unwrap();
+    }
+
     use super::*;
     use nostr::{EventBuilder, Keys, Kind, Tag, Timestamp};
     fn signed(keys: &Keys, kind: u16, at: u64, content: &str, tags: Vec<Vec<String>>) -> Event {

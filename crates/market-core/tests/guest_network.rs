@@ -85,13 +85,9 @@ fn guest_activation(name: &str) {
         }
     });
     let dir = tempfile::tempdir().unwrap();
+    // The native shells seed a new profile folder this way before its first open.
+    assert!(Market::seed_new_profile_relays(dir.path(), std::slice::from_ref(&relay)).unwrap());
     let store = Store::open(&dir.path().join("market.sqlite")).unwrap();
-    store
-        .save_settings(&Settings {
-            relays: vec![relay.clone()],
-            ..Default::default()
-        })
-        .unwrap();
     let secret = iris_market_core::generate_secret_key();
     let guest = Market::open_fresh(dir.path(), &secret).unwrap();
     let initial = store.initial_authorization().unwrap().unwrap();

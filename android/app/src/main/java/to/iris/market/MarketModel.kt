@@ -25,6 +25,7 @@ import to.iris.market.core.MarketApp
 import to.iris.market.core.generateSecretKey
 import to.iris.market.core.MarketDeviceLink
 import to.iris.market.core.publicKeyForSecret
+import to.iris.market.core.seedNewProfileRelays
 import to.iris.market.core.MarketSignerPairing
 import to.iris.market.core.SignerApproval
 import to.iris.market.core.registerRemoteIdentityDevice
@@ -172,6 +173,7 @@ data class MarketSnapshot(
 }
 private fun JSONObject.optional(name: String): String? =
     if (isNull(name)) null else optString(name).takeIf { it.isNotBlank() }
+private fun JSONObject.fields(): Map<String, Any?> = keys().asSequence().associateWith { get(it) }
 
 /** The Keystore key is non-exportable. Only authenticated ciphertext is written to disk. */
 class SecureRecord(application: Application, namespace: String = "market") {
@@ -462,6 +464,12 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
                         bundle.put("secret",secret)
                         bundle.put("signer",paired?.credential)
                         val relays=JSONObject(state.value.settings).optJSONArray("relays")?.toString() ?: "[]"
+                        // A profile new to this device starts on the servers already chosen here,
+                        // before its first connection; an existing profile keeps its own.
+                        if(!bundle.optBoolean("legacy")) {
+                            val chosen=JSONArray(relays).let { a -> (0 until a.length()).map(a::getString) }
+                            seedNewProfileRelays(File(getApplication<Application>().filesDir,"market/accounts/$owner").absolutePath,chosen)
+                        }
                         // Durable local identity and core open do not await relay discovery.
                         secure.put("account-$owner",bundle.toString());secure.put("active-account",owner)
                         openSavedAccount()
@@ -661,7 +669,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
                                 val commit=JSONObject(request.toString())
                                 val fresh=JSONObject(MarketSnapshot.parse(app.snapshot()).settings)
                                 if(expectedAIIntent==null) commit.getJSONObject("settings").put("ai",fresh.getJSONObject("ai"))
-                                else { fresh.put("ai",commit.getJSONObject("settings").getJSONObject("ai"));commit.put("settings",fresh) }
+                                else commit.put("settings",JSONObject(NativeSettingsCommit.editorSave(fresh.fields(),commit.getJSONObject("settings").fields())))
                                 MarketSnapshot.parse(app.command(commit.toString()))
                             } ?: throw CancellationException("Superseded AI preference")
                             publishSnapshot(next)

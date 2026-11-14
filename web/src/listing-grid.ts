@@ -38,6 +38,11 @@ export function setupListingGrid({grid, controls, button, status, makeCard, card
   function paint() {
     if (disposed) return;
     const shown = windowed.update(items, viewKey, mixSellers), next = new Map();
+    // Remove missing cards before positioning their neighbors.
+    const shownIds = new Set(shown.map(item => item.id));
+    for (const [id, entry] of rendered) if (!shownIds.has(id)) {
+      entry.node.remove(); rendered.delete(id);
+    }
     for (const [index, item] of shown.entries()) {
       const key = cardKey(item), previous = rendered.get(item.id);
       const entry = previous?.key === key ? previous : {key, node:makeCard(item)};
@@ -45,7 +50,7 @@ export function setupListingGrid({grid, controls, button, status, makeCard, card
       if (grid.children[index] !== entry.node) grid.insertBefore(entry.node, grid.children[index] || null);
       next.set(item.id, entry);
     }
-    for (const [id, entry] of rendered) if (!next.has(id) || next.get(id).node !== entry.node) entry.node.remove();
+    for (const [id, entry] of rendered) if (next.get(id).node !== entry.node) entry.node.remove();
     rendered = next;
     const remote = pagination(), localMore = shown.length < items.length;
     const hasMore = localMore || remote.hasMore;

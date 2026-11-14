@@ -101,7 +101,7 @@ export function renderListingPage(listing:ListingPresentation,{saved=false,onSav
     confirm.onclick=async()=>{confirm.disabled=true;try{await onCloseBitcoin(listing);}catch(error){problem.textContent=error.message;confirm.disabled=false;}};
     actions.append(close);
   }
-  const save=node('button',saved?'♥ Saved':'♡ Save','button secondary');save.setAttribute('aria-pressed',String(saved));save.onclick=()=>onSave(listing);
+  const save=node('button',saved?'♥ Saved':'♡ Save','button secondary');save.dataset.favoriteId=listing.id;save.setAttribute('aria-pressed',String(saved));save.onclick=()=>onSave(listing);
   actions.append(save);
   if (validListingId(listing.id)) actions.append(...listingShare(listingURL(listing.id), onToast));
   if(listing.externalOrder){

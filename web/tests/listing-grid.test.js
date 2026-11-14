@@ -12,6 +12,16 @@ function streamingGrid(t, loadOlder, olderState=()=>({hasMore:true})) {
   t.after(()=>{view.dispose();if(saved)Object.defineProperty(globalThis,'window',saved);else delete globalThis.window;});
   return {grid,button,controls,status,view};
 }
+test('removing a saved listing leaves neighboring cards attached', t => {
+  const {grid, view} = streamingGrid(t, async () => {});
+  const rows = items(4);
+  view.update(rows, 'saved');
+  const original = [...grid.children];
+  const insert = t.mock.method(grid, 'insertBefore');
+  view.update(rows.filter(row => row.id !== '1'), 'saved');
+  assert.equal(insert.mock.callCount(), 0);
+  assert.deepEqual(grid.children, [original[0], original[2], original[3]]);
+});
 test('existing listings retain an ordinary load-more control after a remote failure',async t=>{
   let requests=0;const remote={hasMore:false,error:'A server is unavailable'};
   const {grid,button,status,controls,view}=streamingGrid(t,async()=>{requests++;},()=>remote);

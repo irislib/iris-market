@@ -66,3 +66,12 @@ test('invitation links and cleanup preserve the deployment prefix and never move
   assert.equal(legacy.cleanURL,`${prefix}?preview=1`);
   assert.equal(captureInvitation(`${prefix}#main`),null);
 });
+
+test('open modal dialogs lock page scroll while dialogs scroll internally', async () => {
+  const css = await readFile(new URL('../styles.css',import.meta.url),'utf8');
+  assert.match(css,/html:has\(dialog:modal\)\s*\{\s*overflow:\s*hidden;?\s*\}/);
+  const dialog = css.match(/(?:^|\})\s*dialog\s*\{([^}]*)\}/)?.[1] ?? '';
+  assert.match(dialog,/overflow:\s*auto/);
+  assert.match(dialog,/max-height:/);
+  assert.match(dialog,/overscroll-behavior:\s*contain/);
+});

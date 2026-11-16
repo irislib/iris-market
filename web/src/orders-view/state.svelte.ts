@@ -28,6 +28,8 @@ export interface OrdersOptions {
   formatPrice?:(item:any)=>string;
   /** The order total in whole sats, when the listing price can be converted. */
   satsFor?:(item:any)=>number|null;
+  /** The photo of a listing this device knows, for orders made before photos were recorded. */
+  imageFor?:(item:any)=>string|undefined;
 }
 
 type View = 'history'|'detail'|'review'|'route'|'delivery'|'payment';
@@ -62,6 +64,7 @@ export class OrdersState {
   isPreview:()=>boolean;
   formatPrice:(item:any)=>string;
   satsFor:(item:any)=>number|null;
+  imageFor:(item:any)=>string|undefined;
   onProfile:(key:string)=>void;
   onReview:(key:string)=>void;
   onNavigate:(id?:string,tab?:string)=>void;
@@ -96,6 +99,7 @@ export class OrdersState {
     this.onReview = options.onReview ?? this.onProfile;
     this.onNavigate = options.onNavigate ?? ((_id?:string,_tab?:string) => {});
     this.formatPrice = options.formatPrice ?? (item => `${item.price || ''} ${item.currency || ''}`.trim());
+    this.imageFor = options.imageFor ?? (() => undefined);
     this.satsFor = options.satsFor ?? (item => ['SATS', 'TESTSAT'].includes(String(item?.currency).toUpperCase()) && Number(item.price) > 0 ? Math.ceil(Number(item.price) * (item.quantity || 1)) : null);
     this.unread = createUnreadTracker({kind:'orders', onUnread});
     this.data = account.state();
@@ -116,7 +120,7 @@ export class OrdersState {
   announce(text:string) { this.announcement = text; }
 
   card(order):HTMLElement {
-    return createOrderCard(order, {owner:this.owner(), deliveries:this.tab === 'deliveries', unread:!!this.unread.unread(order.id), price:item => this.price(item), onOpen:() => this.showDetail(order)});
+    return createOrderCard(order, {owner:this.owner(), deliveries:this.tab === 'deliveries', unread:!!this.unread.unread(order.id), price:item => this.price(item), onOpen:() => this.showDetail(order), image:order.items?.[0]?.image ?? this.imageFor(order.items?.[0])});
   }
   openProfile(pubkey:string) { this.dialog.hide(); this.onProfile(pubkey); }
   clearEditors() { for (const editor of this.editors) editor.destroy(); this.editors = []; }

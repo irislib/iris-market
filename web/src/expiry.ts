@@ -1,5 +1,7 @@
 import {expirationFromInput} from './listing-dates.ts';
 const DAY=86400;
+/** New listings expire after 3 months unless the person chooses otherwise. */
+export const DEFAULT_EXPIRY='90d';
 export const EXPIRY_CHOICES=Object.freeze([
   {value:'',label:'Never',seconds:0},
   {value:'1d',label:'1 day',seconds:DAY},

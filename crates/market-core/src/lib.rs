@@ -258,6 +258,21 @@ impl State {
             .map(|messaging| messaging.orders())
             .unwrap_or_default();
         for view in &mut orders {
+            // Older orders have no stored photo: borrow the listing's, which is already proxied.
+            view.display_image = view.order.items.first().and_then(|item| {
+                item.image
+                    .as_deref()
+                    .and_then(|url| {
+                        image_proxy::image_url(url, &self.settings.image_proxy, 160, 160, true)
+                    })
+                    .or_else(|| {
+                        listings
+                            .iter()
+                            .chain(saved_listings.iter())
+                            .find(|listing| listing.id == item.id)
+                            .and_then(|listing| listing.image_url.clone())
+                    })
+            });
             if let Some(item) = view.order.items.first() {
                 view.display_price = self.rates.convert(
                     &item.price,

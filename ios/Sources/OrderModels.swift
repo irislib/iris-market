@@ -23,6 +23,8 @@ struct MarketOrder: Decodable, Hashable, Identifiable {
     let pickupAuthorization: MarketPickupAuthorization?
     let sourceOrderId: String?
     let deliveryOrderId: String?
+    /// A proxied thumbnail of the ordered item from the core.
+    let displayImage: String?
     var formattedPrice: String {
         guard let displayPrice, displayPrice.amount.isFinite else { return items.first?.formattedPrice ?? "Negotiable" }
         let format = NumberFormatter(); format.numberStyle = .currency; format.currencyCode = displayPrice.currency

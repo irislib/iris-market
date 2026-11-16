@@ -74,8 +74,7 @@ struct ListingDetailView: View {
                     } else if current.mine {
                         Button { store.command(["type": "close", "id": current.id]) { if $0 { closeListing() } } } label: { Text("Mark as unavailable") }.buttonStyle(PrimaryButton())
                     } else if current.side == "offer" && !current.isBitcoinOffer {
-                        Button { reviewOrder = true } label: { Label(NativeTransportType.classify(current.tags ?? [])?.requestLabel ?? "Buy", systemImage: NativeTransportType.classify(current.tags ?? []) == nil ? "bag.fill" : "car.fill") }
-                            .buttonStyle(PrimaryButton()).disabled(store.demo || store.busy || !store.snapshot.messagingReady).accessibilityIdentifier("buyListing")
+                        // Buy is pinned at the bottom with the price (below), as on Android and shop apps.
                         if store.demo { Text("Ordering is unavailable in preview mode.").font(.system(size: 12)).foregroundStyle(MarketTheme.muted) }
                     } else {
                         Button {
@@ -94,6 +93,15 @@ struct ListingDetailView: View {
                     }
                 }.padding(23)
             }.background(MarketTheme.paper)
+                .safeAreaInset(edge: .bottom) {
+                    if current.externalOrder == nil && !current.mine && current.side == "offer" && !current.isBitcoinOffer {
+                        HStack(spacing: 16) {
+                            Text(current.formattedPrice).font(.system(size: 20, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.7)
+                            Button { reviewOrder = true } label: { Label(NativeTransportType.classify(current.tags ?? [])?.requestLabel ?? "Buy", systemImage: NativeTransportType.classify(current.tags ?? []) == nil ? "bag.fill" : "car.fill").frame(maxWidth: .infinity) }
+                                .buttonStyle(PrimaryButton()).disabled(store.demo || store.busy || !store.snapshot.messagingReady).accessibilityIdentifier("buyListing")
+                        }.padding(.horizontal, 23).padding(.vertical, 12).background(.bar)
+                    }
+                }
                 #if os(macOS)
                 .navigationBarBackButtonHidden(true)
                 #endif
@@ -125,7 +133,7 @@ struct NewListingView: View {
     @State private var category = "Other"
     @State private var imageURL = ""
     @State private var uploading = false
-    @State private var expiry: NativeListingExpiry = .never
+    @State private var expiry: NativeListingExpiry = .quarter // Listings expire after 3 months unless chosen otherwise.
     @State private var transport: NativeTransportType? = nil
     @State private var serviceAreas: MarketServiceAreas?
     @State private var chooseServiceAreas = false
@@ -206,7 +214,7 @@ struct NewListingView: View {
                 Section {
                     if store.demo { Label("Preview mode: publishing is turned off.", systemImage: "eye").font(.system(size: 13)).foregroundStyle(MarketTheme.muted) }
                     else if !store.snapshot.canSign { Text("Sign in with your signer or secret key to publish listings.").font(.system(size: 13)).foregroundStyle(MarketTheme.muted) }
-                    else { Text("Your listing will be public, and people can contact you privately. Keep exact addresses and private contact details out of your listing.").font(.system(size: 13)).foregroundStyle(MarketTheme.muted).fixedSize(horizontal: false, vertical: true) }
+                    else { Text("Your listing will be public, and people can contact you privately.").font(.system(size: 13)).foregroundStyle(MarketTheme.muted).fixedSize(horizontal: false, vertical: true) }
                     if !store.demo && store.snapshot.canSign && store.snapshot.people[store.snapshot.publicKey]?.connection.followDistance == nil {
                         // Feeds only show followed accounts, so tell a new poster how people will find them.
                         Text("People see listings from accounts followed in their network. Until someone follows you, share your listing link with the people you want to reach.").font(.system(size: 13)).foregroundStyle(MarketTheme.muted).fixedSize(horizontal: false, vertical: true)

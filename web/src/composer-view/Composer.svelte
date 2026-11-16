@@ -65,7 +65,7 @@
       <p class="small muted">In the listing currency. Your location is separate.</p>
     </fieldset>
   </details>
-  <label>Expires in<select name="expiration" disabled={c.busy}>{#each EXPIRY_CHOICES as option}<option value={option.value}>{option.label}</option>{/each}<option value="keep" hidden={!c.editing} disabled={c.controls.keepDisabled}>{c.keepLabel}</option></select></label>
+  <label>Expires in<select name="expiration" disabled={c.busy} onchange={() => { c.expiryChosen = true }}>{#each EXPIRY_CHOICES as option}<option value={option.value}>{option.label}</option>{/each}<option value="keep" hidden={!c.editing} disabled={c.controls.keepDisabled}>{c.keepLabel}</option></select></label>
   <label>Photos & files<input id="post-files" type="file" multiple aria-describedby="post-file-help" disabled={c.busy} onchange={event => c.addFiles(event.currentTarget)}></label>
   <p id="post-file-help" class="small muted">Up to 4 files · 8 MB each</p>
   <ul id="post-file-list" class="post-file-list">

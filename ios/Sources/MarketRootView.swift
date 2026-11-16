@@ -289,6 +289,16 @@ struct BrowseView: View {
         store.filter(query: store.snapshot.query, side: store.snapshot.side, aiSearch: store.snapshot.aiSearch, networkOnly: enabled)
     }
     private var networkOnly: Bool { store.snapshot.networkOnly ?? true }
+    /// Cards already shown keep their places when more load; new ones join at the end (as on the web).
+    @State private var shownOrder: [String] = []
+    @State private var shownKey = ""
+    private var orderKey: String { [store.snapshot.query, store.snapshot.side, store.snapshot.sort, String(describing: store.snapshot.showAllResults), String(networkOnly), String(describing: photoFilter), String(showMap)].joined(separator: "|") }
+    private func stableOrder(_ listings: [MarketListing]) -> [MarketListing] {
+        guard shownKey == orderKey, !shownOrder.isEmpty else { return listings }
+        let byID = Dictionary(listings.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let kept = shownOrder.compactMap { byID[$0] }, keptIDs = Set(kept.map(\.id))
+        return kept + listings.filter { !keptIDs.contains($0.id) }
+    }
     private var wantsPhotos: Bool { NativePhotoFilter.wantsPhotos(choice: photoFilter, query: store.snapshot.query, side: store.snapshot.side, map: showMap) }
     var body: some View {
         // A failed Home review never leaves the feed empty: fall back to every listing, as Show all would.
@@ -371,14 +381,20 @@ struct BrowseView: View {
                 } else if visibleListings.isEmpty {
                     MarketEmptyState(symbol: query.isEmpty ? "square.grid.2x2" : "magnifyingglass", title: curationActive ? (store.searchPaused ? "Review paused" : searching || unfinishedSearch ? "No matches yet" : "No matches") : query.isEmpty ? "No listings yet" : "No results", description: curationActive ? "New matches appear as they are reviewed. Choose Show all to search by text." : query.isEmpty ? "Sell something or post what you want to buy." : "Try another search or post what you want to buy.")
                 } else {
+                    let ordered = stableOrder(visibleListings)
                     LazyVGrid(columns: listLayout ? [GridItem(.flexible())] : marketListingColumns, alignment: .leading, spacing: listLayout ? 12 : 21) {
-                        ForEach(visibleListings) { listing in ListingCard(listing: listing, compact: listLayout, open: { selected = listing }, save: { store.save(listing) }) }
+                        ForEach(ordered) { listing in ListingCard(listing: listing, compact: listLayout, open: { selected = listing }, save: { store.save(listing) }) }
                     }
+                    .onAppear { shownKey = orderKey; shownOrder = ordered.map(\.id) }
+                    .onChange(of: ordered.map(\.id)) { ids in shownKey = orderKey; shownOrder = ids }
                 }
                 if !showMap && (store.snapshot.searchDiscovery?.hasMore == true || curationActive && store.snapshot.listings.contains { $0.externalOrder == nil && $0.relevance == nil }) {
-                    Button("Load more") { store.continueSearch() }
+                    Button { store.continueSearch() } label: {
+                        HStack(spacing: 8) { if searching { ProgressView() }; Text(searching ? "Loading…" : "Load more").fontWeight(.semibold) }
+                            .frame(maxWidth: .infinity).padding(.vertical, 6)
+                    }
+                        .buttonStyle(.bordered).controlSize(.large)
                         .disabled(searching || store.busy)
-                        .frame(maxWidth: .infinity)
                         .accessibilityIdentifier("loadMoreListings")
                 }
                 if store.demo { Text("Sample listings · nothing here will be published").font(.system(size: 10)).foregroundStyle(MarketTheme.muted).frame(maxWidth: .infinity).padding(.top, 8).padding(.bottom, 20) }

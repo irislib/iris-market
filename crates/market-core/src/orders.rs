@@ -99,6 +99,10 @@ pub struct Shipment {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub location: Option<ShipmentLocation>,
 }
+/// An order photo is a plain public HTTPS address, as listings publish.
+fn order_image(url: &str) -> bool {
+    url.len() <= 2048 && url.starts_with("https://") && !url.chars().any(char::is_control)
+}
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OrderItem {
     pub id: String,
@@ -109,6 +113,9 @@ pub struct OrderItem {
     /// The exact signed listing revision ordered; `id` stays the replaceable address.
     #[serde(default, rename = "eventId", skip_serializing_if = "Option::is_none")]
     pub event_id: Option<String>,
+    /// The listing's public photo when ordered, so the order keeps a picture after edits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -206,6 +213,13 @@ pub struct OrderView {
         skip_serializing_if = "Option::is_none"
     )]
     pub display_price: Option<crate::rates::DisplayPrice>,
+    /// A proxied thumbnail of the ordered item, for order lists.
+    #[serde(
+        default,
+        rename = "display_image",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub display_image: Option<String>,
     #[serde(flatten)]
     pub order: Order,
     pub archived: bool,
@@ -456,6 +470,7 @@ fn snapshot_with_mint(mut value: Order, developer_mint: Option<&str>) -> Result<
                     .is_ok_and(|p| p.is_finite() && p >= 0.));
         require(
             (1..=999).contains(&item.quantity)
+                && item.image.as_deref().is_none_or(order_image)
                 && item.event_id.as_ref().is_none_or(|id| {
                     id.len() == 64
                         && id
@@ -960,6 +975,7 @@ impl OrderBook {
                         source_order_id: r.source_order_id.clone(),
                         delivery_order_id: r.delivery_order_id.clone(),
                         display_price: None,
+                        display_image: None,
                         role: role(&order, owner).map(str::to_string),
                         order,
                         archived: r.archived,
@@ -1085,6 +1101,7 @@ impl OrderBook {
                     quantity,
                     event_id: Some(listing.event_id.clone())
                         .filter(|id| id.len() == 64 && id.bytes().all(|b| b.is_ascii_hexdigit())),
+                    image: listing.image_url.clone().filter(|url| order_image(url)),
                 }],
                 note: note.into(),
                 status: OrderStatus::Requested,

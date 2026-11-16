@@ -195,14 +195,38 @@ pub fn rank(listings: &mut Vec<Listing>, profiles: &Profiles, query: &str, now: 
             }
         })
         .collect();
-    while let Some(head) = heads.pop() {
+    // On Home each further listing from a seller keeps a shrinking share of its score (as in
+    // nostreddit), and a seller never appears twice in a row while another seller is waiting
+    // (as in iris-client). Search keeps its gentler, capped penalty so relevance decides.
+    let ranking = &crate::model::home_defaults().ranking;
+    let repeated = |score: f64, shown: usize| {
+        if !home {
+            return score - (1.5 * shown as f64).min(3.0);
+        }
+        let factor = ranking
+            .author_repeat_decay
+            .powi(shown.min(ranking.author_repeat_steps) as i32);
+        if score >= 0.0 {
+            score * factor
+        } else {
+            score / factor
+        }
+    };
+    let mut previous = None;
+    while let Some(mut head) = heads.pop() {
+        if home && previous == Some(head.author) && !heads.is_empty() {
+            let next = heads.pop().expect("another seller is waiting");
+            heads.push(head);
+            head = next;
+        }
         let queue = &mut queues[head.author];
         let (listing, _, _) = queue.pop_front().unwrap();
         listings.push(listing);
         emitted[head.author] += 1;
+        previous = Some(head.author);
         if let Some((_, score, order)) = queue.front() {
             heads.push(Head {
-                score: score - (1.5 * emitted[head.author] as f64).min(3.0),
+                score: repeated(*score, emitted[head.author]),
                 order: *order,
                 author: head.author,
             });
@@ -306,6 +330,25 @@ mod tests {
             items.iter().map(|l| &l.id).collect::<Vec<_>>(),
             reversed.iter().map(|l| &l.id).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn a_prolific_seller_cannot_take_over_home() {
+        let p = Profiles::default();
+        let now = 2_000_000;
+        let painter = "a".repeat(64);
+        let mut items: Vec<_> = (0..40)
+            .map(|i| listing(&format!("p{i}"), &painter, now - i * 60))
+            .collect();
+        for i in 0..8u8 {
+            let author = format!("{:064x}", i + 1);
+            items.push(listing(&format!("o{i}"), &author, now - 3 * 86_400));
+        }
+        rank(&mut items, &p, "", now, false);
+        let first: Vec<_> = items.iter().take(9).map(|l| l.author == painter).collect();
+        // The painter's newest listing leads, then every other seller before its second.
+        assert_eq!(first.iter().filter(|p| **p).count(), 1, "{first:?}");
+        assert_eq!(items.len(), 48);
     }
 
     #[test]

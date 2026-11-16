@@ -107,3 +107,15 @@ test('repeated ranking respects the current query, listing revision and mutable 
   tags.pop();
   assert.equal(first([editable,tagged],'lamp'),'b');
 });
+
+test('a prolific well-connected seller cannot take over Home',()=>{
+  const now=1_800_000_000;
+  const painter=Array.from({length:40},(_,i)=>({id:`p${i}`,author:'painter',title:`Painting ${i}`,description:'',createdAt:now-i*60}));
+  const others=Array.from({length:8},(_,i)=>({id:`o${i}`,author:`seller${i}`,title:`Item ${i}`,description:'',createdAt:now-86400*3}));
+  const ranked=rankListings([...painter,...others],{now,relationFor:key=>key==='painter'?{distance:1,knownFollowerCount:40}:{distance:2,knownFollowerCount:2}});
+  const first12=ranked.slice(0,12).map(l=>l.author);
+  assert.ok(first12.filter(a=>a==='painter').length<=4,first12.join(','));
+  // All eight other sellers appear before the painter's second listing.
+  assert.deepEqual(first12.slice(0,9).filter(a=>a==='painter'),['painter']);assert.equal(new Set(first12.slice(0,9)).size,9);
+  assert.equal(ranked.length,48);
+});

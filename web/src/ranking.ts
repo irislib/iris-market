@@ -110,6 +110,17 @@ export function rankListings<T extends RankableListing>(listings:T[],{relationFo
   const pop=()=>{const first=heap[0],last=heap.pop();if(heap.length){let index=0;heap[0]=last;while(true){const left=index*2+1;if(left>=heap.length)break;const right=left+1,next=right<heap.length&&byQueue(heap[right],heap[left])<0?right:left;if(byQueue(last,heap[next])<=0)break;heap[index]=heap[next];index=next}heap[index]=last}return first}
   for(const items of authors.values()){items.sort(byBase);push({items,index:0,shown:0,score:items[0].score})}
   const output:T[]=[]
-  while(heap.length){const entry=pop();output.push(entry.items[entry.index].listing);entry.index++;entry.shown++;if(entry.index<entry.items.length){entry.score=entry.items[entry.index].score-Math.min(3,1.5*entry.shown);push(entry)}}
+  // Each further listing from a seller keeps a shrinking share of its score (as in nostreddit),
+  // and on Home a seller never appears twice in a row while another seller is waiting (as in iris-client).
+  const {authorRepeatDecay:decay,authorRepeatSteps:steps}=homeFeed.ranking
+  // Search keeps its gentler, capped penalty so relevant inventory from one seller is not buried.
+  const repeated=(score:number,shown:number)=>{if(!home)return score-Math.min(3,1.5*shown);const factor=Math.pow(decay,Math.min(steps,shown));return score>=0?score*factor:score/factor}
+  let previous:AuthorQueue<T>|undefined
+  while(heap.length){
+    let entry=pop()
+    if(home&&entry===previous&&heap.length){const next=pop();push(entry);entry=next}
+    output.push(entry.items[entry.index].listing);entry.index++;entry.shown++;previous=entry
+    if(entry.index<entry.items.length){entry.score=repeated(entry.items[entry.index].score,entry.shown);push(entry)}
+  }
   return output.concat(remainder)
 }

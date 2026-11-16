@@ -87,6 +87,11 @@ private struct OrderRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 15) {
+                if let image = order.displayImage, let url = URL(string: image) {
+                    AsyncImage(url: url) { phase in
+                        if let picture = phase.image { picture.resizable().scaledToFill() } else { MarketTheme.paper }
+                    }.frame(width: 56, height: 56).clipShape(RoundedRectangle(cornerRadius: 12)).accessibilityHidden(true)
+                }
                 Text(order.title.isEmpty ? "Order" : order.title).font(.system(size: 17, weight: .semibold)).multilineTextAlignment(.leading)
                 Spacer(minLength: 0)
                 if !order.items.isEmpty { Text(order.formattedPrice).font(.system(size: 16, weight: .medium)) }

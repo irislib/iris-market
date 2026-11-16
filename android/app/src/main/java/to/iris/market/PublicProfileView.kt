@@ -1,5 +1,6 @@
 package to.iris.market
 
+import androidx.compose.ui.text.withLink
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -70,7 +71,7 @@ import org.json.JSONObject
                 if(!state.demo && author!=state.publicKey) OutlinedButton(onClick={message(author)}) {
                     Icon(Icons.Filled.ChatBubble,null);Spacer(Modifier.width(8.dp));Text("Message")
                 }
-                if (!profile?.about.isNullOrBlank()) TranslatedText(profile!!.about) { Text(it, style = MaterialTheme.typography.bodyMedium) }
+                if (!profile?.about.isNullOrBlank()) TranslatedText(profile!!.about) { Text(linkedProfileText(it), style = MaterialTheme.typography.bodyMedium) }
                 profile?.website?.let { url -> TextButton(onClick={runCatching{uri.openUri(url)}}) { Text(url,maxLines=2) } }
                 if(known.isNotEmpty()) KnownFollowersLine(known.take(3),maxOf(known.size,person.connection.knownFollowers),open={history=history+author;author=it},showFollowers={
                     if (selection == 3) model.openCollection(author, null)
@@ -153,4 +154,19 @@ import org.json.JSONObject
         val remaining=NativeProfileConnections.remaining(total,people.size)
         if(remaining>0) Text("and $remaining others",Modifier.clickable(onClick=showFollowers),color=Forest,style=MaterialTheme.typography.bodySmall)
     }
+}
+
+
+private val profileLink = Regex("""https?://[^\s<>"']+[^\s<>"'.,;:!?)\]]|(?:nostr:)?(?:npub|nprofile)1[02-9ac-hj-np-z]{20,}""", RegexOption.IGNORE_CASE)
+/** Profile descriptions show web addresses and Nostr profile ids as links. */
+internal fun linkedProfileText(text: String) = androidx.compose.ui.text.buildAnnotatedString {
+    var last = 0
+    for (match in profileLink.findAll(text)) {
+        append(text.substring(last, match.range.first))
+        val value = match.value
+        val target = if (value.startsWith("http", ignoreCase = true)) value else "https://market.iris.to/" + value.replace("nostr:", "", ignoreCase = true)
+        withLink(androidx.compose.ui.text.LinkAnnotation.Url(target, androidx.compose.ui.text.TextLinkStyles(androidx.compose.ui.text.SpanStyle(textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline)))) { append(value.replace("nostr:", "", ignoreCase = true)) }
+        last = match.range.last + 1
+    }
+    append(text.substring(last))
 }

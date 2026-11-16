@@ -86,7 +86,7 @@
         </div>
       {/if}
       {#if profile.about}
-        {#key profile.pubkey + profile.about}<span hidden use:place={() => translatedParagraph(profile.about, 'profile-about')}></span>{/key}
+        {#key profile.pubkey + profile.about}<span hidden use:place={() => translatedParagraph(profile.about, 'profile-about', {links: true})}></span>{/key}
       {/if}
       {#if profile.website}
         <a class="profile-website" href={profile.website} target="_blank" rel="noopener noreferrer">{new URL(profile.website).hostname}</a>

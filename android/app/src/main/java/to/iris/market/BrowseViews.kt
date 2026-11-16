@@ -63,9 +63,21 @@ private fun rememberListLayout(): MutableState<Boolean> {
     val wantsPhotos = NativePhotoFilter.wantsPhotos(photoFilter,state.query,state.side,showMap)
     // A failed Home review never leaves the feed empty: fall back to every listing, as Show all would.
     val homeFallback = homeFeed && state.error != null
-    val visibleListings = state.listings.filter { listing ->
+    val rankedListings = state.listings.filter { listing ->
         (!canCurate || showAll || homeFallback || listing.matchesSearch) && NativePhotoFilter.includes(listing.imageUrl,photoFilter,state.query,state.side,showMap,listing.isBitcoinOffer)
     }
+    // Cards already shown keep their places when more load; new ones join at the end (as on the web).
+    val orderKey = listOf(state.query, state.side, state.sort, showAll, state.networkOnly, photoFilter, showMap).joinToString("|")
+    val shown = remember { mutableStateOf(orderKey to emptyList<String>()) }
+    val visibleListings = remember(rankedListings, orderKey) {
+        val (key, ids) = shown.value
+        if (key != orderKey || ids.isEmpty()) rankedListings else {
+            val byId = rankedListings.associateBy { it.id }
+            val kept = ids.mapNotNull { byId[it] }; val keptIds = kept.map { it.id }.toSet()
+            kept + rankedListings.filter { it.id !in keptIds }
+        }
+    }
+    SideEffect { shown.value = orderKey to visibleListings.map { it.id } }
     LazyVerticalGrid(columns = GridCells.Fixed(if(listLayout) 1 else 2), horizontalArrangement = Arrangement.spacedBy(14.dp),
         verticalArrangement = Arrangement.spacedBy(18.dp), contentPadding = PaddingValues(start=22.dp,end=22.dp,bottom=90.dp)) {
         item(span = { GridItemSpan(maxLineSpan) }) {
@@ -166,7 +178,7 @@ private fun rememberListLayout(): MutableState<Boolean> {
         }
         if(!showMap) items(visibleListings, key={it.id}) { listing -> ListingCard(listing, state.demo, {selected(listing)}, {model.save(listing.id)}, compact=listLayout) }
         if(!showMap && (state.searchDiscovery?.hasMore == true || canCurate && state.listings.any { it.externalOrder == null && it.relevanceShow == null })) item(span={GridItemSpan(maxLineSpan)}) {
-            TextButton(onClick=model::continueSearch,enabled=!searching&&!busy,modifier=Modifier.fillMaxWidth().testTag("loadMoreListings")) { Text("Load more") }
+            OutlinedButton(onClick=model::continueSearch,enabled=!searching&&!busy,modifier=Modifier.fillMaxWidth().height(52.dp).testTag("loadMoreListings")) { Text(if(searching) "Loading…" else "Load more", fontWeight = FontWeight.SemiBold) }
         }
     }
     if(filtersSheet) ModalBottomSheet(onDismissRequest={filtersSheet=false}) {

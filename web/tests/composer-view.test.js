@@ -137,7 +137,7 @@ test('a new listing never starts on the edit-only expiry choice',()=>{
   // Browsers select the hidden "Keep current" option when it is inserted before the generated choices.
   f.field('expiration').value='keep';
   assert.equal(f.composer.prefill({side:'offer',category:'transport',title:'Courier · Kallio',tags:['parcel']}),true);
-  assert.equal(f.field('expiration').value,'');assert.equal(f.field('title').value,'Courier · Kallio');
+  assert.equal(f.field('expiration').value,'90d','new listings default to three months');assert.equal(f.field('title').value,'Courier · Kallio');
 });
 
 test('a prefilled announcement stays an editable draft',()=>{

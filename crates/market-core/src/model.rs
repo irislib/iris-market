@@ -175,6 +175,8 @@ pub(crate) struct HomeRanking {
     pub graph_weight: f64,
     pub relevance_weight: f64,
     pub repeat_title_penalty: f64,
+    pub author_repeat_decay: f64,
+    pub author_repeat_steps: usize,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]

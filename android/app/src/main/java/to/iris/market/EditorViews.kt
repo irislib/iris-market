@@ -37,7 +37,7 @@ import org.json.JSONObject
 }
 
 @Composable fun PostListing(state:MarketSnapshot,model:MarketModel,busy:Boolean,transportType:NativeTransportType?=null,initialArea:String="",initialServiceAreas:String?=null,providerService:Boolean=false,done:()->Unit) {
-    var expiry by remember { mutableStateOf(NativeListingExpiry.NEVER) }
+    var expiry by remember { mutableStateOf(NativeListingExpiry.QUARTER) } // Listings expire after 3 months unless chosen otherwise.
     var expiryOpen by remember { mutableStateOf(false) }
     val escrowEnabled=remember(state.settings){JSONObject(state.settings).optBoolean("escrow_ui")}
     var offerEscrow by remember { mutableStateOf(false) }

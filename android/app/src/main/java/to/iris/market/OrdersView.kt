@@ -10,6 +10,8 @@ import android.os.Bundle
 import android.os.Looper
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -25,6 +27,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
@@ -97,6 +101,7 @@ import java.util.UUID
                 Surface(color = White, shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth().clickable { openOrder(order.id) }) {
                     Column(Modifier.padding(17.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            order.displayImage?.let { OrderThumb(it) }
                             Text(order.title, Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
                             Text(order.formattedPrice, fontWeight = FontWeight.Medium)
                         }
@@ -442,5 +447,14 @@ private data class StopDraft(val id: String = UUID.randomUUID().toString(), val 
             Text(estimate, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
             Text(orderDate(eta!!), style = MaterialTheme.typography.bodySmall, color = Muted)
         }
+    }
+}
+
+
+/** The ordered item's photo, loaded like listing photos. */
+@Composable private fun OrderThumb(url: String) {
+    val photo by produceState<android.graphics.Bitmap?>(null, url) { value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { loadPhoto(url) } }
+    Box(Modifier.size(56.dp).clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surfaceContainerLow)) {
+        photo?.let { Image(it.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop) }
     }
 }

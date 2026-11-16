@@ -35,7 +35,7 @@ struct AuthorProfileView: View {
                                 Text(profile.person.connection.followDistance == nil ? "No known connections" : profile.person.connection.description).font(.caption).foregroundStyle(MarketTheme.muted)
                             }
                         }
-                        if !profile.about.isEmpty { MarketTranslation(fields: [AttributedString(profile.about)]) { Text($0[0]).font(.body).textSelection(.enabled) } }
+                        if !profile.about.isEmpty { MarketTranslation(fields: [ProfileText.linked(profile.about)]) { Text($0[0]).font(.body).textSelection(.enabled) } }
                         if let website = profile.website, let url = URL(string: website) { Link(website, destination: url).font(.subheadline).lineLimit(2) }
                         let known = uniqueKnown(profile)
                         if !known.isEmpty {
@@ -184,5 +184,20 @@ private struct ProfileInlineLayout: Layout {
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         let positions = arrange(subviews, width: bounds.width).1
         for (view, point) in zip(subviews, positions) { view.place(at: CGPoint(x: bounds.minX + point.x, y: bounds.minY + point.y), proposal: ProposedViewSize(width: bounds.width, height: nil)) }
+    }
+}
+
+/// Profile descriptions show web addresses and Nostr profile ids as links.
+enum ProfileText {
+    static func linked(_ text: String) -> AttributedString {
+        var result = AttributedString(text)
+        let pattern = try! NSRegularExpression(pattern: #"https?://[^\s<>"']+[^\s<>"'.,;:!?)\]]|(?:nostr:)?(?:npub|nprofile)1[02-9ac-hj-np-z]{20,}"#, options: [.caseInsensitive])
+        for match in pattern.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+            guard let range = Range(match.range, in: text), let attributed = Range(range, in: result) else { continue }
+            let value = String(text[range])
+            let target = value.lowercased().hasPrefix("http") ? value : "https://market.iris.to/" + value.replacingOccurrences(of: "nostr:", with: "", options: .caseInsensitive)
+            if let url = URL(string: target) { result[attributed].link = url }
+        }
+        return result
     }
 }

@@ -2,9 +2,10 @@ import { element as node } from '../dom.ts';
 import { nextTransportStop, transportProgress } from '../transport-job.ts';
 import { date, statuses } from './format.ts';
 import { createUserName, warmProfiles } from '../people.ts';
+import { createStaticImage } from '../media.ts';
 
 /** An order row. Built as a plain element because the courier workspace also lists it. */
-export function createOrderCard(order, {owner, deliveries, unread, price, onOpen}:{owner?:string;deliveries:boolean;unread:boolean;price:(item:any)=>string;onOpen:()=>void}):HTMLElement {
+export function createOrderCard(order, {owner, deliveries, unread, price, onOpen, image}:{owner?:string;deliveries:boolean;unread:boolean;price:(item:any)=>string;onOpen:()=>void;image?:string}):HTMLElement {
   const card = node('button', undefined, 'order-card'); card.type = 'button'; card.onclick = onOpen;
   const text = node('div', undefined, 'order-card-copy'), amount = node('div', undefined, 'order-card-aside');
   const title = node('span', order.items?.map(item => item.title).join(', ') || 'Order', 'order-card-title');
@@ -21,5 +22,6 @@ export function createOrderCard(order, {owner, deliveries, unread, price, onOpen
   if (other && /^[0-9a-f]{64}$/.test(other)) { meta.prepend(createUserName(other), ' · '); warmProfiles([other]); }
   text.append(meta);
   amount.append(node('span', `${price(order.items?.[0] || {})}${order.items?.[0]?.quantity > 1 ? ` × ${order.items[0].quantity}` : ''}`, 'order-card-price'), node('span', statuses[order.status] || order.status, `order-status order-status-${order.status}`));
+  if (image) { const thumb = node('div', undefined, 'order-card-thumb'); thumb.append(createStaticImage(image, {width: 128, height: 128, square: true, alt: '', fallback: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22/%3E'})); card.append(thumb); }
   card.append(text, amount); return card;
 }

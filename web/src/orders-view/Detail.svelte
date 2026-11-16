@@ -7,6 +7,7 @@
   import {isTestMint, mintUnitLabel} from '../wallet/mints.ts'
   import {orderArrival} from '../order-arrival.ts'
   import {insert} from './actions.ts'
+  import {createStaticImage} from '../media.ts'
   import {dateTime, statuses, terminal, trackingLink} from './format.ts'
   import Person from './Person.svelte'
   import type {OrdersState} from './state.svelte.ts'
@@ -93,6 +94,7 @@
   {/if}
   {#each order.items || [] as item (item)}
     <div class="order-item">
+      {#if item.image ?? s.imageFor(item)}<div class="order-item-photo"><span hidden use:insert={() => createStaticImage((item.image ?? s.imageFor(item))!, {width: 240, height: 240, square: true, alt: item.title, fallback: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22/%3E'})}></span></div>{/if}
       <h3>{item.title}</h3>
       <span class="order-item-price">{s.price(item)}{item.quantity > 1 ? ' each' : ''}</span>
       <span hidden use:translation={item}></span>

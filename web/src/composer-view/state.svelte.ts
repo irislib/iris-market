@@ -6,7 +6,7 @@ import {composerTradeTools} from '../marketplace-tools.ts'
 import {byId, formFields} from '../dom.ts'
 import {parseEvent} from '../market.ts'
 import {createDraftFiles, type DraftFile, type PriceNode} from '../composer-preview.ts'
-import {relativeExpiry} from '../expiry.ts'
+import {DEFAULT_EXPIRY, relativeExpiry} from '../expiry.ts'
 import {courierListingType,isTransportTag} from '../transport-type.ts'
 import {validateDelivery} from '../delivery.ts'
 import {parseServiceAreas} from '../service-area.ts'
@@ -168,7 +168,9 @@ export class ComposerState {
   removeFile(index: number) { this.selection.remove(index); this.clearPending(); this.paintFiles() }
 
   /** Browsers select the edit-only "Keep current" option when it is inserted before the generated choices; a new listing starts at Never. */
-  private resetExpiry() { if (!this.editing && this.fields.expiration.value === 'keep') this.fields.expiration.value = '' }
+  /** New listings expire after 3 months unless the person picks another choice, including Never. */
+  expiryChosen = false
+  private resetExpiry() { if (!this.editing && (this.fields.expiration.value === 'keep' || !this.expiryChosen)) this.fields.expiration.value = DEFAULT_EXPIRY }
   syncKeepOption() { this.keepLabel = this.editing ? `Keep current (${relativeExpiry(this.editing.expiration)?.replace(/^Expires /, '') || 'never'})` : 'Keep current' }
 
   /** Native controls the view does not own (trade tools, area picker) follow the busy state directly. */
@@ -263,7 +265,7 @@ export class ComposerState {
       const receipts = await account.messaging.publishSignedEvents([...(this.pendingShipping ? [this.pendingShipping] : []), signed])
       const showSaved = this.dialog.open
       this.clearPending(); this.editing = null; this.draftId = crypto.randomUUID()
-      this.form.reset(); this.pinTouched = false; this.pinRequest++; this.paintPin(); this.mapPin.open = false
+      this.form.reset(); this.expiryChosen = false; this.resetExpiry(); this.pinTouched = false; this.pinRequest++; this.paintPin(); this.mapPin.open = false
       this.shippingTouched = false; this.countries = []; this.removeExistingDelivery = false; this.canRemoveDelivery = false; this.paintDelivery()
       this.selection.clear(); this.currencyTouched = false; this.areaPicker.setValue(null); this.areaTouched = false; this.areaEditor.open = false
       this.showEditor(); this.dialog.hide()
@@ -323,7 +325,7 @@ export class ComposerState {
   prefill(values) {
     this.resetExpiry()
     const fields = this.fields
-    if (this.busy || this.editing || this.reviewedValues || fields.pinCoordinates.value.trim() || this.shippingTouched || this.countries.length || fields.shippingEnabled.checked || fields.shippingPrice.value.trim() || fields.transportType.value || this.selection.items().length || this.hasAreaDraft() || ['title', 'description', 'price', 'location', 'image', 'tags', 'expiration'].some(key => fields[key].value.trim())) {
+    if (this.busy || this.editing || this.reviewedValues || fields.pinCoordinates.value.trim() || this.shippingTouched || this.countries.length || fields.shippingEnabled.checked || fields.shippingPrice.value.trim() || fields.transportType.value || this.selection.items().length || this.hasAreaDraft() || this.expiryChosen || ['title', 'description', 'price', 'location', 'image', 'tags'].some(key => fields[key].value.trim())) {
       this.open(); this.error = 'Your current draft is still here. Finish it before starting another listing.'; return false
     }
     // A service announcement is an ordinary editable listing; publishing still

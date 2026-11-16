@@ -4,6 +4,8 @@
   "ranking": {
     "graphWeight": 3,
     "relevanceWeight": 8,
-    "repeatTitlePenalty": 3
+    "repeatTitlePenalty": 3,
+    "authorRepeatDecay": 0.48,
+    "authorRepeatSteps": 4
   }
 }

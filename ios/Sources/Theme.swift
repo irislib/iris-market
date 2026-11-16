@@ -130,26 +130,36 @@ struct MarketInlineError: View {
     }
 }
 
-/// The same opposing exchange arrows as the web brand, drawn natively.
+/// The same opposing exchange arrows as the web brand (web/icon.svg), drawn natively without a tile.
 struct IrisMark: View {
+    private static let center = CGPoint(x: 32, y: 32)
+    private static func angle(_ point: CGPoint) -> Angle { .radians(atan2(point.y - center.y, point.x - center.x)) }
+    /// One arrow; the other is the same shape turned half a circle about the centre.
     private var arrow: Path {
         Path { p in
-            p.move(to: CGPoint(x: 7, y: 32))
-            p.addCurve(to: CGPoint(x: 47, y: 12), control1: CGPoint(x: 7, y: 11), control2: CGPoint(x: 30, y: 0))
-            p.addLine(to: CGPoint(x: 47, y: 6))
-            p.addLine(to: CGPoint(x: 59, y: 18))
-            p.addLine(to: CGPoint(x: 47, y: 30))
-            p.addLine(to: CGPoint(x: 47, y: 23))
-            p.addCurve(to: CGPoint(x: 17, y: 32), control1: CGPoint(x: 37, y: 8), control2: CGPoint(x: 17, y: 15))
+            let outerStart = CGPoint(x: 10.14, y: 45.13), outerEnd = CGPoint(x: 39.88, y: 7.75)
+            let innerStart = CGPoint(x: 36.33, y: 18.69), innerEnd = CGPoint(x: 20, y: 39.21)
+            p.move(to: outerStart)
+            // SwiftUI's y-down space flips arc direction: `clockwise: false` sweeps clockwise on screen, as the SVG does.
+            p.addArc(center: Self.center, radius: 25.5, startAngle: Self.angle(outerStart), endAngle: Self.angle(outerEnd), clockwise: false)
+            p.addLine(to: CGPoint(x: 41.49, y: 2.8))
+            p.addLine(to: CGPoint(x: 47.13, y: 19.3))
+            p.addLine(to: CGPoint(x: 34.72, y: 23.63))
+            p.addLine(to: innerStart)
+            p.addArc(center: Self.center, radius: 14, startAngle: Self.angle(innerStart), endAngle: Self.angle(innerEnd), clockwise: true)
             p.closeSubpath()
         }
+    }
+    private static let colors: [Color] = [0xF43F5E, 0xF75E34, 0xF98216, 0xFAB615, 0xB1CA2E, 0x33C658, 0x14BD9A, 0x0BB1D7, 0x2A93EB, 0x4F78F6, 0x7E62F6, 0xB750B6, 0xF43F5E].map { value in
+        Color(red: Double((value >> 16) & 0xff) / 255, green: Double((value >> 8) & 0xff) / 255, blue: Double(value & 0xff) / 255)
     }
     var body: some View {
         GeometryReader { geometry in
             let scale = min(geometry.size.width, geometry.size.height) / 64
-            let path = arrow.applying(CGAffineTransform(scaleX: scale, y: scale))
-            let gradient = LinearGradient(colors: [Color(red: 0.52, green: 0.35, blue: 0.86), Color(red: 0.78, green: 0.35, blue: 0.65), Color(red: 0.95, green: 0.54, blue: 0.35)], startPoint: .bottomLeading, endPoint: .topTrailing)
-            ZStack { path.fill(gradient); path.rotation(.degrees(180), anchor: .center).fill(gradient) }
+            let one = arrow, both = Path { p in p.addPath(one); p.addPath(one.applying(CGAffineTransform(translationX: 64, y: 64).rotated(by: .pi))) }
+            AngularGradient(colors: Self.colors, center: .center)
+                .frame(width: 64 * scale, height: 64 * scale)
+                .mask(both.applying(CGAffineTransform(scaleX: scale, y: scale)).fill())
         }.accessibilityHidden(true)
     }
 }

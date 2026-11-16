@@ -403,7 +403,15 @@ impl Book {
 
     fn receive(&mut self, me: PublicKey, peer: PublicKey, wire: Wire, created: u64, now: u64) {
         self.prune(now);
-        if !self.enabled || me == peer {
+        if me == peer {
+            return;
+        }
+        // Until a helper first turns matching on, keep shares (and their withdrawals) so the
+        // request the sender sees as waiting is there when they do. Turning it off drops them.
+        if !self.enabled
+            && (self.ignore_shares_through.is_some()
+                || !matches!(wire, Wire::Share { .. } | Wire::Withdraw { .. }))
+        {
             return;
         }
         match wire {
@@ -1164,6 +1172,37 @@ mod tests {
             .err()
             .unwrap();
         assert!(err.contains("update"));
+    }
+
+    #[test]
+    fn a_share_sent_before_the_helper_opts_in_is_kept_until_they_do() {
+        let owner = Keys::generate().public_key();
+        let sender = Keys::generate().public_key();
+        let at = 1000;
+        let entry = Entry {
+            id: Uuid::new_v4(),
+            side: Side::Request,
+            summary: "Winter hat".into(),
+            expires_at: at + WEEK,
+        };
+        let mut book = Book::default();
+        book.receive(
+            owner,
+            sender,
+            Wire::Share {
+                entry: entry.clone(),
+            },
+            at,
+            at,
+        );
+        assert_eq!(book.received.len(), 1);
+        book.apply(owner, Action::Enable { enabled: true }, at, None)
+            .unwrap();
+        assert!(book.received.contains_key(&entry.id));
+        book.apply(owner, Action::Enable { enabled: false }, at + 1, None)
+            .unwrap();
+        book.receive(owner, sender, Wire::Share { entry }, at, at + 1);
+        assert!(book.received.is_empty());
     }
 
     #[test]

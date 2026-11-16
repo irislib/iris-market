@@ -50,7 +50,10 @@ function prune(b:Book,at:number){
 }
 export const isPrivateMatch=(event:Rumor)=>event.kind===14 && event.tags.some(t=>t[0]===tag)
 function incoming(b:Book,me:string,peer:string,w:Wire,at:number,created:number){
-  if(!b.enabled||me===peer)return
+  if(me===peer)return
+  // Until a helper first turns matching on, keep shares (and their withdrawals) so the request
+  // the sender sees as waiting is there when they do. Turning it off drops them.
+  if(!b.enabled&&(b.ignoreSharesThrough!==undefined||!['share','withdraw'].includes(w.op)))return
   if(w.op==='share'){
     const e=w.entry
     if(created<=(b.ignoreSharesThrough??-1)||!e||!uuid(e.id)||!['offer','request'].includes(e.side)||!summary(e.summary)||!current(e.expires_at,at))return
@@ -201,6 +204,8 @@ export function createMatchBook(vault:Vault,owner:string,device:string,notify:()
   }
   return {
     async load(){const stored=await vault.get<Book>(storageKey);check();book=stored||empty();const before=JSON.stringify(book);prune(book,now());if(stored&&before!==JSON.stringify(book))await vault.put(storageKey,book);check()},
+    /** Requests kept for a helper who has not turned matching on yet. */
+    waiting:()=>book.enabled?0:Object.values(book.received).filter(r=>r.expires_at>now()).length,
     view():MatchView|null{
       if(!book.enabled)return null
       const b=structuredClone(book);prune(b,now())
@@ -233,7 +238,7 @@ export function createMatchBook(vault:Vault,owner:string,device:string,notify:()
       },listing,invite)
     }),
     async receive(event:Rumor,peer:string,senderDevice?:string){
-      if(!book.enabled||!isPrivateMatch(event)||!key(peer)||peer===owner||![peer,senderDevice].includes(event.pubkey)||getEventHash(event)!==event.id)return
+      if(!isPrivateMatch(event)||!key(peer)||peer===owner||![peer,senderDevice].includes(event.pubkey)||getEventHash(event)!==event.id)return
       const ps=event.tags.filter(t=>t[0]==='p'),c=event.tags.filter(t=>t[0]===tag)
       if(ps.length!==1||ps[0][1]!==owner||c.length!==1||c[0].length!==3||c[0][1]!=='1'||c[0][2].length>4096||event.created_at>now()+60||event.created_at+WEEK<=now())return
       let w:Wire;try{w=JSON.parse(c[0][2])}catch{return}if(!w||typeof w!=='object')return

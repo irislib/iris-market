@@ -7,6 +7,7 @@ export type PrivateMatchApi = {
   openChat(pubkey: string): unknown
   messaging: {
     privateMatchView(): MatchView | null
+    privateMatchWaiting?(): number
     privateMatch(action: MatchAction, listing?: unknown): Promise<void>
     privateMatchChats?(): AliasChat[]
     privateMatchSend?(chat: string, text: string): Promise<void>
@@ -17,6 +18,8 @@ export type PrivateMatchApi = {
 // Shared by the settings toggle, the Messages link and the dialog.
 export class PrivateMatchState {
   view = $state.raw<MatchView | null>(null)
+  /** Requests waiting for this person as a helper while matching is off. */
+  waiting = $state(0)
   chats = $state.raw<AliasChat[]>([])
   openChat = $state('')
   /** New messages per alias chat since it was last opened on this device. */
@@ -45,6 +48,7 @@ export class PrivateMatchState {
     this.canSend = !!state.canSend
     this.peers = state.conversations.map(c => c.pubkey)
     this.view = this.api.messaging.privateMatchView()
+    this.waiting = this.api.messaging.privateMatchWaiting?.() ?? 0
     this.chats = this.api.messaging.privateMatchChats?.() ?? []
     if (!this.view) this.dialogOpen = false
     if (!this.dialogOpen) this.openChat = ''

@@ -209,3 +209,17 @@ test('helpers refuse to introduce an alias to an account',async()=>{
   await legacy.action({op:'vote',proposal,accept:true});await deliver(legacy,bob)
   await assert.rejects(h.action({op:'introduce',proposal}),/update Iris Market/)
 })
+
+test('a request shared before the helper opts in is waiting when they turn matching on',async()=>{
+  const clock={at:1000},a=await mailbox(alice,clock).open(),h=await mailbox(helper,clock).open()
+  await a.action({op:'enable',enabled:true})
+  await a.action({op:'share',helper,side:'request',summary:'Winter hat, size M'})
+  await h.receive(a.jobs()[0].rumor,alice,alice)
+  assert.equal(h.view(),null);assert.equal(h.waiting(),1)
+  await h.action({op:'enable',enabled:true})
+  assert.deepEqual(Object.values(h.view().received).map(r=>r.summary),['Winter hat, size M'])
+  // Turning matching off drops what was shared and ignores older copies.
+  await h.action({op:'enable',enabled:false})
+  await h.receive(a.jobs()[0].rumor,alice,alice)
+  assert.equal(h.waiting(),0)
+})

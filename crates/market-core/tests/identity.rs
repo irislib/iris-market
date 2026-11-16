@@ -218,8 +218,12 @@ fn linked_devices_send_without_owner_secret_and_revoke_only_the_actual_destinati
     .unwrap();
     let pending = a.pending_outbound();
     let delivered = |chat: &Messaging, mine: bool| {
-        chat.conversations().iter().flat_map(|chat| &chat.messages)
-            .any(|message| message.mine == mine && message.text == "Linked device without owner key")
+        chat.conversations()
+            .iter()
+            .flat_map(|chat| &chat.messages)
+            .any(|message| {
+                message.mine == mine && message.text == "Linked device without owner key"
+            })
     };
     assert!(!delivered(&peer, false) && !delivered(&b, true));
     let mut peer_copy = None;

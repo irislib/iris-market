@@ -235,9 +235,11 @@ mod tests {
     #[test]
     fn cached_text_evidence_survives_snapshots_but_not_query_or_text_changes() {
         let original = listing("cache", &"a".repeat(64), 100);
-        assert!(original
-            .search_text_cache
-            .direct(&original, "bicycle", || true));
+        assert!(
+            original
+                .search_text_cache
+                .direct(&original, "bicycle", || true)
+        );
         assert_eq!(
             original
                 .search_text_cache
@@ -246,9 +248,10 @@ mod tests {
         );
         let mut next = original.clone();
         for _ in 0..20 {
-            assert!(next
-                .search_text_cache
-                .direct(&next, "bicycle", || panic!("Repeated direct normalization")));
+            assert!(
+                next.search_text_cache
+                    .direct(&next, "bicycle", || panic!("Repeated direct normalization"))
+            );
             assert_eq!(
                 next.search_text_cache
                     .lexical(&next, "bicycle", || panic!("Repeated lexical scoring")),
@@ -256,9 +259,10 @@ mod tests {
             );
         }
         assert!(next.search_text_cache.literal(&next, "bicycle", || true));
-        assert!(next
-            .search_text_cache
-            .literal(&next, "bicycle", || panic!("Repeated literal matching")));
+        assert!(
+            next.search_text_cache
+                .literal(&next, "bicycle", || panic!("Repeated literal matching"))
+        );
         next.location = "Helsinki".into();
         assert!(!next.search_text_cache.literal(&next, "bicycle", || false));
         assert!(!next.search_text_cache.direct(&next, "desk", || false));
@@ -266,10 +270,12 @@ mod tests {
         assert!(next.search_text_cache.direct(&next, "desk", || true));
         next.tags.push("bicycle".into());
         assert_eq!(next.search_text_cache.lexical(&next, "desk", || 0.5), 0.5);
-        assert!(serde_json::to_value(&next)
-            .unwrap()
-            .get("search_text_cache")
-            .is_none());
+        assert!(
+            serde_json::to_value(&next)
+                .unwrap()
+                .get("search_text_cache")
+                .is_none()
+        );
     }
     #[test]
     fn diverse_authors_remain_visible_and_order_is_deterministic() {

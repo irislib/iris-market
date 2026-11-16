@@ -438,22 +438,25 @@ private struct ListingFiltersView: View {
                     Text(terms.joined(separator: " · ")).font(.subheadline)
                 }
             }
-            if !store.demo {
-                Toggle("In my network", isOn: Binding(get: { store.snapshot.networkOnly ?? true }, set: setNetworkOnly))
-                    .toggleStyle(.switch).accessibilityIdentifier("networkFilter")
-            }
-            Toggle(isOn: $hasPhotos) { Label("Has photos", systemImage: "photo") }
-                .toggleStyle(.switch).padding(16)
-                .background(MarketTheme.surface, in: RoundedRectangle(cornerRadius: 16))
-                .accessibilityIdentifier("hasPhotosFilter")
+            // Related switches share one card so they line up.
+            VStack(spacing: 0) {
+                if !store.demo {
+                    Toggle(isOn: Binding(get: { store.snapshot.networkOnly ?? true }, set: setNetworkOnly)) { Label("In my network", systemImage: "person.2.fill") }
+                        .toggleStyle(.switch).padding(16).accessibilityIdentifier("networkFilter")
+                    Divider().padding(.leading, 52)
+                }
+                Toggle(isOn: $hasPhotos) { Label("Has photos", systemImage: "photo.fill") }
+                    .toggleStyle(.switch).padding(16)
+                    .accessibilityIdentifier("hasPhotosFilter")
+            }.background(MarketTheme.surface, in: RoundedRectangle(cornerRadius: 16))
             VStack(alignment: .leading, spacing: 10) {
-                Toggle("Home feed", isOn: $ai.curateFeed).accessibilityIdentifier("homeFeedFilter")
+                Toggle(isOn: $ai.curateFeed) { Label("Home feed", systemImage: "sparkles") }.accessibilityIdentifier("homeFeedFilter")
                 Text("What would you like to see?").font(.subheadline)
                 TextField("Inspiring, positive and useful listings", text: $ai.interests, axis: .vertical)
                     .lineLimit(4...7).textFieldStyle(.roundedBorder).accessibilityIdentifier("homeFeedPrompt")
                     .onChange(of: ai.interests) { value in if value.count > 1000 { ai.interests = String(value.prefix(1000)) } }
                 Text("Uses your selected AI when enabled. Search keeps its own query.").font(.caption).foregroundStyle(MarketTheme.muted)
-            }
+            }.padding(16).background(MarketTheme.surface, in: RoundedRectangle(cornerRadius: 16))
             Button("Reset", action: reset).disabled(!canReset)
                 .accessibilityIdentifier("resetListingFilters")
         }.padding(24) }.foregroundStyle(MarketTheme.ink).tint(MarketTheme.action)

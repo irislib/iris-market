@@ -240,7 +240,11 @@ final class MarketUITests: XCTestCase {
         app.buttons["tabExplore"].tap()
         let view = app.buttons["resultView"]
         XCTAssertTrue(view.waitForExistence(timeout: 5))
+        // A tap during the settings sheet's dismissal can be dropped; the core applies the choice asynchronously.
+        let applied = NSPredicate(format: "label == %@", "Show AI selected")
         view.tap()
+        if XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: applied, object: view)], timeout: 3) != .completed { view.tap() }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: applied, object: view)], timeout: 5), .completed)
         let search = app.textFields["marketSearch"]
         search.tap(); search.typeText("no-such-preview-listing-783\n")
         XCTAssertTrue(app.staticTexts["No results"].waitForExistence(timeout: 5))
@@ -260,6 +264,7 @@ final class MarketUITests: XCTestCase {
         app.buttons["Save A little more green"].tap()
         app.buttons["listingFilters"].tap()
         let photos = app.switches["hasPhotosFilter"]; XCTAssertTrue(photos.waitForExistence(timeout: 5))
+        capture("listing-filters-sheet")
         photos.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap(); app.buttons["closeListingFilters"].tap()
         XCTAssertTrue(app.staticTexts["No results"].waitForExistence(timeout: 5))
         app.buttons["tabSaved"].tap()

@@ -53,6 +53,8 @@
         form.append(caption(l.side==='offer'?'You are buying bitcoin. Pay '+fiat+' after verifying the locked bitcoin.':'You are selling bitcoin. Collect '+fiat+' before authorizing its release.'));
       }
       else if(['SAT','SATS'].includes(l.currency?.toUpperCase())&&Number.isSafeInteger(Number(l.price))&&Number(l.price)>0)sats.value=String(Number(l.price)*(order?.quantity||1));
+      // Other currencies start from the app's converted estimate; the buyer can change it.
+      else if(Number.isSafeInteger(l.sats_estimate)&&l.sats_estimate>0){sats.value=String(l.sats_estimate*(order?.quantity||1));form.append(caption('Converted from '+l.price+' '+l.currency+' at today’s rate. You can change it.'));}
       const mint=node('select');for(const url of context.mints){const option=node('option',new URL(url).hostname);option.value=url;mint.append(option);}
       if(!sats.readOnly && draft.amount)sats.value=draft.amount;
       if(draft.mint && [...mint.options].some(o=>o.value===draft.mint))mint.value=draft.mint;
@@ -71,7 +73,7 @@
         btn.disabled=pending||!key||!mint.value;
         if(key){
           const chosen=context.contacts.find(p=>p.id===key);
-          selected.append(row('Selected provider',chosen?.name||context.names?.[key]||'Profile address'),node('code',key));
+          selected.append(row('Selected provider',chosen?.name||context.names?.[key]||'Profile address'),(()=>{const short=node('code',key.slice(0,10)+'…'+key.slice(-6));short.title=key;return short;})());
           if(!fixed){const change=node('button','Change provider','esc-secondary');change.type='button';
             change.onclick=()=>{choose('');search.focus();};selected.append(change);}
         }
@@ -252,7 +254,8 @@
       }catch(e){if(disposed||revision!==epoch)return;const box=actionBox('Trade unavailable',e?.message||'Try reopening this trade.');box.append(button('Try again',async()=>{}));host.replaceChildren(box);}
     }
     void render(true);
-    return {refresh:()=>{if(!pending&&id)void render();},close:()=>{disposed=true;epoch++;host.replaceChildren();}};
+    // reload also redraws checkout, while the reader is not typing in it, so names that arrive later replace placeholders.
+    return {refresh:()=>{if(!pending&&id)void render();},reload:()=>{if(!pending&&!disposed&&(id||!host.contains(document.activeElement)))void render();},close:()=>{disposed=true;epoch++;host.replaceChildren();}};
   }
   globalThis.IrisEscrow.mount=mount;
 })();

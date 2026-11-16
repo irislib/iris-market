@@ -105,6 +105,7 @@ export class ComposerState {
   /** Runs once the form is in the document: the trade tools insert their own controls into it. */
   attach() {
     this.tradeTools = composerTradeTools(this.form)
+    this.resetExpiry()
     this.dialog.addEventListener('close', () => { this.pinRequest++; this.uploadController?.abort(); this.releasePreview(); this.areaPicker.hide() })
   }
 
@@ -164,6 +165,8 @@ export class ComposerState {
   }
   removeFile(index: number) { this.selection.remove(index); this.clearPending(); this.paintFiles() }
 
+  /** Browsers select the edit-only "Keep current" option when it is inserted before the generated choices; a new listing starts at Never. */
+  private resetExpiry() { if (!this.editing && this.fields.expiration.value === 'keep') this.fields.expiration.value = '' }
   syncKeepOption() { this.keepLabel = this.editing ? `Keep current (${relativeExpiry(this.editing.expiration)?.replace(/^Expires /, '') || 'never'})` : 'Keep current' }
 
   /** Native controls the view does not own (trade tools, area picker) follow the busy state directly. */
@@ -269,7 +272,7 @@ export class ComposerState {
 
   open() {
     const {account, defaultCurrency = () => 'EUR'} = this.options
-    this.tradeTools.sync(!!this.editing); this.pendingOpen = false; account.closeAccount()
+    this.tradeTools.sync(!!this.editing); this.pendingOpen = false; account.closeAccount(); this.resetExpiry()
     const currency = this.fields.currency
     if (!this.reviewedValues && !this.currencyTouched && currency.value !== defaultCurrency()) { currency.value = defaultCurrency(); this.clearPending() }
     this.error = ''
@@ -311,6 +314,7 @@ export class ComposerState {
   private hasAreaDraft() { try { return !!this.areaPicker.validate() } catch { return true } }
 
   prefill(values) {
+    this.resetExpiry()
     const fields = this.fields
     if (this.busy || this.editing || this.reviewedValues || fields.pinCoordinates.value.trim() || this.shippingTouched || this.countries.length || fields.shippingEnabled.checked || fields.shippingPrice.value.trim() || fields.transportType.value || this.selection.items().length || this.hasAreaDraft() || ['title', 'description', 'price', 'location', 'image', 'tags', 'expiration'].some(key => fields[key].value.trim())) {
       this.open(); this.error = 'Your current draft is still here. Finish it before starting another listing.'; return false

@@ -11,7 +11,9 @@
   interface Row {key: string; value: Partial<ShipmentStop>; assigned?: string; fields: Record<string, HTMLInputElement>}
   let next = 0
   const row = (value: Partial<ShipmentStop> = {}): Row => ({key: String(next++), value, assigned: value.courierPubkey, fields: {}})
-  let rows = $state<Row[]>((order.shipment?.stops?.length ? order.shipment.stops : [{label: 'Pickup'}, {label: 'Destination'}]).slice(0, limit).map(row))
+  // A courier job starts from the route the customer requested.
+  const requested = order.deliveryRequest ? [order.deliveryRequest.pickup, order.deliveryRequest.destination].map((place, index) => ({label: place.label || (index ? 'Destination' : 'Pickup'), address: place.address, ...(place.coordinates ? {coordinates: place.coordinates} : {})})) : null
+  let rows = $state<Row[]>((order.shipment?.stops?.length ? order.shipment.stops : requested ?? [{label: 'Pickup'}, {label: 'Destination'}]).slice(0, limit).map(row))
   let eta: HTMLInputElement, tracking: HTMLInputElement
 
   function read({value, assigned, fields}: Row): ShipmentStop {

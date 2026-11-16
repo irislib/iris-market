@@ -53,7 +53,7 @@ handle=async(req,res)=>{
     else if(path==='/_demo/status'){content=JSON.stringify({ready:true,persistent:!!stateDir,active:actors.active(),events:relay.eventCount(),errors:actors.errors,model:localModel.state(),replies:actors.replyStats()});extension='.json';}
     else if(path==='/sw.js'){content="self.addEventListener('install',()=>self.skipWaiting());self.addEventListener('activate',event=>event.waitUntil(self.registration.unregister()));";extension='.js';}
     else {
-      const file=resolve(directory,'.'+path);if(!file.startsWith(directory+sep))throw new Error('Invalid path');
+      const file=resolve(directory,'.'+(path.endsWith('/')?path+'index.html':path));if(!file.startsWith(directory+sep))throw new Error('Invalid path');
       try {content=await readFile(file);}catch {if(extension)throw new Error('Not found');content=base;extension='.html';}
       if(extension==='.html')content=String(content).replace('<html lang="en">',`<html lang="en" data-demo-relay="${relay.url}" data-demo-mint="${localMint.url}">`).replace('<head>','<head><script src="/_demo/boot.js"></script><link rel="stylesheet" href="/_demo/style.css">');
     }

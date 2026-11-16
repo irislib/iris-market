@@ -3,13 +3,13 @@ import '../../shared/escrow/screen.js';
 import {element as node} from './dom.ts';
 import {marketplaceToolEnabled} from './marketplace-tools.ts';
 import {normalizePublicKey} from './social.ts';
-import {escrowCandidates} from './profiles.ts';
+import {escrowCandidates,loadProfileMetadata} from './profiles.ts';
 import {advertisedProviders,findEscrowServices} from './escrow-directory.ts';
 import type {MarketListing} from './market.ts';
 import type {OrderView,DeliveryRequest} from './orders.ts';
-import {nameFor} from './people.ts';
+import {createUserName,nameFor,warmProfiles} from './people.ts';
 import {buildReviewDraft} from './reviews.ts';
-import {configuredLocalTestMint,DEFAULT_SUPPORTED_MINTS} from './wallet/mints.ts';
+import {configuredLocalTestMint,DEFAULT_SUPPORTED_MINTS,mintUnitLabel} from './wallet/mints.ts';
 import {createSurface} from './surface.ts';
 
 type Checkout={quantity:number;note:string;deliveryRequest?:DeliveryRequest;provider?:string;resume?:boolean};
@@ -17,9 +17,9 @@ type Selection={trade_id?:string;listing_id?:string;order?:Checkout};
 type ProviderDraft={title:string;side:'offer';category:'services';tags:string[]};
 type OpenOptions={onOrder?:(order:OrderView)=>void;maker?:string};
 type Call=(method:string,args:Record<string,any>)=>Promise<unknown>;
-const engine=(globalThis as unknown as {IrisEscrow:{mount:(host:HTMLElement,api:Call,selection:Selection)=>{refresh():void;close():void};list:(records:unknown[],owner:string)=>Array<{id:string;title:string;status:string;joined:boolean;deal:Record<string,string>}>}}).IrisEscrow;
+const engine=(globalThis as unknown as {IrisEscrow:{mount:(host:HTMLElement,api:Call,selection:Selection)=>{refresh():void;reload?():void;close():void};list:(records:unknown[],owner:string)=>Array<{id:string;title:string;status:string;joined:boolean;deal:Record<string,string>}>}}).IrisEscrow;
 
-export function setupEscrowTrade({account,wallet,lookup,isPreview,relays,inventory,onOffer}:{inventory:()=>MarketListing[];onOffer:(draft:ProviderDraft)=>void;relays:()=>readonly string[];account:()=>any;wallet:()=>any;lookup:(id:string,latest?:boolean)=>Promise<any>;isPreview:()=>boolean}){
+export function setupEscrowTrade({account,wallet,lookup,isPreview,relays,inventory,onOffer,satsFor=()=>null}:{satsFor?:(price:string,currency:string)=>number|null;inventory:()=>MarketListing[];onOffer:(draft:ProviderDraft)=>void;relays:()=>readonly string[];account:()=>any;wallet:()=>any;lookup:(id:string,latest?:boolean)=>Promise<any>;isPreview:()=>boolean}){
   let running:ReturnType<typeof engine.mount>, screen:ReturnType<typeof createSurface>;
   const enabled=()=>marketplaceToolEnabled('escrow')&&!isPreview();
   const canProvide=()=>{const s=account()?.state();return s?.status==='ready'&&s.canSign&&s.mode==='local';};
@@ -80,7 +80,7 @@ export function setupEscrowTrade({account,wallet,lookup,isPreview,relays,invento
           if(activeTrade?activeTrade!==step.trade_id:step.action!=='invite'||step.deal?.listing_id!==selection.listing_id||step.deal?.taker!==owner)throw Error('Reopen the selected trade.');
           await a.messaging.sendTradeStep(args.peers,step,args.operation_id);activeTrade=step.trade_id;return true;
         }
-        case 'listing':{const l=await lookup(args.id,args.latest===true);if(!l)throw Error('Open the listing while connected, then return to the trade.');return {id:l.id,title:l.title,author:l.author,side:l.side,escrow:l.escrow,event_id:l.eventId,status:l.status,price:l.price,currency:l.currency,expires_at:l.expiration};}
+        case 'listing':{const l=await lookup(args.id,args.latest===true);if(!l)throw Error('Open the listing while connected, then return to the trade.');return {id:l.id,title:l.title,author:l.author,side:l.side,escrow:l.escrow,event_id:l.eventId,status:l.status,price:l.price,currency:l.currency,expires_at:l.expiration,sats_estimate:satsFor(l.price,l.currency)};}
         case 'contact':{
           const trade=engine.list(s.tradeSteps??[],owner).find(t=>t.id===activeTrade);
           if(!trade||args.peer===owner||![trade.deal.buyer,trade.deal.seller,trade.deal.provider].includes(args.peer))throw Error('Choose a participant in this trade.');
@@ -96,6 +96,8 @@ export function setupEscrowTrade({account,wallet,lookup,isPreview,relays,invento
       }
     };
     const mounted=engine.mount(body,call,selection);running=mounted;
+    // Advertised providers are known by key from their service listings; load their chosen names in the background.
+    if(selection.listing_id){const keys=[...advertisedProviders(inventory(),directory)].slice(0,64);if(keys.length)void loadProfileMetadata(keys,{relays:relays(),timeoutMs:3000}).then(()=>{if(screen===dialog)(mounted.reload??mounted.refresh)();}).catch(()=>{});}
     const flagsChanged=()=>{if(!enabled()&&!recover())dialog.close();else mounted.refresh();};
     window.addEventListener('market-tools-change',flagsChanged);
     const listener=a.onState(s=>{if((!enabled()&&!recover())||s.ownerPubkey!==owner||s.status!=='ready'){dialog.close();return;}mounted.refresh();});
@@ -137,8 +139,8 @@ export function setupEscrowTrade({account,wallet,lookup,isPreview,relays,invento
       list.append(node('p',section,'small muted'));
       for(const t of items){
         const card=entry('',{trade_id:t.id});card.className='order-card';
-        const copy=node('span',undefined,'order-card-copy');copy.append(node('strong',t.title,'order-card-title'),node('span',nameFor(t.deal.buyer)+' · '+nameFor(t.deal.seller),'small muted'));
-        const aside=node('span',undefined,'order-card-aside');aside.append(node('strong',Number(t.deal.sats).toLocaleString()+' sats','order-card-price'),node('span',t.status,t.status==='Help requested'?'order-status order-status-requested':'order-status'));
+        const copy=node('span',undefined,'order-card-copy');const people=node('span',undefined,'small muted');people.append(createUserName(t.deal.buyer),' · ',createUserName(t.deal.seller));warmProfiles([t.deal.buyer,t.deal.seller]);copy.append(node('strong',t.title,'order-card-title'),people);
+        const aside=node('span',undefined,'order-card-aside');aside.append(node('strong',Number(t.deal.sats).toLocaleString()+' '+mintUnitLabel(t.deal.mint),'order-card-price'),node('span',t.status,t.status==='Help requested'?'order-status order-status-requested':'order-status'));
         card.append(copy,aside);list.append(card);
       }
       host.append(list);

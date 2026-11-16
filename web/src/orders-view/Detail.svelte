@@ -13,6 +13,8 @@
 
   let {orders: s}: {orders: OrdersState} = $props()
   const {account, escrow, courier} = s
+  /** A short code both the courier and the merchant can read aloud at collection. */
+  const pickupCode = (reference: string) => reference.replace(/[^0-9a-z]/gi, '').slice(0, 8).toUpperCase()
   const {onPay, onReceiveToken} = s.options
 
   const copy = <T,>(value: T): T => { try { return structuredClone(value) } catch { return value } }
@@ -35,7 +37,7 @@
     if (!order.escrowTradeId && role === 'seller' && order.payment?.status === 'requested') add('Confirm payment received', () => s.update(order, {payment: {...order.payment, status: 'received'}}, 'Payment confirmed'))
     if (!order.escrowTradeId && order.status === 'requested' && role === 'seller') add('Accept order', () => s.update(order, {status: 'accepted'}, 'Order accepted'), true)
     if (order.status === 'accepted' && role === 'seller') add('Mark on the way', () => s.update(order, {status: 'in-transit'}, 'Delivery started'), true)
-    if (['accepted', 'in-transit'].includes(order.status) && ['seller', 'buyer'].includes(role)) add(role === 'buyer' ? 'Mark received' : 'Mark delivered', () => s.update(order, {status: 'delivered'}, 'Order delivered'), role === 'buyer')
+    if (['accepted', 'in-transit'].includes(order.status) && ['seller', 'buyer'].includes(role)) add(role === 'buyer' ? 'Mark received' : 'Mark delivered', () => s.update(order, {status: 'delivered'}, 'Order delivered'), role === 'buyer' && order.status === 'in-transit')
     if (['buyer', 'seller'].includes(role)) add('Message', () => { s.dialog.hide(); void account.openChat(role === 'buyer' ? order.seller : order.buyer, {context: orderContext(order.id)}) })
     if (!done && ['buyer', 'seller'].includes(role)) add(order.status === 'requested' && role === 'seller' ? 'Decline request' : 'Cancel order', () => s.update(order, {status: 'cancelled'}, 'Order cancelled'))
     if (done) add(order.archived ? 'Restore order' : 'Archive order', () => { void s.perform(async () => { await account.messaging.archiveOrder(order.id, !order.archived); s.announce(order.archived ? 'Order restored' : 'Order archived') }) })
@@ -117,13 +119,14 @@
       <h3>Requested route</h3>
       <p>{'Pickup · ' + order.deliveryRequest.pickup.address}</p>
       <p>{'Destination · ' + order.deliveryRequest.destination.address}</p>
+      {#if order.deliveryRequest.collection}<p class="small muted" title={order.deliveryRequest.collection.reference}>{'Pickup code · ' + pickupCode(order.deliveryRequest.collection.reference)} · show this to the merchant</p>{/if}
     </section>
   {/if}
   {#if order.pickupAuthorization}
     <section class="order-pickup-authorization">
       <h3>Collection</h3>
       <Person orders={s} pubkey={order.pickupAuthorization.courierPubkey} label="Authorized courier" />
-      <p class="small muted">{'Pickup reference · ' + order.pickupAuthorization.reference}</p>
+      <p class="small muted" title={order.pickupAuthorization.reference}>{'Pickup code · ' + pickupCode(order.pickupAuthorization.reference)}</p>
     </section>
   {/if}
   {#if order.escrowTradeId}
@@ -150,7 +153,7 @@
     <section class="order-shipment">
       <h3>Route</h3>
       {#if !d.stops.length}
-        <p class="small muted">Delivery or collection details are not set yet.</p>
+        <p class="small muted">{order.deliveryRequest && order.seller === d.owner ? 'Confirm the requested route to track each stop.' : 'Delivery or collection details are not set yet.'}</p>
       {:else}
         <ol class="order-timeline">
           {#each d.stops as stop, index}

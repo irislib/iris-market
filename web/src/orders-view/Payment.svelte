@@ -1,11 +1,17 @@
 <script lang="ts">
-  import {DEFAULT_SUPPORTED_MINTS, isTestMint} from '../wallet/mints.ts'
+  import {DEFAULT_SUPPORTED_MINTS, configuredLocalTestMint, isTestMint} from '../wallet/mints.ts'
   import type {OrdersState} from './state.svelte.ts'
 
   let {orders: s}: {orders: OrdersState} = $props()
   const order = s.current()
   const allowed = !!order && !order.escrowTradeId && order.seller === s.owner()
-  const initial = allowed && ['SATS', 'TESTSAT'].includes(order.items[0].currency) ? order.items[0].price : ''
+  const item = order?.items[0]
+  const developerMint = configuredLocalTestMint()
+  const mints = developerMint ? [developerMint, ...DEFAULT_SUPPORTED_MINTS] : DEFAULT_SUPPORTED_MINTS
+  // Suggest the listing total in sats; the seller can still change it.
+  const suggested = allowed ? s.satsFor(item) : null
+  const initial = suggested ? String(suggested) : ''
+  const estimate = suggested && !['SATS', 'TESTSAT'].includes(String(item.currency).toUpperCase()) ? `Order total ${s.price({...item, price: String(Number(item.price) * item.quantity)})}, converted at today’s rate.` : ''
   let amount: HTMLInputElement, mint: HTMLSelectElement
 
   function submit(event: SubmitEvent) {
@@ -20,8 +26,9 @@
 {#if allowed}
   <form class="order-payment-form" onsubmit={submit}>
     <label class="order-field"><span>Amount in sats</span><input bind:this={amount} type="number" value={initial} required min="1" step="1"></label>
+    {#if estimate}<p class="small muted">{estimate}</p>{/if}
     <label>Mint<select bind:this={mint} aria-label="Payment mint">
-      {#each DEFAULT_SUPPORTED_MINTS as url}<option value={url}>{new URL(url).hostname + (isTestMint(url) ? ' · Test money' : '')}</option>{/each}
+      {#each mints as url}<option value={url}>{new URL(url).hostname + (isTestMint(url) ? ' · Test money' : '')}</option>{/each}
     </select></label>
     <button type="submit" class="button primary" data-order-action disabled={s.busy}>Request payment</button>
     <button type="button" class="button secondary" data-order-action disabled={s.busy} onclick={() => s.showDetail(order)}>Cancel</button>

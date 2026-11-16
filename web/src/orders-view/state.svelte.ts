@@ -24,6 +24,8 @@ export interface OrdersOptions {
   onNavigate?:(id?:string,tab?:string)=>void;
   onClose?:()=>void;
   formatPrice?:(item:any)=>string;
+  /** The order total in whole sats, when the listing price can be converted. */
+  satsFor?:(item:any)=>number|null;
 }
 
 type View = 'history'|'detail'|'review'|'route'|'delivery'|'payment';
@@ -55,6 +57,7 @@ export class OrdersState {
   courier:CourierFeedOptions|undefined;
   isPreview:()=>boolean;
   formatPrice:(item:any)=>string;
+  satsFor:(item:any)=>number|null;
   onProfile:(key:string)=>void;
   onReview:(key:string)=>void;
   onNavigate:(id?:string,tab?:string)=>void;
@@ -63,6 +66,7 @@ export class OrdersState {
   courierUI:ReturnType<typeof setupCourierWorkspace>|undefined;
   data:any;
   pending:any;
+  restoring = true;
   map:any;
   mapLoading:Promise<unknown>|undefined;
   mapHost:HTMLElement|undefined;
@@ -79,6 +83,8 @@ export class OrdersState {
     const {account, page, onClose = () => {}, onUnread = (_count:number) => {}} = options;
     this.options = options;
     this.account = account;
+    // Until the saved profile has been restored, a signed-out state is not yet an answer.
+    void Promise.resolve((account as {restored?:Promise<unknown>}).restored).finally(() => { this.restoring = false; if (this.pending && this.account.state().status !== 'ready') this.account.showAccount(); });
     this.escrow = options.escrow;
     this.courier = options.courier;
     this.isPreview = options.isPreview ?? (() => false);
@@ -86,6 +92,7 @@ export class OrdersState {
     this.onReview = options.onReview ?? this.onProfile;
     this.onNavigate = options.onNavigate ?? ((_id?:string,_tab?:string) => {});
     this.formatPrice = options.formatPrice ?? (item => `${item.price || ''} ${item.currency || ''}`.trim());
+    this.satsFor = options.satsFor ?? (item => ['SATS', 'TESTSAT'].includes(String(item?.currency).toUpperCase()) && Number(item.price) > 0 ? Math.ceil(Number(item.price) * (item.quantity || 1)) : null);
     this.unread = createUnreadTracker({kind:'orders', onUnread});
     this.data = account.state();
     this.dialog = createSurface({className:'orders-dialog', label:'Orders', pageHost:page, onOpen:() => this.onNavigate(this.view === 'detail' ? this.selected : undefined, this.tab), onClose});
@@ -142,12 +149,14 @@ export class OrdersState {
   showTab(key:string) { this.tab = key; this.error = ''; this.render(); if (this.dialog.open) this.onNavigate(undefined, this.tab); }
   requestReady(intent) {
     if (this.isPreview()) { this.pending = undefined; this.error = 'Switch to the live market to place an order.'; this.view = 'history'; this.render(); if (!this.dialog.open) this.dialog.showModal(); return false; }
-    if (this.data.status !== 'ready') { this.pending = intent; this.account.showAccount(); return false; }
+    if (this.data.status !== 'ready') { this.pending = intent; if (!this.restoring) this.account.showAccount(); return false; }
     return true;
   }
   open(id?:string, section?:string) {
     if (['purchases', 'sales', 'deliveries', 'archived', 'escrow'].includes(section)) this.tab = section;
     this.data = this.account.state();
+    // Opening Orders from its badge shows the unread order rather than an empty tab.
+    if (!section && !id && !this.tabUnread(this.tab)) this.tab = ['purchases', 'sales'].find(tab => this.tabUnread(tab)) ?? (['purchases', 'sales'].includes(this.tab) ? this.tab : 'purchases');
     if (!(this.courierUI && this.tab === 'deliveries' && !id) && !this.requestReady({ type: 'history', id, section })) return;
     const order = id && this.orders().find(item => item.id === id);
     if (order) this.showDetail(order); else { this.showHistory(); if (id) { this.error = 'This order is not available on this device yet.'; this.render(); } }
@@ -166,8 +175,10 @@ export class OrdersState {
     sections.push(['archived', 'Archived']);
     return sections;
   }
-  filteredOrders() {
-    const owner = this.owner(), tab = this.tab;
+  /** True when an order on this tab has an update the reader has not opened. */
+  tabUnread(tab:string) { return ['purchases', 'sales'].includes(tab) && this.filteredOrders(tab).some(order => !!this.unread.unread(order.id)) }
+  filteredOrders(tab = this.tab) {
+    const owner = this.owner();
     return this.orders().filter(order => tab === 'archived' ? order.archived : !order.archived && (tab === 'purchases' ? order.buyer === owner : tab === 'sales' ? order.seller === owner : order.shipment?.stops?.some(stop => stop.courierPubkey === owner || order.seller === owner)))
       .sort((a, b) => b.updatedAt - a.updatedAt);
   }
@@ -217,7 +228,11 @@ export class OrdersState {
     const scrollTop = this.dialog.scrollTop;
     this.renderVersion++; this.clearEditors();
     if (this.view === 'review' && this.listing?.category === 'transport') this.editors = [createDeliveryPlaceInput({label:'Pickup'}), createDeliveryPlaceInput({label:'Destination'})];
-    if (this.view === 'delivery' && this.current() && this.courier) this.editors = [createDeliveryPlaceInput({label:'Destination'})];
+    if (this.view === 'delivery' && this.current() && this.courier) {
+      // Start from the destination already on the order, so the buyer only confirms it.
+      const stop = this.current().shipment.stops.at(-1), known = this.current().shipment.stops.length > 1 && stop?.address;
+      this.editors = [createDeliveryPlaceInput({label:'Destination', ...(known ? {value:{label:'Destination', address:stop.address, ...(stop.coordinates ? {coordinates:stop.coordinates} : {})}} : {})})];
+    }
     this.renders++;
     flushSync();
     this.dialog.scrollTop = scrollTop;

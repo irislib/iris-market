@@ -132,6 +132,14 @@ test('editing an own listing fills the form and keeps its expiry by default',()=
   assert.equal(f.$('#post-error').textContent,'Your current draft is still here. Finish it before starting another listing.');assert.equal(f.field('title').value,'Desk');
 });
 
+test('a new listing never starts on the edit-only expiry choice',()=>{
+  const f=fixture();
+  // Browsers select the hidden "Keep current" option when it is inserted before the generated choices.
+  f.field('expiration').value='keep';
+  assert.equal(f.composer.prefill({side:'offer',category:'transport',title:'Courier · Kallio',tags:['parcel']}),true);
+  assert.equal(f.field('expiration').value,'');assert.equal(f.field('title').value,'Courier · Kallio');
+});
+
 test('a prefilled announcement stays an editable draft',()=>{
   const f=fixture();
   assert.equal(f.composer.prefill({side:'request',category:'transport',title:'Ride to Tampere',tags:['passenger']}),true);

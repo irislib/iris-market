@@ -52,7 +52,7 @@ test('signed-out profile shows onboarding; existing profile options and key logi
   const surface=accountSurface();
   assert.equal(surface.hidden,false);
   assert.equal(surface.classList.contains('profile-onboarding'),true);
-  assert.equal(surface.querySelector('h2').hidden,true);
+  assert.equal(surface.querySelector('h2').hidden,false);assert.equal(surface.querySelector('h2').textContent,'Create your profile');
   assert.equal(surface.querySelector('#account-create').hidden,false);
   assert.equal(surface.querySelector('#account-existing').hidden,true);
   assert.equal(surface.querySelector('#account-ready').hidden,true);

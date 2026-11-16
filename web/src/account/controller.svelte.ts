@@ -186,8 +186,8 @@ export class AccountController {
     this.account?.classList.toggle('profile-onboarding', !ready && !locked && !existing && !this.pendingInvite)
     this.accountStatus = ''
     this.accountView = {
-      heading: this.pendingInvite ? 'Private chat invitation' : locked ? 'Continue with your profile' : ready && !this.signingOnly ? 'Your profile' : 'Existing profile',
-      headingHidden: !ready && !locked && !this.pendingInvite && !existing,
+      heading: this.pendingInvite ? 'Private chat invitation' : locked ? 'Continue with your profile' : ready && !this.signingOnly ? 'Your profile' : existing ? 'Existing profile' : 'Create your profile',
+      headingHidden: false,
       existing, signingOnly: this.signingOnly, busy: this.busy,
       loginHidden: ready && !this.signingOnly || locked && !state.needsLogin,
       unlockHidden: !locked || !!state.needsLogin, passwordHidden: !state.password,

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {marketplaceToolEnabled,saveMarketplaceTool} from '../src/marketplace-flags.ts';
+import {marketplaceToolEnabled,saveMarketplaceTool,setMarketplaceOwner} from '../src/marketplace-flags.ts';
 
 test('escrow is opt-in and scoped to the active profile',()=>{
   const rows=new Map(),old=Object.getOwnPropertyDescriptor(globalThis,'localStorage');
@@ -12,4 +12,15 @@ test('escrow is opt-in and scoped to the active profile',()=>{
     saveMarketplaceTool('escrow',false,'a');
     assert.equal(marketplaceToolEnabled('escrow','a'),false);
   }finally{if(old)Object.defineProperty(globalThis,'localStorage',old);else delete globalThis.localStorage;}
+});
+
+test('a visitor choice carries over to a profile without its own',()=>{
+  const rows=new Map(),old=Object.getOwnPropertyDescriptor(globalThis,'localStorage');
+  Object.defineProperty(globalThis,'localStorage',{configurable:true,value:{getItem:k=>rows.get(k)??null,setItem:(k,v)=>rows.set(k,v)}});
+  try{
+    setMarketplaceOwner('');saveMarketplaceTool('escrow',true);
+    saveMarketplaceTool('escrow',false,'kept');
+    setMarketplaceOwner('new');assert.equal(marketplaceToolEnabled('escrow'),true,'new profile adopts the visitor choice');
+    setMarketplaceOwner('');setMarketplaceOwner('kept');assert.equal(marketplaceToolEnabled('escrow'),false,'an explicit profile choice wins');
+  }finally{setMarketplaceOwner('');if(old)Object.defineProperty(globalThis,'localStorage',old);else delete globalThis.localStorage;}
 });

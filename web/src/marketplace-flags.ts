@@ -9,5 +9,8 @@ export function saveMarketplaceTool(id:MarketplaceTool, enabled:boolean, owner=a
 }
 /** Switches the profile whose tool settings apply; returns the previous one. */
 export function setMarketplaceOwner(owner:string):string {
-  const previous=activeOwner;activeOwner=owner;return previous;
+  const previous=activeOwner;activeOwner=owner;
+  // A choice made before signing in carries over to a profile that has not made its own.
+  if(!previous&&owner)try{for(const id of ['escrow'] as MarketplaceTool[])if(localStorage.getItem(setting(id,owner))===null&&localStorage.getItem(setting(id,''))!==null)localStorage.setItem(setting(id,owner),localStorage.getItem(setting(id,''))!);}catch{}
+  return previous;
 }

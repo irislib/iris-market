@@ -12,6 +12,7 @@
   const heading = $derived(s.view === 'delivery' ? 'Arrange delivery' : s.view === 'payment' ? 'Request payment' : s.view === 'review' ? 'Request an order'
     : s.view === 'route' ? 'Delivery details' : s.view === 'detail' ? 'Order details' : s.tab === 'deliveries' ? 'Transport' : 'Orders')
   const sections = $derived.by(() => { void s.renders; return s.sections() })
+  const unreadTabs = $derived.by(() => { void s.renders; return new Set(sections.map(([key]) => key).filter(key => s.tabUnread(key))) })
 </script>
 
 <button type="button" class="dialog-close icon-button" aria-label="Close orders" onclick={() => s.dialog.close()}>×</button>
@@ -19,7 +20,7 @@
 <h2 id="orders-title">{heading}</h2>
 <nav class="orders-tabs" aria-label="Order history" hidden={s.view !== 'history' || !!s.courier && s.tab === 'deliveries'}>
   {#each sections as [key, label] (key)}
-    <button type="button" aria-pressed={s.tab === key} onclick={() => s.showTab(key)}>{label}</button>
+    <button type="button" aria-pressed={s.tab === key} onclick={() => s.showTab(key)}>{label}{#if unreadTabs.has(key)}<span class="unread-dot" aria-hidden="true"></span><span class="sr-only"> · new</span>{/if}</button>
   {/each}
 </nav>
 <p class="error orders-error" role="alert">{s.error}</p>

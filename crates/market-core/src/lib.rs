@@ -1659,14 +1659,13 @@ impl Market {
             }
             s.followers_cancel = None;
             match result {
-                Ok(mut cache) => {
-                    cache.retain_from(&s.profiles);
+                Ok(cache) => {
+                    s.profiles.retain_from(&cache);
                     let previous = s.profile.as_ref().unwrap();
-                    let mut profile = cache.profile(&author);
+                    let mut profile = s.profiles.profile(&author);
                     profile.loading = previous.loading;
                     profile.error = previous.error.clone();
                     profile.followers_loaded = true;
-                    s.profiles = cache;
                     s.profile = Some(profile);
                 }
                 Err(_) => {
@@ -1720,10 +1719,10 @@ impl Market {
                 return;
             }
             match result {
-                Ok(mut cache) => {
-                    cache.retain_from(&s.profiles);
+                Ok(cache) => {
+                    s.profiles.retain_from(&cache);
                     if let Some(author) = author {
-                        let mut profile = cache.profile(&author);
+                        let mut profile = s.profiles.profile(&author);
                         if let Some(previous) = &s.profile {
                             profile.followers_loaded = previous.followers_loaded;
                             profile.followers_loading = previous.followers_loading;
@@ -1731,7 +1730,6 @@ impl Market {
                         }
                         s.profile = Some(profile);
                     }
-                    s.profiles = cache;
                 }
                 Err(_) => {
                     if let Some(profile) = s.profile.as_mut() {

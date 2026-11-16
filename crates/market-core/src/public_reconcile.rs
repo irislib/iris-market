@@ -1,9 +1,10 @@
-//! Download-only, bounded NIP-77 repair of the existing public listing store.
+//! Download-only, bounded NIP-77 repair of public listings and discovery lists.
 //! This never shares account keys, private subscriptions, messages or outboxes.
 use crate::{State, listing};
 use anyhow::{Result, bail, ensure};
 use nostr::{
-    ClientMessage, Event, EventId, Filter, JsonUtil, Kind, RelayMessage, SubscriptionId, Timestamp,
+    ClientMessage, Event, EventId, Filter, JsonUtil, Kind, PublicKey, RelayMessage, SubscriptionId,
+    Timestamp,
 };
 use nostr_pubsub_reconcile::{Filter as Window, Limits, Record, Session};
 use nostr_pubsub_relay::{RelaySession, RelaySessionEvent};
@@ -24,6 +25,7 @@ use tokio::{
 const MAX_RECORDS: usize = 4096;
 const MAX_BYTES: usize = 8 * 1024 * 1024;
 const FRAME_BYTES: usize = 16_384;
+const GRAPH_BATCH: usize = 32;
 const MAX_NEED: usize = 256;
 const FETCH_BATCH: usize = 32;
 const MAX_DELIVERIES: usize = 2048;
@@ -99,14 +101,109 @@ async fn next(
     }
 }
 
+struct Round {
+    filter: Filter,
+    window: Window,
+    snapshot: Vec<Record>,
+}
+
+// Only public follow paths select authors. Never enumerate mute targets, private peers or outboxes.
+fn graph_round(
+    graph: &nostr_social_graph::SocialGraph,
+    cursor: &mut usize,
+    until: u64,
+) -> Option<Round> {
+    let root = PublicKey::from_hex(graph.get_root()).ok()?;
+    let mut neighbours = Vec::new();
+    for distance in [1, 2] {
+        let mut layer = graph.get_users_by_follow_distance(distance);
+        layer.sort_unstable();
+        neighbours.extend(
+            layer
+                .into_iter()
+                .filter_map(|key| PublicKey::from_hex(&key).ok()),
+        );
+    }
+    let mut authors = vec![root];
+    if !neighbours.is_empty() {
+        let count = neighbours.len().min(GRAPH_BATCH - 1);
+        authors.extend(
+            neighbours
+                .iter()
+                .cycle()
+                .skip(*cursor % neighbours.len())
+                .take(count)
+                .copied(),
+        );
+        *cursor = (*cursor % neighbours.len() + count) % neighbours.len();
+    }
+    let window = Window { since: 0, until };
+    let mut snapshot = Vec::new();
+    for author in &authors {
+        for kind in [3, 10000] {
+            if let Some(head) = graph.get_list_revision(&author.to_hex(), kind)
+                && head.complete
+                && window.contains(head.created_at)
+                && let Ok(id) = EventId::from_hex(&head.id)
+            {
+                snapshot.push(Record {
+                    timestamp: head.created_at,
+                    id: id.to_bytes(),
+                });
+            }
+        }
+    }
+    Some(Round {
+        filter: Filter::new()
+            .authors(authors)
+            .kinds([Kind::ContactList, Kind::MuteList]),
+        window,
+        snapshot,
+    })
+}
+
+fn accepts_graph_list(graph: &nostr_social_graph::SocialGraph, event: &Event) -> bool {
+    let author = event.pubkey.to_hex();
+    let previous_at = match event.kind {
+        Kind::ContactList => graph.get_follow_list_created_at(&author),
+        Kind::MuteList => graph.get_mute_list_created_at(&author),
+        _ => return false,
+    };
+    let head = graph.get_list_revision(&author, u32::from(event.kind.as_u16()));
+    nostr_social_graph::accepts_list_revision(
+        previous_at,
+        head.as_ref(),
+        event.created_at.as_secs(),
+        &event.id.to_hex(),
+    )
+}
+
 async fn reconcile(
     url: &str,
     local: &[Event],
     window: Window,
+    admit: impl FnMut(Event) -> Result<bool>,
+    current: impl Fn() -> bool,
+) -> Result<Report> {
+    let round = Round {
+        filter: Filter::new().kind(Kind::Custom(listing::LISTING_KIND)),
+        snapshot: records(local, window)?,
+        window,
+    };
+    fetch_missing(url, round, admit, current).await
+}
+
+async fn fetch_missing(
+    url: &str,
+    round: Round,
     mut admit: impl FnMut(Event) -> Result<bool>,
     current: impl Fn() -> bool,
 ) -> Result<Report> {
-    let snapshot = records(local, window)?;
+    let Round {
+        filter,
+        window,
+        snapshot,
+    } = round;
     timeout(ROUND_TIME, async {
         let mut session = RelaySession::connect(url).await?;
         let mut deliveries = 0;
@@ -118,8 +215,7 @@ async fn reconcile(
                 break;
             }
         }
-        let filter = Filter::new()
-            .kind(Kind::Custom(listing::LISTING_KIND))
+        let filter = filter
             .since(Timestamp::from(window.since))
             .until(Timestamp::from(window.until));
         let id = SubscriptionId::generate();
@@ -218,8 +314,14 @@ async fn reconcile(
                             ensure!(bytes <= MAX_BYTES, "Reconciliation exceeds payload budget");
                             if wanted.contains(&event.id)
                                 && !received.contains(&event.id)
-                                && window.contains(event.created_at.as_secs())
-                                && listing::parse(&event, window.until).is_ok()
+                                && filter.match_event(&event, Default::default())
+                                && match event.kind {
+                                    Kind::ContactList | Kind::MuteList => {
+                                        event.verify().is_ok()
+                                            && crate::public_cache::current(&event, window.until)
+                                    }
+                                    _ => listing::parse(&event, window.until).is_ok(),
+                                }
                             {
                                 admit(event.as_ref().clone())?;
                                 received.insert(event.id);
@@ -308,6 +410,7 @@ pub(crate) async fn run(state: Arc<Mutex<State>>, notify: Arc<Notify>, stopped: 
     let mut capabilities: HashMap<String, (Instant, bool)> = HashMap::new();
     let mut previous = Vec::new();
     let mut cursor = 0usize;
+    let mut graph_cursors = HashMap::new();
     let mut due = Instant::now() + Duration::from_secs(3);
     loop {
         tokio::select! { _ = tokio::time::sleep_until(due) => {}, _ = notify.notified() => {} }
@@ -318,6 +421,7 @@ pub(crate) async fn run(state: Arc<Mutex<State>>, notify: Arc<Notify>, stopped: 
         if relays != previous {
             previous = relays.clone();
             cursor = 0;
+            graph_cursors.clear();
             due = Instant::now() + Duration::from_secs(3);
             continue;
         }
@@ -355,9 +459,6 @@ pub(crate) async fn run(state: Arc<Mutex<State>>, notify: Arc<Notify>, stopped: 
             MAX_RECORDS,
             MAX_BYTES,
         );
-        let Ok(snapshot) = snapshot else {
-            continue;
-        };
         let current =
             || !stopped.load(Ordering::Acquire) && state.lock().unwrap().settings.relays == relays;
         let admit = |event| {
@@ -372,7 +473,51 @@ pub(crate) async fn run(state: Arc<Mutex<State>>, notify: Arc<Notify>, stopped: 
             Ok(changed)
         };
         // Unsupported, offline and incomplete rounds never suppress normal REQ browsing.
-        let _ = reconcile(url, &snapshot, window, admit, current).await;
+        if let Ok(snapshot) = snapshot {
+            let _ = reconcile(url, &snapshot, window, admit, current).await;
+        }
+
+        let (owner, graph) = {
+            let s = state.lock().unwrap();
+            if stopped.load(Ordering::Acquire) || s.settings.relays != relays || s.demo {
+                continue;
+            }
+            (s.owner, Arc::clone(s.profiles.discovery_graph()))
+        };
+        let root = graph.get_root();
+        let (last_root, offset) = graph_cursors
+            .entry(url.clone())
+            .or_insert_with(|| (String::new(), 0));
+        if last_root != root {
+            *last_root = root.to_owned();
+            *offset = 0;
+        }
+        let Some(round) = graph_round(&graph, offset, listing::now()) else {
+            continue;
+        };
+        let active = |s: &State| {
+            !stopped.load(Ordering::Acquire)
+                && !s.demo
+                && s.owner == owner
+                && s.settings.relays == relays
+                && s.profiles.home_root() == root
+        };
+        let current = || active(&state.lock().unwrap());
+        let admit = |event: Event| {
+            if !accepts_graph_list(&graph, &event) {
+                return Ok(false);
+            }
+            let mut s = state.lock().unwrap();
+            if !active(&s) {
+                return Ok(false);
+            }
+            let changed = s.profiles.ingest_graph_list(event)?;
+            if changed {
+                s.revision += 1;
+            }
+            Ok(changed)
+        };
+        let _ = fetch_missing(url, round, admit, current).await;
     }
 }
 

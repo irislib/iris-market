@@ -34,13 +34,25 @@ async fn relay(
     window: Window,
     extras: Vec<Event>,
 ) -> (String, JoinHandle<Vec<EventId>>) {
+    let snapshot = records(&remote, window).unwrap();
+    let filter = Filter::new().kind(Kind::Custom(listing::LISTING_KIND));
+    scoped_relay(remote, window, extras, filter, snapshot).await
+}
+
+async fn scoped_relay(
+    remote: Vec<Event>,
+    window: Window,
+    extras: Vec<Event>,
+    expected: Filter,
+    snapshot: Vec<Record>,
+) -> (String, JoinHandle<Vec<EventId>>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("ws://{}", listener.local_addr().unwrap());
     let task = tokio::spawn(async move {
         let (stream, _) = listener.accept().await.unwrap();
         let mut socket = accept_async(stream).await.unwrap();
         let mut engine = Session::new(
-            records(&remote, window).unwrap(),
+            snapshot,
             window,
             Limits {
                 max_frame_bytes: FRAME_BYTES,
@@ -64,17 +76,12 @@ async fn relay(
                     ..
                 } => {
                     assert_eq!(
-                        filter
-                            .kinds
-                            .as_ref()
-                            .unwrap()
-                            .iter()
-                            .copied()
-                            .collect::<Vec<_>>(),
-                        vec![Kind::Custom(listing::LISTING_KIND)]
+                        filter.as_ref(),
+                        &expected
+                            .clone()
+                            .since(Timestamp::from(window.since))
+                            .until(Timestamp::from(window.until))
                     );
-                    assert_eq!(filter.since.unwrap().as_secs(), window.since);
-                    assert_eq!(filter.until.unwrap().as_secs(), window.until);
                     let frame = engine.respond(&unhex(&initial_message).unwrap()).unwrap();
                     socket
                         .send(Message::Text(
@@ -104,6 +111,8 @@ async fn relay(
                     filters,
                 } => {
                     let filter = &filters[0];
+                    assert_eq!(filter.authors, expected.authors);
+                    assert_eq!(filter.kinds, expected.kinds);
                     let ids = filter.ids.as_ref().unwrap();
                     assert!(ids.len() <= FETCH_BATCH);
                     requested.extend(ids.iter().copied());
@@ -422,4 +431,84 @@ async fn cancellation_does_not_wait_for_relay_or_admit_data() {
     .await;
     assert!(result.is_err());
     assert!(started.elapsed() < Duration::from_secs(1));
+}
+
+#[tokio::test]
+async fn graph_round_repairs_only_signed_scoped_missing_public_lists() {
+    use crate::profiles::Profiles;
+    use nostr::{EventBuilder, Tag};
+    let owner = Keys::generate();
+    let friend = Keys::generate();
+    let muted = Keys::generate();
+    let stranger = Keys::generate();
+    let list = |keys: &Keys, kind, tags: Vec<Tag>, at| {
+        EventBuilder::new(kind, "")
+            .tags(tags)
+            .custom_created_at(Timestamp::from(at))
+            .sign_with_keys(keys)
+            .unwrap()
+    };
+    let mut profiles = Profiles::default();
+    profiles.set_viewer(owner.public_key().to_hex());
+    let own = list(
+        &owner,
+        Kind::ContactList,
+        vec![Tag::public_key(friend.public_key())],
+        10,
+    );
+    profiles.ingest_graph_list(own.clone()).unwrap();
+    let mut projected = profiles.discovery_graph().as_ref().clone();
+    assert!(!accepts_graph_list(&projected, &own));
+    assert!(!accepts_graph_list(
+        &projected,
+        &list(&owner, Kind::ContactList, vec![], 9)
+    ));
+    projected.mark_list_incomplete(&owner.public_key().to_hex(), 3);
+    assert!(accepts_graph_list(&projected, &own));
+    let round = graph_round(&projected, &mut 0, 100).unwrap();
+    assert!(round.snapshot.is_empty());
+    assert_eq!(round.filter.authors.as_ref().unwrap().len(), 2);
+    let mute = list(
+        &friend,
+        Kind::MuteList,
+        vec![Tag::public_key(muted.public_key())],
+        20,
+    );
+    let missing = list(&friend, Kind::ContactList, vec![], 22);
+    let wrong_author = list(&stranger, Kind::MuteList, vec![], 25);
+    let wrong_kind = list(&friend, Kind::Metadata, vec![], 27);
+    let unknown = list(&friend, Kind::ContactList, vec![], 29);
+    let bad = list(&friend, Kind::MuteList, vec![], 30);
+    let mut forged = bad.clone();
+    forged.sig = own.sig;
+    let advertised = [&own, &mute, &missing, &wrong_author, &wrong_kind, &bad].map(|e| Record {
+        timestamp: e.created_at.as_secs(),
+        id: e.id.to_bytes(),
+    });
+    let (url, server) = scoped_relay(
+        vec![own.clone(), mute.clone()],
+        round.window,
+        vec![wrong_author, wrong_kind, unknown, forged],
+        round.filter.clone(),
+        advertised.to_vec(),
+    )
+    .await;
+    let report = fetch_missing(&url, round, |e| profiles.ingest_graph_list(e), || true)
+        .await
+        .unwrap();
+    assert_eq!(
+        (report.requested, report.received, report.complete),
+        (6, 2, false)
+    );
+    assert_eq!(server.await.unwrap().len(), 6);
+    let graph = profiles.discovery_graph();
+    assert_eq!(
+        graph.get_muted_by_user(&friend.public_key().to_hex()),
+        vec![muted.public_key().to_hex()]
+    );
+    let next = graph_round(graph, &mut 0, 100).unwrap();
+    assert!(!next.filter.authors.unwrap().contains(&muted.public_key()));
+    assert_eq!(next.snapshot.len(), 2);
+    assert!(next.snapshot.iter().any(|r| r.id == mute.id.to_bytes()));
+    assert!(next.snapshot.iter().any(|r| r.id == own.id.to_bytes()));
 }

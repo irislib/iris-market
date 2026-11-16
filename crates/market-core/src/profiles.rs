@@ -119,13 +119,7 @@ impl Profiles {
             self.rebuild_graph();
         }
         if let Some(cache) = backing {
-            for event in cache
-                .query_local(
-                    &[Filter::new().kinds([Kind::Metadata, Kind::ContactList])],
-                    512,
-                )
-                .unwrap_or_default()
-            {
+            for event in cache.profile_records(512).unwrap_or_default() {
                 let _ = self.ingest(event);
             }
         }
@@ -154,9 +148,14 @@ impl Profiles {
     }
     /// Winner checks preserve newer observations when independent profile requests finish.
     pub fn retain_from(&mut self, previous: &Self) {
+        self.refresh_public_cache();
         for event in previous.events.values() {
             let _ = self.ingest(event.clone());
         }
+        self.context_loaded = self
+            .events
+            .get(&(DEFAULT_ROOT.into(), 3))
+            .is_some_and(supported_contacts);
     }
     pub fn retain_metadata_from(&mut self, previous: &Self) {
         for event in previous
@@ -169,7 +168,9 @@ impl Profiles {
     }
     pub fn ingest(&mut self, event: Event) -> Result<bool> {
         let kind = event.kind.as_u16();
-        if ![0, 3].contains(&kind) || event.created_at.as_secs() > crate::listing::now() + 600 {
+        if ![0, 3, 10000].contains(&kind)
+            || event.created_at.as_secs() > crate::listing::now() + 600
+        {
             bail!("Invalid profile event");
         }
         let size = event.as_json().len();
@@ -187,7 +188,7 @@ impl Profiles {
         }
         // Retain the signed winner even when its list cannot be projected.
         // Otherwise an older edge could regain a Home boost from the snapshot.
-        let unsupported = kind == 3 && !supported_contacts(&event);
+        let unsupported = kind != 0 && !supported_contacts(&event);
         let key = (event.pubkey.to_hex(), kind);
         let previous = self.events.get(&key);
         if previous.is_some_and(|old| {
@@ -210,10 +211,19 @@ impl Profiles {
         if kind == 3 {
             self.rebuild_graph();
         }
+        if kind == 10000 {
+            self.home_graph.take();
+        }
         if unsupported {
-            bail!("Follow list is too large");
+            bail!("Public list is too large");
         }
         Ok(true)
+    }
+    pub(super) fn ingest_graph_list(&mut self, event: Event) -> Result<bool> {
+        if let Some(cache) = &self.public_cache {
+            cache.store_graph_list(&event)?;
+        }
+        self.ingest(event)
     }
     pub(crate) fn set_viewer(&mut self, viewer: String) {
         if self.viewer.as_ref() != Some(&viewer) {
@@ -222,7 +232,7 @@ impl Profiles {
         }
     }
 
-    fn home_root(&self) -> &str {
+    pub(super) fn home_root(&self) -> &str {
         self.viewer
             .as_deref()
             .filter(|viewer| !self.graph.get_followed_by_user(viewer).is_empty())
@@ -232,17 +242,23 @@ impl Profiles {
     fn rebuild_graph(&mut self) {
         self.home_graph.take();
         let mut graph = SocialGraph::new(DEFAULT_ROOT);
-        self.overlay_contacts(&mut graph, 1.0);
+        self.overlay_lists(&mut graph, false);
         self.graph = graph;
     }
 
-    fn overlay_contacts(&self, graph: &mut SocialGraph, mute_threshold: f64) {
-        for event in self.events.values().filter(|e| e.kind == Kind::ContactList) {
+    fn overlay_lists(&self, graph: &mut SocialGraph, discovery: bool) {
+        for event in self
+            .events
+            .values()
+            .filter(|e| e.kind == Kind::ContactList || discovery && e.kind == Kind::MuteList)
+        {
+            let kind = u32::from(event.kind.as_u16());
+            let author = event.pubkey.to_hex();
             graph.handle_event(
                 &NostrEvent {
                     created_at: event.created_at.as_secs(),
                     content: String::new(),
-                    kind: 3,
+                    kind,
                     pubkey: event.pubkey.to_hex(),
                     id: event.id.to_hex(),
                     sig: event.sig.to_string(),
@@ -264,43 +280,45 @@ impl Profiles {
                     },
                 },
                 true,
-                mute_threshold,
+                if discovery { f64::INFINITY } else { 1.0 },
             );
+            if !supported_contacts(event)
+                && graph
+                    .get_list_revision(&author, kind)
+                    .is_some_and(|r| r.id == event.id.to_hex())
+            {
+                graph.mark_list_incomplete(&author, kind);
+            }
         }
     }
-    fn discovery_graph(&self) -> &SocialGraph {
+    pub(super) fn discovery_graph(&self) -> &std::sync::Arc<SocialGraph> {
         self.home_graph.get_or_init(|| {
             let root = self.home_root();
-            let use_snapshot = root == DEFAULT_ROOT
-                && self
-                    .events
-                    .get(&(DEFAULT_ROOT.into(), 3))
-                    .is_none_or(supported_contacts);
-            let mut graph = if use_snapshot {
-                // This snapshot has no signatures. Use it only for discovery,
-                // and let verified contacts replace even newer snapshot edges.
+            let mut graph = if root == DEFAULT_ROOT {
+                // Preserve list timestamps and completeness from the signed directory's projection.
+                // This is a discovery seed. Profile and escrow evidence still requires verified bodies.
                 static BASE: std::sync::LazyLock<std::sync::Arc<SocialGraph>> =
                     std::sync::LazyLock::new(|| {
-                        let bytes = include_bytes!("../../../web/src/data/social-graph.bin");
-                        let mut state = SocialGraph::from_binary(DEFAULT_ROOT, bytes)
-                            .expect("pinned public graph")
-                            .export_state();
-                        state.follow_list_created_at.clear();
                         std::sync::Arc::new(
-                            SocialGraph::from_state(state).expect("valid discovery graph"),
+                            SocialGraph::from_binary(
+                                DEFAULT_ROOT,
+                                include_bytes!("../../../web/src/data/social-graph.bin"),
+                            )
+                            .expect("pinned public graph"),
                         )
                     });
-                if !self.events.values().any(|e| e.kind == Kind::ContactList) {
+                if !self
+                    .events
+                    .values()
+                    .any(|e| matches!(e.kind, Kind::ContactList | Kind::MuteList))
+                {
                     return std::sync::Arc::clone(&BASE);
                 }
-                let mut graph = BASE.as_ref().clone();
-                self.overlay_contacts(&mut graph, f64::INFINITY);
-                graph
+                BASE.as_ref().clone()
             } else {
-                let mut graph = self.graph.clone();
-                graph.set_root(root).expect("verified viewer key");
-                graph
+                SocialGraph::new(root)
             };
+            self.overlay_lists(&mut graph, true);
             graph.recalculate_follow_distances();
             std::sync::Arc::new(graph)
         })
@@ -312,12 +330,6 @@ impl Profiles {
 
     pub(crate) fn home_relation(&self, author: &str) -> (Option<u32>, usize) {
         let graph = self.discovery_graph();
-        let graph =
-            if graph.get_root() == DEFAULT_ROOT && self.graph.get_follow_distance(author) < 1000 {
-                &self.graph
-            } else {
-                graph
-            };
         let distance = graph.get_follow_distance(author);
         let known = graph
             .get_followers_by_user(author)
@@ -628,7 +640,7 @@ pub(crate) async fn fetch_viewer_context(
             .take(32)
             .filter_map(|p| PublicKey::from_hex(&p).ok())
             .collect();
-        if !context.is_empty() {
+        if target.is_some() && !context.is_empty() {
             let events = query(
                 &bus,
                 public_cache.as_ref(),
@@ -881,6 +893,78 @@ mod tests {
         assert!(!cache.ingest(old).unwrap());
         assert!(cache.profile(&b.public_key().to_hex()).followers.is_empty());
     }
+    #[test]
+    fn discovery_keeps_snapshot_revision_order_and_active_viewer_during_hydration() {
+        let owner = Keys::generate();
+        let friend = Keys::generate();
+        let stranger = Keys::generate();
+        let mut incoming = Profiles::default();
+        let old = follows(&owner, &[stranger.public_key()], 70);
+        let new = follows(&owner, &[friend.public_key()], 80);
+        incoming.ingest(new.clone()).unwrap();
+        let mut seed = SocialGraph::new(&owner.public_key().to_hex());
+        incoming.overlay_lists(&mut seed, true);
+        let mut local = Profiles::default();
+        local.set_viewer(owner.public_key().to_hex());
+        local.ingest(old.clone()).unwrap();
+        local.overlay_lists(&mut seed, true);
+        assert_eq!(
+            seed.get_list_revision(&owner.public_key().to_hex(), 3)
+                .unwrap()
+                .id,
+            new.id.to_hex()
+        );
+        assert!(!seed.is_following(
+            &owner.public_key().to_hex(),
+            &stranger.public_key().to_hex()
+        ));
+        local.retain_from(&incoming);
+        assert_eq!(local.home_root(), owner.public_key().to_hex());
+        assert!(local.in_listing_network(&friend.public_key().to_hex()));
+        assert!(!local.in_listing_network(&stranger.public_key().to_hex()));
+        // A verified body can supply the exact missing revision without clearing its timestamp.
+        seed.mark_list_incomplete(&owner.public_key().to_hex(), 3);
+        local.overlay_lists(&mut seed, true);
+        assert!(
+            seed.get_list_revision(&owner.public_key().to_hex(), 3)
+                .unwrap()
+                .complete
+        );
+    }
+
+    #[test]
+    fn public_mute_tags_survive_restart_without_replaying_the_mute_body() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("graph.sqlite");
+        let owner = Keys::generate();
+        let peer = Keys::generate();
+        let private = Keys::generate();
+        let event = EventBuilder::new(Kind::MuteList, private.public_key().to_hex())
+            .tags([Tag::public_key(peer.public_key())])
+            .sign_with_keys(&owner)
+            .unwrap();
+        {
+            let mut profiles =
+                Profiles::from_public_cache(Some(PublicEventCache::open(&path).unwrap()));
+            profiles.ingest_graph_list(event.clone()).unwrap();
+        }
+        let cache = PublicEventCache::open(&path).unwrap();
+        assert!(cache.authority().unwrap().is_empty());
+        assert!(
+            cache
+                .query_local(&[Filter::new().ids([event.id])], 128)
+                .unwrap()
+                .is_empty()
+        );
+        let profiles = Profiles::from_public_cache(Some(cache));
+        assert_eq!(
+            profiles
+                .discovery_graph()
+                .get_muted_by_user(&owner.public_key().to_hex()),
+            vec![peer.public_key().to_hex()]
+        );
+    }
+
     #[test]
     fn rejects_tampered_metadata_and_unsafe_profile_urls() {
         let keys = Keys::generate();

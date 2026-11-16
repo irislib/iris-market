@@ -3,7 +3,7 @@
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use fs2::FileExt;
-use nostr::{Event, Filter, JsonUtil};
+use nostr::{Event, Filter, JsonUtil, Kind};
 use nostr_pubsub::{
     EventBus, EventSource, MatchEventOptions, PublishReport, PubsubError, QueryEvent, QueryOptions,
     QueryReport, SOURCE_PRIORITY_LOCAL_INDEX, VerifiedEvent,
@@ -50,14 +50,14 @@ struct Cache {
 }
 
 fn coordinate(event: &Event) -> Option<String> {
-    matches!(event.kind.as_u16(), 0 | 3)
+    matches!(event.kind.as_u16(), 0 | 3 | 10000)
         .then(|| format!("{}:{}:", event.kind.as_u16(), event.pubkey))
 }
 fn supersedes(a: &Event, b: &Event) -> bool {
     a.created_at > b.created_at || a.created_at == b.created_at && a.id < b.id
 }
 fn validate(event: &Event) -> Result<()> {
-    if !matches!(event.kind.as_u16(), 0 | 3 | 5)
+    if !matches!(event.kind.as_u16(), 0 | 3 | 5 | 10000)
         || event.as_json().len() > MAX_EVENT_BYTES
         || event.created_at.as_secs() > crate::listing::now().saturating_add(300)
     {
@@ -232,7 +232,12 @@ impl PublicEventCache {
         if cache.disabled {
             return Ok(Vec::new());
         }
-        Ok(cache.events.values().cloned().collect())
+        Ok(cache
+            .events
+            .values()
+            .filter(|event| event.kind != Kind::MuteList)
+            .cloned()
+            .collect())
     }
     pub fn permits(&self, event: &Event) -> Result<bool> {
         let cache = self
@@ -242,6 +247,14 @@ impl PublicEventCache {
         Ok(!cache.disabled && allows(&cache.events, event, crate::listing::now()))
     }
     pub fn ingest(&self, event: &Event) -> Result<bool> {
+        anyhow::ensure!(
+            event.kind != Kind::MuteList,
+            "Mute lists require graph-scoped ingestion"
+        );
+        self.store_verified(event)
+    }
+
+    fn store_verified(&self, event: &Event) -> Result<bool> {
         validate(event)?;
         let mut cache = self
             .inner
@@ -311,7 +324,25 @@ impl PublicEventCache {
         cache.disabled = false;
         Ok(true)
     }
+    /// Signed public list bodies stay local. The ordinary event bus never replays mute lists.
+    pub(super) fn store_graph_list(&self, event: &Event) -> Result<bool> {
+        anyhow::ensure!(
+            matches!(event.kind, Kind::ContactList | Kind::MuteList),
+            "Expected a graph list"
+        );
+        self.store_verified(event)
+    }
+    pub(super) fn profile_records(&self, limit: usize) -> Result<Vec<Event>> {
+        self.query_records(
+            &[Filter::new().kinds([Kind::Metadata, Kind::ContactList, Kind::MuteList])],
+            limit,
+            true,
+        )
+    }
     pub fn query_local(&self, filters: &[Filter], limit: usize) -> Result<Vec<Event>> {
+        self.query_records(filters, limit, false)
+    }
+    fn query_records(&self, filters: &[Filter], limit: usize, graph: bool) -> Result<Vec<Event>> {
         if filters.len() > 64 {
             bail!("Public cache query exceeds its filter budget");
         }
@@ -325,7 +356,10 @@ impl PublicEventCache {
         let mut events: Vec<_> = cache
             .events
             .values()
-            .filter(|event| allows(&cache.events, event, crate::listing::now()))
+            .filter(|event| {
+                (graph || event.kind != Kind::MuteList)
+                    && allows(&cache.events, event, crate::listing::now())
+            })
             .cloned()
             .collect();
         events.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(a.id.cmp(&b.id)));

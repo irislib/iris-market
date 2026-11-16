@@ -1,20 +1,25 @@
-// npm ci --ignore-scripts, then node scripts/generate-graph-bootstrap.mjs.
-// Copy the reviewed mobile snapshot from the locked SDK, preserving list IDs.
-import {readFile, writeFile} from 'node:fs/promises'
-import {createHash} from 'node:crypto'
-import {SocialGraph} from 'nostr-social-graph'
+import { createHash } from 'node:crypto'
+import { readFile, writeFile } from 'node:fs/promises'
+import { verifyMobileGraphSnapshot } from 'nostr-social-graph/mobileGraphSnapshot'
 
 const provenance = JSON.parse(await readFile(new URL('../src/data/social-graph.provenance.json', import.meta.url)))
-const installed = JSON.parse(await readFile(new URL('../node_modules/nostr-social-graph/package.json', import.meta.url)))
-const digest = bytes => createHash('sha256').update(bytes).digest('hex')
-if (`${installed.name}@${installed.version}` !== provenance.source.package) throw Error('Graph library version differs from the reviewed source')
-const input = process.argv[2] ?? new URL('../node_modules/nostr-social-graph/data/socialGraph.bin', import.meta.url)
-const bytes = await readFile(input)
-if (bytes.byteLength !== provenance.snapshot.byteLength || digest(bytes) !== provenance.snapshot.sha256) throw Error('Source snapshot integrity check failed')
-const graph = await SocialGraph.fromBinary(provenance.root, new Uint8Array(bytes))
-const size = graph.size()
-for (const field of ['users', 'follows', 'mutes']) if (size[field] !== provenance.snapshot[field]) throw Error('Snapshot census differs from reviewed source')
-const revisions = [...graph.getInternalData().listRevisions]
-for (const kind of [3, 10000]) if (!revisions.some(([key, revision]) => key.startsWith(`${kind}:`) && revision.id)) throw Error('Snapshot is missing list revision IDs')
+const file = name => new URL(import.meta.resolve('nostr-social-graph/' + name))
+const installed = JSON.parse(await readFile(file('package.json')))
+if (installed.name + '@' + installed.version !== provenance.source.package) throw Error('Unexpected graph SDK version')
+
+const receiptBytes = await readFile(file('data/socialGraph.json'))
+const sha256 = bytes => createHash('sha256').update(bytes).digest('hex')
+if (sha256(receiptBytes) !== provenance.source.receiptSha256) throw Error('Unexpected signed snapshot receipt')
+const receipt = JSON.parse(receiptBytes)
+if (receipt.root !== provenance.root || receipt.source.url !== provenance.source.url ||
+    receipt.source.eventId !== provenance.source.eventId || receipt.source.directoryHash !== provenance.source.directoryHash) {
+  throw Error('Unexpected graph snapshot origin')
+}
+const source = await readFile(process.argv[2] ?? file('data/socialGraph.bin'))
+const graph = await verifyMobileGraphSnapshot(source, receipt)
+const { maxNodes, maxEdges, maxDistance, maxEdgesPerNode } = provenance.projection
+const bytes = await graph.toBinary(maxNodes, maxEdges, maxDistance, maxEdgesPerNode)
+if (bytes.length !== provenance.snapshot.byteLength || bytes.length > 1_100_000 ||
+    sha256(bytes) !== provenance.snapshot.sha256) throw Error('Unexpected Market projection')
 await writeFile(new URL('../src/data/social-graph.bin', import.meta.url), bytes)
-console.log(`Verified company graph: ${bytes.byteLength} bytes, ${digest(bytes)}`)
+console.log(`Verified Market graph: ${bytes.length} bytes, ${provenance.snapshot.sha256}`)

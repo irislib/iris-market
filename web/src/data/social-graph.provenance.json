@@ -1,25 +1,40 @@
 {
-  "version": 2,
+  "version": 3,
   "root": "336f319763657d6b0e65a5b5876719e8c8dcdcf9396852be71ee26b73368b29b",
   "source": {
-    "package": "nostr-social-graph@4.2.0",
-    "url": "https://github.com/mmalmi/nostr-social-graph/releases/download/v4.2.0/nostr-social-graph-4.2.0.tgz",
-    "sourceCommit": "a01737b3035880eb5aeb3fc6fe5381c6c50c39c8",
-    "packageSha256": "158b105ecccb6d5049e4d9944f40c59ea66ac504a9539e11948f33c5bad66f03",
-    "path": "data/socialGraph.bin",
-    "origin": "https://graph-api.iris.to/social-graph",
-    "verifiedEvents": false
+    "package": "nostr-social-graph@4.2.1",
+    "url": "htree://npub1yscmnnadrmvape0mvgzfx9uyl267klnhzy8znsr6ysl8wtxngpqsnx6dm0/social-graph/mobile-336f319763657d6b0e65a5b5876719e8c8dcdcf9396852be71ee26b73368b29b.bin",
+    "eventId": "89416ffecfb072fbb90805def7858801b3b5770c4a5bb5cc5fd0cecebb2d2d7e",
+    "directoryHash": "18b8449d3c36d5665496137597fc0fdfae6109bdd90b2af4eaa39f8f767d30f7",
+    "sha256": "d9d11e34916b33fb8540f3a124f5968c0d67db7c45d75412a17c382f011256ca",
+    "bytes": 1416341,
+    "receiptSha256": "4c22ce2ab2b895513f5da4309cedcd161338fb297f01a0c9affd283ec63b23f7",
+    "graphCompletedAt": 1794832567
+  },
+  "projection": {
+    "maxNodes": 21500,
+    "maxEdges": 125000,
+    "maxDistance": 4,
+    "maxEdgesPerNode": 500
   },
   "snapshot": {
-    "byteLength": 1034502,
-    "sha256": "9af2ad6aaf830ff08aa14f83233e56c49d1379fb5da05efd1ebe9166aceabcb0",
-    "users": 21323,
-    "follows": 118569,
-    "mutes": 1555,
-    "rootFollows": 2,
-    "usersWithinTwoHops": 412,
-    "partial": true,
-    "note": "Exact bounded SDK bootstrap retains available follow/mute event IDs and incomplete-list markers. It is an unsigned discovery seed, not a complete census."
-  },
-  "use": "Cold discovery fallback only. Retained personal graphs are not replaced; optional live synchronization fetches missing revisions."
+    "byteLength": 1086901,
+    "sha256": "71b90ce796900710ed97c47e92d4d478dea9d16646bb46851afe345f03813120",
+    "users": 21027,
+    "follows": 116639,
+    "mutes": 1294,
+    "rootFollows": 3,
+    "secondDegree": 409,
+    "revisionCounts": {
+      "follows": {
+        "ids": 357,
+        "complete": 239
+      },
+      "mutes": {
+        "ids": 1414,
+        "complete": 1281
+      }
+    },
+    "partial": true
+  }
 }

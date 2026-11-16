@@ -397,6 +397,7 @@ mod tests {
         let open = || Market::open(dir.path(), &buyer.secret_key().to_secret_hex(), false).unwrap();
         let app = open();
         let offer = Draft {
+            coordinates: None,
             title: "Desk".into(),
             description: "Private listing detail".into(),
             side: "offer".into(),

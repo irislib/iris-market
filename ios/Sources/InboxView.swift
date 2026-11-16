@@ -1,4 +1,5 @@
 import SwiftUI
+import CoreImage.CIFilterBuiltins
 
 private struct InboxThread: Identifiable {
     let conversation: MarketConversation
@@ -28,6 +29,16 @@ struct InboxView: View {
     @State private var showInvitation = false
     @State private var selected: InboxThread?
     @AppStorage("market.messageGrouping") private var grouping = "threads"
+    @State private var search = ""
+    /// Threads matching the search by person name, thread title or message text.
+    private var shownThreads: [InboxThread] {
+        let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return threads }
+        return threads.filter { thread in
+            let name = store.snapshot.people[thread.conversation.id]?.name ?? thread.conversation.name
+            return ([name, title(thread)] + thread.messages.map(\.text)).contains { $0.localizedCaseInsensitiveContains(query) }
+        }
+    }
     private var threads: [InboxThread] {
         store.snapshot.conversations.flatMap { conversation -> [InboxThread] in
             if grouping == "people" { return [InboxThread(conversation: conversation, key: "*", context: nil, messages: conversation.messages)] }
@@ -46,12 +57,16 @@ struct InboxView: View {
                 PrivateMatchesLink().id(store.snapshot.publicKey)
                 EscrowInboxCards()
                 Picker("Group conversations", selection: $grouping) { Text("Threads").tag("threads"); Text("People").tag("people") }.pickerStyle(.segmented)
+                if !store.snapshot.conversations.isEmpty {
+                    HStack { Image(systemName: "magnifyingglass").foregroundStyle(MarketTheme.muted); TextField("Search people and messages", text: $search).textFieldStyle(.plain).accessibilityIdentifier("inboxSearch") }
+                        .padding(12).background(MarketTheme.surface, in: RoundedRectangle(cornerRadius: 12))
+                }
                 if store.snapshot.conversations.isEmpty {
                     MarketEmptyState(symbol: "bubble.left.and.bubble.right", title: "No conversations", description: "Send a private enquiry from a listing or exchange an invitation.")
                     Button { showInvitation = true } label: { Text("Connect with an invitation") }.buttonStyle(PrimaryButton())
                 } else {
                     VStack(spacing: 0) {
-                        ForEach(threads) { thread in
+                        ForEach(shownThreads) { thread in
                             Button { selected = thread } label: {
                                 VStack(alignment: .leading, spacing: 6) {
                                     if isPrivateMatch(thread.conversation.id) {
@@ -88,6 +103,7 @@ struct InboxView: View {
     }
 }
 
+/// New chat, as in Iris Chat: share your invitation (QR, share, copy), or join with someone else's.
 struct InvitationView: View {
     @EnvironmentObject private var store: MarketStore
     @Environment(\.dismiss) private var dismiss
@@ -96,28 +112,46 @@ struct InvitationView: View {
         MarketNavigationContainer {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
-                    Text("Exchange a private invitation with the person you want to talk to.").font(.system(size: 15)).lineSpacing(4).foregroundStyle(MarketTheme.muted)
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Accept invitation").font(.system(size: 15, weight: .semibold))
-                        TextField("Paste invitation", text: $input, prompt: Text("Paste invitation").foregroundColor(MarketTheme.muted), axis: .vertical).lineLimit(2...5).font(.system(size: 13)).marketNoAutocapitalization().autocorrectionDisabled().padding(15).background(MarketTheme.surface, in: RoundedRectangle(cornerRadius: 15)).accessibilityIdentifier("inviteInput")
-                        Button { store.command(["type": "accept_invite", "invite": input]) { if $0 { dismiss() } } } label: { Text("Accept invitation") }.buttonStyle(PrimaryButton()).disabled(input.isEmpty || store.busy || store.demo)
+                    VStack(spacing: 14) {
+                        Text("Invite someone").font(.system(size: 17, weight: .semibold)).frame(maxWidth: .infinity, alignment: .leading)
+                        Text("Let them scan this code, or send them the link. Your chat stays private.").font(.system(size: 14)).foregroundStyle(MarketTheme.muted).frame(maxWidth: .infinity, alignment: .leading)
+                        if let invite = store.snapshot.invite, !invite.isEmpty {
+                            InvitationQR(text: invite)
+                            HStack(spacing: 12) {
+                                ShareLink(item: invite) { Label("Share", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity) }.buttonStyle(PrimaryButton())
+                                Button { MarketPlatform.copyToClipboard(invite) } label: { Label("Copy link", systemImage: "doc.on.doc").frame(maxWidth: .infinity) }.buttonStyle(PrimaryButton(dark: false))
+                            }
+                        } else if store.demo {
+                            Text("Invitations are unavailable in preview mode.").font(.system(size: 12)).foregroundStyle(MarketTheme.muted)
+                        } else {
+                            ProgressView("Preparing your invitation…").frame(maxWidth: .infinity).padding(.vertical, 30)
+                        }
                     }
                     Rectangle().fill(MarketTheme.line).frame(height: 1)
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("Share invitation").font(.system(size: 15, weight: .semibold))
-                        if let invite = store.snapshot.invite, !invite.isEmpty {
-                            ShareLink(item: invite) { Label("Share invitation", systemImage: "square.and.arrow.up") }.buttonStyle(PrimaryButton(dark: false))
-                            Button { MarketPlatform.copyToClipboard(invite) } label: { Label("Copy invitation", systemImage: "doc.on.doc") }.font(.system(size: 13)).frame(maxWidth: .infinity)
-                        } else {
-                            Button { store.command(["type": "create_invite"]) } label: { Label("Create invitation", systemImage: "plus") }.buttonStyle(PrimaryButton(dark: false)).disabled(store.busy || store.demo)
-                        }
+                        Text("Have an invitation?").font(.system(size: 17, weight: .semibold))
+                        TextField("Paste invitation link", text: $input, prompt: Text("Paste invitation link").foregroundColor(MarketTheme.muted), axis: .vertical).lineLimit(1...4).font(.system(size: 14)).marketNoAutocapitalization().autocorrectionDisabled().padding(12).background(MarketTheme.surface, in: RoundedRectangle(cornerRadius: 12)).accessibilityIdentifier("inviteInput")
+                        Button { store.command(["type": "accept_invite", "invite": input.trimmingCharacters(in: .whitespacesAndNewlines)]) { if $0 { dismiss() } } } label: { Text("Join chat").frame(maxWidth: .infinity) }.buttonStyle(PrimaryButton()).disabled(input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.busy || store.demo)
                     }
                     MarketInlineError()
-                    if store.demo { Text("Invitations are unavailable in preview mode.").font(.system(size: 12)).foregroundStyle(MarketTheme.muted) }
                 }.padding(25)
-            }.background(MarketTheme.paper).navigationTitle("Private invitation").marketInlineTitle()
+            }.background(MarketTheme.paper).navigationTitle("New chat").marketInlineTitle()
                 .toolbar { ToolbarItem(placement: .confirmationAction) { MarketDoneButton { dismiss() } } }
+                // An invitation is local until shared; prepare one as soon as the screen opens.
+                .task { if !store.demo && (store.snapshot.invite ?? "").isEmpty { store.command(["type": "create_invite"]) } }
         }
+    }
+}
+
+private struct InvitationQR: View {
+    let text: String
+    private var image: CGImage? {
+        let filter = CIFilter.qrCodeGenerator(); filter.message = Data(text.utf8); filter.correctionLevel = "M"
+        guard let output = filter.outputImage else { return nil }
+        return CIContext().createCGImage(output.transformed(by: CGAffineTransform(scaleX: 8, y: 8)), from: output.extent.applying(CGAffineTransform(scaleX: 8, y: 8)))
+    }
+    var body: some View {
+        if let image { Image(decorative: image, scale: 1).interpolation(.none).resizable().scaledToFit().frame(width: 240, height: 240).padding(16).background(.white).clipShape(RoundedRectangle(cornerRadius: 16)).accessibilityLabel("Invitation QR code") }
     }
 }
 

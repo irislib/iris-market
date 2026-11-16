@@ -41,11 +41,13 @@ struct AuthorProfileView: View {
                         if !known.isEmpty {
                             KnownFollowersLine(people: Array(known.prefix(3)), total: max(known.count, profile.person.connection.followedByFriends), open: { history.append(author); switchAuthor($0) }, showFollowers: { selectFollowers() })
                         }
-                        ProfileInlineLayout(spacing: 14) {
-                            connectionControl("Listings", count: nil, value: "listings")
-                            connectionControl("Collections", count: nil, value: "collections")
-                            connectionControl("Following", count: profile.followingCount, value: "following")
-                            connectionControl("Followers", count: profile.followersLoaded == true ? orderedFollowers(profile).count : nil, value: "followers")
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 8) {
+                                connectionControl("Listings", count: nil, value: "listings")
+                                connectionControl("Collections", count: nil, value: "collections")
+                                connectionControl("Following", count: profile.followingCount, value: "following")
+                                connectionControl("Followers", count: profile.followersLoaded == true ? orderedFollowers(profile).count : nil, value: "followers")
+                            }
                         }
                         if selection == "collections" {
                             let feed = store.snapshot.profileListings.flatMap { $0.author == author ? $0 : nil }
@@ -128,14 +130,17 @@ struct AuthorProfileView: View {
     private func connectionControl(_ label: String, count: Int?, value: String) -> some View {
         let selected = selection == value || (selection == nil && value == "listings")
         return Button {
-            let next = selected || value == "listings" ? nil : value
+            // Tabs stay selected when tapped again; Listings is the default view.
+            let next = value == "listings" ? nil : value
             if selection == "followers" && next != "followers" { cancelFollowers() }
             if selection == "collections" && next != "collections" { openCollection(nil) }
             selection = next
             if next == "followers", profile?.followersLoaded != true, profile?.followersLoading != true { loadFollowers() }
         } label: {
-            HStack(spacing: 4) { if let count { Text("\(count)").fontWeight(.semibold) }; Text(label) }
-                .font(.caption).foregroundStyle(selected ? MarketTheme.green : MarketTheme.muted)
+            HStack(spacing: 5) { Text(label); if let count { Text("\(count)").fontWeight(.semibold).opacity(0.75) } }
+                .font(.system(size: 13, weight: .medium)).padding(.horizontal, 14).padding(.vertical, 10)
+                .foregroundStyle(selected ? MarketTheme.onAction : MarketTheme.ink)
+                .background(selected ? MarketTheme.action : MarketTheme.surface, in: Capsule())
         }.buttonStyle(.plain).accessibilityIdentifier("profile\(label)")
             .accessibilityAddTraits(selected ? .isSelected : [])
     }

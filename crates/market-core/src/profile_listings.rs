@@ -343,6 +343,7 @@ mod tests {
             .control
             .clone();
         let draft = crate::model::Draft {
+            coordinates: None,
             title: "Fixture".into(),
             description: String::new(),
             side: "offer".into(),

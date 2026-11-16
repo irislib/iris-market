@@ -130,6 +130,8 @@ struct NewListingView: View {
     @State private var price = ""
     @State private var currency = "EUR"
     @State private var location = ""
+    /// A point chosen on the map as [longitude, latitude]; published as district-level cells.
+    @State private var mapPoint: [Double]?
     @State private var category = "Other"
     @State private var imageURL = ""
     @State private var uploading = false
@@ -199,8 +201,15 @@ struct NewListingView: View {
                 Section("Details") {
                     HStack { TextField("Price or budget", text: $price, prompt: Text("Price or budget").foregroundColor(MarketTheme.muted)).labelsHidden().marketDecimalKeyboard().accessibilityIdentifier("listingPrice"); Picker("Currency", selection: $currency) { Text("EUR").tag("EUR"); Text("USD").tag("USD"); Text("GBP").tag("GBP"); Text("BTC").tag("BTC") }.labelsHidden().frame(width: 90) }
                     Picker("Expires in", selection: $expiry) { ForEach(NativeListingExpiry.presets, id: \.self) { Text($0.label).tag($0) } }.accessibilityIdentifier("listingExpiry")
-                    TextField(transport == nil ? "Town, area, or #geohash" : "Pickup area", text: $location, prompt: Text(transport == nil ? "Town, area, or #geohash" : "Pickup area").foregroundColor(MarketTheme.muted)).labelsHidden().accessibilityIdentifier("listingLocation")
-                    PlaceSearchButton(value: MarketDeliveryPlace(label: location, address: location)) { place in location = place.label }
+                    TextField(transport == nil ? "Location" : "Pickup area", text: $location, prompt: Text(transport == nil ? "Location, e.g. Lisbon, Portugal" : "Pickup area").foregroundColor(MarketTheme.muted)).labelsHidden().accessibilityIdentifier("listingLocation")
+                    PlaceSearchButton(value: MarketDeliveryPlace(label: location, address: location, coordinates: mapPoint)) { place in
+                        let name = place.label.trimmingCharacters(in: .whitespacesAndNewlines)
+                        location = name.isEmpty || name == "Meeting point" ? place.address : name
+                        mapPoint = MarketShipment.validCoordinates(place.coordinates) ? place.coordinates : nil
+                    }
+                    if mapPoint != nil {
+                        HStack { Label("Shown on the map by district", systemImage: "mappin.circle.fill").font(.footnote).foregroundStyle(MarketTheme.muted); Spacer(); Button("Remove") { mapPoint = nil }.font(.footnote) }
+                    }
                     if transport != nil && category == "Transport" {
                         Button { chooseServiceAreas = true } label: { Label(serviceAreas == nil ? "Choose pickup and destination areas" : "Edit service areas", systemImage: "map.fill") }.disabled(store.demo).accessibilityIdentifier("transportServiceAreas")
                         Text("Search a place, drop a pin, and choose your range. Boundaries become public only when you publish.").font(.footnote).foregroundStyle(MarketTheme.muted).fixedSize(horizontal: false, vertical: true)
@@ -271,7 +280,7 @@ struct NewListingView: View {
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
     private func publish() {
-        var draft: [String: Any] = ["title": title, "description": description, "side": side, "price": price, "currency": currency, "location": location, "category": category, "tags": category == "Transport" ? (transport?.tags ?? []) : [], "image_url": imageURL.isEmpty ? NSNull() : imageURL as Any]
+        var draft: [String: Any] = ["title": title, "description": description, "side": side, "price": price, "currency": currency, "location": location, "coordinates": mapPoint.map { $0 as Any } ?? NSNull(), "category": category, "tags": category == "Transport" ? (transport?.tags ?? []) : [], "image_url": imageURL.isEmpty ? NSNull() : imageURL as Any]
         if advertisingProvider { draft["tags"] = (draft["tags"] as? [String] ?? []) + ["escrow-provider"] }
         if category == "Transport", let serviceAreas, let data = try? JSONEncoder().encode(serviceAreas), let geometry = try? JSONSerialization.jsonObject(with: data) { draft["service_areas"] = geometry }
         if escrowEnabled {

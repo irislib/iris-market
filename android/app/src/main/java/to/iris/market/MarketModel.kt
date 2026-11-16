@@ -111,7 +111,7 @@ data class MarketSnapshot(
     val error: String? = null, val query: String = "", val side: String = "offer",
     val listings: List<Listing> = emptyList(), val savedCount: Int = 0,
     val settings: String = "{}", val conversations: List<Conversation> = emptyList(),
-    val invite: String? = null, val aiSearch: Boolean = false, val sort: String = "suggested",
+    val invite: String? = null, val inviteQr: List<List<Boolean>>? = null, val aiSearch: Boolean = false, val sort: String = "suggested",
     val orders: List<MarketOrder> = emptyList(), val liveLocationSupported: Boolean = false,
     val people: Map<String, PublicPerson> = emptyMap(), val profile: PublicProfile? = null, val graphContextLoaded: Boolean = false,
     val privateMatching: String? = null,
@@ -148,7 +148,7 @@ data class MarketSnapshot(
                     Conversation(c.getString("id"), c.optString("name", "Conversation"),
                         (0 until ms.length()).map { j -> val m = ms.getJSONObject(j)
                             Message(m.getString("id"), m.optString("text"), m.optBoolean("mine"), m.optional("order_id"), m.optJSONObject("cashu")?.let(CashuPayment::parse),m.optJSONObject("context")?.let(MessageContext::parse),createdAt=m.optLong("created_at",0L),delivery=m.optional("delivery"),escrow=!m.isNull("escrow"),reactions=m.optJSONArray("reactions")?.let { values -> (0 until values.length()).map { i -> values.getJSONObject(i).let { reaction -> MessageReaction(reaction.getString("emoji"),reaction.getInt("count"),reaction.optBoolean("reacted_by_me")) } } } ?: emptyList()) }, if(c.isNull("timer_seconds")) null else c.getLong("timer_seconds"))
-                }, invite = o.optional("invite"), aiSearch = o.optBoolean("ai_search"), sort = o.optString("sort", "suggested"),
+                }, invite = o.optional("invite"), inviteQr = o.optJSONArray("invite_qr")?.let { rows -> (0 until rows.length()).map { y -> rows.getJSONArray(y).let { row -> (0 until row.length()).map { row.optBoolean(it) } } } }, aiSearch = o.optBoolean("ai_search"), sort = o.optString("sort", "suggested"),
                 liveLocationSupported = o.optBoolean("live_location_supported", false),
                 orders = o.optJSONArray("orders")?.let { a -> (0 until a.length()).map { MarketOrder.parse(a.getJSONObject(it)) } } ?: emptyList(),
                 people = o.optJSONObject("people")?.let { people -> people.keys().asSequence().associateWith { PublicPerson.parse(people.getJSONObject(it)) } } ?: emptyMap(),

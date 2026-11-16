@@ -29,7 +29,10 @@ struct PlaceSearchButton: View {
         }
         .accessibilityHint("Search for a town, address, or meeting point, then choose it on the map.")
         .marketPage(isPresented: $choosing, onDismiss: {
-            if let draft, !draft.address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, MarketShipment.validCoordinates(draft.coordinates) { onSelect(draft) }
+            // A map point alone is enough: name it by its coordinates when no address was typed.
+            guard var draft, MarketShipment.validCoordinates(draft.coordinates) || !draft.address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+            if draft.address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, let point = draft.coordinates, point.count == 2 { draft.address = String(format: "%.4f, %.4f", point[1], point[0]) }
+            onSelect(draft)
         }) { PrivatePlaceMapEditor(place: $draft).marketSheetScope() }
     }
 }

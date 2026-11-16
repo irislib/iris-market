@@ -168,14 +168,16 @@ pub(crate) fn builder(
         ],
         vec!["client".into(), "Iris Market".into()],
     ];
-    if let Some(hash) = d
+    // A map point wins; a trailing `#geohash` in the text remains supported for older clients.
+    let chosen = d.coordinates.and_then(|point| crate::geo::encode(point, 4));
+    let typed = d
         .location
         .split_whitespace()
         .last()
         .and_then(|s| s.strip_prefix('#'))
-        && crate::geo::decode(hash).is_some()
-    {
-        let hash = hash.to_ascii_lowercase();
+        .filter(|hash| crate::geo::decode(hash).is_some())
+        .map(str::to_ascii_lowercase);
+    if let Some(hash) = chosen.or(typed) {
         for length in 1..=hash.len() {
             tags.push(vec!["g".into(), hash[..length].into()]);
         }
@@ -265,6 +267,7 @@ pub fn parse(event: &Event, at: u64) -> Result<Listing> {
         .collect();
     let escrow = crate::escrow::Offer::from_event(event)?;
     let mut draft = Draft {
+        coordinates: None,
         escrow,
         title: field(event, "title")?.context("Listing has no title")?,
         description: event.content.clone(),
@@ -362,6 +365,7 @@ pub fn draft_from(l: &Listing) -> Draft {
         price: l.price.clone(),
         currency: l.currency.clone(),
         location: l.location.clone(),
+        coordinates: l.coordinates,
         category: l.category.clone(),
         tags: l.tags.clone(),
         service_areas: l.service_areas.clone(),

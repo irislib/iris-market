@@ -15,6 +15,7 @@ import {captureInvitation} from '../asset-url.ts'
 import {npubEncode} from 'nostr-tools/nip19'
 import {createMessaging} from '../messaging/client.ts'
 import {personFor, warmProfiles, resetPeople} from '../people.ts'
+import qrcode from 'qrcode-generator'
 import {normalizePublicKey} from '../social.ts'
 import {cacheProfileMetadata} from '../profiles.ts'
 
@@ -66,6 +67,10 @@ export class AccountController {
   chatError = $state('')
   chatText = $state('')
   chatRecipient = $state('')
+  /** Filters conversations by person name, thread title or message text. */
+  chatSearch = $state('')
+  /** Your invitation for New chat: the link and a local QR image. */
+  invitePanel = $state<{url: string; qr: string} | null>(null)
   sendDisabled = $state(false)
   sendHidden = $state(false)
   chatStatus = $state('')
@@ -218,7 +223,9 @@ export class AccountController {
     const rows: ChatRowView[] = display.flatMap(c => {
       const groups = threadMode ? groupMessageThreads(c.messages) : [{key: '*', context: undefined, messages: c.messages}]
       if (!groups.length) groups.push({key: 'general', context: undefined, messages: []})
-      return groups.map(group => ({pubkey: c.pubkey, key: group.key, context: group.context, pressed: selected === c.pubkey && this.selectedThreadKey === group.key,
+      const query = this.chatSearch.trim().toLowerCase()
+      return groups.filter(group => !query || [personFor(c.pubkey).name, threadMode ? this.contextTitle(group.context) : '', ...group.messages.map(m => m.text ?? '')].some(value => String(value ?? '').toLowerCase().includes(query)))
+        .map(group => ({pubkey: c.pubkey, key: group.key, context: group.context, pressed: selected === c.pubkey && this.selectedThreadKey === group.key,
         title: threadMode ? this.contextTitle(group.context) : undefined, unread: !!this.unread.unread(c.pubkey, group.messages.map(m => m.id))}))
     })
     const context = this.selectedContext
@@ -336,6 +343,21 @@ export class AccountController {
   lock() { return this.login(() => this.messaging.lock()) }
   copyId() { return navigator.clipboard.writeText(npubEncode(this.state.ownerPubkey)).then(() => { this.accountStatus = 'Profile ID copied' }).catch(this.fail) }
   copyBackup() { return this.withBusy(async () => { await navigator.clipboard.writeText(await this.messaging.exportKey()); this.accountStatus = 'Backup key copied. Store it privately.' }).catch(() => {}) }
+  /** New chat, as in Iris Chat: show your invitation as a QR code with share and copy. */
+  showInvitePanel() {
+    if (this.invitePanel) { this.invitePanel = null; return }
+    if (this.state.status !== 'ready') { this.showAccount(); return }
+    void this.withBusy(async () => {
+      const url = await this.messaging.inviteUrl()
+      const qr = qrcode(0, 'M'); qr.addData(url); qr.make()
+      this.invitePanel = {url, qr: 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(qr.createSvgTag({cellSize: 4, margin: 16, scalable: true}))}
+    }).catch(() => {})
+  }
+  shareInvite() {
+    const url = this.invitePanel?.url; if (!url) return
+    if (navigator.share) void navigator.share({title: 'Chat with me on Iris Market', url}).catch(() => {})
+    else void navigator.clipboard.writeText(url).then(() => { this.chatError = 'Invitation link copied.' }).catch(() => {})
+  }
   copyInvite() { return this.withBusy(async () => { await navigator.clipboard.writeText(await this.messaging.inviteUrl()); this.accountStatus = 'Private invitation copied.' }).catch(() => {}) }
   revoke(pubkey: string) { return this.withBusy(() => this.messaging.revokeDevice(pubkey)).catch(() => {}) }
 

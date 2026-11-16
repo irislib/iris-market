@@ -73,6 +73,7 @@ fn listing_contact_checks_the_verified_cached_author_before_opening() {
     let seller = Keys::generate();
     let stranger = Keys::generate();
     let draft = Draft {
+        coordinates: None,
         title: "Synthetic test chair".into(),
         description: "Offline fixture only".into(),
         side: "offer".into(),

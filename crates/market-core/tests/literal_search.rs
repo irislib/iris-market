@@ -27,6 +27,7 @@ fn native_and_web_share_single_term_matching_cases() {
 
 fn draft(title: &str, description: &str, side: &str, tags: &[&str]) -> Draft {
     Draft {
+        coordinates: None,
         title: title.into(),
         description: description.into(),
         side: side.into(),
@@ -181,4 +182,25 @@ fn verified_listing_words_and_tags_match_without_changing_ai_or_side_state() {
             .is_empty()
     );
     app.shutdown();
+}
+
+#[test]
+fn a_map_point_publishes_district_cells_and_survives_edits() {
+    use iris_market_core::listing;
+    let keys = nostr::Keys::generate();
+    let mut d = draft("Pie", "Blueberry", "offer", &[]);
+    d.location = "Kallio, Helsinki".into();
+    d.coordinates = Some([24.9384, 60.1699]);
+    let event = listing::build(&keys, &d, "pie", 1_000, false).unwrap();
+    let cells: Vec<_> = event
+        .tags
+        .iter()
+        .filter(|t| t.as_slice().first().is_some_and(|k| k == "g"))
+        .map(|t| t.as_slice()[1].clone())
+        .collect();
+    assert_eq!(cells, ["u", "ud", "ud9", "ud9w"]);
+    let parsed = listing::parse(&event, 1_000).unwrap();
+    assert_eq!(parsed.location, "Kallio, Helsinki");
+    let edited = listing::build(&keys, &listing::draft_from(&parsed), "pie", 1_001, false).unwrap();
+    assert!(edited.tags.iter().any(|t| t.as_slice() == ["g", "ud9w"]));
 }

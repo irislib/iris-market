@@ -37,6 +37,9 @@ import org.json.JSONObject
 }
 
 @Composable fun PostListing(state:MarketSnapshot,model:MarketModel,busy:Boolean,transportType:NativeTransportType?=null,initialArea:String="",initialServiceAreas:String?=null,providerService:Boolean=false,done:()->Unit) {
+    /** A point chosen on the map as [longitude, latitude]; published as district-level cells. */
+    var mapPoint by remember { mutableStateOf<List<Double>?>(null) }
+    var choosingPlace by remember { mutableStateOf(false) }
     var expiry by remember { mutableStateOf(NativeListingExpiry.QUARTER) } // Listings expire after 3 months unless chosen otherwise.
     var expiryOpen by remember { mutableStateOf(false) }
     val escrowEnabled=remember(state.settings){JSONObject(state.settings).optBoolean("escrow_ui")}
@@ -76,7 +79,20 @@ import org.json.JSONObject
                 NativeListingExpiry.entries.forEach { choice -> DropdownMenuItem(text={Text(choice.label)},onClick={expiry=choice;expiryOpen=false}) }
             }
         }
-        MarketField(location,{location=it},if(transport == null) "Location" else "Pickup area",hint="City, area or #geohash")
+        MarketField(location,{location=it},if(transport == null) "Location" else "Pickup area",hint="e.g. Lisbon, Portugal")
+        if (transport == null) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = { choosingPlace = true }, enabled = !state.demo) { Icon(Icons.Filled.Map, null); Spacer(Modifier.width(8.dp)); Text(if (mapPoint == null) "Choose on map" else "Change map point") }
+                if (mapPoint != null) { Text("Shown on the map by district", color = Muted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f)); TextButton(onClick = { mapPoint = null }) { Text("Remove") } }
+            }
+            if (choosingPlace) PrivatePlaceMapEditor(value = JSONObject().put("label", location).put("address", location).apply { mapPoint?.let { put("coordinates", JSONArray(it)) } }.toString(), change = { raw ->
+                if (raw != null) runCatching { OrderDeliveryPlace.parse(JSONObject(raw)) }.getOrNull()?.let { place ->
+                    val name = place.label.trim(); val point = place.coordinates?.takeIf { it.size == 2 }
+                    location = if (name.isNotEmpty() && name != "Meeting point") name else place.address.ifBlank { point?.let { "%.4f, %.4f".format(it[1], it[0]) } ?: location }
+                    mapPoint = point
+                }
+            }, close = { choosingPlace = false })
+        }
         Box {
             OutlinedButton(onClick={categoriesOpen=true},shape=RoundedCornerShape(14.dp),modifier=Modifier.fillMaxWidth().height(52.dp)) {
                 Text(category);Spacer(Modifier.weight(1f));Icon(Icons.Filled.ExpandMore,null)
@@ -146,7 +162,7 @@ import org.json.JSONObject
         confirmButton={TextButton(enabled=!busy&&!uploading&&!state.demo&&state.canSign,onClick={
             confirmPublish=false
             val draft=JSONObject().put("title",title.trim()).put("description",description.trim()).put("side",side)
-                .put("price",price.trim()).put("currency",currency.trim()).put("location",location.trim())
+                .put("price",price.trim()).put("currency",currency.trim()).put("location",location.trim()).put("coordinates",mapPoint?.let { JSONArray(it) } ?: JSONObject.NULL)
                 .put("category",category).put("tags",JSONArray(if(category == "Transport") transport?.tags ?: emptyList<String>() else emptyList<String>())).put("image_url",imageUrl.trim().ifBlank { null } ?: JSONObject.NULL)
             if(providerService && escrowEnabled && side=="offer") draft.getJSONArray("tags").put("escrow-provider")
             if(category=="Transport")serviceAreas?.let {draft.put("service_areas",JSONObject(it))}

@@ -9,6 +9,7 @@ fn event(keys: &Keys, id: &str, at: u64, sold: bool, expires: Option<u64>) -> Ev
     listing::build(
         keys,
         &Draft {
+            coordinates: None,
             title: format!("Listing {id}"),
             description: "Public listing".into(),
             side: "offer".into(),

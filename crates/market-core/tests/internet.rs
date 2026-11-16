@@ -100,6 +100,7 @@ fn two_profiles_publish_discover_and_exchange_private_enquiries_over_internet_tr
     .unwrap();
     let bob = Market::open(b_dir.path(), &bob_keys.secret_key().to_secret_hex(), false).unwrap();
     let d = Draft {
+        coordinates: None,
         title: "A real signed listing".into(),
         description: "Relay integration fixture".into(),
         side: "offer".into(),

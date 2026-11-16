@@ -39,7 +39,8 @@ final class MarketUITests: XCTestCase {
         let expiry = app.buttons["listingExpiry"]
         for _ in 0..<3 where !expiry.isHittable { app.swipeUp() }
         XCTAssertTrue(expiry.waitForExistence(timeout: 5))
-        XCTAssertTrue(expiry.label.contains("Never"))
+        // New listings expire after three months unless the poster chooses otherwise.
+        XCTAssertTrue(expiry.label.contains("90 days"), expiry.label)
         expiry.tap()
         app.buttons["1 week"].tap()
         XCTAssertTrue(expiry.label.contains("1 week"))
@@ -81,9 +82,9 @@ final class MarketUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Inbox"].waitForExistence(timeout: 5))
         capture("05-inbox")
         app.buttons.matching(NSPredicate(format: "label == %@", "Connect with an invitation")).firstMatch.tap()
-        XCTAssertTrue(app.navigationBars["Private invitation"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["New chat"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.textFields["inviteInput"].exists)
-        XCTAssertFalse(app.buttons["Accept invitation"].isEnabled)
+        XCTAssertFalse(app.buttons["Join chat"].isEnabled)
         capture("14-private-invitation")
         app.buttons["Done"].tap()
         app.buttons["More"].tap()

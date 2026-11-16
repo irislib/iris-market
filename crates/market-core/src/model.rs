@@ -89,6 +89,9 @@ pub struct Draft {
     pub currency: String,
     #[serde(default)]
     pub location: String,
+    /// A point chosen on the map as `[longitude, latitude]`; published as district-level geohash cells.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordinates: Option<[f64; 2]>,
     #[serde(default)]
     pub category: String,
     #[serde(default)]
@@ -349,6 +352,9 @@ pub struct Snapshot {
     pub conversations: Vec<Conversation>,
     pub orders: Vec<crate::orders::OrderView>,
     pub invite: Option<String>,
+    /// QR modules for the invitation, so every client can show it in person.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invite_qr: Option<Vec<Vec<bool>>>,
     pub profile: Option<crate::profiles::Profile>,
     pub profile_listings: Option<crate::profile_listings::Page>,
     pub graph_context_loaded: bool,

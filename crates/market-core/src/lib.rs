@@ -390,6 +390,7 @@ impl State {
                 .unwrap_or_default(),
             orders,
             invite: self.invite.clone(),
+            invite_qr: self.invite.as_deref().and_then(qr_modules),
             profile,
             profile_listings: self
                 .profile_listings
@@ -2182,6 +2183,7 @@ fn seed_preview(state: &mut State) -> Result<()> {
     let preview_keys = Keys::new(SecretKey::from_slice(&[1u8; 32])?);
     for (i, (title, description, side, price, category, location)) in samples.iter().enumerate() {
         let d = Draft {
+            coordinates: None,
             title: (*title).into(),
             description: (*description).into(),
             side: (*side).into(),
@@ -2208,3 +2210,25 @@ fn seed_preview(state: &mut State) -> Result<()> {
 }
 #[cfg(not(target_os = "ios"))]
 pub mod updater;
+
+/// QR modules for short text such as an invitation link; `None` without QR support or when too long.
+fn qr_modules(text: &str) -> Option<Vec<Vec<bool>>> {
+    #[cfg(feature = "cashu-wallet")]
+    {
+        let code = qrcode::QrCode::new(text.as_bytes()).ok()?;
+        Some(
+            (0..code.width())
+                .map(|y| {
+                    (0..code.width())
+                        .map(|x| code[(x, y)] == qrcode::Color::Dark)
+                        .collect()
+                })
+                .collect(),
+        )
+    }
+    #[cfg(not(feature = "cashu-wallet"))]
+    {
+        let _ = text;
+        None
+    }
+}

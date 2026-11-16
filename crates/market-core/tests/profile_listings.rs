@@ -39,6 +39,7 @@ fn author_subscription_streams_signed_winners_before_eose_and_closes_on_navigati
     let stranger = Keys::generate();
     let now = listing::now();
     let draft = Draft {
+        coordinates: None,
         title: "Only in the author feed".into(),
         description: "Signed localhost listing".into(),
         side: "offer".into(),

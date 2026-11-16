@@ -27,6 +27,7 @@ fn submitted_search_streams_tags_without_eose_and_pages_when_nip50_is_unsupporte
     let keys = Keys::generate();
     let now = listing::now();
     let draft = |title: &str, tags: Vec<String>| Draft {
+        coordinates: None,
         title: title.into(),
         description: String::new(),
         side: "offer".into(),
@@ -237,6 +238,7 @@ fn relay_cursors_resume_independently_and_partial_pages_retry_the_same_boundary(
     let keys = Keys::generate();
     let now = listing::now();
     let draft = |title: &str| Draft {
+        coordinates: None,
         title: title.into(),
         description: String::new(),
         side: "offer".into(),

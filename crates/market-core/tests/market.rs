@@ -14,6 +14,7 @@ use std::{
 
 fn draft() -> Draft {
     Draft {
+        coordinates: None,
         title: "A useful camera".into(),
         description: "Works well".into(),
         side: "offer".into(),

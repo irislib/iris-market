@@ -103,6 +103,9 @@ private fun inboxContextTitle(context:MessageContext?,state:MarketSnapshot):Stri
         else if(c.messages.isEmpty())listOf(InboxThread(c,"general",null,emptyList()))
         else c.messages.groupBy { it.threadKey }.map { (key,messages) -> InboxThread(c,key,messages.first().context?:messages.first().orderId?.let(MessageContext::order),messages) }
     }.sortedWith(compareByDescending<InboxThread> {it.latestActivity}.thenBy {it.id})
+    // Search by person name or message text.
+    var search by remember { mutableStateOf("") }
+    val shownThreads = search.trim().let { query -> if (query.isEmpty()) threads else threads.filter { thread -> (listOf(state.people[thread.conversation.id]?.name ?: thread.conversation.name) + thread.messages.map { it.text }).any { it.contains(query, ignoreCase = true) } } }
     var pasted by remember { mutableStateOf("") };var showConnect by remember { mutableStateOf(false) }
     val clipboard=LocalClipboardManager.current
     val route by model.pushRoute.collectAsStateWithLifecycle()
@@ -131,27 +134,35 @@ private fun inboxContextTitle(context:MessageContext?,state:MarketSnapshot):Stri
             listOf(true to "Threads",false to "People").forEach { (threads,label) -> FilterChip(selected=groupByThreads==threads,onClick={groupByThreads=threads;preferences.edit().putBoolean("message-threads",threads).apply()},label={Text(label)}) }
         }
         Row(horizontalArrangement=Arrangement.spacedBy(8.dp),modifier=Modifier.padding(vertical=12.dp)) {
-            OutlinedButton(onClick={showConnect=!showConnect},shape=CircleShape) { Icon(Icons.Filled.Link,null,Modifier.size(18.dp));Spacer(Modifier.width(6.dp));Text("Connect") }
-            if(!state.demo) TextButton(enabled=!busy,onClick={model.action("create_invite");showConnect=true}) { Text("Create invitation") }
+            // New chat, as in Iris Chat: share your invitation, or join with someone else's.
+            OutlinedButton(onClick={showConnect=!showConnect;if(showConnect&&!state.demo&&state.invite.isNullOrBlank())model.action("create_invite")},shape=CircleShape) { Icon(Icons.Filled.PersonAdd,null,Modifier.size(18.dp));Spacer(Modifier.width(6.dp));Text("New chat") }
         }
-        if(showConnect) Column(verticalArrangement=Arrangement.spacedBy(9.dp)) {
-            MarketField(pasted,{pasted=it},"Paste a private invitation")
+        if(showConnect) Column(verticalArrangement=Arrangement.spacedBy(10.dp)) {
+            Text("Invite someone",fontWeight=FontWeight.SemiBold)
+            Text("Let them scan this code, or send them the link. Your chat stays private.",color=Muted,style=MaterialTheme.typography.bodySmall)
+            val invite=state.invite
+            if(invite.isNullOrBlank()) Text(if(state.demo)"Invitations are unavailable in preview mode." else "Preparing your invitation…",color=Muted,style=MaterialTheme.typography.bodySmall)
+            else {
+                state.inviteQr?.let { InvitationQr(it) }
+                val context=androidx.compose.ui.platform.LocalContext.current
+                Row(horizontalArrangement=Arrangement.spacedBy(10.dp)) {
+                    Button(onClick={context.startActivity(android.content.Intent.createChooser(android.content.Intent(android.content.Intent.ACTION_SEND).setType("text/plain").putExtra(android.content.Intent.EXTRA_TEXT,invite),"Share invitation"))},modifier=Modifier.weight(1f)) { Icon(Icons.Filled.Share,null,Modifier.size(18.dp));Spacer(Modifier.width(6.dp));Text("Share") }
+                    OutlinedButton(onClick={clipboard.setText(AnnotatedString(invite))},modifier=Modifier.weight(1f)) { Icon(Icons.Filled.ContentCopy,null,Modifier.size(18.dp));Spacer(Modifier.width(6.dp));Text("Copy link") }
+                }
+            }
+            HorizontalDivider(Modifier.padding(vertical=6.dp))
+            Text("Have an invitation?",fontWeight=FontWeight.SemiBold)
+            MarketField(pasted,{pasted=it},"Paste invitation link")
             Button(enabled=!state.demo && pasted.isNotBlank() && !busy,onClick={
                 model.command(JSONObject().put("type","accept_invite").put("invite",pasted.trim())){pasted="";showConnect=false}
-            }) { Text("Accept invitation") }
-            state.invite?.let { invite ->
-                Surface(color=Mint,shape=RoundedCornerShape(16.dp)) { Column(Modifier.padding(14.dp)) {
-                    Text("Your invitation is ready",fontWeight=FontWeight.SemiBold)
-                    Text("Share it with the person you want to connect with.",color=Muted,style=MaterialTheme.typography.bodySmall)
-                    TextButton(onClick={clipboard.setText(AnnotatedString(invite))}) { Icon(Icons.Filled.ContentCopy,null,Modifier.size(16.dp));Spacer(Modifier.width(6.dp));Text("Copy invitation") }
-                } }
-            }
+            },modifier=Modifier.fillMaxWidth()) { Text("Join chat") }
             Spacer(Modifier.height(6.dp))
         }
+        if(state.conversations.isNotEmpty()) MarketField(search,{search=it},"Search people and messages")
         LazyColumn(verticalArrangement=Arrangement.spacedBy(10.dp),contentPadding=PaddingValues(bottom=30.dp)) {
             if(state.escrowInvites.isNotEmpty())item { EscrowCardsView(state,model) }
             if(state.conversations.isEmpty())item { EmptyView("No conversations","Open a listing to send a private enquiry, or connect with an invitation.",Icons.Filled.Forum) }
-            items(threads,key={it.id}) { thread ->
+            items(shownThreads,key={it.id}) { thread ->
                 val c=thread.conversation
                 Surface(color=White,shape=RoundedCornerShape(20.dp),modifier=Modifier.fillMaxWidth().clickable{selected=c.id;selectedThread=thread.key;selectedContext=thread.context}) {
                     Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(6.dp)) {
@@ -317,5 +328,15 @@ private fun inboxContextTitle(context:MessageContext?,state:MarketSnapshot):Stri
         AppUpdatesView(model.updates, state.demo)
         HorizontalDivider(color=Line)
         OutlinedButton(onClick=switchMode,modifier=Modifier.fillMaxWidth(),shape=RoundedCornerShape(15.dp)) { Text(if(state.demo) "Open live market" else "Open Preview") }
+    }
+}
+
+
+/** The invitation as a QR code, drawn from the modules the core computes. */
+@Composable private fun InvitationQr(modules: List<List<Boolean>>) {
+    if (modules.isEmpty() || modules.size > 177) return
+    androidx.compose.foundation.Canvas(Modifier.size(240.dp).background(Color.White, RoundedCornerShape(16.dp)).padding(12.dp).semantics { contentDescription = "Invitation QR code" }) {
+        val count = modules.size; val step = size.minDimension / (count + 8)
+        modules.forEachIndexed { y, row -> row.forEachIndexed { x, dark -> if (dark) drawRect(Color.Black, androidx.compose.ui.geometry.Offset((x + 4) * step, (y + 4) * step), androidx.compose.ui.geometry.Size(step, step)) } }
     }
 }

@@ -291,7 +291,9 @@ struct BrowseView: View {
     private var networkOnly: Bool { store.snapshot.networkOnly ?? true }
     private var wantsPhotos: Bool { NativePhotoFilter.wantsPhotos(choice: photoFilter, query: store.snapshot.query, side: store.snapshot.side, map: showMap) }
     var body: some View {
-        let requireMatch = curationActive && !showAllMatches
+        // A failed Home review never leaves the feed empty: fall back to every listing, as Show all would.
+        let homeFallback = store.homeFilterActive && store.searchPaused
+        let requireMatch = curationActive && !showAllMatches && !homeFallback
         let visibleListings = store.snapshot.listings.filter { listing in
             (!requireMatch || listing.matchesSearch) && NativePhotoFilter.includes(imageURL: listing.imageUrl, choice: photoFilter, query: store.snapshot.query, side: store.snapshot.side, map: showMap, bitcoin: listing.isBitcoinOffer)
         }
@@ -337,7 +339,9 @@ struct BrowseView: View {
                             else { store.selectResultView(showAll: !showAllMatches) }
                         }.accessibilityIdentifier("resultView")
                     }
-                    if store.searchPaused, let status = store.localAIStatus {
+                    if homeFallback {
+                        Text("Suggestions are unavailable right now, so all listings are shown.").font(.caption).foregroundStyle(MarketTheme.muted)
+                    } else if store.searchPaused, let status = store.localAIStatus {
                         Text(status).font(.caption).foregroundStyle(MarketTheme.muted)
                     }
                     if unavailableCount > 0 {
@@ -360,6 +364,11 @@ struct BrowseView: View {
                 }.padding(.top, 2)
                 if showMap && !store.demo {
                     MarketMapView(listings: visibleListings, onSelect: { selected = $0 }).frame(height: 440).clipShape(RoundedRectangle(cornerRadius: 20))
+                } else if visibleListings.isEmpty && (!curationActive || homeFallback) && !store.demo && (networkOnly || wantsPhotos) {
+                    // The default filters hide new sellers; lead with the way out instead of a dead end.
+                    MarketEmptyState(symbol: query.isEmpty ? "square.grid.2x2" : "magnifyingglass", title: query.isEmpty ? "Nothing in your network yet" : "No matches in your network", description: "Listings from other people\(wantsPhotos ? " or without photos" : "") are hidden.", action: "Show everyone") {
+                        photoFilter = false; if networkOnly { setNetworkOnly(false) }
+                    }
                 } else if visibleListings.isEmpty {
                     MarketEmptyState(symbol: query.isEmpty ? "square.grid.2x2" : "magnifyingglass", title: curationActive ? (store.searchPaused ? "Review paused" : searching || unfinishedSearch ? "No matches yet" : "No matches") : query.isEmpty ? "No listings yet" : "No results", description: curationActive ? "New matches appear as they are reviewed. Choose Show all to search by text." : query.isEmpty ? "Sell something or post what you want to buy." : "Try another search or post what you want to buy.")
                 } else {

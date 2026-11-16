@@ -14,7 +14,8 @@ struct ProfileView: View {
             VStack(alignment: .leading, spacing: 25) {
                 Text("Settings").font(.system(size: 30, weight: .medium)).tracking(-1).foregroundStyle(MarketTheme.ink)
                 VStack(spacing: 0) {
-                    profileRow("Sign in", symbol: "person.crop.circle.badge.checkmark") { signIn = true }.disabled(store.demo)
+                    // A profile already exists here; this opens setup for a fresh one or switches to another key.
+                    profileRow(store.snapshot.profileNameRequired == true ? "Set up profile" : "Use another profile", symbol: "person.crop.circle.badge.checkmark") { signIn = true }.disabled(store.demo)
                     Divider().padding(.leading, 61)
                     profileRow("Wallet", subtitle: "Cashu tokens and Lightning top ups", symbol: "wallet.pass.fill") { wallet = true }.accessibilityIdentifier("walletSettingsRow")
                     Divider().padding(.leading, 61)

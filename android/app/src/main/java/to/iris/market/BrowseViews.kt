@@ -61,8 +61,10 @@ private fun rememberListLayout(): MutableState<Boolean> {
     val searching = localInference || state.searchDiscovery?.loading == true || canCurate && busy
     val matchCount = state.listings.count { it.matchesSearch }
     val wantsPhotos = NativePhotoFilter.wantsPhotos(photoFilter,state.query,state.side,showMap)
+    // A failed Home review never leaves the feed empty: fall back to every listing, as Show all would.
+    val homeFallback = homeFeed && state.error != null
     val visibleListings = state.listings.filter { listing ->
-        (!canCurate || showAll || listing.matchesSearch) && NativePhotoFilter.includes(listing.imageUrl,photoFilter,state.query,state.side,showMap,listing.isBitcoinOffer)
+        (!canCurate || showAll || homeFallback || listing.matchesSearch) && NativePhotoFilter.includes(listing.imageUrl,photoFilter,state.query,state.side,showMap,listing.isBitcoinOffer)
     }
     LazyVerticalGrid(columns = GridCells.Fixed(if(listLayout) 1 else 2), horizontalArrangement = Arrangement.spacedBy(14.dp),
         verticalArrangement = Arrangement.spacedBy(18.dp), contentPadding = PaddingValues(start=22.dp,end=22.dp,bottom=90.dp)) {
@@ -151,7 +153,13 @@ private fun rememberListLayout(): MutableState<Boolean> {
         if (showMap && !state.demo) item(span={GridItemSpan(maxLineSpan)}) {
             MarketMapView(visibleListings,selected,Modifier.fillMaxWidth().height(440.dp).clip(RoundedCornerShape(20.dp))) { cells -> model.command(JSONObject().put("type","set_map_area").put("cells",cells)) }
         }
-        if (!showMap && visibleListings.isEmpty()) item(span={GridItemSpan(maxLineSpan)}) {
+        if (!showMap && visibleListings.isEmpty() && (!(canCurate && !showAll) || homeFallback) && !searching && !state.demo && (state.networkOnly || wantsPhotos)) item(span={GridItemSpan(maxLineSpan)}) {
+            // The default filters hide new sellers; lead with the way out instead of a dead end.
+            EmptyView(if(query.isBlank()) "Nothing in your network yet" else "No matches in your network",
+                "Listings from other people${if(wantsPhotos) " or without photos" else ""} are hidden.", Icons.Filled.Storefront, "Show everyone") {
+                changePhotoFilter(false); if(state.networkOnly) model.filter(state.query, state.side, state.aiSearch, networkOnly=false)
+            }
+        } else if (!showMap && visibleListings.isEmpty()) item(span={GridItemSpan(maxLineSpan)}) {
             EmptyView(if(canCurate && !showAll && state.error != null) "Search paused" else if(searching || canCurate && !showAll && (state.searchDiscovery?.hasMore == true || state.listings.any { it.externalOrder == null && it.relevanceShow == null })) "No matches yet" else if(canCurate && !showAll) "No matching listings" else if(query.isBlank()) "No listings yet" else "No matches",
                 if(canCurate && !showAll && state.error != null) "Check your AI settings, then try again." else if(searching) "New matches appear here as they arrive." else if(canCurate && !showAll && (state.searchDiscovery?.hasMore == true || state.listings.any { it.externalOrder == null && it.relevanceShow == null })) "Load more to keep searching, or choose Show all." else if(canCurate && !showAll) "Choose Show all or change your AI settings." else if(query.isBlank()) "Sell something or post what you want to buy." else "Try a different search or clear the filters.",
                 Icons.Filled.Storefront)

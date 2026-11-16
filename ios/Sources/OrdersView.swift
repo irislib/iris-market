@@ -47,6 +47,12 @@ struct OrdersView: View {
             }.padding(23)
         }.foregroundStyle(MarketTheme.ink)
             .onChange(of: jobsAvailable) { available in if !available && section == .escrow { section = .purchases } }
+            .onAppear {
+                // Open on the list holding the latest activity, so a new sale is not hidden behind an empty Purchases list.
+                let owner = store.snapshot.publicKey
+                guard section == .purchases, let latest = store.snapshot.orders.filter({ !$0.archived }).max(by: { $0.updatedAt < $1.updatedAt }) else { return }
+                if let list = [MarketOrderList.purchases, .sales, .deliveries].first(where: { $0.contains(latest, owner: owner) }) { section = list }
+            }
             .marketPage(isPresented: $offerService) { NewListingView(providerService: true).marketListingEditorSheetScope() }
             .marketPage(item: selection) { value in OrderDetailView(orderID: value.id).marketSheetScope() }
     }

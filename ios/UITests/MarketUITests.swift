@@ -335,7 +335,7 @@ final class MarketUITests: XCTestCase {
         app.terminate(); app.launchArguments = []; app.launch()
         XCTAssertTrue(app.buttons["tabProfile"].waitForExistence(timeout: 10))
         app.buttons["tabProfile"].tap()
-        app.buttons["Sign in"].tap()
+        app.buttons["Use another profile"].tap()
         let key = app.secureTextFields["accountSecret"]
         XCTAssertTrue(key.waitForExistence(timeout: 5))
         key.tap()

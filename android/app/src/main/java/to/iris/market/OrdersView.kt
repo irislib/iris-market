@@ -44,7 +44,10 @@ import java.time.format.DateTimeFormatter
 import java.util.UUID
 
 @Composable fun OrdersView(state: MarketSnapshot, model:MarketModel, busy:Boolean, openOrder: (String) -> Unit) {
-    var tab by remember { mutableStateOf("purchases") }
+    // Open on the list holding the latest activity, so a new sale is not hidden behind an empty Purchases list.
+    var tab by remember { mutableStateOf(state.orders.filter { !it.archived }.maxByOrNull { it.updatedAt }?.let { latest ->
+        when { latest.buyer == state.publicKey -> "purchases"; latest.seller == state.publicKey -> "sales"; latest.handlesDelivery(state.publicKey) -> "deliveries"; else -> null }
+    } ?: "purchases") }
     val escrowEnabled=JSONObject(state.settings).optBoolean("escrow_ui") && !state.demo
     val showJobs=escrowEnabled || (!state.demo && state.escrowInvites.any {it.joined && it.participants[2]==state.publicKey})
     var offerService by remember {mutableStateOf(false)}

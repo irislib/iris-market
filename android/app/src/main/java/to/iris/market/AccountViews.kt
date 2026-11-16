@@ -258,10 +258,10 @@ private fun inboxContextTitle(context:MessageContext?,state:MarketSnapshot):Stri
         Text("Settings",style=MaterialTheme.typography.headlineMedium)
         Row(verticalAlignment=Alignment.CenterVertically,modifier=Modifier.padding(vertical=10.dp)) {
             UserAvatar(state.people[state.publicKey] ?: PublicPerson.unnamed(state.publicKey),70.dp)
-            Spacer(Modifier.width(17.dp));Column { Text(if(state.demo) "Preview profile" else "Your profile",style=MaterialTheme.typography.titleLarge,fontWeight=FontWeight.SemiBold)
+            Spacer(Modifier.width(17.dp));Column { Text(if(state.demo) "Preview profile" else state.people[state.publicKey]?.name?.takeIf { it.isNotBlank() && it != "Unnamed user" } ?: "Your profile",style=MaterialTheme.typography.titleLarge,fontWeight=FontWeight.SemiBold)
                 if(state.demo) Text("Sample listings",color=Muted,style=MaterialTheme.typography.bodySmall) }
         }
-        OutlinedButton(onClick={signIn=true},enabled=!state.demo) {Icon(Icons.Filled.Login,null);Spacer(Modifier.width(8.dp));Text("Sign in")}
+        OutlinedButton(onClick={signIn=true},enabled=!state.demo) {Icon(Icons.Filled.Login,null);Spacer(Modifier.width(8.dp));Text(if(state.profileNameRequired) "Set up profile" else "Use another profile")}
         if(!state.demo&&!state.canSign) Text("Sign in with your profile key to publish listings.",color=Muted,style=MaterialTheme.typography.bodySmall)
         TextButton(onClick=openWallet,enabled=!state.demo&&!state.profileNameRequired) { Icon(Icons.Filled.AccountBalanceWallet,null);Spacer(Modifier.width(8.dp));Text("Wallet") }
         key(state.publicKey) { PrivateMatchingSettings(state, model, busy) }

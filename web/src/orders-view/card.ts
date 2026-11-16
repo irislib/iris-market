@@ -1,6 +1,7 @@
 import { element as node } from '../dom.ts';
 import { nextTransportStop, transportProgress } from '../transport-job.ts';
 import { date, statuses } from './format.ts';
+import { createUserName, warmProfiles } from '../people.ts';
 
 /** An order row. Built as a plain element because the courier workspace also lists it. */
 export function createOrderCard(order, {owner, deliveries, unread, price, onOpen}:{owner?:string;deliveries:boolean;unread:boolean;price:(item:any)=>string;onOpen:()=>void}):HTMLElement {
@@ -14,7 +15,11 @@ export function createOrderCard(order, {owner, deliveries, unread, price, onOpen
     if (stop) text.append(node('span', `${stop.status === 'arrived' ? 'At' : 'Next'}: ${stop.label || 'Stop'}${stop.address ? ` · ${stop.address}` : ''}`, 'order-next-label'));
     if (progress.total) text.append(node('span', `${progress.completed} of ${progress.total} stops completed`, 'small muted'));
   }
-  text.append(node('span', `${date(order.createdAt)}${order.items?.[0]?.quantity > 1 ? ` · ${order.items[0].quantity} items` : ''}`, 'small muted'));
+  // Name the other person, so two orders for the same item can be told apart.
+  const other = owner && order.seller === owner ? order.buyer : owner && order.buyer === owner ? order.seller : '';
+  const meta = node('span', `${date(order.createdAt)}${order.items?.[0]?.quantity > 1 ? ` · ${order.items[0].quantity} items` : ''}`, 'small muted');
+  if (other && /^[0-9a-f]{64}$/.test(other)) { meta.prepend(createUserName(other), ' · '); warmProfiles([other]); }
+  text.append(meta);
   amount.append(node('span', `${price(order.items?.[0] || {})}${order.items?.[0]?.quantity > 1 ? ` × ${order.items[0].quantity}` : ''}`, 'order-card-price'), node('span', statuses[order.status] || order.status, `order-status order-status-${order.status}`));
   card.append(text, amount); return card;
 }

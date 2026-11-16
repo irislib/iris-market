@@ -1,7 +1,17 @@
 // Injected only by the installed desktop shell. No web API can run commands.
-(() => {
+(function installUpdates() {
   const parent = document.querySelector('#preferences-dialog');
-  if (!parent || document.querySelector('#desktop-updates')) return;
+  if (!parent) {
+    const observer = new MutationObserver(() => {
+      if (document.querySelector('#preferences-dialog')) {
+        observer.disconnect();
+        installUpdates();
+      }
+    });
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+    return;
+  }
+  if (document.querySelector('#desktop-updates')) return;
   const section = document.createElement('section');
   section.id = 'desktop-updates'; section.className = 'settings-section';
   section.innerHTML = '<h3>App updates</h3><p data-version class="small muted"></p><label><input type="checkbox" data-auto> Check automatically</label><p data-status role="status" aria-live="polite"></p><p data-error role="alert"></p><div class="detail-actions"><button type="button" class="button secondary" data-check>Check for updates</button><button type="button" class="button" data-download hidden>Download update</button><button type="button" class="button" data-open hidden>Open installer</button></div>';

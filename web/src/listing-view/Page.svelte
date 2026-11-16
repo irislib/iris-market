@@ -13,10 +13,11 @@
 
   let {listing, options}: {listing: ListingPresentation; options: ListingPageOptions} = $props()
   const saved = $derived(options.saved ?? false)
-  const {onSave = () => {}, onBuy = () => {}, onMessage = undefined, priceNode, authorRow = () => null, isPreview = false, owner = undefined, onEdit = undefined, onCloseBitcoin = undefined, onToast = () => {}, draftPreview = false, localImage = undefined, discoverable = undefined} = options
+  const {onSave = () => {}, onBuy = () => {}, onMessage = undefined, onAddToBasket = undefined, onViewBasket = undefined, priceNode, authorRow = () => null, isPreview = false, owner = undefined, onEdit = undefined, onCloseBitcoin = undefined, onToast = () => {}, draftPreview = false, localImage = undefined, discoverable = undefined} = options
 
   const hero = heroImage(listing, {draftPreview, localImage})
   let showingOriginal = $state(false)
+  let inBasket = $state(options.inBasket ?? false)
   function selectImage(original: boolean) {
     showingOriginal = original
     hero.select(original, () => { showingOriginal = false })
@@ -96,6 +97,10 @@
       {#snippet actions()}
         <div class="detail-actions">
           {#if showBuy}<button class="button primary" onclick={() => onBuy(listing)}>{bitcoin ? (listing.side === 'request' ? 'Message buyer' : 'Message seller') : listing.side === 'request' ? 'Respond' : 'Buy'}</button>{/if}
+          {#if showBuy && onAddToBasket && !bitcoin && listing.side === 'offer' && String(listing.price ?? '') !== ''}
+            {#if inBasket && onViewBasket}<button class="button secondary" onclick={() => onViewBasket()}>View basket</button>
+            {:else}<button class="button secondary" onclick={() => { inBasket = onAddToBasket(listing) !== false }}>Add to basket</button>{/if}
+          {/if}
           {#if showBuy && onMessage && !bitcoin && listing.side !== 'request'}<button class="button secondary" onclick={() => onMessage(listing)}>Message seller</button>{/if}
           {#if showEdit}<button class="button primary" onclick={() => onEdit(listing)}>Edit listing</button>{/if}
           {#if showClose}

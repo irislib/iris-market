@@ -11,13 +11,17 @@ export interface Shipment {stops:ShipmentStop[];trackingUrl?:string;eta?:number;
 /** `id` is the replaceable listing address; `eventId` pins the exact signed revision that was ordered. */
 /** An order photo is a plain public HTTPS address, as listings publish. */
 const orderImage=(url:unknown):url is string=>typeof url==='string'&&url.length<=2048&&url.startsWith('https://')&&!/[\u0000-\u001f\u007f]/.test(url);
+/** The most listings one order holds. */
+export const MAX_ITEMS=20;
 export interface OrderItem {id:string;title:string;price:string;currency:string;quantity:number;eventId?:string;image?:string}
 export interface DeliveryPlace {label:string;address:string;coordinates?:Coordinates}
 export interface DeliveryRequest {pickup:DeliveryPlace;destination:DeliveryPlace;collection?:{merchant:string;reference:string}}
 export interface PickupAuthorization {courierPubkey:string;reference:string}
 export interface OrderPayment {mint:string;amount:string;unit:'sat';status:'requested'|'received'}
 export interface OrderEscrow {escrowTradeId?:string;escrowProvider?:string}
-export interface OrderRequestOptions extends OrderEscrow {quantity?:number;note?:string;deliveryRequest?:DeliveryRequest}
+export interface OrderRequestOptions extends OrderEscrow {quantity?:number;note?:string;deliveryRequest?:DeliveryRequest;
+  /** Further listings from the same seller, ordered together. */
+  basket?:Array<{listing:OrderListing;quantity:number}>}
 export interface Order extends OrderEscrow {payment?:OrderPayment;deliveryRequest?:DeliveryRequest;pickupAuthorization?:PickupAuthorization;id:string;buyer:string;seller:string;items:OrderItem[];note:string;status:OrderStatus;createdAt:number;updatedAt:number;shipment:Shipment;routeId:string}
 export interface OrderView extends Order {sourceOrderId?:string;deliveryOrderId?:string;archived:boolean;role:'buyer'|'seller'|'courier'|null;sync:'queued'|'sent';locationFresh:boolean}
 export interface OrderListing {id:string;eventId?:string;imageUrl?:string;author:string;title:string;price:string|number;currency:string;side?:string;status?:string;expiration?:number;escrow?:{trade:string};externalOrder?:unknown}
@@ -97,7 +101,10 @@ function validateSnapshot(raw:unknown,options:OrderValidationOptions={}):Order {
   const escrow=escrowAttachment(value,buyer,seller);
   if(escrow.escrowTradeId && value.payment!=null)fail('Use the escrow agreement for this payment.');
   if(buyer===seller||!value.id?.startsWith(`${buyer}:`)||!UUID.test(value.id.slice(65)))fail('Invalid order identity.');
-  if(!Array.isArray(value.items)||value.items.length!==1)fail('One listing per order is supported.');
+  // One seller per order; a basket can hold several of their listings. Escrow covers a single listing.
+  if(!Array.isArray(value.items)||value.items.length<1||value.items.length>MAX_ITEMS)fail(`Order between 1 and ${MAX_ITEMS} listings.`);
+  if(escrow.escrowTradeId&&value.items.length!==1)fail('Escrow covers one listing per order.');
+  if(new Set(value.items.map(item=>item?.id)).size!==value.items.length)fail('Each listing appears once per order.');
   const items=value.items.map(item=>{
     if(!Number.isInteger(item.quantity)||item.quantity<1||item.quantity>999)fail('Choose a quantity between 1 and 999.');
     const price=String(item.price??'');if(price!==''&&(!/^[+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(price)||price.length>24||!Number.isFinite(Number(price))))fail('Invalid price.');
@@ -124,8 +131,8 @@ export function decodeOrder(rumor:Pick<OrderRumor,'kind'|'tags'>):OrderEnvelope|
 }
 export const isOrderMessage = (rumor:Pick<OrderRumor,'tags'>) => rumor?.tags?.some(tag=>tag[0]===ORDER_TAG) === true;
 export const orderMessageText = (event:OrderEnvelope, order:Order) => {
-  const title=order.items[0].title;
-  if(event.action==='request')return `Order requested: ${order.items[0].quantity} × ${title}${order.note?`\n${order.note}`:''}`;
+  const title=order.items.length>1?`${order.items[0].title} and ${order.items.length-1} more`:order.items[0].title;
+  if(event.action==='request')return `Order requested: ${order.items.map(item=>`${item.quantity} × ${item.title}`).join(', ')}${order.note?`\n${order.note}`:''}`;
   if(event.action==='payment')return event.payload.status==='received'?'Payment received (seller confirmation).':'Payment requested.';
   if(event.action==='pickup')return `Pickup authorization updated for ${title}.`;
   if(event.action==='route')return `Delivery details updated for ${title}.`;
@@ -285,11 +292,13 @@ export function createOrderBook({vault,owner,device,notify=()=>{},now=time,check
     state:()=>data.records.map(project).sort((a,b)=>b.updatedAt-a.updatedAt||a.id.localeCompare(b.id)),
     async load(){const stored=await vault.get<OrderData>(KEY);check();if(stored){if(!Array.isArray(stored.records)||stored.records.length>MAX_ORDERS||!Array.isArray(stored.jobs)||stored.jobs.length>MAX_JOBS||!Array.isArray(stored.ephemeral))fail('Invalid private order storage.');data={...stored,blocked:stored.blocked??[],pending:stored.pending??[]};}},
     flush:()=>writes,
-    request(listing:OrderListing,{quantity=1,note='',deliveryRequest:delivery,...selected}:OrderRequestOptions={}){
+    request(listing:OrderListing,{quantity=1,note='',deliveryRequest:delivery,basket,...selected}:OrderRequestOptions={}){
       if(!listing||listing.side==='request'||listing.status==='sold'||listing.expiration&&listing.expiration<=now())fail('Choose an available selling listing.');
       const escrow=escrowAttachment(selected,owner,listing.author);
       if(escrow.escrowTradeId && (listing.externalOrder || listing.escrow?.trade!=='goods'))fail('This listing does not offer escrow for orders.');
-      const order=snapshot({...escrow,id:`${owner}:${crypto.randomUUID()}`,buyer:owner,seller:listing.author,items:[{id:listing.id,title:listing.title,price:listing.price,currency:listing.currency,quantity,...(/^[a-f0-9]{64}$/.test(listing.eventId??'')?{eventId:listing.eventId}:{}),...(orderImage(listing.imageUrl)?{image:listing.imageUrl}:{})}],...(delivery?{deliveryRequest:delivery}:{}),note,status:'requested',createdAt:now(),updatedAt:now(),shipment:{stops:[]},routeId:''});
+      const item=(value:OrderListing,count:number)=>({id:value.id,title:value.title,price:value.price,currency:value.currency,quantity:count,...(/^[a-f0-9]{64}$/.test(value.eventId??'')?{eventId:value.eventId}:{}),...(orderImage(value.imageUrl)?{image:value.imageUrl}:{})});
+      for(const extra of basket??[])if(!extra?.listing||extra.listing.author!==listing.author||extra.listing.side==='request'||extra.listing.status==='sold'||extra.listing.expiration&&extra.listing.expiration<=now())fail('A basket item is no longer available from this seller.');
+      const order=snapshot({...escrow,id:`${owner}:${crypto.randomUUID()}`,buyer:owner,seller:listing.author,items:[item(listing,quantity),...(basket??[]).map(extra=>item(extra.listing,extra.quantity))],...(delivery?{deliveryRequest:delivery}:{}),note,status:'requested',createdAt:now(),updatedAt:now(),shipment:{stops:[]},routeId:''});
       return local(order.id,'request',order,true);
     },
     requestDelivery(sourceOrderId:string,serviceListing:OrderListing,destination:DeliveryPlace){return serial(async()=>{

@@ -10,6 +10,7 @@
   import {createStaticImage} from '../media.ts'
   import {dateTime, statuses, terminal, trackingLink} from './format.ts'
   import Person from './Person.svelte'
+  import {orderPrice} from './summary.ts'
   import type {OrdersState} from './state.svelte.ts'
 
   let {orders: s}: {orders: OrdersState} = $props()
@@ -101,6 +102,7 @@
       {#if item.quantity > 1}<p class="small muted">Quantity {item.quantity}</p>{/if}
     </div>
   {/each}
+  {#if (order.items?.length ?? 0) > 1}<p class="order-basket-row order-basket-total"><span>Total</span><span>{orderPrice(order, value => s.price(value))}</span></p>{/if}
   {#if d.arrival}
     <section class="order-arrival" aria-label="Estimated arrival">
       <span class="small muted">Estimated arrival</span>

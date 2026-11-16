@@ -273,7 +273,34 @@ impl State {
                             .and_then(|listing| listing.image_url.clone())
                     })
             });
-            if let Some(item) = view.order.items.first() {
+            // A basket shows its total when every item shares a currency.
+            let total = view.order.items.first().and_then(|first| {
+                let mut sum = 0.0;
+                for item in &view.order.items {
+                    let price: f64 = item.price.parse().ok()?;
+                    if item.currency != first.currency || !price.is_finite() {
+                        return None;
+                    }
+                    sum += price * f64::from(item.quantity);
+                }
+                (view.order.items.len() > 1).then(|| (sum.to_string(), first.currency.clone()))
+            });
+            if let Some((price, currency)) = &total {
+                // Without a conversion the total stays in the listings' own currency.
+                view.display_price = self
+                    .rates
+                    .convert(price, currency, &self.settings.currency, listing::now())
+                    .or_else(|| {
+                        Some(rates::DisplayPrice {
+                            amount: price.parse().ok()?,
+                            currency: rates::normalize_currency(currency)?,
+                            approximate: false,
+                            source: None,
+                            updated_at: None,
+                            stale: false,
+                        })
+                    });
+            } else if let Some(item) = view.order.items.first() {
                 view.display_price = self.rates.convert(
                     &item.price,
                     &item.currency,

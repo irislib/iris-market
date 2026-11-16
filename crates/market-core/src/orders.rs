@@ -99,6 +99,8 @@ pub struct Shipment {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub location: Option<ShipmentLocation>,
 }
+/// The most listings one order holds.
+pub const MAX_ITEMS: usize = 20;
 /// An order photo is a plain public HTTPS address, as listings publish.
 fn order_image(url: &str) -> bool {
     url.len() <= 2048 && url.starts_with("https://") && !url.chars().any(char::is_control)
@@ -454,7 +456,25 @@ fn snapshot_with_mint(mut value: Order, developer_mint: Option<&str>) -> Result<
                 .is_some_and(uuid),
         "Invalid order identity",
     )?;
-    require(value.items.len() == 1, "One listing per order is supported")?;
+    // One seller per order; a basket can hold several of their listings. Escrow covers one listing.
+    require(
+        (1..=MAX_ITEMS).contains(&value.items.len()),
+        "Order between 1 and 20 listings",
+    )?;
+    require(
+        value.escrow.escrow_trade_id.is_none() || value.items.len() == 1,
+        "Escrow covers one listing per order",
+    )?;
+    require(
+        value
+            .items
+            .iter()
+            .map(|item| &item.id)
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+            == value.items.len(),
+        "Each listing appears once per order",
+    )?;
     for item in &mut value.items {
         item.currency.make_ascii_uppercase();
         let valid_price = item.price.is_empty()

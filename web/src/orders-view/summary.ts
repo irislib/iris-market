@@ -38,6 +38,20 @@ export function orderTotals(orders: SummaryOrder[]) {
   return [...totals].map(([currency, amount]) => ({currency, amount})).sort((a, b) => a.currency.localeCompare(b.currency));
 }
 
+type PricedItem = {price: string | number; currency: string; quantity: number};
+/** One line's price: the unit price times its count when the price is a number. */
+export function linePrice<T extends PricedItem>(item: T, price: (item: T) => string): string {
+  const unit = Number(item.price);
+  return item.quantity > 1 && item.price !== '' && Number.isFinite(unit) ? price({...item, price: String(unit * item.quantity)}) : price(item);
+}
+
+/** The order total when every item shares a currency; otherwise the first item with a count. */
+export function orderPrice<T extends PricedItem>(order: {items?: T[]}, price: (item: T) => string): string {
+  const items = order.items || [], first = items[0] ?? ({price: '', currency: '', quantity: 1} as T);
+  if (items.length > 1 && items.every(item => item.currency === first.currency && item.price !== '' && Number.isFinite(Number(item.price)))) return price({...first, price: String(items.reduce((sum, item) => sum + Number(item.price) * item.quantity, 0))});
+  return `${price(first)}${first.quantity > 1 ? ` × ${first.quantity}` : ''}${items.length > 1 ? ` + ${items.length - 1} more` : ''}`;
+}
+
 const cell = (value: unknown) => { const text = String(value ?? ''); return /[",\n\r]/.test(text) || /^[=+\-@\t]/.test(text) ? `"${(/^[=+\-@\t]/.test(text) ? "'" : '') + text.replaceAll('"', '""')}"` : text; };
 /** A spreadsheet-safe CSV of the orders shown, one row per item. Formula-like text is quoted so it stays text. */
 export function ordersCsv(orders: SummaryOrder[], owner: string, nameFor: (pubkey: string) => string = () => '') {

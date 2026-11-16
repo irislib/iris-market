@@ -5,12 +5,16 @@
   import type {createDeliveryPlaceInput} from '../delivery-place-ui.ts'
   import {place} from '../svelte/place.ts'
   import Person from './Person.svelte'
+  import {linePrice, orderPrice} from './summary.ts'
   import type {OrdersState} from './state.svelte.ts'
 
   let {orders: s}: {orders: OrdersState} = $props()
   const {account, escrow} = s
   // A fresh form per render; later listing changes never reset what was typed.
   const listing = s.listing
+  const extra = s.basketExtra, firstQuantity = s.basketQuantity
+  // A basket lists every item; its counts were set in the basket.
+  const lines = listing ? [{listing, quantity: firstQuantity}, ...extra] : []
   const places = [...s.editors]
   const escrowable = !!(escrow && listing?.escrow?.trade === 'goods' && listing.side === 'offer')
   let image = $state(listing ? imageUrl(listing.imageUrl, {width: 160}) || art(listing) : '')
@@ -30,8 +34,8 @@
     const count = Number(quantity.value), message = note.value.trim()
     if (!Number.isInteger(count) || count < 1 || count > 999) { quantity.reportValidity(); return }
     void s.perform(async () => {
-      const draft = {quantity: count, note: message, ...(places.length === 2 ? {deliveryRequest: {pickup: places[0].read(), destination: places[1].read()}} : {})}
-      const saved = order => { s.data = account.state(); s.showDetail(order); s.announce('Order requested') }
+      const draft = {quantity: count, note: message, ...(extra.length ? {basket: extra.map(item => ({listing: item.listing, quantity: item.quantity}))} : {}), ...(places.length === 2 ? {deliveryRequest: {pickup: places[0].read(), destination: places[1].read()}} : {})}
+      const saved = order => { if (extra.length || s.basket?.items().some(item => item.listing.id === listing.id)) { s.basket?.clearSeller(listing.author); s.basketChanged() } s.data = account.state(); s.showDetail(order); s.announce('Order requested') }
       if (protect) {
         if (!escrow?.canCheckout(listing)) throw Error('Enable escrow in Settings to use a provider.')
         await escrow.checkout(listing, draft, saved)
@@ -45,16 +49,26 @@
     <div class="order-review-item">
       <img alt="" referrerpolicy="no-referrer" src={image} onerror={() => { if (fellBack) return; fellBack = true; image = art(listing) }}>
       <div>
-        <h3 bind:this={title}>{listing.title}</h3>
-        <p class="order-review-price">{s.price(listing)}</p>
-        <span hidden use:place={() => translateListingTitle(listing, title)}></span>
+        {#if extra.length}
+          <h3>{lines.reduce((sum, item) => sum + item.quantity, 0)} items</h3>
+          <p class="order-review-price">{orderPrice({items: lines.map(item => ({...item.listing, quantity: item.quantity}))}, value => s.price(value))}</p>
+        {:else}
+          <h3 bind:this={title}>{listing.title}</h3>
+          <p class="order-review-price">{s.price(listing)}</p>
+          <span hidden use:place={() => translateListingTitle(listing, title)}></span>
+        {/if}
       </div>
     </div>
     <Person orders={s} pubkey={listing.author} label="Seller" />
     {#each places as value}<span hidden use:editor={value}></span>{/each}
-    <label class="order-field"><span>Quantity</span><input bind:this={quantity} type="number" value="1" required min="1" max="999" step="1"></label>
+    <label class="order-field" hidden={extra.length > 0}><span>Quantity</span><input bind:this={quantity} type="number" value={String(firstQuantity)} required min="1" max="999" step="1"></label>
+    {#if extra.length}
+      <div class="order-basket-items">
+        {#each lines as item (item.listing.id)}<p class="order-basket-row"><span>{item.quantity} × {item.listing.title}</span><span>{linePrice({...item.listing, quantity: item.quantity}, value => s.price(value))}</span></p>{/each}
+      </div>
+    {/if}
     <label class="order-field"><span>Message to the seller</span><textarea bind:this={note} value="" maxlength="2000" placeholder="Optional" rows="3"></textarea></label>
-    {#if escrowable}
+    {#if escrowable && !extra.length}
       <label class="checkbox-label" hidden={!eligible}><input type="checkbox" bind:checked={protect}><span>Use escrow</span></label>
     {/if}
     <p class="small muted">The seller will confirm your request. No payment is taken here.</p>

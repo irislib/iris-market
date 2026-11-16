@@ -1,4 +1,5 @@
 import { flushSync } from 'svelte';
+import type {Basket, BasketItem} from '../basket.ts';
 import {filterOrders, ordersCsv, type OrderPeriod, type OrderStatusFilter} from './summary.ts';
 import {nameFor} from '../people.ts';
 import { createSurface, type Surface } from '../surface.ts';
@@ -28,6 +29,8 @@ export interface OrdersOptions {
   formatPrice?:(item:any)=>string;
   /** The order total in whole sats, when the listing price can be converted. */
   satsFor?:(item:any)=>number|null;
+  /** This browser's basket, grouped by seller; each group becomes one order. */
+  basket?:Basket;
   /** The photo of a listing this device knows, for orders made before photos were recorded. */
   imageFor?:(item:any)=>string|undefined;
 }
@@ -44,6 +47,9 @@ export class OrdersState {
   statusFilter = $state<OrderStatusFilter>('all');
   selected = $state<string|undefined>();
   listing = $state.raw<any>();
+  /** Further basket listings from the same seller, ordered with `listing`. */
+  basketExtra = $state.raw<BasketItem[]>([]);
+  basketQuantity = $state(1);
   busy = $state(false);
   error = $state('');
   announcement = $state('');
@@ -64,6 +70,8 @@ export class OrdersState {
   isPreview:()=>boolean;
   formatPrice:(item:any)=>string;
   satsFor:(item:any)=>number|null;
+  basket:Basket|undefined;
+  basketVersion = $state(0);
   imageFor:(item:any)=>string|undefined;
   onProfile:(key:string)=>void;
   onReview:(key:string)=>void;
@@ -74,6 +82,8 @@ export class OrdersState {
   data:any;
   pending:any;
   restoring = true;
+  /** True while Orders was opened without a tab and the reader has not picked one. */
+  autoTab = false;
   map:any;
   mapLoading:Promise<unknown>|undefined;
   mapHost:HTMLElement|undefined;
@@ -100,6 +110,7 @@ export class OrdersState {
     this.onNavigate = options.onNavigate ?? ((_id?:string,_tab?:string) => {});
     this.formatPrice = options.formatPrice ?? (item => `${item.price || ''} ${item.currency || ''}`.trim());
     this.imageFor = options.imageFor ?? (() => undefined);
+    this.basket = options.basket;
     this.satsFor = options.satsFor ?? (item => ['SATS', 'TESTSAT'].includes(String(item?.currency).toUpperCase()) && Number(item.price) > 0 ? Math.ceil(Number(item.price) * (item.quantity || 1)) : null);
     this.unread = createUnreadTracker({kind:'orders', onUnread});
     this.data = account.state();
@@ -154,7 +165,7 @@ export class OrdersState {
     if (this.selected !== order.id) { this.stopLocation(); this.dropMap(); }
     this.selected = order.id; this.view = 'detail'; this.error = ''; this.render(); if (this.dialog.open) this.onNavigate(order.id);
   }
-  showTab(key:string) { this.tab = key; this.error = ''; this.render(); if (this.dialog.open) this.onNavigate(undefined, this.tab); }
+  showTab(key:string) { this.autoTab = false; this.tab = key; this.error = ''; this.render(); if (this.dialog.open) this.onNavigate(undefined, this.tab); }
   requestReady(intent) {
     if (this.isPreview()) { this.pending = undefined; this.error = 'Switch to the live market to place an order.'; this.view = 'history'; this.render(); if (!this.dialog.open) this.dialog.showModal(); return false; }
     if (this.data.status !== 'ready') { this.pending = intent; if (!this.restoring) this.account.showAccount(); return false; }
@@ -162,6 +173,7 @@ export class OrdersState {
   }
   open(id?:string, section?:string) {
     if (['purchases', 'sales', 'deliveries', 'archived', 'escrow'].includes(section)) this.tab = section;
+    this.autoTab = !section && !id;
     this.data = this.account.state();
     // Opening Orders from its badge shows the unread order rather than an empty tab.
     if (!section && !id && !this.tabUnread(this.tab)) this.tab = ['purchases', 'sales', ...(this.escrow?.showJobs() ? ['escrow'] : [])].find(tab => this.tabUnread(tab)) ?? (['purchases', 'sales'].includes(this.tab) ? this.tab : 'purchases');
@@ -171,9 +183,10 @@ export class OrdersState {
     if (!this.dialog.open) this.dialog.showModal();
     this.syncUnread();
   }
-  buy(value) {
+  buy(value, extra: BasketItem[] = [], quantity = 1) {
     this.data = this.account.state();
-    if (!this.requestReady({ type: 'buy', listing: value })) return;
+    if (!this.requestReady({ type: 'buy', listing: value, extra, quantity })) return;
+    this.basketExtra = extra; this.basketQuantity = quantity;
     this.stopLocation(); this.dropMap(); this.listing = value; this.view = 'review'; this.selected = undefined; this.error = ''; this.render(); if (!this.dialog.open) this.dialog.showModal();
   }
   /** The tabs shown; also falls back from Escrow jobs once they are unavailable. */
@@ -183,6 +196,13 @@ export class OrdersState {
     sections.push(['archived', 'Archived']);
     return sections;
   }
+  /** Opens the order review for one seller's basket group. */
+  checkoutBasket(seller: string) {
+    const group = this.basket?.groups().find(value => value.seller === seller); if (!group?.items.length) return
+    const [first, ...rest] = group.items
+    this.buy(first.listing, rest, first.quantity)
+  }
+  basketChanged() { this.basketVersion++ }
   /** True when an order on this tab has an update the reader has not opened. */
   tabUnread(tab:string) { return tab === 'escrow' ? (this.escrow?.attention?.() ?? 0) > 0 : ['purchases', 'sales'].includes(tab) && this.filteredOrders(tab).some(order => !!this.unread.unread(order.id)) }
   /** The current tab after the history filters; unread dots and tab choice ignore these filters. */
@@ -261,7 +281,9 @@ export class OrdersState {
     const order = this.current(), sharing = this.sharing;
     const sharedStop = sharing && order?.shipment?.stops?.find(stop => stop.id === sharing.stopId && stop.status !== 'completed' && (order.seller === this.owner() || stop.courierPubkey === this.owner()));
     if (sharing && (!order || terminal(order) || !sharedStop || order.archived || document.visibilityState === 'hidden')) this.stopLocation();
-    if (this.pending && this.data.status === 'ready') { const intent = this.pending; this.pending = undefined; this.account.closeAccount?.(); if (intent.type === 'buy') this.buy(intent.listing); else this.open(intent.id, intent.section); return; }
+    if (this.pending && this.data.status === 'ready') { const intent = this.pending; this.pending = undefined; this.account.closeAccount?.(); if (intent.type === 'buy') this.buy(intent.listing, intent.extra ?? [], intent.quantity ?? 1); else this.open(intent.id, intent.section); return; }
+    // Orders that arrive after opening move an empty, unpicked tab to the one with news.
+    if (this.autoTab && this.dialog.open && this.view === 'history' && !this.filteredOrders(this.tab).length) { const next = ['purchases', 'sales'].find(tab => this.tabUnread(tab)); if (next) this.tab = next; }
     // Preserve typing while private updates arrive in the background.
     if (this.dialog.open && !['review', 'route', 'delivery', 'payment'].includes(this.view)) this.render();
   }

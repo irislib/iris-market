@@ -1,6 +1,7 @@
 import { element as node } from '../dom.ts';
 import { nextTransportStop, transportProgress } from '../transport-job.ts';
 import { date, statuses } from './format.ts';
+import { orderPrice } from './summary.ts';
 import { createUserName, warmProfiles } from '../people.ts';
 import { createStaticImage } from '../media.ts';
 
@@ -21,7 +22,7 @@ export function createOrderCard(order, {owner, deliveries, unread, price, onOpen
   const meta = node('span', `${date(order.createdAt)}${order.items?.[0]?.quantity > 1 ? ` · ${order.items[0].quantity} items` : ''}`, 'small muted');
   if (other && /^[0-9a-f]{64}$/.test(other)) { meta.prepend(createUserName(other), ' · '); warmProfiles([other]); }
   text.append(meta);
-  amount.append(node('span', `${price(order.items?.[0] || {})}${order.items?.[0]?.quantity > 1 ? ` × ${order.items[0].quantity}` : ''}`, 'order-card-price'), node('span', statuses[order.status] || order.status, `order-status order-status-${order.status}`));
+  amount.append(node('span', orderPrice(order, price), 'order-card-price'), node('span', statuses[order.status] || order.status, `order-status order-status-${order.status}`));
   if (image) { const thumb = node('div', undefined, 'order-card-thumb'); thumb.append(createStaticImage(image, {width: 128, height: 128, square: true, alt: '', fallback: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22/%3E'})); card.append(thumb); }
   card.append(text, amount); return card;
 }

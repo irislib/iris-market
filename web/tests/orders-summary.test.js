@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {filterOrders,orderTotals,ordersCsv} from '../src/orders-view/summary.ts';
+import {filterOrders,linePrice,orderPrice,orderTotals,ordersCsv} from '../src/orders-view/summary.ts';
 
 const me='a'.repeat(64),you='b'.repeat(64),now=Date.UTC(2026,10,16)/1000;
 const order=(id,{status='delivered',days=1,price='20',currency='EUR',quantity=1,seller=me,title='Mittens'}={})=>({id:`${you}:${id}`,buyer:seller===me?you:me,seller,status,createdAt:now-days*86400,items:[{id:`${seller}:item`,title,price,currency,quantity,eventId:'c'.repeat(64)}]});
@@ -24,4 +24,13 @@ test('CSV export is spreadsheet-safe and names the listing revision',()=>{
   assert.equal(lines.length,3);assert.match(lines[0],/^Date,Order,Type,Item/);
   assert.match(lines[1],/,Sale,"'=HYPERLINK\(""x""\)",3,20,EUR,60,delivered,Helmi,npub1/);
   assert.match(lines[2],/,Purchase,"Pie, blueberry",/);assert.ok(lines[1].endsWith(','+'c'.repeat(64)));
+});
+
+test('basket prices show line totals and one order total',()=>{
+  const price=item=>`${item.price} ${item.currency}`;
+  assert.equal(linePrice({price:'2000',currency:'SATS',quantity:2},price),'4000 SATS');
+  assert.equal(linePrice({price:'',currency:'EUR',quantity:3},price),' EUR');
+  assert.equal(orderPrice({items:[{price:'1500',currency:'SATS',quantity:1},{price:'2000',currency:'SATS',quantity:2}]},price),'5500 SATS');
+  assert.equal(orderPrice({items:[{price:'3',currency:'EUR',quantity:2}]},price),'3 EUR × 2');
+  assert.equal(orderPrice({items:[{price:'3',currency:'EUR',quantity:1},{price:'100',currency:'SATS',quantity:1}]},price),'3 EUR + 1 more');
 });

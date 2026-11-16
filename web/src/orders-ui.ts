@@ -14,5 +14,6 @@ export function setupOrders(options: OrdersOptions) {
     refresh: (value?) => orders.refresh(value),
     refreshCourier: () => orders.refreshCourier(),
     hide: () => orders.dialog.hide(),
+    basketChanged: () => orders.basketChanged(),
   };
 }

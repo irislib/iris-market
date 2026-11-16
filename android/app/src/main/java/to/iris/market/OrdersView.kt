@@ -204,7 +204,12 @@ import java.util.UUID
             Text(order.statusLabel, fontWeight = FontWeight.SemiBold)
             Text(orderDate(order.createdAt), color = Muted, style = MaterialTheme.typography.bodySmall)
         }
-        order.items.forEach { item -> Text("${item.quantity} × ${order.formattedPrice}", style = MaterialTheme.typography.titleMedium);if(order.displayPrice!=null)Text(item.displayPrice,style=MaterialTheme.typography.bodySmall,color=Muted) }
+        // A single item shows the converted order price; a basket lists each item and then its total.
+        if (order.items.size == 1) order.items.forEach { item -> Text("${item.quantity} × ${order.formattedPrice}", style = MaterialTheme.typography.titleMedium);if(order.displayPrice!=null)Text(item.displayPrice,style=MaterialTheme.typography.bodySmall,color=Muted) }
+        else {
+            order.items.forEach { item -> Row(Modifier.fillMaxWidth()) { Text("${item.quantity} × ${item.title}", Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge); Text(item.lineDisplayPrice, style = MaterialTheme.typography.bodyMedium) } }
+            Row(Modifier.fillMaxWidth()) { Text("Total", Modifier.weight(1f), fontWeight = FontWeight.SemiBold); Text(order.formattedPrice, style = MaterialTheme.typography.titleMedium) }
+        }
         val other = if (seller) order.buyer else order.seller
         Row(Modifier.fillMaxWidth().clickable { openProfile(other) }.padding(vertical = 4.dp)) {
             UserRow(state.people[other] ?: PublicPerson.unnamed(other), if (seller) "Buyer" else "Seller")

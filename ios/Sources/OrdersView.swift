@@ -215,8 +215,14 @@ struct OrderDetailView: View {
         VStack(alignment: .leading, spacing: 21) {
             Text(order.title.isEmpty ? "Order" : order.title).font(.system(size: 30, weight: .medium))
             HStack { Text(order.statusLabel).fontWeight(.semibold); Spacer(); Text(Date(timeIntervalSince1970: Double(order.createdAt)), format: .dateTime.day().month()).foregroundStyle(MarketTheme.muted) }.font(.system(size: 13))
-            ForEach(order.items) { item in
+            // A single item shows the converted order price; a basket lists each item and then its total.
+            if order.items.count == 1, let item = order.items.first {
                 VStack(alignment: .leading, spacing: 5) { Text("\(item.quantity) × \(order.formattedPrice)").font(.system(size: 22, weight: .semibold)); if order.displayPrice != nil { Text(item.formattedPrice).font(.caption).foregroundStyle(MarketTheme.muted) } }
+            } else {
+                ForEach(order.items) { item in
+                    HStack { Text("\(item.quantity) × \(item.title)").font(.system(size: 16, weight: .medium)); Spacer(); Text(item.lineFormattedPrice).font(.system(size: 15)) }
+                }
+                HStack { Text("Total").font(.system(size: 16, weight: .semibold)); Spacer(); Text(order.formattedPrice).font(.system(size: 20, weight: .semibold)) }
             }
             Button { profile = OrderSelection(id: other) } label: { UserRow(person: store.snapshot.people[other] ?? .unnamed(other), subtitle: seller ? "Buyer" : "Seller") }.buttonStyle(.plain)
             if !order.note.isEmpty { Text(order.note).font(.system(size: 15)).lineSpacing(4) }

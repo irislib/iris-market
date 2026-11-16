@@ -28,6 +28,7 @@ struct MarketOrder: Decodable, Hashable, Identifiable {
     var formattedPrice: String {
         guard let displayPrice, displayPrice.amount.isFinite else { return items.first?.formattedPrice ?? "Negotiable" }
         let format = NumberFormatter(); format.numberStyle = .currency; format.currencyCode = displayPrice.currency
+        if ["TESTSAT", "TESTSATS"].contains(displayPrice.currency.uppercased()) { format.numberStyle = .decimal; format.maximumFractionDigits = 0; return (format.string(from: NSNumber(value: displayPrice.amount)) ?? String(displayPrice.amount)) + " test sats" }
         if ["SAT", "SATS", "BTC"].contains(displayPrice.currency.uppercased()) { format.numberStyle = .decimal; format.maximumFractionDigits = displayPrice.currency.uppercased() == "BTC" ? 8 : 0; return (format.string(from: NSNumber(value: displayPrice.amount)) ?? String(displayPrice.amount)) + " " + (displayPrice.currency.uppercased() == "BTC" ? "BTC" : "sats") }
         return (format.string(from: NSNumber(value: displayPrice.amount)) ?? items.first?.formattedPrice ?? "Negotiable") + (displayPrice.stale ? " · older rate" : "")
     }
@@ -87,6 +88,11 @@ struct MarketOrderItem: Decodable, Hashable, Identifiable {
         let symbols = ["EUR": "€", "USD": "$", "GBP": "£"]
         if let symbol = symbols[currency] { return symbol + price }
         return price + " " + (currency.lowercased() == "sats" ? "sats" : currency)
+    }
+    /// The price of this line: unit price times count.
+    var lineFormattedPrice: String {
+        guard quantity > 1, let unit = Decimal(string: price) else { return formattedPrice }
+        return MarketOrderItem(id: id, title: title, price: NSDecimalNumber(decimal: unit * Decimal(quantity)).stringValue, currency: currency, quantity: 1).formattedPrice
     }
 }
 

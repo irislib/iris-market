@@ -3,6 +3,8 @@
   import {insert, collect} from './actions.ts'
   import type {OrdersState} from './state.svelte.ts'
   import {ORDER_PERIODS, ORDER_STATUS_FILTERS, orderTotals} from './summary.ts'
+  import {linePrice, orderPrice} from './summary.ts'
+  import Person from './Person.svelte'
 
   let {orders: s}: {orders: OrdersState} = $props()
 
@@ -20,6 +22,31 @@
   }
 </script>
 
+{#key s.renders + ':' + s.basketVersion}
+  {#if tab === 'purchases' && s.basket?.groups().length}
+    <section class="order-basket" aria-label="Basket">
+      <h3>Basket</h3>
+      {#each s.basket.groups() as group (group.seller)}
+        <div class="order-basket-group">
+          <Person orders={s} pubkey={group.seller} label="Seller" />
+          {#each group.items as item (item.listing.id)}
+            <div class="order-basket-row">
+              <span>{item.listing.title}</span>
+              <span class="order-basket-quantity">
+                <button type="button" class="icon-button" aria-label="One fewer {item.listing.title}" onclick={() => { s.basket!.setQuantity(item.listing.id, item.quantity - 1); s.basketChanged() }}>−</button>
+                <span>{item.quantity}</span>
+                <button type="button" class="icon-button" aria-label="One more {item.listing.title}" onclick={() => { s.basket!.setQuantity(item.listing.id, item.quantity + 1); s.basketChanged() }}>+</button>
+              </span>
+              <span>{linePrice({...item.listing, quantity: item.quantity}, value => s.price(value))}</span>
+            </div>
+          {/each}
+          {#if group.items.length > 1}<p class="order-basket-row order-basket-total"><span>Total</span><span>{orderPrice({items: group.items.map(item => ({...item.listing, quantity: item.quantity}))}, value => s.price(value))}</span></p>{/if}
+          <button type="button" class="button primary" onclick={() => s.checkoutBasket(group.seller)}>Request order</button>
+        </div>
+      {/each}
+    </section>
+  {/if}
+{/key}
 {#key s.renders}
   {#if tab === 'escrow' && s.escrow}
     <span hidden use:insert={() => collect(host => s.escrow.jobs(host))}></span>

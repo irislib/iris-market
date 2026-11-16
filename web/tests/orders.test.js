@@ -363,3 +363,17 @@ test('local HTTP payment mint requires exact explicit loopback configuration on 
  assert.equal(applyOrderEnvelope(prior,snapshotEvent,seller,buyer,1800000000,device,{developerMint}).record.order.payment.mint,developerMint);
  assert.throws(()=>createOrderBook({vault:a.vault,owner:buyer,device,developerMint:'http://example.com:3338'}),/Local test mint/);
 });
+
+test('a basket orders several listings from one seller in a single order',async()=>{
+  const a=await book(buyer),b=await book(seller);
+  const lamp={...listing,id:`${seller}:lamp`,title:'Lamp',price:'30'};
+  const order=await a.book.request(listing,{quantity:1,basket:[{listing:lamp,quantity:2}]});
+  assert.deepEqual(order.items.map(item=>[item.title,item.quantity]),[['Bicycle',1],['Lamp',2]]);
+  const {orderMessageText}=await import('../src/orders.ts');
+  assert.match(orderMessageText(eventFor(a.book,'request'),order),/1 × Bicycle, 2 × Lamp/);
+  await b.book.receive(rumorFor(a.book,'request'),buyer);
+  assert.equal(b.book.state()[0].items.length,2);
+  const other={...listing,id:`${courier}:chair`,author:courier};
+  assert.throws(()=>a.book.request(listing,{basket:[{listing:other,quantity:1}]}),/no longer available from this seller/);
+  assert.throws(()=>a.book.request(listing,{basket:[{listing,quantity:1}]}),/appears once/);
+});

@@ -18,6 +18,8 @@ data class OrderItem(val id: String, val title: String, val price: String, val c
         currency == "SATS" -> "$price sats"
         else -> "$price $currency"
     }
+    /** The price of this line: unit price times count. */
+    val lineDisplayPrice: String get() = price.toBigDecimalOrNull()?.takeIf { quantity > 1 }?.let { copy(price = (it * quantity.toBigDecimal()).stripTrailingZeros().toPlainString(), quantity = 1).displayPrice } ?: displayPrice
 }
 data class DeliveryStop(val id: String, val label: String, val address: String, val coordinates: List<Double>?, val courierPubkey: String?, val status: String) {
     fun json(): JSONObject = JSONObject().put("id", id).put("label", label).put("address", address).put("status", status).apply {
@@ -56,8 +58,9 @@ data class MarketOrder(
         val display=displayPrice?:return items.firstOrNull()?.displayPrice?:"Negotiable"
         if(!display.amount.isFinite())return items.firstOrNull()?.displayPrice?:"Negotiable"
         val suffix=if(display.stale)" · older rate" else ""
+        if(display.currency.uppercase() in setOf("TESTSAT","TESTSATS"))return java.text.NumberFormat.getNumberInstance().apply{maximumFractionDigits=0}.format(display.amount)+" test sats"+suffix
         if(display.currency.uppercase() in setOf("SAT","SATS","BTC"))return java.text.NumberFormat.getNumberInstance().apply{maximumFractionDigits=if(display.currency.uppercase()=="BTC")8 else 0}.format(display.amount)+" "+(if(display.currency.uppercase()=="BTC")"BTC" else "sats")+suffix
-        return runCatching {java.text.NumberFormat.getCurrencyInstance().apply{currency=java.util.Currency.getInstance(display.currency)}.format(display.amount)}.getOrDefault(items.firstOrNull()?.displayPrice?:"Negotiable")+suffix
+        return runCatching {java.text.NumberFormat.getCurrencyInstance().apply{currency=java.util.Currency.getInstance(display.currency)}.format(display.amount)}.getOrDefault(java.text.NumberFormat.getNumberInstance().format(display.amount)+" "+display.currency)+suffix
     }
     val terminal: Boolean get() = status in listOf("delivered", "cancelled")
     val title: String get() = items.joinToString { it.title }.ifBlank { "Order" }

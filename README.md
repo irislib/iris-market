@@ -25,11 +25,11 @@ A general marketplace for things, skills and opportunities. Native iOS, Android 
 - One search field for text or optional AI matching. Browser-local AI can prepare its local model automatically, with inline progress, cancellation and a remembered result view. It is experimental; marketplace accuracy is not established.
 - Named CLI commands, a local JSON action interface and MCP stdio tools for search, publication, saved listings, contact, messages and private orders.
 
-This is a development prototype. The browser includes an optional Cashu wallet; shipping guarantees, automatic transfer of earlier private chat history, general group conversations and saved matching watches are not implemented. Apple and Android source now includes an opt-in Cashu wallet; its capabilities and remaining acceptance gates are described below. Native local AI supports Apple Foundation Models and two optional Android downloads. Compact search and Gemma 4 E2B have both been exercised on a physical Pixel with real signed marketplace listings. The CLI source package 0.1.4 remains published on crates.io; the alpha.19 downloads are separate release artifacts and do not republish that crate. Signed Android, notarized macOS, Linux desktop and CLI downloads are available in [v0.1.4-alpha.19](https://github.com/irislib/iris-market/releases/tag/v0.1.4-alpha.19). iOS 0.1.4 (30) is available to the existing internal TestFlight group. Home and listing search default to your social network. The Mac toolbar uses the standard sidebar control.
+This is a development prototype. The browser includes an optional Cashu wallet; shipping guarantees, automatic transfer of earlier private chat history, general group conversations and saved matching watches are not implemented. Apple and Android source now includes an opt-in Cashu wallet; its capabilities and remaining acceptance gates are described below. Native local AI supports Apple Foundation Models and two optional Android downloads. Compact search and Gemma 4 E2B have both been exercised on a physical Pixel with real signed marketplace listings. The CLI source package 0.1.4 remains published on crates.io; the alpha.21 downloads are separate release artifacts and do not republish that crate. Signed Android, notarized macOS, Linux desktop and CLI downloads are available in [v0.1.4-alpha.21](https://github.com/irislib/iris-market/releases/tag/v0.1.4-alpha.21). iOS 0.1.4 (32) is available to the existing internal TestFlight group. Home and listing search default to your social network. The Mac toolbar uses the standard sidebar control.
 
 Web: [market.iris.to](https://market.iris.to) · [App builds and CLI](https://getmarket.iris.to). Source: [GitHub](https://github.com/irislib/iris-market). Hashtree source: [iris-market](https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/iris-market).
 
-Windows currently uses the [web app](https://market.iris.to/) or the [x64 CLI download](https://github.com/irislib/iris-market/releases/download/v0.1.4-alpha.19/iris-market-v0.1.4-alpha.19-cli-x86_64-pc-windows-msvc.zip). The Windows CLI requires the [Microsoft Visual C++ v14 x64 runtime](https://aka.ms/vc14/vc_redist.x64.exe). A native Windows GUI is not implemented; Windows PWA installation and runtime have not been manually verified.
+Windows currently uses the [web app](https://market.iris.to/) or the [x64 CLI download](https://github.com/irislib/iris-market/releases/download/v0.1.4-alpha.21/iris-market-v0.1.4-alpha.21-cli-x86_64-pc-windows-msvc.zip). The Windows CLI requires the [Microsoft Visual C++ v14 x64 runtime](https://aka.ms/vc14/vc_redist.x64.exe). A native Windows GUI is not implemented; Windows PWA installation and runtime have not been manually verified.
 
 The browser feed below uses real public listings. Native alpha builds share the same visual direction and use platform system fonts.
 
@@ -390,6 +390,12 @@ Native release diagnostics remap source paths to `/source/iris-market`, Cargo in
 
 Acceptance includes actual fresh-native Rust→JS order interoperability and an iOS UI order journey using an isolated local relay. Seller/courier native screens were additionally exercised with an isolated UI harness. Native profile grids load signed author listings independently from Browse, with bounded load-more queries; this was exercised on an actual iOS simulator. Current native source includes opt-in private live-location sending only while the order view is active in the foreground. Leaving, covering or backgrounding the view stops sharing; the sender coalesces updates and expires them after two minutes instead of queuing a location history. Foreground sharing is included in alpha.2/build 13; real-device GPS-sharing acceptance remains pending. Current wallet acceptance limits are described in Cashu wallet above. Native Transport is available from the header and Profile, with Find work, My jobs and My service, explicit service topics, next-stop directions, and normal private order actions. Native local and selected remote AI apply each decision as it finishes and can review newly arriving results for the submitted search, within a 240-candidate budget. Remaining work retains the same query and signed-revision checks; Stop, leaving the search, or backgrounding ends that continuation.
 
+### Release 0.1.4 alpha 21
+
+Build **32** refreshes public follow and mute lists from relays that support reconciliation. Home and listing search keep the network filter on by default. Turning off **In my network** expands native results to other sellers. Saved local graph data remains available offline.
+
+The signed Android app supports upgrading from build 30. The notarized Apple silicon app retains the standard macOS sidebar button. On Linux, the update control appears when Settings opens. The iOS build is available to the existing internal TestFlight group.
+
 ### Release 0.1.4 alpha 19
 
 Home and listing search now start with your own listings and those from people reachable through follows. Choose **Everyone** in the browser or turn off **In my network** in native Filters to see listings from other authors. Reset restores the network default.
@@ -592,7 +598,7 @@ Receipt and reaction records use Iris Chat's existing private inner kinds: 15 fo
 
 ### Platform coverage
 
-This describes alpha.19/build 30. Linux bundles the accepted browser interface. Windows uses the browser/PWA or CLI.
+This describes alpha.21/build 32. Linux bundles the accepted browser interface. Windows uses the browser/PWA or CLI.
 
 | Area | Browser / Linux interface | iOS / macOS / Android source |
 | --- | --- | --- |

@@ -83,7 +83,6 @@ function assetHeaders(downloads: boolean, routeScript?: string, dev = false) {
   const routeHash = routeScript ? ` 'sha256-${createHash('sha256').update(routeScript).digest('base64')}'` : '';
   // NIP-11 capability checks use HTTPS on the configured default relay hosts.
   const relayOrigins = downloads ? [] : DEFAULT_RELAYS.map(relay => new URL(relay.replace(/^wss:/, 'https:')).origin);
-  if (!downloads) relayOrigins.push('https://graph-api.iris.to');
   if (dev) {
     relayOrigins.push('ws://127.0.0.1:*', 'ws://localhost:*');
     if (process.env.MARKET_TEST_RELAY === '1') relayOrigins.push('http://127.0.0.1:4785');

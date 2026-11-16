@@ -79,7 +79,7 @@ export async function loadGraphBootstrap({ root = GRAPH_BOOTSTRAP.root, signal, 
       const graph = await loadFreshGraph({ root, signal })
       let newestFollowAt = 0
       for (const timestamp of graph.getInternalData().followListCreatedAt.values()) newestFollowAt = Math.max(newestFollowAt, timestamp)
-      return { graph, provenance: Object.freeze({ source: 'server-snapshot', package: 'nostr-social-graph', root,
+      return { graph, provenance: Object.freeze({ source: 'signed-snapshot', package: 'nostr-social-graph', root,
         sha256: null, bytes: null, verifiedEvents: false, stale: true, newestFollowAt }) }
     } catch { active(signal) /* Keep the pinned seed available when the fresh service is unreachable. */ }
   }

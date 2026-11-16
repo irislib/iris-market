@@ -11,11 +11,13 @@ async function headers(downloads) {
   return headers['Content-Security-Policy']
 }
 
-test('Market permits its bounded fresh graph source without broadening downloads permissions', async () => {
+test('Market permits signed snapshot reads and excludes the retired graph API', async () => {
   const origin = 'https://graph-api.iris.to'
   const market = (await headers(false)).match(/connect-src ([^;]+)/)[1].split(/\s+/)
   const downloads = (await headers(true)).match(/connect-src ([^;]+)/)[1].split(/\s+/)
-  assert(market.includes(origin))
+  assert(market.includes('https://cdn.iris.to'))
+  assert(market.includes('wss:'))
+  assert(!market.includes(origin))
   assert(!market.includes('https:'))
   assert(!downloads.includes(origin))
 })

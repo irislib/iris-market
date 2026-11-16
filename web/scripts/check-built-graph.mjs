@@ -5,6 +5,8 @@ import { readdir } from 'node:fs/promises';
 import { WebSocketServer } from 'ws';
 import { finalizeEvent, getPublicKey } from 'nostr-tools';
 import { SocialGraph } from 'nostr-social-graph';
+import { createNamedGraphFixture } from 'nostr-social-graph/testing/namedGraph';
+import { once } from 'node:events';
 import { Negentropy, NegentropyStorageVector } from '../node_modules/nostr-social-graph/src/vendor/negentropy.js';
 import { GRAPH_BOOTSTRAP } from '../src/graph-bootstrap.ts';
 
@@ -17,23 +19,53 @@ const graph = new SocialGraph(root);
 graph.addFollower(root, author);
 const bytes = await graph.toBinary();
 
-test('the production chunk imports and decodes a fresh graph, rather than merely downloading it', async t => {
-  let requests = 0;
-  t.mock.method(globalThis, 'fetch', async url => {
-    requests++;
-    assert.equal(new URL(url).searchParams.get('root'), root);
-    return new Response(bytes, { headers: { 'x-graph-root': root } });
+async function namedSnapshot(t) {
+  const fixture = await createNamedGraphFixture(root, bytes);
+  const relay = new WebSocketServer({host: '127.0.0.1', port: 0});
+  await once(relay, 'listening');
+  t.after(async () => {
+    for (const socket of relay.clients) socket.terminate();
+    await new Promise(resolve => relay.close(resolve));
   });
-  const loaded = await loadGraphBootstrap({ root });
-  assert.equal(requests, 1);
+  let names = 0;
+  relay.on('connection', socket => socket.on('message', raw => {
+    const [type, id, filter] = JSON.parse(String(raw));
+    if (type === 'REQ' && filter.authors.includes(fixture.event.pubkey) &&
+        filter.kinds.includes(30064) && filter['#d'].includes('social-graph')) {
+      names++;
+      socket.send(JSON.stringify(['EVENT', id, fixture.event]));
+      socket.send(JSON.stringify(['EOSE', id]));
+    }
+  }));
+  const blockReads = [];
+  t.mock.method(globalThis, 'fetch', async url => {
+    const {origin, pathname} = new URL(url);
+    assert.equal(origin, 'https://fixture.invalid');
+    assert.match(pathname, /^\/[0-9a-f]{64}\.bin$/);
+    const hash = pathname.slice(1, -4);
+    blockReads.push(hash);
+    const block = await fixture.readBlock(hash);
+    assert(block);
+    return new Response(block);
+  });
+  return {snapshot: {publisher: fixture.publisher, relays: ['ws://127.0.0.1:' + relay.address().port],
+    blossomServers: ['https://fixture.invalid']}, blockReads, names: () => names};
+}
+
+test('the production chunk reads the signed mobile graph from immutable blocks', async t => {
+  const fixture = await namedSnapshot(t);
+  const loaded = await loadGraphBootstrap({root, snapshot: fixture.snapshot});
+  assert.equal(fixture.names(), 1);
+  assert(fixture.blockReads.length >= 3);
   assert.equal(loaded.getRoot(), root);
   assert.equal(loaded.size().users, 2);
   assert.deepEqual([...loaded.getFollowedByUser(root)], [author]);
 });
 
-test('the production chunk rejects a response belonging to another graph', async t => {
-  t.mock.method(globalThis, 'fetch', async () => new Response(bytes, { headers: { 'x-graph-root': author } }));
-  await assert.rejects(loadGraphBootstrap({ root }), /root mismatch/);
+test('the production chunk rejects a scoring root absent from the signed manifest', async t => {
+  const fixture = await namedSnapshot(t);
+  await assert.rejects(loadGraphBootstrap({root: author, snapshot: fixture.snapshot}), /root|projection/i);
+  assert.equal(fixture.names(), 1);
 });
 
 test('unsupported negentropy preserves the graph without broad follow/mute catch-up requests', async () => {

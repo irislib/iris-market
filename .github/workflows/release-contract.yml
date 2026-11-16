@@ -1,29 +1,33 @@
-name: Release contract
-
-on:
-  pull_request:
-  push:
-    branches: [main]
-  workflow_dispatch:
-
+name: Qualify signed social graph on Market
+on: workflow_dispatch
 permissions:
   contents: read
-
 jobs:
-  source-checks:
+  qualify:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - name: Check pinned inputs and artifact acceptance contract
-        env:
-          PYTHONDONTWRITEBYTECODE: '1'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '26.12.1'
+      - name: Install the frozen web dependencies
+        working-directory: web
+        run: npm ci --no-audit --no-fund
+      - name: Check and build the web application with loopback access
         run: |
-          python3 scripts/release-build-inputs.py --check
-          python3 scripts/android-release-inputs.py --check
-          python3 scripts/test_alpha_release.py -v
-          python3 scripts/native-alpha.py --help
-          node --test scripts/publish-alpha.test.mjs
-      # Native builds, signing and publication are separately owned release gates.
+          mkdir -p "$RUNNER_TEMP/market-qualify"
+          sudo --preserve-env=PATH,RUNNER_TEMP unshare --net -- bash -euc '
+            ip link set lo up
+            test -z "$(ip route show default)"
+            exec runuser -u runner -- env PATH="$PATH" RUNNER_TEMP="$RUNNER_TEMP" bash -eu bundle-market.sh
+          '
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: signed-graph-market
+          path: ${{ runner.temp }}/market-qualify
+          if-no-files-found: error
+          retention-days: 7

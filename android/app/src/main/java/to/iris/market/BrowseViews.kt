@@ -256,9 +256,9 @@ private fun rememberListLayout(): MutableState<Boolean> {
         }
         listing.externalOrder?.let { Text(it.methods,color=Muted,style=MaterialTheme.typography.bodySmall,maxLines=1,overflow=TextOverflow.Ellipsis) }
         listing.escrow?.bitcoinTerms?.let { Text(it,color=Muted,style=MaterialTheme.typography.bodySmall) }
-        if(listing.location.isNotBlank()) Row(verticalAlignment=Alignment.CenterVertically,modifier=Modifier.padding(top=5.dp)) {
+        if(listing.placeLabel.isNotBlank()) Row(verticalAlignment=Alignment.CenterVertically,modifier=Modifier.padding(top=5.dp)) {
             Icon(Icons.Filled.LocationOn,null,Modifier.size(12.dp),tint=Muted); Spacer(Modifier.width(3.dp))
-            Text(listing.location,color=Muted,fontSize=12.sp,maxLines=1,overflow=TextOverflow.Ellipsis)
+            Text(listing.placeLabel,color=Muted,fontSize=12.sp,maxLines=1,overflow=TextOverflow.Ellipsis)
         }
         listing.relevance?.takeIf { it.isNotBlank() }?.let {
             Text(it,color=Forest,fontSize=11.sp,maxLines=2,modifier=Modifier.padding(top=5.dp))
@@ -305,8 +305,8 @@ private fun rememberListLayout(): MutableState<Boolean> {
         TranslationControl(reading)
         Spacer(Modifier.height(9.dp));Text(listing.displayPrice,fontSize=29.sp,fontWeight=FontWeight.SemiBold)
         listing.escrow?.bitcoinTerms?.let { Text(it,color=Muted,style=MaterialTheme.typography.bodySmall) }
-        if(listing.location.isNotBlank()) Row(Modifier.padding(top=12.dp),verticalAlignment=Alignment.CenterVertically) {
-            Icon(Icons.Filled.LocationOn,null,Modifier.size(17.dp),tint=Muted);Spacer(Modifier.width(5.dp));Text(listing.location,color=Muted)
+        if(listing.placeLabel.isNotBlank()) Row(Modifier.padding(top=12.dp),verticalAlignment=Alignment.CenterVertically) {
+            Icon(Icons.Filled.LocationOn,null,Modifier.size(17.dp),tint=Muted);Spacer(Modifier.width(5.dp));Text(listing.placeLabel,color=Muted)
         }
         var expiryNow by remember(listing.id) { mutableStateOf(System.currentTimeMillis()/1000) }
         LaunchedEffect(listing.id) { while(true) { expiryNow=System.currentTimeMillis()/1000; kotlinx.coroutines.delay(60_000) } }

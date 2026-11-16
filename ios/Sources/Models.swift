@@ -150,6 +150,8 @@ struct MarketListing: Decodable, Identifiable, Hashable {
         revision.combine(tags)
         return "\(id)|\(createdAt)|\(revision.finalize())"
     }
+    /// Location words, or a note that the listing has a map area without words.
+    var placeLabel: String { location.isEmpty ? (coordinates != nil ? "On the map" : "Anywhere") : location }
     var formattedPrice: String {
         if let order = externalOrder { return order.amounts.joined(separator: "–") + " " + currency }
         if isBitcoinOffer { return "\(price) \(currency)" }

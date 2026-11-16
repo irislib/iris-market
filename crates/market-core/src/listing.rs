@@ -156,7 +156,7 @@ pub(crate) fn builder(
     let mut tags = vec![
         vec!["d".into(), identifier.into()],
         vec!["title".into(), d.title.trim().into()],
-        vec!["location".into(), d.location.trim().into()],
+        vec!["location".into(), location_label(&d.location)],
         vec!["t".into(), d.category.trim().into()],
         vec![
             "k".into(),
@@ -324,7 +324,7 @@ pub fn parse(event: &Event, at: u64) -> Result<Listing> {
         price: draft.price,
         currency: draft.currency,
         display_price: None,
-        location: draft.location,
+        location: location_label(&draft.location),
         category: draft.category,
         tags: draft.tags,
         service_areas: draft.service_areas,
@@ -351,9 +351,32 @@ pub fn parse(event: &Event, at: u64) -> Result<Listing> {
                 })
                 .collect();
             hashes.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
-            hashes.first().and_then(|v| crate::geo::decode(v))
+            // Older clients kept the area only as a trailing `#code` in the location text.
+            hashes
+                .first()
+                .and_then(|v| crate::geo::decode(v))
+                .or_else(|| location_hash(&draft.location).and_then(|v| crate::geo::decode(&v)))
         },
     })
+}
+
+/// A trailing `#geohash` in location text, as older clients wrote it.
+fn location_hash(text: &str) -> Option<String> {
+    text.split_whitespace()
+        .last()
+        .and_then(|word| word.strip_prefix('#'))
+        .filter(|hash| hash.len() <= 12 && crate::geo::decode(hash).is_some())
+        .map(str::to_ascii_lowercase)
+}
+/// Location words for people; a trailing `#geohash` stays in the background as map tags.
+pub fn location_label(text: &str) -> String {
+    let text = text.trim();
+    match location_hash(text) {
+        Some(_) => text[..text.rfind('#').unwrap_or(text.len())]
+            .trim()
+            .to_owned(),
+        None => text.to_owned(),
+    }
 }
 
 pub fn draft_from(l: &Listing) -> Draft {

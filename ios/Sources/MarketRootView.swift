@@ -534,7 +534,7 @@ struct ListingCard: View {
                         Text(listing.formattedPrice).font(.system(size: 18, weight: .semibold)).foregroundStyle(MarketTheme.ink)
                         if let terms = listing.escrow?.bitcoinTerms { Text(terms).font(.caption).foregroundStyle(MarketTheme.muted) }
                         if let order = listing.externalOrder { Text(order.methods).font(.caption).foregroundStyle(MarketTheme.muted).lineLimit(1) }
-                        else { HStack(spacing: 3) { Image(systemName: "mappin").font(.system(size: 9)); Text(listing.location.isEmpty ? "Anywhere" : listing.location).lineLimit(1) }.font(.system(size: 10)).foregroundStyle(MarketTheme.muted) }
+                        else { HStack(spacing: 3) { Image(systemName: "mappin").font(.system(size: 9)); Text(listing.placeLabel).lineLimit(1) }.font(.system(size: 10)).foregroundStyle(MarketTheme.muted) }
                     }.padding(.horizontal, 2)
                 }.buttonStyle(.plain)
             }

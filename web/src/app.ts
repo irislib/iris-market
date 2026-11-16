@@ -89,6 +89,8 @@ let feedAudience: FeedAudience = 'network';
 let ordersFromNav=false;
 /** This browser's basket, per profile; each seller's group becomes one order request. */
 const basket=createBasket(globalThis.localStorage,()=>accountUI?.state().ownerPubkey||'');
+/** A map-area filter keeps its geohash in the background and shows these words instead. */
+const MAP_AREA_LABEL='Area chosen on the map';
 let feedTags=[], feedAuthors=null, locationFilter=decodeGeohash(params.get('g'))?'#'+params.get('g').toLowerCase():'', shipsTo='';
 let photoFilter:boolean|null=null, mapVisible=false;
 const hiddenListings=createHiddenListings({getItem:key=>localStorage.getItem(key),setItem:(key,value)=>localStorage.setItem(key,value)},'market-hidden-'+(preview?'preview':'live'));
@@ -312,7 +314,7 @@ function updateAudienceLabels(){
 }
 const syncHomePrompt=()=>{$('home-prompt-fields').hidden=!$('home-feed-enabled').checked;};
 $('home-feed-enabled').onchange=syncHomePrompt;
-$('feed-filters').onclick=()=>{const home=aiFilter.homeFeed();$('home-feed-enabled').checked=home.enabled;syncHomePrompt();$('home-feed-prompt').value=home.prompt;$('has-photos').checked=photosOnly();$('location').value=locationFilter;locationInputs.restore(nearbyFilter);$('ships-to').value=shipsTo;$('tag-input').value=feedTags.join(', ');$('audience').value=feedAudience;$('filter-error').textContent='';$('filters-dialog').showModal();updateFilterSummary()};
+$('feed-filters').onclick=()=>{const home=aiFilter.homeFeed();$('home-feed-enabled').checked=home.enabled;syncHomePrompt();$('home-feed-prompt').value=home.prompt;$('has-photos').checked=photosOnly();$('location').value=locationFilter.startsWith('#')&&locationHash(locationFilter)?MAP_AREA_LABEL:locationFilter;locationInputs.restore(nearbyFilter);$('ships-to').value=shipsTo;$('tag-input').value=feedTags.join(', ');$('audience').value=feedAudience;$('filter-error').textContent='';$('filters-dialog').showModal();updateFilterSummary()};
 function feedCells(mapCells:string[]=[]){const hash=locationHash(locationFilter);return mapCells.length?mapCells:hash?[hash]:nearbyFilter?geohashQueryForViewport(nearbyViewport(nearbyFilter)):[];}
 function syncAreaURL(){if(!['home','search'].includes(currentRoute.type))return;const url=new URL(location.href),hash=locationHash(locationFilter);if(hash)url.searchParams.set('g',hash);else url.searchParams.delete('g');if(url.href!==location.href)history.replaceState(history.state,'',url);}
 function updateFilterSummary(){
@@ -346,7 +348,7 @@ $('filter-form').onsubmit=e=>{
   const sourceChanged=JSON.stringify(tags)!==JSON.stringify(feedTags)||feedAuthors!==null;
   const previousNearby=JSON.stringify(nearbyFilter),previousHash=locationHash(locationFilter);
   if($('has-photos').checked!==photosOnly())photoFilter=$('has-photos').checked;
-  nearbyFilter=locationInputs.pending();locationFilter=nearbyFilter?NEARBY_LABEL:$('location').value.trim();
+  nearbyFilter=locationInputs.pending();const typedLocation=$('location').value.trim();locationFilter=nearbyFilter?NEARBY_LABEL:typedLocation===MAP_AREA_LABEL&&locationHash(locationFilter)?locationFilter:typedLocation;
   shipsTo=$('ships-to').value;syncAreaURL();resetShipping();feedTags=tags;const audience=$('audience').value;
   feedAudience=audience==='following'||audience==='everyone'?audience:'network';feedAuthors=null;
   $('filters-dialog').close();updateFilterSummary();

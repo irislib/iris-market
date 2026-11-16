@@ -48,6 +48,8 @@ data class Listing(
         val digest = java.security.MessageDigest.getInstance("SHA-256").digest(content.toByteArray(Charsets.UTF_8))
         return "$id|$createdAt|${digest.joinToString("") { "%02x".format(it) }}"
     }
+    /** Location words, or a note that the listing has a map area without words. */
+    val placeLabel: String get() = location.ifBlank { if (coordinates != null) "On the map" else "" }
     val displayPrice: String get() {
         externalOrder?.let { return it.amounts.joinToString("–") + " " + currency }
         if(isBitcoinOffer) return "$price $currency"

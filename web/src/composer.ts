@@ -1,5 +1,5 @@
 import { flushSync, mount } from 'svelte';
-import {locationHash} from './map/geohash.ts';
+import {locationHash,locationLabel} from './map/geohash.ts';
 import {listingPin} from './map/listing-pin.ts';
 import {BITCOIN_KIND,BITCOIN_TAGS,offerTags} from './escrow-offer.ts';
 import { createSurface } from './surface.ts';
@@ -59,10 +59,10 @@ export function listingDraft(values, { identifier=crypto.randomUUID(), createdAt
   if(expiration!==undefined)tags.push(['expiration',String(expiration)]);
   const pin = Object.hasOwn(values,'pinCoordinates') ? listingPin(String(values.pinCoordinates), String(values.pinPrecision)) : null;
   const hash = pin?.hash ?? (!Object.hasOwn(values,'pinCoordinates') ? locationHash(location) : undefined);
-  const label = Object.hasOwn(values,'pinCoordinates') && locationHash(location) ? location.slice(0,location.lastIndexOf('#')).trim() : location;
+  const label = locationLabel(location);
   if(pin?.uri)tags.push(['r',pin.uri]);
   if(hash)for(let n=1;n<=hash.length;n++)tags.push(['g',hash.slice(0,n)]);
-  if(label||hash)tags.push(['location',label||'#'+hash]);if(image)tags.push(['image',image]);
+  if(label)tags.push(['location',label]);if(image)tags.push(['image',image]);
   if(values.serviceAreas)tags.push(...serviceAreaTags(values.serviceAreas));
   for(const file of files){
     if(file.isImage)tags.push(['image',file.url]);
@@ -78,11 +78,13 @@ export function revisedListingDraft(values, previous, attachments=[]) {
   if((offer?.trade==='bitcoin_fiat')!==(previous.rawEvent?.kind===BITCOIN_KIND))throw Error('Create a new listing to change the trade type.');
   const draft=listingDraft({...values,escrow:offer,expiration:values.expiration??'keep'},{identifier:previous.identifier,createdAt:Math.max(Math.floor(Date.now()/1000),previous.createdAt+1),attachments,previousExpiration:previous.expiration});
   draft.tags.find(tag=>tag[0]==='published_at')[1]=String(listingPublishedAt(previous)??previous.createdAt);
+  // Older listings kept their area as `#code` in the location words; that text area follows the words.
+  const previousLocation=previous.originalTags?.find(tag=>tag[0]==='location')?.[1]??previous.location;
   const replaced=new Set(['d','title','client','market','price','location','status','published_at','expiration','iris-escrow',...(previous.rawEvent?.kind===BITCOIN_KIND?BITCOIN_TAGS:[])]);
   for(const tag of previous.originalTags||[]){
     if(tag[0]==='k'&&['buy','sell'].includes(tag[1]) || tag[0]==='type'&&['want_buy','want_rent'].includes(tag[1]) || tag[0]==='t'&&tag[1]==='market:request')continue;
     if(Object.hasOwn(values,'pinCoordinates') && (tag[0]==='g' && !['pickup','destination'].includes(tag[2]) || tag[0]==='r' && tag[1]?.startsWith('geo:')))continue;
-    if(tag[0]==='g'&&tag.length===2&&values.location!==previous.location&&(locationHash(values.location)||locationHash(previous.location)))continue;
+    if(tag[0]==='g'&&tag.length===2&&values.location!==previousLocation&&(locationHash(values.location)||locationHash(previousLocation)))continue;
     if(values.category==='transport'&&values.transportType&&tag[0]==='t'&&isTransportTag(tag[1]))continue;
     if(Object.hasOwn(values,'serviceAreas')&&(tag[0]==='service_area'||tag[0]==='g'&&['pickup','destination'].includes(tag[2])))continue;
     if(Object.hasOwn(values,'shipping')&&tag[0]==='shipping_option')continue;

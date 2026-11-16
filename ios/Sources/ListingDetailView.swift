@@ -59,7 +59,7 @@ struct ListingDetailView: View {
                     MarketTranslation(fields: [AttributedString(current.title), formattedDescription]) { fields in
                         VStack(alignment: .leading, spacing: 23) {
                             Text(fields[0]).font(.system(size: 32, weight: .medium)).tracking(-0.7).foregroundStyle(MarketTheme.ink)
-                            HStack { Text(current.formattedPrice).font(.system(size: 28, weight: .semibold)); Spacer(); Label(current.location.isEmpty ? "Anywhere" : current.location, systemImage: "mappin.circle.fill").font(.system(size: 13)).foregroundStyle(MarketTheme.muted) }.foregroundStyle(MarketTheme.ink)
+                            HStack { Text(current.formattedPrice).font(.system(size: 28, weight: .semibold)); Spacer(); Label(current.placeLabel, systemImage: "mappin.circle.fill").font(.system(size: 13)).foregroundStyle(MarketTheme.muted) }.foregroundStyle(MarketTheme.ink)
                             if let terms = current.escrow?.bitcoinTerms { Text(terms).font(.subheadline).foregroundStyle(MarketTheme.muted) }
                             TimelineView(.periodic(from: expiryClockStart, by: 60)) { context in
                                 Text(NativeListingExpiry.detail(deadline: current.expiresAt, now: Int64(context.date.timeIntervalSince1970))).font(.system(size: 13)).foregroundStyle(MarketTheme.muted).accessibilityIdentifier("listingExpiryDetail")

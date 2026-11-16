@@ -12,7 +12,13 @@ test('explicit public location publishes legacy prefixes and an edit replaces th
  assert.equal(listing.geohash,'u60g');
  const updated=parseEvent(finalizeEvent(revisedListingDraft({...values,location:'#ezjm'},listing),key));
  assert.equal(updated.geohash,'ezjm');assert(!updated.originalTags.some(t=>t[1]==='u60g'));
- assert.equal(parseEvent(finalizeEvent(revisedListingDraft(values,updated),key)).coordinates,null);
+ assert(!updated.originalTags.some(t=>t[0]==='location'),'an area without words publishes no #code as its location');
+ assert.equal(updated.location,'');
+ const reworded=parseEvent(finalizeEvent(revisedListingDraft(values,updated),key));
+ assert.equal(reworded.geohash,'ezjm','changing the words keeps the map area');assert.equal(reworded.location,'Helsinki');
+ assert.equal(parseEvent(finalizeEvent(revisedListingDraft({...values,pinCoordinates:''},reworded),key)).coordinates,null);
+ const legacy=parseEvent(finalizeEvent({...listingDraft(values),tags:[...listingDraft(values).tags.filter(t=>t[0]!=='location'),['location','Old shop #u60g']]},key));
+ assert.equal(legacy.location,'Old shop');assert.equal(legacy.geohash,'u60g','an older text-only area still reaches the map');
 });
 test('transport areas survive signing and edits without becoming location pins',()=>{
  const key=generateSecretKey(),pickup=serviceAreaCircle([24.94,60.17],10),destination=serviceAreaCircle([25.6,60.4],30);

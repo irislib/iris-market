@@ -39,5 +39,5 @@ export function pinPreview(tags: readonly (readonly string[])[], hash: string): 
   const widthKm = (bounds[2] - bounds[0]) * 111.2 * Math.cos((bounds[1] + bounds[3]) * Math.PI / 360)
   const metres = Math.max(widthKm, heightKm) < 1
   const size = (km: number) => Number((metres ? km * 1000 : km).toPrecision(2))
-  return 'Public area · #' + hash + ' · about ' + size(widthKm) + ' × ' + size(heightKm) + (metres ? ' m' : ' km')
+  return 'Public area · about ' + size(widthKm) + ' × ' + size(heightKm) + (metres ? ' m' : ' km')
 }

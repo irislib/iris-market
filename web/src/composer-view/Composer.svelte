@@ -46,8 +46,8 @@
   {/if}
   <details class="post-service-areas" hidden={c.areaHidden} bind:this={c.areaEditor} ontoggle={() => c.syncAreaEditor()} use:append={c.areaPicker.element}><summary>Transport areas</summary></details>
   <details id="post-map-pin" bind:this={c.mapPin}>
-    <summary>Map pin</summary>
-    <label>Precision<select name="pinPrecision" disabled={c.busy} onchange={() => c.changePrecision()}><option value="3">Region</option><option value="4" selected>District</option><option value="5">City</option><option value="6">Neighborhood</option><option value="7">Block</option><option value="exact">Exact coordinates</option></select></label>
+    <summary>Map location</summary>
+    <label>Show on the map<select name="pinPrecision" disabled={c.busy} onchange={() => c.changePrecision()}><option value="4" selected>Approximate area</option><option value="exact">Exact place</option></select></label>
     <label>Coordinates<input name="pinCoordinates" maxlength="80" placeholder="Latitude, longitude" autocomplete="off" disabled={c.busy} oninput={() => c.changePin()}></label>
     <button id="post-add-area" class="text-button" type="button" disabled={c.busy} onclick={() => c.useLocation()}>Use my location</button>
     <p class="small muted" id="post-pin-hint">{c.pinHint}</p>

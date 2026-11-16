@@ -21,6 +21,12 @@ export function locationHash(location: string): string | undefined {
   return decodeGeohash(location?.trim().match(/(?:^|\s)#(\S+)$/u)?.[1])?.geohash
 }
 
+/** Location text for people: a trailing `#geohash` (older clients) is used for the map, never shown. */
+export function locationLabel(location: string): string {
+  const text = location?.trim() ?? ''
+  return locationHash(text) ? text.slice(0, text.lastIndexOf('#')).trim() : text
+}
+
 export function encodeLocationHash(longitude: number, latitude: number, precision: number): string {
   if (!Number.isFinite(longitude) || Math.abs(longitude) > 180 || !Number.isFinite(latitude) || Math.abs(latitude) > 90 ||
       !Number.isInteger(precision) || precision < 1 || precision > 12) throw Error('Invalid map coordinates or precision.')

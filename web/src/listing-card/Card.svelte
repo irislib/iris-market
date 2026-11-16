@@ -47,7 +47,7 @@
     <span hidden use:place={() => listingMenu(l.title, ctx.hidden(l.id), () => ctx.toggleHidden(l))}></span>
   </div>
   <Price quote={ctx.quote(l)} info={ctx.price(l)} className="card-price" />
-  <p class="card-location">{l.externalOrder?.methods || l.location || 'Anywhere'}</p>
+  <p class="card-location">{l.externalOrder?.methods || l.location || (l.geohash ? 'On the map' : 'Anywhere')}</p>
   {#if !ctx.preview() && l.author && !l.externalOrder}
     <span hidden use:place={() => ctx.author(l)}></span>
   {/if}

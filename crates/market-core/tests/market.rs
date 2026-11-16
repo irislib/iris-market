@@ -1588,3 +1588,52 @@ fn a_basket_groups_by_seller_totals_lines_and_survives_reopening() {
             .is_err()
     );
 }
+
+#[test]
+fn listings_posted_across_an_area_border_share_the_earlier_area() {
+    let dir = tempfile::tempdir().unwrap();
+    offline(dir.path());
+    let app = Market::open_fresh(dir.path(), &iris_market_core::generate_secret_key()).unwrap();
+    let call = |command: Value| -> Value {
+        serde_json::from_str(&app.command(&command.to_string()).unwrap()).unwrap()
+    };
+    call(json!({"type":"update_profile","name":"Border test"}));
+    let home = iris_market_core::geo::encode([24.94, 60.17], 4).unwrap();
+    let [west, ..] = iris_market_core::geo::bounds(&home).unwrap();
+    // Just across the western edge of the first area.
+    let points = [[west + 0.001, 60.17], [west - 0.001, 60.17], [-9.14, 38.72]];
+    let mut areas = Vec::new();
+    for (i, point) in points.iter().enumerate() {
+        let state = call(json!({"type":"publish","draft":{
+            "title":format!("Bike {i}"),"description":"","side":"offer","price":"10","currency":"EUR",
+            "location":"","category":"other","tags":[],"coordinates":point
+        }}));
+        let id = state["listings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|l| l["title"] == format!("Bike {i}"))
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let store = Store::open(&dir.path().join("market.sqlite")).unwrap();
+        let event = store.event(&id).unwrap();
+        let cell = event
+            .tags
+            .iter()
+            .map(|t| t.as_slice())
+            .filter(|t| t.len() == 2 && t[0] == "g")
+            .map(|t| t[1].clone())
+            .max_by_key(String::len)
+            .unwrap();
+        areas.push(cell);
+    }
+    assert_eq!(areas[0], home);
+    assert_ne!(iris_market_core::geo::encode(points[1], 4).unwrap(), home);
+    assert_eq!(
+        areas[1], home,
+        "the neighbouring point keeps the earlier area"
+    );
+    assert_ne!(areas[2], home, "a distant point gets its own area");
+}

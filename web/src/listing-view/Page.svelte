@@ -85,7 +85,7 @@
     <div class="eyebrow">{context}</div>
     <h1>{title}</h1>
     <span hidden use:place={() => priceNode(listing, 'detail-price')}></span>
-    {#if !listing.externalOrder}<p class="detail-place">{listing.location || 'Anywhere'}</p>{/if}
+    {#if !listing.externalOrder}<p class="detail-place">{listing.location || (listing.geohash ? 'On the map' : 'Anywhere')}</p>{/if}
     {#if bitcoin}<p class="detail-quote">{bitcoin.sats.toLocaleString() + ' sats · ' + fiatMethodLabel(bitcoin.method)}</p>{/if}
     {#if author}<span hidden use:place={() => author}></span>{/if}
     {#if hasAdded || expiry !== null}

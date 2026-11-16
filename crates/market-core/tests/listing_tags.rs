@@ -21,6 +21,28 @@ fn explicit_location_publishes_legacy_geohash_prefixes() {
         listing::parse(&event, 100).unwrap().coordinates,
         iris_market_core::geo::decode("u60g")
     );
+    // The code stays in the map tags; people see only the words.
+    let location: Vec<_> = event
+        .tags
+        .iter()
+        .map(Tag::as_slice)
+        .filter(|t| t[0] == "location")
+        .map(|t| t[1].as_str())
+        .collect();
+    assert_eq!(location, ["Pickup area"]);
+    assert_eq!(listing::parse(&event, 100).unwrap().location, "Pickup area");
+    let older = EventBuilder::new(nostr::Kind::Custom(30402), "")
+        .tags([
+            Tag::parse(["d", "old"]).unwrap(),
+            Tag::parse(["title", "Old desk"]).unwrap(),
+            Tag::parse(["location", "Old shop #u60g"]).unwrap(),
+        ])
+        .custom_created_at(Timestamp::from(100))
+        .sign_with_keys(&Keys::generate())
+        .unwrap();
+    let parsed = listing::parse(&older, 100).unwrap();
+    assert_eq!(parsed.location, "Old shop");
+    assert_eq!(parsed.coordinates, iris_market_core::geo::decode("u60g"));
 }
 
 #[test]

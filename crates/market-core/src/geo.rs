@@ -1,5 +1,10 @@
 //! Decode public Nostr geohash cells. Textual locations are never geocoded implicitly.
 pub fn decode(value: &str) -> Option<[f64; 2]> {
+    let [west, south, east, north] = bounds(value)?;
+    Some([(west + east) / 2.0, (south + north) / 2.0])
+}
+/// A cell's `[west, south, east, north]` edges.
+pub fn bounds(value: &str) -> Option<[f64; 4]> {
     const ALPHABET: &[u8] = b"0123456789bcdefghjkmnpqrstuvwxyz";
     if value.is_empty() || value.len() > 12 {
         return None;
@@ -29,11 +34,69 @@ pub fn decode(value: &str) -> Option<[f64; 2]> {
             longitude = !longitude;
         }
     }
-    Some([(west + east) / 2.0, (south + north) / 2.0])
+    Some([west, south, east, north])
+}
+/// The cells around a cell, at the same length.
+pub fn neighbours(hash: &str) -> Vec<String> {
+    let Some([west, south, east, north]) = bounds(hash) else {
+        return Vec::new();
+    };
+    let ([lng, lat], width, height) = (
+        [(west + east) / 2.0, (south + north) / 2.0],
+        east - west,
+        north - south,
+    );
+    let mut cells = Vec::new();
+    for dy in [-1.0, 0.0, 1.0] {
+        for dx in [-1.0, 0.0, 1.0] {
+            let y = lat + dy * height;
+            let x = (lng + dx * width + 540.0).rem_euclid(360.0) - 180.0;
+            if (dx != 0.0 || dy != 0.0)
+                && y.abs() < 90.0
+                && let Some(cell) = encode([x, y], hash.len())
+                && !cells.contains(&cell)
+                && !cell.eq_ignore_ascii_case(hash)
+            {
+                cells.push(cell);
+            }
+        }
+    }
+    cells
+}
+/// Reuses a remembered area when the new one is the same or next to it, so listings
+/// posted from either side of a cell border do not reveal that border.
+pub fn sticky(hash: &str, remembered: &[String]) -> String {
+    remembered
+        .iter()
+        .find(|area| {
+            area.len() == hash.len()
+                && (area.eq_ignore_ascii_case(hash)
+                    || neighbours(area).iter().any(|cell| cell == hash))
+        })
+        .cloned()
+        .unwrap_or_else(|| hash.to_owned())
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn neighbours_see_each_other_and_near_areas_stick() {
+        for hash in ["u4pr", "ud9w", "xbpb", "8000"] {
+            let around = neighbours(hash);
+            assert_eq!(around.len(), 8, "{hash}");
+            for cell in &around {
+                assert!(
+                    neighbours(cell).iter().any(|c| c == hash),
+                    "{cell} sees {hash}"
+                );
+            }
+        }
+        let home = encode([24.94, 60.17], 4).unwrap();
+        let next = neighbours(&home)[0].clone();
+        let far = encode([-9.14, 38.72], 4).unwrap();
+        assert_eq!(sticky(&next, std::slice::from_ref(&home)), home);
+        assert_eq!(sticky(&far, std::slice::from_ref(&home)), far);
+    }
     #[test]
     fn known_cell_and_invalid_inputs() {
         let p = decode("u60g").unwrap();

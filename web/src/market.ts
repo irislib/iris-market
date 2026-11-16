@@ -1,7 +1,7 @@
 import {BITCOIN_KIND,bitcoinFilter,readEscrowOffer} from './escrow-offer.ts';
 import {keywordSearches,matchesLiteralSearch,listingSearchText} from './lexical-search.ts'
 import { verifyEvent, type Event as NostrEvent } from 'nostr-tools/pure'
-import { locationFromTags, MAX_GEOHASH_QUERY_VALUES, WEB_REGIONAL_QUERY_VALUES } from './map/geohash.ts'
+import { decodeGeohash, locationFromTags, locationHash, locationLabel, MAX_GEOHASH_QUERY_VALUES, WEB_REGIONAL_QUERY_VALUES } from './map/geohash.ts'
 import { exactListingPoint } from './map/listing-pin.ts'
 import { getPublicRuntime, queryPublicIndex } from './nostr-runtime.ts'
 import { createListingRecovery } from './listing-recovery.ts'
@@ -70,8 +70,9 @@ export function parseEvent(input: NostrEvent, { now = seconds() } = {}) {
   if (typeof title !== 'string' || !title.trim() || length(title) > 160) fail('Invalid listing title')
   if (bytes(event.content) > 12000) fail('Description is too long')
   const side = quote.side ?? classifiedSide(event.tags)
-  const location = singleton(event, 'location') ?? ''
-  const geo = locationFromTags(event.tags)
+  const rawLocation = singleton(event, 'location') ?? ''
+  const location = locationLabel(rawLocation)
+  const geo = locationFromTags(event.tags) ?? decodeGeohash(locationHash(rawLocation))
   const exactPoint = exactListingPoint(event.tags, geo?.geohash ?? null)
   const tags = event.tags.filter(tag => tag[0] === 't' && typeof tag[1] === 'string' && !tag[1].startsWith('market:')).map(tag => tag[1])
   const category = tags[0] ?? 'Other'

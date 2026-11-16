@@ -1228,7 +1228,7 @@ impl Market {
                 }
                 self.notify.notify_waiters();
             }
-            Command::Publish { draft } => {
+            Command::Publish { mut draft } => {
                 if s.demo {
                     bail!("Leave Preview to publish your own listing");
                 }
@@ -1236,6 +1236,14 @@ impl Market {
                     s.messaging.as_ref().is_some_and(|m| m.can_send()),
                     "Approve this device before publishing a listing"
                 );
+                // An area next to one this profile used before stays that earlier area.
+                let area = draft
+                    .coordinates
+                    .and_then(|point| geo::encode(point, 4))
+                    .map(|cell| geo::sticky(&cell, &s.store.listing_areas().unwrap_or_default()));
+                if let Some(area) = &area {
+                    draft.coordinates = geo::decode(area);
+                }
                 let draft = listing::builder(
                     &draft,
                     &uuid::Uuid::new_v4().to_string(),
@@ -1255,6 +1263,9 @@ impl Market {
                     .map_err(anyhow::Error::msg)?;
                 s.store
                     .ingest_with_contact(&event, listing::now(), &contact)?;
+                if let Some(area) = &area {
+                    s.store.remember_listing_area(area)?;
+                }
                 s.status = "Saved · publishing".into();
                 self.notify.notify_waiters();
             }

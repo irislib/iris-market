@@ -1,7 +1,8 @@
 import {flushSync} from 'svelte'
 import {decodeGeohash,locationHash} from '../map/geohash.ts'
 import {createPlaceSearch} from '../places/search.ts'
-import {exactListingPoint} from '../map/listing-pin.ts'
+import {exactListingPoint, listingPin} from '../map/listing-pin.ts'
+import {createAreaMemory, stickyArea} from '../map/area-memory.ts'
 import {currentPosition} from '../location-filter.ts'
 import {composerTradeTools} from '../marketplace-tools.ts'
 import {byId, formFields} from '../dom.ts'
@@ -41,7 +42,9 @@ export class ComposerState {
   progress = $state('')
   publishLabel = $state('Publish listing')
   side = $state('offer')
-  pinHint = $state('Only the selected area will be public.')
+  /** Recent public areas of the signed-in profile, kept only in this browser. */
+  private areaMemory = createAreaMemory(globalThis.localStorage, () => this.options.account.state().ownerPubkey || '')
+  pinHint = $state('Only a wider area, about 20–40 km across, is public.')
   category = $state('other')
   areaHidden = $state(false)
   shippingEnabled = $state(false)
@@ -144,12 +147,13 @@ export class ComposerState {
     pinField.dispatchEvent(new Event('input', {bubbles: true}))
   }
   paintPin() {
-    this.pinHint = this.precision.value === 'exact' ? 'Publishing shares these coordinates with everyone.' : 'Only the selected area will be public.'
+    this.pinHint = this.precision.value === 'exact' ? 'Everyone can see this exact place. Use it for a shop or pickup point, not your home.' : 'Only a wider area, about 20–40 km across, is public.'
   }
   changePin() { this.pinTouched = true; this.pinRequest++; this.paintPin(); this.clearPending() }
   changePrecision() {
     const legacyHash = locationHash(this.fields.location.value), pinField = this.fields.pinCoordinates
-    if (!this.pinTouched && !pinField.value.trim() && legacyHash) pinField.value = '#' + legacyHash
+    const legacy = !this.pinTouched && !pinField.value.trim() ? decodeGeohash(legacyHash) : null
+    if (legacy) pinField.value = legacy.coordinates[1].toFixed(5) + ', ' + legacy.coordinates[0].toFixed(5)
     this.changePin()
   }
   async useLocation() {
@@ -248,6 +252,10 @@ export class ComposerState {
     const values: Record<string, any> = Object.fromEntries(new FormData(this.form)); this.error = ''; this.progress = ''
     if (!this.pinTouched && (this.editing || !fields.pinCoordinates.value.trim())) { delete values.pinCoordinates; delete values.pinPrecision }
     try {
+      // An area next to one this profile used before stays that earlier area.
+      const pin = values.pinCoordinates && values.pinPrecision !== 'exact' ? listingPin(String(values.pinCoordinates), String(values.pinPrecision)) : null
+      const area = pin && stickyArea(pin.hash, this.areaMemory.areas())
+      if (pin && area !== pin.hash) values.pinCoordinates = '#' + area
       Object.assign(values, this.tradeTools.choices())
       if (this.editing && (values.transportType === undefined || values.transportType === this.initialTransportType)) {
         if (values.transportType === this.initialTransportType) delete values.transportType
@@ -286,11 +294,12 @@ export class ComposerState {
         onShipping: event => { this.pendingShipping = event }, signEvent: draft => account.messaging.signEvent(draft),
       })
       const signed = publication.event
-      parseEvent(signed)
+      const published = parseEvent(signed)
       this.pendingEvent = signed; this.pendingShipping = publication.shipping
       if (active.signal.aborted) throw new DOMException('Upload cancelled', 'AbortError')
       this.publishLabel = 'Saving…'; this.progress = ''
       const receipts = await account.messaging.publishSignedEvents([...(this.pendingShipping ? [this.pendingShipping] : []), signed])
+      if (values.pinCoordinates && values.pinPrecision !== 'exact' && published.geohash) this.areaMemory.remember(published.geohash)
       const showSaved = this.dialog.open
       this.clearPending(); this.editing = null; this.draftId = crypto.randomUUID()
       this.form.reset(); this.expiryChosen = false; this.resetExpiry(); this.pinTouched = false; this.pinRequest++; this.paintPin(); this.mapPin.open = false
@@ -324,7 +333,7 @@ export class ComposerState {
     this.pinRequest++; this.pinTouched = false
     for (const option of [...precision.options]) if (option.dataset.previous) option.remove()
     const originalPrecision = String(listing.geohash?.length || 4)
-    if (!exact && ![...precision.options].some(option => option.value === originalPrecision)) { const option = new Option(originalPrecision + ' characters', originalPrecision); option.dataset.previous = 'true'; precision.add(option) }
+    if (!exact && ![...precision.options].some(option => option.value === originalPrecision)) { const option = new Option('Area chosen before', originalPrecision); option.dataset.previous = 'true'; precision.add(option) }
     precision.value = exact ? 'exact' : originalPrecision
     // An area pin shows its centre as plain coordinates; the published area stays the same.
     const cell = decodeGeohash(listing.geohash)

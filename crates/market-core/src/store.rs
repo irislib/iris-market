@@ -584,6 +584,34 @@ impl Store {
         )?;
         Ok(())
     }
+    /// Recent public listing areas of this profile; kept only on this device.
+    pub fn listing_areas(&self) -> Result<Vec<String>> {
+        let raw: Option<String> = self
+            .db
+            .query_row(
+                "SELECT value FROM preferences WHERE key='listing-areas'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(raw
+            .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|area| crate::geo::decode(area).is_some())
+            .take(4)
+            .collect())
+    }
+    pub fn remember_listing_area(&self, area: &str) -> Result<()> {
+        let mut areas = vec![area.to_owned()];
+        areas.extend(self.listing_areas()?.into_iter().filter(|a| a != area));
+        areas.truncate(4);
+        self.db.execute(
+            "INSERT INTO preferences VALUES ('listing-areas', ?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            [serde_json::to_string(&areas)?],
+        )?;
+        Ok(())
+    }
     pub fn toggle_saved(&self, coordinate: &str) -> Result<()> {
         self.event(coordinate)?;
         let removed = self

@@ -206,7 +206,7 @@ fun MarketAppView(model: MarketModel, appearance: Appearance, changeAppearance: 
             selected = null
         }
         ModalBottomSheet(onDismissRequest = { selected = null }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = Cream) {
-            ListingDetail(listing, state.demo, model, busy, person=state.people[listing.author], openProfile={ profileAuthor=it; selected=null }, buy={ reviewListing=listing; selected=null }) { selected = null; tab = 2 }
+            ListingDetail(listing, state.demo, model, busy, person=state.people[listing.author], openProfile={ profileAuthor=it; selected=null }, buy={ reviewListing=listing; selected=null }, inbox={ selected = null; tab = 2 }, viewBasket={ selected = null; tab = 3 })
         }
     }
     profileAuthor?.let { author ->

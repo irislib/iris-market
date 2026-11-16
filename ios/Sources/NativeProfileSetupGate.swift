@@ -5,7 +5,7 @@ enum NativeProfileSetupGate {
     // discovery remain available without creating a public profile.
     private static let writes: Set<String> = [
         "publish", "save_collection", "close", "contact", "create_invite", "accept_invite",
-        "private_match", "send_message", "request_order", "update_order"
+        "private_match", "send_message", "request_order", "request_basket_order", "update_order"
     ]
     static func requiresSetup(command: String, nameRequired: Bool, demo: Bool) -> Bool {
         nameRequired && !demo && writes.contains(command)

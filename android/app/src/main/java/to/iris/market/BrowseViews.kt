@@ -291,7 +291,7 @@ private fun rememberListLayout(): MutableState<Boolean> {
     }
 }
 
-@Composable fun ListingDetail(listing: Listing, demo: Boolean, model: MarketModel, busy: Boolean, person: PublicPerson?, openProfile:(String)->Unit, buy:()->Unit, inbox:()->Unit) {
+@Composable fun ListingDetail(listing: Listing, demo: Boolean, model: MarketModel, busy: Boolean, person: PublicPerson?, openProfile:(String)->Unit, buy:()->Unit, inbox:()->Unit, viewBasket:(()->Unit)?=null) {
     val clipboard=LocalClipboardManager.current
     var showEscrow by remember(listing.id) { mutableStateOf(false) }
     if(showEscrow) EscrowDialog(model,listing.id,null){showEscrow=false}
@@ -333,6 +333,15 @@ private fun rememberListLayout(): MutableState<Boolean> {
             },modifier=Modifier.weight(1.35f).height(51.dp),shape=RoundedCornerShape(15.dp)) {
                 Text(if(listing.isBitcoinOffer) (if(listing.side=="offer") "Message seller" else "Message buyer") else if(listing.side=="offer") NativeTransportType.classify(listing.tags)?.requestLabel ?: "Buy" else "Respond")
             }
+        }
+        // A basket orders several listings from one seller together.
+        if(!listing.mine && !demo && listing.side=="offer" && !listing.isBitcoinOffer && listing.externalOrder==null && listing.price.isNotBlank() && NativeTransportType.classify(listing.tags)==null) {
+            val snapshot by model.state.collectAsState()
+            val inBasket = snapshot.basket.any { group -> group.items.any { it.listing.id == listing.id } }
+            Spacer(Modifier.height(10.dp))
+            if (inBasket && viewBasket != null) OutlinedButton(onClick = viewBasket, modifier = Modifier.fillMaxWidth().height(51.dp), shape = RoundedCornerShape(15.dp)) { Icon(Icons.Filled.ShoppingBasket, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("In basket · View basket") }
+            else if (inBasket) Text("In basket · find it in Orders", color = Muted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.fillMaxWidth())
+            else OutlinedButton(enabled = !busy, onClick = { model.command(JSONObject().put("type", "add_to_basket").put("id", listing.id)) }, modifier = Modifier.fillMaxWidth().height(51.dp), shape = RoundedCornerShape(15.dp)) { Icon(Icons.Filled.ShoppingBasket, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Add to basket") }
         }
         if(!listing.mine && !demo && listing.side=="offer" && !listing.isBitcoinOffer) TextButton(enabled=!busy,onClick={
             model.command(JSONObject().put("type","contact").put("author",listing.author).put("listing_id",listing.id),inbox)

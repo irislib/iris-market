@@ -1536,3 +1536,55 @@ fn remote_systemone_failure_preserves_unreviewed_listings_without_false_decision
     assert_eq!(server.join().unwrap(), 1);
     app.shutdown();
 }
+
+#[test]
+fn a_basket_groups_by_seller_totals_lines_and_survives_reopening() {
+    let dir = tempfile::tempdir().unwrap();
+    offline(dir.path());
+    let seller = Keys::generate();
+    let other = Keys::generate();
+    let viewer = Keys::generate();
+    let app = Market::open(dir.path(), &viewer.secret_key().to_secret_hex(), false).unwrap();
+    let mut pie = draft();
+    pie.title = "Pie".into();
+    pie.price = "4.5".into();
+    for (author, value, d) in [
+        (&seller, "camera", draft()),
+        (&seller, "pie", pie),
+        (&other, "camera", draft()),
+    ] {
+        app.ingest_event(&listing::build(author, &d, value, listing::now(), false).unwrap())
+            .unwrap();
+    }
+    let call = |command: Value| -> Value {
+        serde_json::from_str(&app.command(&command.to_string()).unwrap()).unwrap()
+    };
+    let camera = format!("{}:camera", seller.public_key());
+    let pie = format!("{}:pie", seller.public_key());
+    call(json!({"type":"add_to_basket","id":camera}));
+    call(json!({"type":"add_to_basket","id":pie}));
+    call(json!({"type":"add_to_basket","id":pie}));
+    let state = call(json!({"type":"add_to_basket","id":format!("{}:camera", other.public_key())}));
+    let basket = state["basket"].as_array().unwrap();
+    assert_eq!(basket.len(), 2, "one group per seller");
+    assert_eq!(basket[0]["seller"], seller.public_key().to_hex());
+    assert_eq!(basket[0]["items"][1]["quantity"], 2);
+    assert_eq!(basket[0]["items"][1]["total"]["amount"], 9.0);
+    assert_eq!(basket[0]["total"]["amount"], 129.0);
+    assert_eq!(basket[0]["total"]["currency"], "EUR");
+    assert!(state["people"].get(other.public_key().to_hex()).is_some());
+    let state = call(json!({"type":"set_basket_quantity","id":camera,"quantity":0}));
+    assert_eq!(state["basket"][0]["items"].as_array().unwrap().len(), 1);
+    drop(app);
+    let app = Market::open(dir.path(), &viewer.secret_key().to_secret_hex(), false).unwrap();
+    let state: Value = serde_json::from_str(
+        &app.command(&json!({"type":"set_sort","sort":"newest"}).to_string())
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(state["basket"][0]["items"][0]["listing"]["id"], pie);
+    assert!(
+        app.command(&json!({"type":"add_to_basket","id":"missing:listing"}).to_string())
+            .is_err()
+    );
+}

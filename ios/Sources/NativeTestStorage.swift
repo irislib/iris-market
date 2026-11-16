@@ -10,10 +10,13 @@ enum NativeTestStorage {
         guard enabled else { return nil }
         let args = ProcessInfo.processInfo.arguments
         guard args.contains("--ui-test-mode"), let index = args.firstIndex(of: "--test-storage"), index + 1 < args.count else { throw Failure.invalidDirectory }
-        let root = URL(fileURLWithPath: args[index + 1], isDirectory: true).standardizedFileURL
+        // A bare folder name lives in this app's own temporary folder, which a UI test runner cannot see.
+        let requested = args[index + 1]
+        let root = (requested.contains("/") ? URL(fileURLWithPath: requested, isDirectory: true) : FileManager.default.temporaryDirectory.appendingPathComponent(requested, isDirectory: true)).standardizedFileURL
         let temporary = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().standardizedFileURL
-        guard root.lastPathComponent.hasPrefix("iris-market-ui-"), root.deletingLastPathComponent().resolvingSymlinksInPath().standardizedFileURL == temporary,
-              root.resolvingSymlinksInPath().standardizedFileURL == root.deletingLastPathComponent().resolvingSymlinksInPath().appendingPathComponent(root.lastPathComponent, isDirectory: true).standardizedFileURL else { throw Failure.invalidDirectory }
+        // Compare paths: a folder that does not exist yet resolves without its trailing slash.
+        guard root.lastPathComponent.hasPrefix("iris-market-ui-"), root.deletingLastPathComponent().resolvingSymlinksInPath().standardizedFileURL.path == temporary.path,
+              root.resolvingSymlinksInPath().standardizedFileURL.path == root.deletingLastPathComponent().resolvingSymlinksInPath().appendingPathComponent(root.lastPathComponent, isDirectory: true).standardizedFileURL.path else { throw Failure.invalidDirectory }
         let fm = FileManager.default
         if !fm.fileExists(atPath: root.path) { try fm.createDirectory(at: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700]) }
         let attributes = try fm.attributesOfItem(atPath: root.path)

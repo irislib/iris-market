@@ -34,6 +34,16 @@ struct ListingDetailView: View {
         #endif
         dismiss()
     }
+    /// A basket orders several listings from one seller together; once added, it opens the basket.
+    @ViewBuilder private var basketButton: some View {
+        if store.inBasket(current) {
+            Button { closeListing(); onOrder?() } label: { Label(onOrder == nil ? "In basket" : "View basket", systemImage: "basket.fill").lineLimit(1).minimumScaleFactor(0.8).frame(maxWidth: .infinity) }
+                .buttonStyle(.bordered).controlSize(.large).disabled(onOrder == nil).accessibilityIdentifier("viewBasket")
+        } else {
+            Button { store.addToBasket(current) } label: { Label("Add to basket", systemImage: "basket.fill").lineLimit(1).minimumScaleFactor(0.8).frame(maxWidth: .infinity) }
+                .buttonStyle(.bordered).controlSize(.large).disabled(store.busy).accessibilityIdentifier("addToBasket")
+        }
+    }
     var body: some View {
         MarketNavigationContainer {
             ScrollView {
@@ -96,7 +106,9 @@ struct ListingDetailView: View {
                 .safeAreaInset(edge: .bottom) {
                     if current.externalOrder == nil && !current.mine && current.side == "offer" && !current.isBitcoinOffer {
                         HStack(spacing: 16) {
-                            Text(current.formattedPrice).font(.system(size: 20, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.7)
+                            // With a basket button the bar keeps both actions and the page shows the price.
+                            if !store.demo && !current.price.isEmpty && NativeTransportType.classify(current.tags ?? []) == nil { basketButton }
+                            else { Text(current.formattedPrice).font(.system(size: 20, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.7) }
                             Button { reviewOrder = true } label: { Label(NativeTransportType.classify(current.tags ?? [])?.requestLabel ?? "Buy", systemImage: NativeTransportType.classify(current.tags ?? []) == nil ? "bag.fill" : "car.fill").frame(maxWidth: .infinity) }
                                 .buttonStyle(PrimaryButton()).disabled(store.demo || store.busy || !store.snapshot.messagingReady).accessibilityIdentifier("buyListing")
                         }.padding(.horizontal, 23).padding(.vertical, 12).background(.bar)

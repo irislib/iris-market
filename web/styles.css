@@ -165,6 +165,7 @@ button[data-alternate-label]::after { content:attr(data-alternate-label); visibi
 .match-compose, .match-card { padding: 14px 0; border-top: 1px solid var(--line); }
 .match-compose summary { cursor: pointer; font-weight: 600; }
 .match-compose select[hidden] { display: none; }
+.match-compose .match-other summary { font-weight: 400; color: var(--muted); }
 .match-compose input, .match-compose textarea, .match-compose select { display: block; width: 100%; margin: 8px 0; }
 .match-card { overflow-wrap: anywhere; }
 .match-card p { margin: 4px 0 10px; }
@@ -272,3 +273,5 @@ button[data-alternate-label]::after { content:attr(data-alternate-label); visibi
   font-size: 12px;
 }
 @media(max-width:760px){.download-site .header .quiet{display:none}}
+.post-place-suggestions { list-style: none; margin: -4px 0 8px; padding: 0; display: grid; gap: 2px; }
+.post-place-suggestions .text-button { text-align: left; padding: 6px 0; }

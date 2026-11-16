@@ -32,6 +32,13 @@ struct MarketOrder: Decodable, Hashable, Identifiable {
         if ["SAT", "SATS", "BTC"].contains(displayPrice.currency.uppercased()) { format.numberStyle = .decimal; format.maximumFractionDigits = displayPrice.currency.uppercased() == "BTC" ? 8 : 0; return (format.string(from: NSNumber(value: displayPrice.amount)) ?? String(displayPrice.amount)) + " " + (displayPrice.currency.uppercased() == "BTC" ? "BTC" : "sats") }
         return (format.string(from: NSNumber(value: displayPrice.amount)) ?? items.first?.formattedPrice ?? "Negotiable") + (displayPrice.stale ? " · older rate" : "")
     }
+    /// A basket's sum in its items' own currency, when they share one and have numeric prices.
+    var itemsTotal: String? {
+        guard items.count > 1, let first = items.first, items.allSatisfy({ $0.currency == first.currency }) else { return nil }
+        var sum = Decimal(0)
+        for item in items { guard let unit = Decimal(string: item.price) else { return nil }; sum += unit * Decimal(item.quantity) }
+        return MarketOrderItem(id: first.id, title: "", price: NSDecimalNumber(decimal: sum).stringValue, currency: first.currency, quantity: 1).formattedPrice
+    }
     var terminal: Bool { status == "delivered" || status == "cancelled" }
     var title: String { items.map(\.title).filter { !$0.isEmpty }.joined(separator: ", ") }
     var statusLabel: String {

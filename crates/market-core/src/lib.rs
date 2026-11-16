@@ -148,6 +148,18 @@ impl State {
         let mut listings = self.store.listings(&self.owner.to_hex(), listing::now())?;
         let mut saved_listings: Vec<_> = listings.iter().filter(|l| l.saved).cloned().collect();
         let saved_count = saved_listings.len();
+        // Basket lines whose listing is no longer available stay hidden.
+        let mut basket_lines: Vec<(Listing, u16)> = self
+            .store
+            .basket()?
+            .into_iter()
+            .filter_map(|(id, quantity)| {
+                listings
+                    .iter()
+                    .find(|l| l.id == id)
+                    .map(|l| (l.clone(), quantity))
+            })
+            .collect();
         let query = self.query.to_lowercase();
         // Snapshots repeat for every update. Normalize the search once and
         // each listing's text only when the search or that text changes.
@@ -197,6 +209,7 @@ impl State {
         let mut people: std::collections::BTreeMap<_, _> = listings
             .iter()
             .chain(saved_listings.iter())
+            .chain(basket_lines.iter().map(|(l, _)| l))
             .map(|l| (l.author.clone(), self.profiles.person(&l.author)))
             .collect();
         people.insert(
@@ -233,7 +246,11 @@ impl State {
                 }
             }
         }
-        for listing in listings.iter_mut().chain(saved_listings.iter_mut()) {
+        for listing in listings
+            .iter_mut()
+            .chain(saved_listings.iter_mut())
+            .chain(basket_lines.iter_mut().map(|(l, _)| l))
+        {
             rates::project(
                 listing,
                 &self.rates,
@@ -243,6 +260,45 @@ impl State {
             listing.image_url = listing.image_url.as_deref().and_then(|url| {
                 image_proxy::image_url(url, &self.settings.image_proxy, 800, 800, false)
             });
+        }
+        let mut basket: Vec<BasketGroup> = Vec::new();
+        for (item, quantity) in basket_lines {
+            let total = rates::total(
+                [(item.price.as_str(), item.currency.as_str(), quantity)],
+                &self.rates,
+                &self.settings.currency,
+                listing::now(),
+            );
+            let line = BasketLine {
+                listing: item,
+                quantity,
+                total,
+            };
+            match basket
+                .iter_mut()
+                .find(|group| group.seller == line.listing.author)
+            {
+                Some(group) => group.items.push(line),
+                None => basket.push(BasketGroup {
+                    seller: line.listing.author.clone(),
+                    items: vec![line],
+                    total: None,
+                }),
+            }
+        }
+        for group in &mut basket {
+            group.total = rates::total(
+                group.items.iter().map(|line| {
+                    (
+                        line.listing.price.as_str(),
+                        line.listing.currency.as_str(),
+                        line.quantity,
+                    )
+                }),
+                &self.rates,
+                &self.settings.currency,
+                listing::now(),
+            );
         }
         for person in people.values_mut() {
             image_proxy::person(person, &self.settings.image_proxy);
@@ -274,32 +330,16 @@ impl State {
                     })
             });
             // A basket shows its total when every item shares a currency.
-            let total = view.order.items.first().and_then(|first| {
-                let mut sum = 0.0;
-                for item in &view.order.items {
-                    let price: f64 = item.price.parse().ok()?;
-                    if item.currency != first.currency || !price.is_finite() {
-                        return None;
-                    }
-                    sum += price * f64::from(item.quantity);
-                }
-                (view.order.items.len() > 1).then(|| (sum.to_string(), first.currency.clone()))
-            });
-            if let Some((price, currency)) = &total {
-                // Without a conversion the total stays in the listings' own currency.
-                view.display_price = self
-                    .rates
-                    .convert(price, currency, &self.settings.currency, listing::now())
-                    .or_else(|| {
-                        Some(rates::DisplayPrice {
-                            amount: price.parse().ok()?,
-                            currency: rates::normalize_currency(currency)?,
-                            approximate: false,
-                            source: None,
-                            updated_at: None,
-                            stale: false,
-                        })
-                    });
+            if view.order.items.len() > 1 {
+                view.display_price = rates::total(
+                    view.order
+                        .items
+                        .iter()
+                        .map(|item| (item.price.as_str(), item.currency.as_str(), item.quantity)),
+                    &self.rates,
+                    &self.settings.currency,
+                    listing::now(),
+                );
             } else if let Some(item) = view.order.items.first() {
                 view.display_price = self.rates.convert(
                     &item.price,
@@ -373,6 +413,7 @@ impl State {
             listings,
             saved_count,
             saved_listings,
+            basket,
             trade_steps: self
                 .messaging
                 .as_ref()
@@ -1077,6 +1118,32 @@ impl Market {
                 s.sort = sort;
             }
             Command::Save { id } => s.store.toggle_saved(&id)?,
+            Command::AddToBasket { id } => s.store.add_to_basket(&id, listing::now())?,
+            Command::SetBasketQuantity { id, quantity } => {
+                s.store.set_basket_quantity(&id, quantity)?
+            }
+            Command::RequestBasketOrder { seller, note } => {
+                let now = listing::now();
+                let lines: Vec<(Listing, u16)> = s
+                    .store
+                    .basket()?
+                    .into_iter()
+                    .filter(|(id, _)| id.starts_with(&format!("{seller}:")))
+                    .filter_map(|(id, quantity)| {
+                        let listing = listing::parse(&s.store.event(&id).ok()?, now).ok()?;
+                        (listing.status == "active" && listing.expires_at.is_none_or(|at| at > now))
+                            .then_some((listing, quantity))
+                    })
+                    .collect();
+                ensure!(!lines.is_empty(), "These listings are no longer available");
+                s.messaging
+                    .as_mut()
+                    .context("Leave Preview to request an order")?
+                    .request_basket_order(&lines, &note)
+                    .map_err(anyhow::Error::msg)?;
+                s.store.clear_basket_seller(&seller)?;
+                self.notify.notify_waiters();
+            }
             Command::UpdateProfile { name } => {
                 anyhow::ensure!(!s.demo, "Leave Preview to create your profile");
                 let name = name.trim();

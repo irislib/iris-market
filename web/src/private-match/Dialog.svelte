@@ -111,12 +111,18 @@
       <option value="request">I’m looking for</option>
       <option value="offer">I’m offering</option>
     </select>
-    <select aria-label="Choose from your conversations" hidden={!matches.peers.length}
-      value={matches.peers.includes(helper) ? helper : ''} onchange={e => { if (e.currentTarget.value) helper = e.currentTarget.value }}>
-      <option value="">Choose from your conversations</option>
-      {#each matches.peers as key, i (key)}<option value={key}>{peerNames[i]}</option>{/each}
-    </select>
-    <input bind:value={helper} placeholder="Helper’s profile ID (npub…)" aria-label="Helper" autocomplete="off">
+    {#if matches.peers.length}
+      <select aria-label="Helper" value={matches.peers.includes(helper) ? helper : ''} onchange={e => { if (e.currentTarget.value) helper = e.currentTarget.value }}>
+        <option value="">Choose your helper</option>
+        {#each matches.peers as key, i (key)}<option value={key}>{peerNames[i]}</option>{/each}
+      </select>
+      <details class="match-other"><summary class="small">Someone you have not chatted with</summary>
+        <input bind:value={helper} placeholder="Their profile ID (npub…)" aria-label="Helper’s profile ID" autocomplete="off">
+      </details>
+    {:else}
+      <p class="small muted">Your helper is someone you trust to introduce you. Start a chat with them in Messages, then choose them here. You can also paste their profile ID.</p>
+      <input bind:value={helper} placeholder="Helper’s profile ID (npub…)" aria-label="Helper" autocomplete="off">
+    {/if}
     <textarea bind:value={summary} placeholder="e.g. Looking for a cargo bike with two seats" aria-label="Shareable summary" maxlength="200"></textarea>
     <p class="small muted">{matches.canSend ? '' : 'This device needs approval before it can send.'}</p>
     <button class="button primary" disabled={!matches.canSend} onclick={send}>Send to helper privately</button>

@@ -177,7 +177,8 @@ impl Store {
             CREATE TABLE IF NOT EXISTS saved (coordinate TEXT PRIMARY KEY);
             CREATE TABLE IF NOT EXISTS outbox (event_id TEXT PRIMARY KEY, raw TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS relevance (coordinate TEXT PRIMARY KEY, event_id TEXT NOT NULL, value TEXT NOT NULL);")?;
+            CREATE TABLE IF NOT EXISTS relevance (coordinate TEXT PRIMARY KEY, event_id TEXT NOT NULL, value TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS basket (coordinate TEXT PRIMARY KEY, quantity INTEGER NOT NULL, added_at INTEGER NOT NULL);")?;
         collections::schema(&db)?;
         Ok(Self {
             db,
@@ -535,6 +536,53 @@ impl Store {
             |r| r.get(0),
         )?;
         Ok(Event::from_json(raw)?)
+    }
+    /// Basket lines in the order they were added. Nothing here is published.
+    pub fn basket(&self) -> Result<Vec<(String, u16)>> {
+        let mut stmt = self
+            .db
+            .prepare("SELECT coordinate, quantity FROM basket ORDER BY added_at, rowid")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, u16>(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+    /// Adds one more of a stored listing; a seller's basket holds at most `MAX_ITEMS` listings.
+    pub fn add_to_basket(&self, coordinate: &str, now: u64) -> Result<()> {
+        self.event(coordinate)?;
+        let seller = coordinate.split(':').next().unwrap_or_default();
+        let lines: usize = self.db.query_row(
+            "SELECT COUNT(*) FROM basket WHERE coordinate >= ?1 AND coordinate < ?2 AND coordinate != ?3",
+            params![format!("{seller}:"), format!("{seller};"), coordinate],
+            |r| r.get(0),
+        )?;
+        anyhow::ensure!(
+            lines < crate::orders::MAX_ITEMS,
+            "That seller's basket is full"
+        );
+        self.db.execute(
+            "INSERT INTO basket VALUES (?1, 1, ?2) ON CONFLICT(coordinate) DO UPDATE SET quantity=MIN(999, quantity + 1)",
+            params![coordinate, now as i64],
+        )?;
+        Ok(())
+    }
+    /// Zero removes the line.
+    pub fn set_basket_quantity(&self, coordinate: &str, quantity: u16) -> Result<()> {
+        if quantity == 0 {
+            self.db
+                .execute("DELETE FROM basket WHERE coordinate=?1", [coordinate])?;
+        } else {
+            self.db.execute(
+                "UPDATE basket SET quantity=?2 WHERE coordinate=?1",
+                params![coordinate, quantity.min(999)],
+            )?;
+        }
+        Ok(())
+    }
+    pub fn clear_basket_seller(&self, seller: &str) -> Result<()> {
+        self.db.execute(
+            "DELETE FROM basket WHERE coordinate >= ?1 AND coordinate < ?2",
+            params![format!("{seller}:"), format!("{seller};")],
+        )?;
+        Ok(())
     }
     pub fn toggle_saved(&self, coordinate: &str) -> Result<()> {
         self.event(coordinate)?;

@@ -10,6 +10,8 @@ struct OrdersView: View {
         !store.demo && (store.snapshot.settings.escrowUi || store.snapshot.escrowCards.contains { $0.joined && $0.deal.provider == store.snapshot.publicKey })
     }
     @State private var period = MarketOrderPeriod.all
+    @State private var basketSeller: String?
+    @State private var requestedOrder: String?
     private var historySection: Bool { [.purchases, .sales, .archived].contains(section) }
     private var sectionOrders: [MarketOrder] { store.snapshot.orders.filter { section.contains($0, owner: store.snapshot.publicKey) } }
     private var orders: [MarketOrder] { historySection ? sectionOrders.filter { period.includes($0.createdAt) } : sectionOrders }
@@ -55,6 +57,9 @@ struct OrdersView: View {
                     }
                     Text(MarketOrderHistory.summary(orders)).font(.caption).foregroundStyle(MarketTheme.muted)
                 }
+                if section == .purchases, let basket = store.snapshot.basket, !basket.isEmpty {
+                    BasketSection(groups: basket) { basketSeller = $0.seller }
+                }
                 if section == .escrow && jobsAvailable {
                     EmptyView() // Escrow jobs are listed above.
                 } else if orders.isEmpty && !sectionOrders.isEmpty {
@@ -74,11 +79,100 @@ struct OrdersView: View {
             .onAppear {
                 // Open on the list holding the latest activity, so a new sale is not hidden behind an empty Purchases list.
                 let owner = store.snapshot.publicKey
+                // A waiting basket keeps Purchases open.
+                guard (store.snapshot.basket ?? []).isEmpty else { return }
                 guard section == .purchases, let latest = store.snapshot.orders.filter({ !$0.archived }).max(by: { $0.updatedAt < $1.updatedAt }) else { return }
                 if let list = [MarketOrderList.purchases, .sales, .deliveries].first(where: { $0.contains(latest, owner: owner) }) { section = list }
             }
             .marketPage(isPresented: $offerService) { NewListingView(providerService: true).marketListingEditorSheetScope() }
             .marketPage(item: selection) { value in OrderDetailView(orderID: value.id).marketSheetScope() }
+            .marketPage(isPresented: Binding(get: { basketSeller != nil }, set: { if !$0 { basketSeller = nil } }), onDismiss: {
+                // Open the new order once the review sheet has closed.
+                if let id = requestedOrder, !id.isEmpty { store.activeOrderID = id }
+                requestedOrder = nil
+            }) {
+                if let seller = basketSeller { BasketCheckoutView(seller: seller) { requestedOrder = $0 }.marketSheetScope() }
+            }
+    }
+}
+
+/// The basket on Purchases: one card per seller, each requested as one order.
+private struct BasketSection: View {
+    @EnvironmentObject private var store: MarketStore
+    let groups: [MarketBasketGroup]
+    let onCheckout: (MarketBasketGroup) -> Void
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Basket").font(.system(size: 20, weight: .semibold))
+            ForEach(groups) { group in
+                VStack(alignment: .leading, spacing: 14) {
+                    UserRow(person: store.snapshot.people[group.seller] ?? .unnamed(group.seller), subtitle: "Seller")
+                    ForEach(group.items) { line in
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack(alignment: .firstTextBaseline) {
+                                Text(line.listing.title).font(.system(size: 16, weight: .medium)).lineLimit(2)
+                                Spacer(minLength: 8)
+                                Text(line.formattedTotal).font(.system(size: 15))
+                            }
+                            HStack(spacing: 12) {
+                                Button { store.setBasketQuantity(line.listing.id, line.quantity - 1) } label: { Image(systemName: line.quantity == 1 ? "trash.fill" : "minus").frame(width: 22, height: 22) }
+                                    .buttonStyle(.bordered).accessibilityLabel(line.quantity == 1 ? "Remove \(line.listing.title)" : "One fewer \(line.listing.title)")
+                                Text("\(line.quantity)").font(.system(size: 16, weight: .medium)).monospacedDigit().frame(minWidth: 24).accessibilityLabel("Quantity \(line.quantity)")
+                                Button { store.setBasketQuantity(line.listing.id, line.quantity + 1) } label: { Image(systemName: "plus").frame(width: 22, height: 22) }
+                                    .buttonStyle(.bordered).accessibilityLabel("One more \(line.listing.title)")
+                            }
+                        }
+                    }
+                    if group.items.count > 1, let total = group.total {
+                        Divider()
+                        HStack { Text("Total").fontWeight(.semibold); Spacer(); Text(total.formatted).fontWeight(.semibold) }.font(.system(size: 16))
+                    }
+                    Button("Request order") { onCheckout(group) }
+                        .buttonStyle(PrimaryButton()).disabled(store.demo || store.busy || !store.snapshot.canSign).accessibilityIdentifier("basketRequestOrder")
+                }.padding(18).frame(maxWidth: .infinity, alignment: .leading).background(MarketTheme.surface, in: RoundedRectangle(cornerRadius: 20))
+            }
+        }
+    }
+}
+
+/// Reviews one seller's basket before it becomes an order request.
+struct BasketCheckoutView: View {
+    @EnvironmentObject private var store: MarketStore
+    @Environment(\.dismiss) private var dismiss
+    let seller: String
+    let onRequested: (String) -> Void
+    @State private var note = ""
+    private var group: MarketBasketGroup? { store.snapshot.basket?.first { $0.seller == seller } }
+    var body: some View {
+        MarketNavigationContainer {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 23) {
+                    if let group {
+                        Text("\(group.count) items").font(.system(size: 30, weight: .medium))
+                        if let total = group.total { Text(total.formatted).font(.system(size: 26, weight: .semibold)) }
+                        UserRow(person: store.snapshot.people[seller] ?? .unnamed(seller), subtitle: "Seller")
+                        VStack(spacing: 10) {
+                            ForEach(group.items) { line in
+                                HStack(alignment: .firstTextBaseline) { Text("\(line.quantity) × \(line.listing.title)"); Spacer(minLength: 8); Text(line.formattedTotal) }.font(.system(size: 15))
+                            }
+                        }
+                        TextField("Note · optional", text: $note, axis: .vertical).lineLimit(3...6).padding(16).background(MarketTheme.surface, in: RoundedRectangle(cornerRadius: 16))
+                            .onChange(of: note) { value in if value.count > 2000 { note = String(value.prefix(2000)) } }
+                        Text("The seller will confirm your order. No payment is taken here.").font(.system(size: 13)).foregroundStyle(MarketTheme.muted)
+                        MarketInlineError()
+                        Button("Request order") {
+                            store.requestBasketOrder(seller: seller, note: note.trimmingCharacters(in: .whitespacesAndNewlines)) { id in
+                                guard let id else { return }
+                                onRequested(id); dismiss()
+                            }
+                        }.buttonStyle(PrimaryButton()).disabled(store.demo || store.busy || !store.snapshot.canSign).accessibilityIdentifier("requestBasketOrder")
+                    } else {
+                        MarketEmptyState(symbol: "basket.fill", title: "Basket is empty", description: "Add listings from this seller to order them together.")
+                    }
+                }.padding(24)
+            }.background(MarketTheme.paper).foregroundStyle(MarketTheme.ink).navigationTitle("Review order").marketInlineTitle()
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
+        }
     }
 }
 
@@ -222,7 +316,13 @@ struct OrderDetailView: View {
                 ForEach(order.items) { item in
                     HStack { Text("\(item.quantity) × \(item.title)").font(.system(size: 16, weight: .medium)); Spacer(); Text(item.lineFormattedPrice).font(.system(size: 15)) }
                 }
-                HStack { Text("Total").font(.system(size: 16, weight: .semibold)); Spacer(); Text(order.formattedPrice).font(.system(size: 20, weight: .semibold)) }
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Total").font(.system(size: 16, weight: .semibold)); Spacer()
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text(order.itemsTotal ?? order.formattedPrice).font(.system(size: 20, weight: .semibold))
+                        if let total = order.itemsTotal, order.displayPrice != nil, total != order.formattedPrice { Text("≈ \(order.formattedPrice)").font(.caption).foregroundStyle(MarketTheme.muted) }
+                    }
+                }
             }
             Button { profile = OrderSelection(id: other) } label: { UserRow(person: store.snapshot.people[other] ?? .unnamed(other), subtitle: seller ? "Buyer" : "Seller") }.buttonStyle(.plain)
             if !order.note.isEmpty { Text(order.note).font(.system(size: 15)).lineSpacing(4) }

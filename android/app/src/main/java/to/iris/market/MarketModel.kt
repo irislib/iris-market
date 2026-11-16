@@ -92,7 +92,31 @@ data class EscrowOffer(val trade:String,val sats:Long?,val method:String) {
         return java.text.NumberFormat.getIntegerInstance().format(sats) + " sats · " + methodLabel
     }
 }
-data class PriceDisplay(val amount: Double, val currency: String, val approximate: Boolean, val stale: Boolean)
+data class PriceDisplay(val amount: Double, val currency: String, val approximate: Boolean, val stale: Boolean) {
+    val formatted: String get() {
+        val code = currency.uppercase(); val suffix = if (stale) " · older rate" else ""
+        if (code in setOf("SAT", "SATS", "BTC", "TESTSAT", "TESTSATS")) {
+            val unit = if (code == "BTC") "BTC" else if (code.startsWith("TEST")) "test sats" else "sats"
+            return java.text.NumberFormat.getNumberInstance().apply { maximumFractionDigits = if (code == "BTC") 8 else 0 }.format(amount) + " " + unit + suffix
+        }
+        return runCatching { java.text.NumberFormat.getCurrencyInstance().apply { this.currency = java.util.Currency.getInstance(code) }.format(amount) }.getOrDefault("$amount $code") + suffix
+    }
+    companion object { fun parse(d: JSONObject) = PriceDisplay(d.optDouble("amount"), d.optString("currency"), d.optBoolean("approximate"), d.optBoolean("stale")) }
+}
+/** One basket line: a listing, its count and the line total. */
+data class BasketLine(val listing: Listing, val quantity: Int, val total: PriceDisplay?) { val formattedTotal: String get() = total?.formatted ?: listing.displayPrice }
+/** One seller's basket lines; requesting them makes one order. */
+data class BasketGroup(val seller: String, val items: List<BasketLine>, val total: PriceDisplay?) {
+    val count: Int get() = items.sumOf { it.quantity }
+    companion object {
+        fun parse(o: JSONObject): BasketGroup {
+            val lines = o.optJSONArray("items") ?: JSONArray()
+            return BasketGroup(o.getString("seller"), (0 until lines.length()).map { i -> val line = lines.getJSONObject(i)
+                BasketLine(Listing.parse(line.getJSONObject("listing")), line.optInt("quantity", 1), line.optJSONObject("total")?.let(PriceDisplay::parse)) },
+                o.optJSONObject("total")?.let(PriceDisplay::parse))
+        }
+    }
+}
 data class MessageContext(val threadId:String,val orderId:String?=null,val listing:String?=null) {
     val key:String get()=orderId?.let { "order:$it" }?:"thread:$threadId"
     fun json()=JSONObject().put("thread_id",threadId).apply { orderId?.let { put("order_id",it) };listing?.let { put("listing",it) } }
@@ -123,7 +147,7 @@ data class MarketSnapshot(
     val searchGeneration: Long = 0, val searchPlanPending: Boolean = false, val searchPlanTags: List<String> = emptyList(),
     val satsDisplayPrice: PriceDisplay? = null,
     val supportedCurrencies: List<String> = emptyList(),
-    val revision: Long = 0, val aiMessage: String? = null, val aiTestResult: NativeAITestResult? = null, val savedListings: List<Listing>? = null, val escrowInvites: List<EscrowInboxCard> = emptyList(), val escrowRevision: Int = 0, val aiConfigured: Boolean = true, val profileNameRequired: Boolean = false
+    val revision: Long = 0, val aiMessage: String? = null, val aiTestResult: NativeAITestResult? = null, val savedListings: List<Listing>? = null, val basket: List<BasketGroup> = emptyList(), val escrowInvites: List<EscrowInboxCard> = emptyList(), val escrowRevision: Int = 0, val aiConfigured: Boolean = true, val profileNameRequired: Boolean = false
 ) {
     companion object {
         fun parse(raw: String): MarketSnapshot {
@@ -142,6 +166,7 @@ data class MarketSnapshot(
                 supportedCurrencies = o.optJSONArray("supported_currencies")?.let { list -> (0 until list.length()).map { list.getString(it) } } ?: emptyList(),
                 satsDisplayPrice = o.optJSONObject("sats_display_price")?.let { d -> PriceDisplay(d.optDouble("amount"),d.optString("currency"),d.optBoolean("approximate"),d.optBoolean("stale")) },
                 savedListings = o.optJSONArray("saved_listings")?.let { a -> (0 until a.length()).map { Listing.parse(a.getJSONObject(it)) } },
+                basket = o.optJSONArray("basket")?.let { a -> (0 until a.length()).map { BasketGroup.parse(a.getJSONObject(it)) } } ?: emptyList(),
                 aiConfigured = o.optBoolean("ai_configured",true), profileNameRequired = o.optBoolean("profile_name_required"),
                 conversations = (0 until cs.length()).map { i ->
                     val c = cs.getJSONObject(i); val ms = c.optJSONArray("messages") ?: JSONArray()

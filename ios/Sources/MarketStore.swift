@@ -447,6 +447,17 @@ final class MarketStore: ObservableObject {
         guard generation == accountGeneration else { throw CancellationError() }
         return try JSONDecoder().decode(ListingMediaUpload.self, from: Data(raw.utf8))
     }
+    func inBasket(_ listing: MarketListing) -> Bool { snapshot.basket?.contains { $0.items.contains { $0.listing.id == listing.id } } ?? false }
+    func addToBasket(_ listing: MarketListing) { command(["type": "add_to_basket", "id": listing.id]) }
+    /// Zero removes the line.
+    func setBasketQuantity(_ id: String, _ quantity: Int) { command(["type": "set_basket_quantity", "id": id, "quantity": max(0, min(999, quantity))]) }
+    /// Completes with the new order's ID, or nil when the request failed.
+    func requestBasketOrder(seller: String, note: String, completion: @escaping (String?) -> Void) {
+        let existing = Set(snapshot.orders.map(\.id))
+        command(["type": "request_basket_order", "seller": seller, "note": note]) { success in
+            completion(success ? self.snapshot.orders.first { !existing.contains($0.id) && $0.buyer == self.snapshot.publicKey && $0.seller == seller }?.id ?? "" : nil)
+        }
+    }
     func requestOrder(_ listing: MarketListing, quantity: Int, note: String, deliveryRequest: MarketDeliveryRequest? = nil, completion: @escaping (Bool) -> Void) {
         let existing = Set(snapshot.orders.map(\.id))
         var request: [String: Any] = ["type": "request_order", "listing_id": listing.id, "quantity": quantity, "note": note]

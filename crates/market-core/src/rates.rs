@@ -245,6 +245,43 @@ impl RateBook {
     }
 }
 
+/// The sum of `(price, currency, quantity)` lines when all share one currency and
+/// have numeric prices: converted when a rate is known, else in that currency.
+pub fn total<'a>(
+    lines: impl IntoIterator<Item = (&'a str, &'a str, u16)>,
+    rates: &RateBook,
+    preferred: &str,
+    now: u64,
+) -> Option<DisplayPrice> {
+    let mut currency: Option<&str> = None;
+    let mut sum = 0.0;
+    for (price, from, quantity) in lines {
+        let price: f64 = price
+            .trim()
+            .parse()
+            .ok()
+            .filter(|value: &f64| value.is_finite())?;
+        if currency.is_some_and(|currency| currency != from) {
+            return None;
+        }
+        currency = Some(from);
+        sum += price * f64::from(quantity);
+    }
+    let currency = currency?;
+    rates
+        .convert(&sum.to_string(), currency, preferred, now)
+        .or_else(|| {
+            Some(DisplayPrice {
+                amount: sum,
+                currency: normalize_currency(currency)?,
+                approximate: false,
+                source: None,
+                updated_at: None,
+                stale: false,
+            })
+        })
+}
+
 pub fn project(listing: &mut crate::model::Listing, rates: &RateBook, preferred: &str, now: u64) {
     listing.display_price = rates.convert(&listing.price, &listing.currency, preferred, now);
 }

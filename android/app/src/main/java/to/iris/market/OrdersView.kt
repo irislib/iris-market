@@ -31,6 +31,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -49,7 +51,8 @@ import java.util.UUID
 
 @Composable fun OrdersView(state: MarketSnapshot, model:MarketModel, busy:Boolean, openOrder: (String) -> Unit) {
     // Open on the list holding the latest activity, so a new sale is not hidden behind an empty Purchases list.
-    var tab by remember { mutableStateOf(state.orders.filter { !it.archived }.maxByOrNull { it.updatedAt }?.let { latest ->
+    // A waiting basket keeps Purchases open.
+    var tab by remember { mutableStateOf(if (state.basket.isNotEmpty()) "purchases" else state.orders.filter { !it.archived }.maxByOrNull { it.updatedAt }?.let { latest ->
         when { latest.buyer == state.publicKey -> "purchases"; latest.seller == state.publicKey -> "sales"; latest.handlesDelivery(state.publicKey) -> "deliveries"; else -> null }
     } ?: "purchases") }
     val escrowEnabled=JSONObject(state.settings).optBoolean("escrow_ui") && !state.demo
@@ -68,6 +71,9 @@ import java.util.UUID
     }.sortedByDescending { it.updatedAt }
     val historyTab = tab in setOf("purchases", "sales", "archived")
     val orders = if (historyTab) sectionOrders.filter { period.includes(it.createdAt) } else sectionOrders
+    val basketShown = tab == "purchases" && state.basket.isNotEmpty()
+    var checkoutSeller by remember { mutableStateOf<String?>(null) }
+    checkoutSeller?.let { seller -> state.basket.firstOrNull { it.seller == seller }?.let { group -> BasketCheckout(group, state, model, busy, close = { checkoutSeller = null }) { id -> checkoutSeller = null; if (id != null) openOrder(id) } } ?: run { checkoutSeller = null } }
     Column(Modifier.fillMaxSize().padding(horizontal = 22.dp)) {
         Text("Orders", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.padding(top = 15.dp, bottom = 10.dp))
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -93,10 +99,11 @@ import java.util.UUID
                     if(!state.canSign) Text("Use the device holding your profile key to offer escrow services.",style=MaterialTheme.typography.bodySmall,color=Muted)
                 }
             }
-        } else if (orders.isEmpty() && sectionOrders.isNotEmpty()) EmptyView("No orders in this period", "Choose another period to see earlier orders.", Icons.Filled.CalendarMonth)
-        else if (orders.isEmpty()) EmptyView(when(tab) { "sales" -> "No sales yet"; "deliveries" -> "No deliveries yet"; "archived" -> "Nothing archived"; else -> "No purchases yet" },
+        } else if (orders.isEmpty() && sectionOrders.isNotEmpty() && !basketShown) EmptyView("No orders in this period", "Choose another period to see earlier orders.", Icons.Filled.CalendarMonth)
+        else if (orders.isEmpty() && !basketShown) EmptyView(when(tab) { "sales" -> "No sales yet"; "deliveries" -> "No deliveries yet"; "archived" -> "Nothing archived"; else -> "No purchases yet" },
             when(tab) { "sales" -> "Order requests for your listings appear here."; "deliveries" -> "Deliveries you handle appear here."; "archived" -> "Finished orders can be kept here."; else -> "Your orders appear here." }, Icons.Filled.ReceiptLong)
         else LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(top = 12.dp, bottom = 24.dp)) {
+            if (basketShown) item(key = "basket") { BasketSection(state, model, busy) { checkoutSeller = it } }
             items(orders, key = { it.id }) { order ->
                 Surface(color = White, shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth().clickable { openOrder(order.id) }) {
                     Column(Modifier.padding(17.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -115,6 +122,57 @@ import java.util.UUID
             }
         }
     }
+}
+
+/** The basket on Purchases: one card per seller, each requested as one order. */
+@Composable private fun BasketSection(state: MarketSnapshot, model: MarketModel, busy: Boolean, checkout: (String) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text("Basket", style = MaterialTheme.typography.titleLarge)
+        state.basket.forEach { group ->
+            Surface(color = White, shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(17.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    UserRow(state.people[group.seller] ?: PublicPerson.unnamed(group.seller), "Seller")
+                    group.items.forEach { line ->
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Row(Modifier.fillMaxWidth()) { Text(line.listing.title, Modifier.weight(1f), fontWeight = FontWeight.Medium, maxLines = 2); Text(line.formattedTotal) }
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                val quantity = { value: Int -> model.command(JSONObject().put("type", "set_basket_quantity").put("id", line.listing.id).put("quantity", value.coerceIn(0, 999))) }
+                                OutlinedIconButton(enabled = !busy, onClick = { quantity(line.quantity - 1) }) { Icon(if (line.quantity == 1) Icons.Filled.Delete else Icons.Filled.Remove, if (line.quantity == 1) "Remove ${line.listing.title}" else "One fewer ${line.listing.title}") }
+                                Text("${line.quantity}", style = MaterialTheme.typography.titleMedium, modifier = Modifier.semantics { contentDescription = "Quantity ${line.quantity}" })
+                                OutlinedIconButton(enabled = !busy, onClick = { quantity(line.quantity + 1) }) { Icon(Icons.Filled.Add, "One more ${line.listing.title}") }
+                            }
+                        }
+                    }
+                    if (group.items.size > 1) group.total?.let { total -> HorizontalDivider(color = Line); Row(Modifier.fillMaxWidth()) { Text("Total", Modifier.weight(1f), fontWeight = FontWeight.SemiBold); Text(total.formatted, fontWeight = FontWeight.SemiBold) } }
+                    Button(enabled = !busy && !state.demo && state.canSign, onClick = { checkout(group.seller) }, modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(16.dp)) { Text("Request order") }
+                }
+            }
+        }
+    }
+}
+
+/** Reviews one seller's basket before it becomes an order request. */
+@Composable private fun BasketCheckout(group: BasketGroup, state: MarketSnapshot, model: MarketModel, busy: Boolean, close: () -> Unit, done: (String?) -> Unit) {
+    var note by remember(group.seller) { mutableStateOf("") }
+    var error by remember(group.seller) { mutableStateOf<String?>(null) }
+    AlertDialog(onDismissRequest = close, title = { Text("${group.count} items") }, text = {
+        Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            UserRow(state.people[group.seller] ?: PublicPerson.unnamed(group.seller), "Seller")
+            group.items.forEach { line -> Row(Modifier.fillMaxWidth()) { Text("${line.quantity} × ${line.listing.title}", Modifier.weight(1f)); Text(line.formattedTotal) } }
+            group.total?.let { total -> Row(Modifier.fillMaxWidth()) { Text("Total", Modifier.weight(1f), fontWeight = FontWeight.SemiBold); Text(total.formatted, fontWeight = FontWeight.SemiBold) } }
+            OutlinedTextField(note, { note = it.take(2000) }, label = { Text("Note · optional") }, modifier = Modifier.fillMaxWidth(), minLines = 2)
+            Text("The seller will confirm your order. No payment is taken here.", color = Muted, style = MaterialTheme.typography.bodySmall)
+            error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        }
+    }, confirmButton = {
+        Button(enabled = !busy && !state.demo, onClick = {
+            error = null
+            val existing = state.orders.map { it.id }.toSet()
+            model.orderCommand(JSONObject().put("type", "request_basket_order").put("seller", group.seller).put("note", note.trim()),
+                onSuccess = { done(model.state.value.orders.firstOrNull { it.id !in existing && it.buyer == state.publicKey && it.seller == group.seller }?.id) },
+                onError = { error = it })
+        }) { Text("Request order") }
+    }, dismissButton = { TextButton(onClick = close) { Text("Cancel") } })
 }
 
 @Composable fun OrderReview(listing: Listing, state: MarketSnapshot, model: MarketModel, busy: Boolean, done: (String?) -> Unit) {
@@ -208,7 +266,13 @@ import java.util.UUID
         if (order.items.size == 1) order.items.forEach { item -> Text("${item.quantity} × ${order.formattedPrice}", style = MaterialTheme.typography.titleMedium);if(order.displayPrice!=null)Text(item.displayPrice,style=MaterialTheme.typography.bodySmall,color=Muted) }
         else {
             order.items.forEach { item -> Row(Modifier.fillMaxWidth()) { Text("${item.quantity} × ${item.title}", Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge); Text(item.lineDisplayPrice, style = MaterialTheme.typography.bodyMedium) } }
-            Row(Modifier.fillMaxWidth()) { Text("Total", Modifier.weight(1f), fontWeight = FontWeight.SemiBold); Text(order.formattedPrice, style = MaterialTheme.typography.titleMedium) }
+            Row(Modifier.fillMaxWidth()) {
+                Text("Total", Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(order.itemsTotal ?: order.formattedPrice, style = MaterialTheme.typography.titleMedium)
+                    if (order.itemsTotal != null && order.displayPrice != null && order.itemsTotal != order.formattedPrice) Text("≈ ${order.formattedPrice}", color = Muted, style = MaterialTheme.typography.bodySmall)
+                }
+            }
         }
         val other = if (seller) order.buyer else order.seller
         Row(Modifier.fillMaxWidth().clickable { openProfile(other) }.padding(vertical = 4.dp)) {

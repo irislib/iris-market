@@ -421,3 +421,40 @@ fn private_separate_checkout_payment_send_boundary_and_live_location_actual_ndr(
     );
     assert!(m.orders()[0].order.shipment.location.is_none());
 }
+
+#[test]
+fn a_basket_order_reaches_the_seller_with_every_line() {
+    let bd = TempDir::new().unwrap();
+    let sd = TempDir::new().unwrap();
+    let bk = Keys::generate();
+    let sk = Keys::generate();
+    let other = Keys::generate();
+    let mut b = Messaging::open(bd.path(), bk.clone()).unwrap();
+    let mut s = Messaging::open(sd.path(), sk.clone()).unwrap();
+    let mut scarf = listing(&sk);
+    scarf.id = format!("{}:scarf", sk.public_key().to_hex());
+    scarf.title = "Scarf".into();
+    let mittens = listing(&sk);
+    assert!(
+        b.request_basket_order(&[(scarf.clone(), 1), (listing(&other), 1)], "")
+            .is_err(),
+        "one order holds one seller's listings"
+    );
+    assert!(b.request_basket_order(&[], "").is_err());
+    let id = b
+        .request_basket_order(&[(scarf, 1), (mittens, 3)], "Both please")
+        .unwrap();
+    b.accept_invite(&s.invite().unwrap()).unwrap();
+    exchange(&mut b, &mut s);
+    let order = &s.orders()[0].order;
+    assert_eq!(order.id, id);
+    assert_eq!(
+        order
+            .items
+            .iter()
+            .map(|item| (item.title.as_str(), item.quantity))
+            .collect::<Vec<_>>(),
+        [("Scarf", 1), ("Delivery", 3)]
+    );
+    assert_eq!(order.note, "Both please");
+}

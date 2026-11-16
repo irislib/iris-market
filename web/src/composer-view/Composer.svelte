@@ -38,7 +38,12 @@
   <label>Title<input name="title" maxlength="160" required autocomplete="off" disabled={c.busy}></label>
   <label>Description<textarea name="description" rows="4" maxlength="12000" disabled={c.busy}></textarea></label>
   <div class="form-pair"><label>Price<input name="price" inputmode="decimal" placeholder="Negotiable" disabled={c.busy}></label><label>Currency<input name="currency" maxlength="12" autocapitalize="characters" disabled={c.busy}></label></div>
-  <label>Location <span class="muted">· optional</span><input name="location" maxlength="160" placeholder="e.g. Lisbon, Portugal" autocomplete="off" disabled={c.busy}></label>
+  <label>Location <span class="muted">· optional</span><input name="location" maxlength="160" placeholder="e.g. Lisbon, Portugal" autocomplete="off" disabled={c.busy} oninput={() => c.searchPlace()}></label>
+  {#if c.placeSuggestions.length}
+    <ul class="post-place-suggestions" aria-label="Places">
+      {#each c.placeSuggestions as place (place.label + place.lat + place.lng)}<li><button type="button" class="text-button" onclick={() => c.choosePlace(place)}>{place.label}</button></li>{/each}
+    </ul>
+  {/if}
   <details class="post-service-areas" hidden={c.areaHidden} bind:this={c.areaEditor} ontoggle={() => c.syncAreaEditor()} use:append={c.areaPicker.element}><summary>Transport areas</summary></details>
   <details id="post-map-pin" bind:this={c.mapPin}>
     <summary>Map pin</summary>

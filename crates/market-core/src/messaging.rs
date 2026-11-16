@@ -1205,6 +1205,23 @@ impl Messaging {
             Ok(id)
         })
     }
+    pub fn request_basket_order(
+        &mut self,
+        lines: &[(crate::model::Listing, u16)],
+        note: &str,
+    ) -> MessagingResult<String> {
+        self.transaction(|this| {
+            let id = this.state.orders.request_basket(
+                lines,
+                note,
+                &this.owner.to_hex(),
+                &this.keys.public_key().to_hex(),
+                now(),
+            )?;
+            this.prepare_order_threads()?;
+            Ok(id)
+        })
+    }
     pub fn request_delivery(
         &mut self,
         source_id: &str,

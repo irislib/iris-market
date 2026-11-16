@@ -430,6 +430,36 @@ fn wire_shipment(mut value: Shipment) -> Result<Shipment> {
     value.location = None; // Snapshots and routes never carry position history.
     Ok(value)
 }
+/// An order line for an available selling listing, pinned to its signed revision.
+fn order_item(listing: &crate::model::Listing, quantity: u16, now: u64) -> Result<OrderItem> {
+    require(
+        listing.external_order.is_none(),
+        "This public quote cannot be purchased through Iris",
+    )?;
+    require(
+        !matches!(
+            listing.escrow,
+            Some(crate::escrow::Offer::BitcoinFiat { .. })
+        ),
+        "Use a private escrow proposal for bitcoin offers",
+    )?;
+    require(
+        listing.side == "offer"
+            && listing.status != "sold"
+            && listing.expires_at.is_none_or(|at| at > now),
+        "Choose an available selling listing",
+    )?;
+    Ok(OrderItem {
+        id: listing.id.clone(),
+        title: listing.title.clone(),
+        price: listing.price.clone(),
+        currency: listing.currency.clone(),
+        quantity,
+        event_id: Some(listing.event_id.clone())
+            .filter(|id| id.len() == 64 && id.bytes().all(|b| b.is_ascii_hexdigit())),
+        image: listing.image_url.clone().filter(|url| order_image(url)),
+    })
+}
 fn snapshot_with_mint(mut value: Order, developer_mint: Option<&str>) -> Result<Order> {
     value.escrow.validate(&value.buyer, &value.seller)?;
     require(
@@ -1087,23 +1117,7 @@ impl OrderBook {
                 "This listing does not offer escrow for orders",
             )?;
         }
-        require(
-            listing.external_order.is_none(),
-            "This public quote cannot be purchased through Iris",
-        )?;
-        require(
-            !matches!(
-                listing.escrow,
-                Some(crate::escrow::Offer::BitcoinFiat { .. })
-            ),
-            "Use a private escrow proposal for bitcoin offers",
-        )?;
-        require(
-            listing.side == "offer"
-                && listing.status != "sold"
-                && listing.expires_at.is_none_or(|at| at > now),
-            "Choose an available selling listing",
-        )?;
+        let item = order_item(listing, quantity, now)?;
         let order = snapshot_with_mint(
             Order {
                 escrow,
@@ -1113,16 +1127,50 @@ impl OrderBook {
                 id: format!("{owner}:{}", Uuid::new_v4()),
                 buyer: owner.into(),
                 seller: listing.author.clone(),
-                items: vec![OrderItem {
-                    id: listing.id.clone(),
-                    title: listing.title.clone(),
-                    price: listing.price.clone(),
-                    currency: listing.currency.clone(),
-                    quantity,
-                    event_id: Some(listing.event_id.clone())
-                        .filter(|id| id.len() == 64 && id.bytes().all(|b| b.is_ascii_hexdigit())),
-                    image: listing.image_url.clone().filter(|url| order_image(url)),
-                }],
+                items: vec![item],
+                note: note.into(),
+                status: OrderStatus::Requested,
+                created_at: now,
+                updated_at: now,
+                shipment: Shipment::default(),
+                route_id: String::new(),
+            },
+            self.developer_mint.as_deref(),
+        )?;
+        let id = order.id.clone();
+        self.local(&id, "request", json!(order), owner, device, now)?;
+        Ok(id)
+    }
+    /// One order for several listings from one seller, as a basket checkout makes.
+    pub(crate) fn request_basket(
+        &mut self,
+        lines: &[(crate::model::Listing, u16)],
+        note: &str,
+        owner: &str,
+        device: &str,
+        now: u64,
+    ) -> Result<String> {
+        let seller = &lines.first().ok_or("Your basket is empty")?.0.author;
+        let items = lines
+            .iter()
+            .map(|(listing, quantity)| {
+                require(
+                    &listing.author == seller,
+                    "One order holds listings from one seller",
+                )?;
+                order_item(listing, *quantity, now)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let order = snapshot_with_mint(
+            Order {
+                escrow: OrderEscrow::default(),
+                payment: None,
+                pickup_authorization: None,
+                delivery_request: None,
+                id: format!("{owner}:{}", Uuid::new_v4()),
+                buyer: owner.into(),
+                seller: seller.clone(),
+                items,
                 note: note.into(),
                 status: OrderStatus::Requested,
                 created_at: now,

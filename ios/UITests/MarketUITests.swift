@@ -453,4 +453,63 @@ final class MarketUITests: XCTestCase {
         capture("fresh-profile-name-persisted")
     }
 
+
+    /// Opt-in: a fresh isolated profile on a loopback relay that already holds two listings from one seller.
+    func testLocalRelayBasketOrdersTwoListingsTogether() throws {
+        guard let relay = ProcessInfo.processInfo.environment["MARKET_BASKET_UI_RELAY"], relay.hasPrefix("ws://127.0.0.1:") else { throw XCTSkip("Needs a seeded loopback relay") }
+        let first = ProcessInfo.processInfo.environment["MARKET_BASKET_UI_FIRST"] ?? "Wool scarf"
+        let second = ProcessInfo.processInfo.environment["MARKET_BASKET_UI_SECOND"] ?? "Wool mittens"
+        app.terminate()
+        app.launchArguments = ["--ui-test-mode", "--test-storage", "iris-market-ui-basket-\(UUID().uuidString.prefix(8))"]
+        app.launchEnvironment["MARKET_ESCROW_TEST_RELAY"] = relay
+        app.launch()
+        let name = app.textFields["profileName"]
+        if name.waitForExistence(timeout: 10) { name.tap(); name.typeText("Grandma Test"); app.buttons["completeProfileName"].tap() }
+        // The seeded listings have no photos and the fresh profile follows nobody yet.
+        XCTAssertTrue(app.buttons["listingFilters"].waitForExistence(timeout: 20))
+        app.buttons["listingFilters"].tap()
+        XCTAssertTrue(app.switches["hasPhotosFilter"].waitForExistence(timeout: 5))
+        setSwitch("hasPhotosFilter", enabled: false)
+        app.buttons["closeListingFilters"].tap()
+        let everyone = app.buttons["Show everyone"]
+        for _ in 0..<6 where !app.buttons["View \(first)"].waitForExistence(timeout: 5) {
+            if everyone.exists && everyone.isHittable { everyone.tap() }
+        }
+        capture("basket-00-feed")
+        for title in [first, second] {
+            let card = app.buttons["View \(title)"]
+            for _ in 0..<6 where !card.waitForExistence(timeout: 5) { app.swipeUp() }
+            XCTAssertTrue(card.exists, "\(title) arrives from the relay")
+            card.tap()
+            let add = app.buttons["addToBasket"]
+            for _ in 0..<4 where !add.isHittable { app.swipeUp() }
+            XCTAssertTrue(add.waitForExistence(timeout: 5))
+            add.tap()
+            XCTAssertTrue(app.buttons["viewBasket"].waitForExistence(timeout: 5))
+            capture("basket-01-added-\(title)")
+            if title == first { app.buttons["Done"].firstMatch.tap() }
+        }
+        app.buttons["viewBasket"].tap()
+        XCTAssertTrue(app.staticTexts["Basket"].waitForExistence(timeout: 8))
+        app.buttons["One more \(second)"].tap()
+        XCTAssertTrue(app.staticTexts["Total"].waitForExistence(timeout: 5))
+        capture("basket-02-orders-basket")
+        app.buttons["basketRequestOrder"].tap()
+        XCTAssertTrue(app.navigationBars["Review order"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["3 items"].exists)
+        capture("basket-03-review")
+        app.buttons["requestBasketOrder"].tap()
+        // A first order asks for a name, then the buyer confirms again.
+        let nameField = app.textFields["profileName"]
+        if nameField.waitForExistence(timeout: 5) {
+            nameField.tap(); nameField.typeText("Grandma Test")
+            app.buttons["completeProfileName"].tap()
+            XCTAssertTrue(app.buttons["requestBasketOrder"].waitForExistence(timeout: 5))
+            app.buttons["requestBasketOrder"].tap()
+        }
+        XCTAssertTrue(app.navigationBars["Order"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Total"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["2 × \(second)"].exists)
+        capture("basket-04-order-detail")
+    }
 }

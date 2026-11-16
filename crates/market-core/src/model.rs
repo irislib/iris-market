@@ -348,6 +348,8 @@ pub struct Snapshot {
     pub saved_count: usize,
     pub trade_steps: Vec<serde_json::Value>,
     pub saved_listings: Vec<Listing>,
+    /// This device's basket, one group per seller; each group becomes one order request.
+    pub basket: Vec<BasketGroup>,
     pub settings: Settings,
     pub conversations: Vec<Conversation>,
     pub orders: Vec<crate::orders::OrderView>,
@@ -358,6 +360,22 @@ pub struct Snapshot {
     pub profile: Option<crate::profiles::Profile>,
     pub profile_listings: Option<crate::profile_listings::Page>,
     pub graph_context_loaded: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BasketLine {
+    pub listing: Listing,
+    pub quantity: u16,
+    /// Unit price times count, converted when a rate is known.
+    pub total: Option<crate::rates::DisplayPrice>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BasketGroup {
+    pub seller: String,
+    pub items: Vec<BasketLine>,
+    /// The sum when every item has a numeric price in one currency.
+    pub total: Option<crate::rates::DisplayPrice>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -381,6 +399,18 @@ pub enum Command {
     },
     Save {
         id: String,
+    },
+    AddToBasket {
+        id: String,
+    },
+    SetBasketQuantity {
+        id: String,
+        quantity: u16,
+    },
+    RequestBasketOrder {
+        seller: String,
+        #[serde(default)]
+        note: String,
     },
     OpenCollection {
         author: String,

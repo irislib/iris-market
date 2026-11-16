@@ -1,5 +1,6 @@
 import {flushSync} from 'svelte'
-import {encodeLocationHash,locationHash} from '../map/geohash.ts'
+import {decodeGeohash,locationHash} from '../map/geohash.ts'
+import {createPlaceSearch} from '../places/search.ts'
 import {exactListingPoint} from '../map/listing-pin.ts'
 import {currentPosition} from '../location-filter.ts'
 import {composerTradeTools} from '../marketplace-tools.ts'
@@ -112,6 +113,36 @@ export class ComposerState {
   }
 
   // Pin
+  /** Place suggestions for the typed location; the search runs on this device. */
+  placeSuggestions = $state.raw<{label: string; value: string; lat: number; lng: number}[]>([])
+  private placeSearch?: ReturnType<typeof createPlaceSearch>
+  private placeTicket = 0
+  private placeTimer?: ReturnType<typeof setTimeout>
+  searchPlace() {
+    clearTimeout(this.placeTimer)
+    const ticket = ++this.placeTicket, query = this.fields.location.value.trim()
+    if (query.length < 2) { this.placeSuggestions = []; return }
+    this.placeTimer = setTimeout(async () => {
+      try {
+        this.placeSearch ??= createPlaceSearch()
+        const results = await this.placeSearch.search(query)
+        if (ticket === this.placeTicket) this.placeSuggestions = results.slice(0, 5).map(place => ({label: [place.name, place.context || (place.displayName !== place.name ? place.displayName : undefined)].filter(Boolean).join(' · '), value: [place.name, place.context].filter(Boolean).join(', ').slice(0, 160), lat: place.lat, lng: place.lng}))
+      } catch { if (ticket === this.placeTicket) this.placeSuggestions = [] }
+    }, 300)
+  }
+  /** Uses a suggested place as the location and puts its point on the map pin. */
+  choosePlace(place: {value: string; lat: number; lng: number}) {
+    this.placeTicket++; this.placeSuggestions = []
+    this.fields.location.value = place.value
+    this.setPinPoint(place.lat, place.lng)
+    this.mapPin.open = true
+  }
+  /** Coordinates stay on this device unless Exact is chosen; only the chosen area is published. */
+  private setPinPoint(lat: number, lng: number) {
+    const pinField = this.fields.pinCoordinates
+    pinField.value = lat.toFixed(this.precision.value === 'exact' ? 7 : 5) + ', ' + lng.toFixed(this.precision.value === 'exact' ? 7 : 5)
+    pinField.dispatchEvent(new Event('input', {bubbles: true}))
+  }
   paintPin() {
     this.pinHint = this.precision.value === 'exact' ? 'Publishing shares these coordinates with everyone.' : 'Only the selected area will be public.'
   }
@@ -126,12 +157,9 @@ export class ComposerState {
     try {
       const {coords} = await currentPosition(navigator.geolocation, selected === 'exact')
       if (request !== this.pinRequest || id !== this.draftId || !this.dialog.open || this.reviewing || this.busy) return
-      const pinField = this.fields.pinCoordinates
-      pinField.value = selected === 'exact' ? coords.latitude.toFixed(7) + ', ' + coords.longitude.toFixed(7)
-        : '#' + encodeLocationHash(coords.longitude, coords.latitude, Number(selected))
-      pinField.dispatchEvent(new Event('input', {bubbles: true}))
+      this.setPinPoint(coords.latitude, coords.longitude)
       this.error = ''
-    } catch { if (request === this.pinRequest && id === this.draftId) this.error = 'Location unavailable. Enter coordinates or a geohash instead.' }
+    } catch { if (request === this.pinRequest && id === this.draftId) this.error = 'Location unavailable. Search for a place or enter coordinates.' }
   }
 
   // Delivery
@@ -298,7 +326,9 @@ export class ComposerState {
     const originalPrecision = String(listing.geohash?.length || 4)
     if (!exact && ![...precision.options].some(option => option.value === originalPrecision)) { const option = new Option(originalPrecision + ' characters', originalPrecision); option.dataset.previous = 'true'; precision.add(option) }
     precision.value = exact ? 'exact' : originalPrecision
-    fields.pinCoordinates.value = exact ? exact[1] + ', ' + exact[0] : listing.geohash ? '#' + listing.geohash : ''
+    // An area pin shows its centre as plain coordinates; the published area stays the same.
+    const cell = decodeGeohash(listing.geohash)
+    fields.pinCoordinates.value = exact ? exact[1] + ', ' + exact[0] : cell ? cell.coordinates[1].toFixed(5) + ', ' + cell.coordinates[0].toFixed(5) : ''
     this.paintPin(); this.mapPin.open = !!listing.geohash
     // Keep a category from another client editable rather than silently replacing it.
     const category = String(listing.category).toLowerCase()
@@ -349,5 +379,5 @@ export class ComposerState {
 
   hide({preservePending = false} = {}) { if (!preservePending) this.pendingOpen = false; this.dialog.hide() }
 
-  destroy() { this.uploadController?.abort(); this.releasePreview(); void this.areaPicker.destroy(); void this.uploader?.close() }
+  destroy() { clearTimeout(this.placeTimer); void this.placeSearch?.close(); this.uploadController?.abort(); this.releasePreview(); void this.areaPicker.destroy(); void this.uploader?.close() }
 }

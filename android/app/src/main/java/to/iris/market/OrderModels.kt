@@ -62,6 +62,13 @@ data class MarketOrder(
         if(display.currency.uppercase() in setOf("SAT","SATS","BTC"))return java.text.NumberFormat.getNumberInstance().apply{maximumFractionDigits=if(display.currency.uppercase()=="BTC")8 else 0}.format(display.amount)+" "+(if(display.currency.uppercase()=="BTC")"BTC" else "sats")+suffix
         return runCatching {java.text.NumberFormat.getCurrencyInstance().apply{currency=java.util.Currency.getInstance(display.currency)}.format(display.amount)}.getOrDefault(java.text.NumberFormat.getNumberInstance().format(display.amount)+" "+display.currency)+suffix
     }
+    /** A basket's sum in its items' own currency, when they share one and have numeric prices. */
+    val itemsTotal: String? get() {
+        val first = items.firstOrNull() ?: return null
+        if (items.size < 2 || items.any { it.currency != first.currency }) return null
+        val sum = items.fold(java.math.BigDecimal.ZERO) { total, item -> total + ((item.price.toBigDecimalOrNull() ?: return null) * item.quantity.toBigDecimal()) }
+        return first.copy(price = sum.stripTrailingZeros().toPlainString(), quantity = 1).displayPrice
+    }
     val terminal: Boolean get() = status in listOf("delivered", "cancelled")
     val title: String get() = items.joinToString { it.title }.ifBlank { "Order" }
     val statusLabel: String get() = when(status) { "requested" -> "Requested"; "accepted" -> "Accepted"; "in-transit" -> "On the way"; "delivered" -> "Delivered"; "cancelled" -> "Cancelled"; else -> "Updating" }

@@ -34,6 +34,8 @@ struct MarketSnapshot: Decodable {
     var listings: [MarketListing] = []
     var savedCount: Int = 0
     var savedListings: [MarketListing]?
+    /// This device's basket, one group per seller.
+    var basket: [MarketBasketGroup]?
     var aiTestResult: NativeAITestResult?
     var aiMessage: String?
     var aiConfigured: Bool?
@@ -172,6 +174,34 @@ struct MarketDisplayPrice: Decodable, Hashable {
     let source: String?
     let updatedAt: Int64?
     let stale: Bool
+    var formatted: String {
+        let code = currency.uppercased(), formatter = NumberFormatter(), suffix = stale ? " · older rate" : ""
+        if ["SAT", "SATS", "BTC", "TESTSAT", "TESTSATS"].contains(code) {
+            formatter.numberStyle = .decimal; formatter.maximumFractionDigits = code == "BTC" ? 8 : 0
+            let unit = code == "BTC" ? "BTC" : code.hasPrefix("TEST") ? "test sats" : "sats"
+            return "\(formatter.string(from: NSNumber(value: amount)) ?? String(amount)) \(unit)\(suffix)"
+        }
+        formatter.numberStyle = .currency; formatter.currencyCode = code
+        return "\(formatter.string(from: NSNumber(value: amount)) ?? "\(amount) \(code)")\(suffix)"
+    }
+}
+
+/// One basket line: a listing, its count and the line total.
+struct MarketBasketLine: Decodable, Hashable, Identifiable {
+    let listing: MarketListing
+    let quantity: Int
+    let total: MarketDisplayPrice?
+    var id: String { listing.id }
+    var formattedTotal: String { total?.formatted ?? listing.formattedPrice }
+}
+
+/// One seller's basket lines; requesting them makes one order.
+struct MarketBasketGroup: Decodable, Hashable, Identifiable {
+    let seller: String
+    let items: [MarketBasketLine]
+    let total: MarketDisplayPrice?
+    var id: String { seller }
+    var count: Int { items.reduce(0) { $0 + $1.quantity } }
 }
 
 /// Public, signed coverage geometry. This projection has no identity or private shipment fields.

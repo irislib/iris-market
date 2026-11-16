@@ -64,7 +64,7 @@ struct MarketRootView: View {
                 } label: {
                     if hasProfile { UserAvatar(person: ownPerson, size: 34).frame(width: 41, height: 41).accessibilityHidden(true) }
                     else { Image(systemName: "ellipsis").font(.system(size: 20, weight: .semibold)).frame(width: 41, height: 41).foregroundStyle(MarketTheme.muted) }
-                }.menuIndicator(.hidden).accessibilityElement(children: .ignore).accessibilityLabel(Text("Menu")).accessibilityIdentifier("mainMenu")
+                }.menuIndicator(.hidden).accessibilityElement(children: .ignore).accessibilityLabel(Text("Menu")).accessibilityAddTraits(.isButton).accessibilityIdentifier("mainMenu")
             }.padding(.horizontal, 23).padding(.top, 10).padding(.bottom, 16)
             Group {
                 switch tab {
@@ -364,11 +364,10 @@ struct BrowseView: View {
                 }.padding(.top, 2)
                 if showMap && !store.demo {
                     MarketMapView(listings: visibleListings, onSelect: { selected = $0 }).frame(height: 440).clipShape(RoundedRectangle(cornerRadius: 20))
-                } else if visibleListings.isEmpty && (!curationActive || homeFallback) && !store.demo && (networkOnly || wantsPhotos) {
-                    // The default filters hide new sellers; lead with the way out instead of a dead end.
-                    MarketEmptyState(symbol: query.isEmpty ? "square.grid.2x2" : "magnifyingglass", title: query.isEmpty ? "Nothing in your network yet" : "No matches in your network", description: "Listings from other people\(wantsPhotos ? " or without photos" : "") are hidden.", action: "Show everyone") {
-                        photoFilter = false; if networkOnly { setNetworkOnly(false) }
-                    }
+                } else if visibleListings.isEmpty && !store.demo && store.snapshot.status.hasPrefix("Offline") {
+                    MarketEmptyState(symbol: "wifi.slash", title: "You’re offline", description: "No message servers are set up, so only saved listings are available. Add a server in Settings under Connection details.")
+                } else if visibleListings.isEmpty && (!curationActive || homeFallback) && !store.demo && networkOnly {
+                    MarketEmptyState(symbol: query.isEmpty ? "square.grid.2x2" : "magnifyingglass", title: query.isEmpty ? "No listings yet" : "No results", description: "Only showing listings from people in your network.", action: "Show everyone") { setNetworkOnly(false) }
                 } else if visibleListings.isEmpty {
                     MarketEmptyState(symbol: query.isEmpty ? "square.grid.2x2" : "magnifyingglass", title: curationActive ? (store.searchPaused ? "Review paused" : searching || unfinishedSearch ? "No matches yet" : "No matches") : query.isEmpty ? "No listings yet" : "No results", description: curationActive ? "New matches appear as they are reviewed. Choose Show all to search by text." : query.isEmpty ? "Sell something or post what you want to buy." : "Try another search or post what you want to buy.")
                 } else {

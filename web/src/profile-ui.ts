@@ -31,7 +31,7 @@ export function setupProfiles(options: ProfileOptions) {
   const open = (pubkey: string, settings?: {navigate?: boolean}) => { const pending = state.open(pubkey, settings); flushSync(); return pending }
   return {
     open,
-    openReviews(pubkey: string) { void state.open(pubkey); state.select('reviews'); flushSync() },
+    openReviews(pubkey: string, write = false) { void state.open(pubkey); state.select('reviews'); flushSync(); if (write) state.reviews?.write() },
     close() { state.close(); flushSync() },
     refreshReviews() { state.reviews?.refresh() },
     destroy() { state.destroyed = true; state.close(); flushSync(); void unmount(view); container.replaceChildren(); if (!page) container.remove() },

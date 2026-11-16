@@ -272,5 +272,3 @@ button[data-alternate-label]::after { content:attr(data-alternate-label); visibi
   font-size: 12px;
 }
 @media(max-width:760px){.download-site .header .quiet{display:none}}
-/* When the feed is empty only because of the default network filters, lead with the way out. */
-.market:has(#show-everyone:not([hidden])) #grid-pagination{display:none}

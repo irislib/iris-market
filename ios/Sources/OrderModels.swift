@@ -76,6 +76,8 @@ struct MarketOrderItem: Decodable, Hashable, Identifiable {
     let price: String
     let currency: String
     let quantity: Int
+    /// The exact signed listing revision, when the order recorded one.
+    var eventId: String? = nil
     var formattedPrice: String {
         guard !price.isEmpty else { return "Negotiable" }
         if ["TESTSAT", "TESTSATS"].contains(currency.uppercased()) { return price + " test sats" }
@@ -204,4 +206,49 @@ func marketRoutePatch(stops: [MarketStopDraft], tracking: String, eta: Date?) th
         shipment["eta"] = Int64(seconds)
     }
     return ["shipment": shipment]
+}
+
+/// History filters, totals and CSV export for the order lists.
+enum MarketOrderPeriod: String, CaseIterable, Identifiable {
+    case all = "All time", days30 = "Last 30 days", year = "This year", lastYear = "Last year"
+    var id: String { rawValue }
+    func includes(_ createdAt: Int64, now: Date = Date()) -> Bool {
+        let date = Date(timeIntervalSince1970: TimeInterval(createdAt)), calendar = Calendar.current
+        switch self {
+        case .all: return true
+        case .days30: return date >= now.addingTimeInterval(-30 * 86400)
+        case .year: return calendar.component(.year, from: date) == calendar.component(.year, from: now)
+        case .lastYear: return calendar.component(.year, from: date) == calendar.component(.year, from: now) - 1
+        }
+    }
+}
+enum MarketOrderHistory {
+    /// Totals in each listing's own currency; cancelled orders and negotiable prices are left out.
+    static func summary(_ orders: [MarketOrder]) -> String {
+        var totals: [String: Double] = [:]
+        for order in orders where order.status != "cancelled" {
+            for item in order.items { if let price = Double(item.price), price.isFinite { totals[item.currency, default: 0] += price * Double(item.quantity) } }
+        }
+        let format = NumberFormatter(); format.numberStyle = .decimal; format.maximumFractionDigits = 2
+        let amounts = totals.keys.sorted().map { (format.string(from: NSNumber(value: totals[$0]!)) ?? "") + " " + $0 }
+        return (["\(orders.count) \(orders.count == 1 ? "order" : "orders")"] + amounts).joined(separator: " · ")
+    }
+    /// A spreadsheet-safe CSV, one row per item; formula-like text stays text.
+    static func csv(_ orders: [MarketOrder], owner: String, name: (String) -> String) -> String {
+        func cell(_ value: String) -> String {
+            let formula = value.first.map { "=+-@\t".contains($0) } ?? false
+            guard formula || value.contains(where: { ",\"\n\r".contains($0) }) else { return value }
+            return "\"" + (formula ? "'" : "") + value.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+        }
+        let day = DateFormatter(); day.dateFormat = "yyyy-MM-dd"; day.timeZone = TimeZone(identifier: "UTC")
+        var rows = [["Date", "Order", "Type", "Item", "Quantity", "Unit price", "Currency", "Total", "Status", "Other person", "Other person ID", "Listing", "Listing revision"]]
+        for order in orders {
+            let sale = order.seller == owner, other = sale ? order.buyer : order.seller
+            for item in order.items {
+                let total = Double(item.price).map { String(format: "%g", $0 * Double(item.quantity)) } ?? ""
+                rows.append([day.string(from: Date(timeIntervalSince1970: TimeInterval(order.createdAt))), order.id, sale ? "Sale" : "Purchase", item.title, String(item.quantity), item.price, item.currency, total, order.status, name(other), other, item.id, item.eventId ?? ""])
+            }
+        }
+        return rows.map { $0.map(cell).joined(separator: ",") }.joined(separator: "\r\n") + "\r\n"
+    }
 }

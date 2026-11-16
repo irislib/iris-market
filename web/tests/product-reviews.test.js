@@ -82,3 +82,15 @@ test('reader enforces cancellation even when an injected public query ignores th
   const result=loadProductReviews(target,{signal:controller.signal,query:(_filters,options)=>{querySignal=options.signal;return new Promise(()=>{});}});
   controller.abort();await assert.rejects(result,{name:'AbortError'});assert.equal(querySignal.aborted,true);
 });
+
+test('a written product review round-trips as a market-spec recommendation',async()=>{
+  const {buildProductReviewDraft}=await import('../src/product-reviews.ts');
+  const seller=getPublicKey(new Uint8Array(32).fill(7)),buyer=new Uint8Array(32).fill(9),address=`30402:${seller}:mittens`;
+  const draft=buildProductReviewDraft({address,recommend:true,body:' Warm and soft. ',now:1700000000});
+  assert.deepEqual(draft.tags,[['d',`a:${address}`],['rating','1','thumb']]);
+  assert.deepEqual(buildProductReviewDraft({address,eventId:'a'.repeat(64),recommend:true,now:1}).tags[1],['e','a'.repeat(64)]);assert.equal(draft.content,'Warm and soft.');
+  const review=parseProductReview(finalizeEvent(draft,buyer),address,1700000001);
+  assert.equal(review.format,'market-spec');assert.equal(review.rating,1);assert.equal(review.body,'Warm and soft.');
+  assert.equal(parseProductReview(finalizeEvent(buildProductReviewDraft({address,recommend:false,now:1700000000}),buyer),address,1700000001).rating,0);
+  assert.throws(()=>parseProductReview(finalizeEvent(draft,new Uint8Array(32).fill(7)),address,1700000001),/Self-reviews/);
+});

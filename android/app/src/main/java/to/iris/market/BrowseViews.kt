@@ -153,11 +153,11 @@ private fun rememberListLayout(): MutableState<Boolean> {
         if (showMap && !state.demo) item(span={GridItemSpan(maxLineSpan)}) {
             MarketMapView(visibleListings,selected,Modifier.fillMaxWidth().height(440.dp).clip(RoundedCornerShape(20.dp))) { cells -> model.command(JSONObject().put("type","set_map_area").put("cells",cells)) }
         }
-        if (!showMap && visibleListings.isEmpty() && (!(canCurate && !showAll) || homeFallback) && !searching && !state.demo && (state.networkOnly || wantsPhotos)) item(span={GridItemSpan(maxLineSpan)}) {
-            // The default filters hide new sellers; lead with the way out instead of a dead end.
-            EmptyView(if(query.isBlank()) "Nothing in your network yet" else "No matches in your network",
-                "Listings from other people${if(wantsPhotos) " or without photos" else ""} are hidden.", Icons.Filled.Storefront, "Show everyone") {
-                changePhotoFilter(false); if(state.networkOnly) model.filter(state.query, state.side, state.aiSearch, networkOnly=false)
+        if (!showMap && visibleListings.isEmpty() && !state.demo && state.status.startsWith("Offline")) item(span={GridItemSpan(maxLineSpan)}) {
+            EmptyView("You’re offline", "No message servers are set up, so only saved listings are available. Add a server in Settings under Connection details.", Icons.Filled.CloudOff)
+        } else if (!showMap && visibleListings.isEmpty() && (!(canCurate && !showAll) || homeFallback) && !searching && !state.demo && state.networkOnly) item(span={GridItemSpan(maxLineSpan)}) {
+            EmptyView(if(query.isBlank()) "No listings yet" else "No matches", "Only showing listings from people in your network.", Icons.Filled.Storefront, "Show everyone") {
+                model.filter(state.query, state.side, state.aiSearch, networkOnly=false)
             }
         } else if (!showMap && visibleListings.isEmpty()) item(span={GridItemSpan(maxLineSpan)}) {
             EmptyView(if(canCurate && !showAll && state.error != null) "Search paused" else if(searching || canCurate && !showAll && (state.searchDiscovery?.hasMore == true || state.listings.any { it.externalOrder == null && it.relevanceShow == null })) "No matches yet" else if(canCurate && !showAll) "No matching listings" else if(query.isBlank()) "No listings yet" else "No matches",

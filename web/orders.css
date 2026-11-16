@@ -12,3 +12,4 @@
 
 .escrow-jobs-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:18px}.escrow-jobs-heading h3,.escrow-job-list p{margin:0}.escrow-job-list{margin-bottom:22px}
 .orders-dialog .checkbox-label,.order-review-form .checkbox-label{display:flex;align-items:center;gap:10px;min-height:44px;cursor:pointer}.orders-dialog .checkbox-label input,.order-review-form .checkbox-label input{flex:none;width:20px;height:20px;margin:0;accent-color:var(--accent)}
+.orders-tools{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:4px 0 6px}.orders-tools select{min-height:40px;padding:8px 12px;border:1px solid var(--line);border-radius:10px;background:var(--surface);color:inherit;font:inherit;font-size:14px}.orders-tools .text-button{margin-left:auto;min-height:40px}.orders-summary{margin:0 0 10px}

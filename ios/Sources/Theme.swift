@@ -70,7 +70,7 @@ struct MarketEmptyState: View {
                 .frame(width: 82, height: 82).background(MarketTheme.mint.opacity(0.5), in: RoundedRectangle(cornerRadius: 27))
             Text(title).font(.system(size: 24, weight: .semibold)).foregroundStyle(MarketTheme.ink)
             Text(description).font(.system(size: 15)).foregroundStyle(MarketTheme.muted).multilineTextAlignment(.center).lineSpacing(4).frame(maxWidth: 280)
-            if let action { Button(action, action: onAction).buttonStyle(.borderedProminent).controlSize(.large).padding(.top, 8) }
+            if let action { Button(action, action: onAction).font(.system(size: 15, weight: .semibold)).foregroundStyle(MarketTheme.action).padding(.top, 4) }
         }.frame(maxWidth: .infinity).padding(.vertical, 48).padding(.horizontal, 24)
     }
 }

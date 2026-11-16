@@ -53,19 +53,33 @@ import java.util.UUID
     var offerService by remember {mutableStateOf(false)}
     LaunchedEffect(showJobs){if(!showJobs && tab=="jobs")tab="purchases"}
     if(offerService && escrowEnabled){PostListing(state,model,busy,providerService=true){offerService=false};return}
-    val orders = state.orders.filter { order ->
+    var period by remember { mutableStateOf(OrderPeriod.ALL) }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val sectionOrders = state.orders.filter { order ->
         if (tab == "archived") order.archived else !order.archived && when(tab) {
             "sales" -> order.seller == state.publicKey
             "deliveries" -> order.handlesDelivery(state.publicKey)
             else -> order.buyer == state.publicKey
         }
     }.sortedByDescending { it.updatedAt }
+    val historyTab = tab in setOf("purchases", "sales", "archived")
+    val orders = if (historyTab) sectionOrders.filter { period.includes(it.createdAt) } else sectionOrders
     Column(Modifier.fillMaxSize().padding(horizontal = 22.dp)) {
         Text("Orders", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.padding(top = 15.dp, bottom = 10.dp))
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             (listOf("purchases" to "Purchases", "sales" to "Sales", "deliveries" to "Deliveries") + listOfNotNull(("jobs" to "Escrow jobs").takeIf {showJobs}, "archived" to "Archived")).forEach { (key, label) ->
                 FilterChip(selected = tab == key, onClick = { tab = key }, label = { Text(label) }, shape = CircleShape)
             }
+        }
+        if (historyTab && sectionOrders.isNotEmpty()) {
+            Row(Modifier.fillMaxWidth().padding(top = 10.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                OrderPeriod.entries.forEach { value -> FilterChip(selected = period == value, onClick = { period = value }, label = { Text(value.label) }) }
+                TextButton(enabled = orders.isNotEmpty(), onClick = {
+                    val csv = OrderHistory.csv(orders, state.publicKey) { key -> state.people[key]?.name ?: "" }
+                    context.startActivity(android.content.Intent.createChooser(android.content.Intent(android.content.Intent.ACTION_SEND).setType("text/csv").putExtra(android.content.Intent.EXTRA_SUBJECT, "Iris Market $tab").putExtra(android.content.Intent.EXTRA_TEXT, csv), "Export CSV"))
+                }) { Text("Export CSV") }
+            }
+            Text(OrderHistory.summary(orders), color = Muted, style = MaterialTheme.typography.bodySmall)
         }
         if(tab=="jobs" && showJobs) {
             Column(Modifier.verticalScroll(rememberScrollState()).padding(vertical=14.dp),verticalArrangement=Arrangement.spacedBy(10.dp)) {
@@ -75,7 +89,8 @@ import java.util.UUID
                     if(!state.canSign) Text("Use the device holding your profile key to offer escrow services.",style=MaterialTheme.typography.bodySmall,color=Muted)
                 }
             }
-        } else if (orders.isEmpty()) EmptyView(when(tab) { "sales" -> "No sales yet"; "deliveries" -> "No deliveries yet"; "archived" -> "Nothing archived"; else -> "No purchases yet" },
+        } else if (orders.isEmpty() && sectionOrders.isNotEmpty()) EmptyView("No orders in this period", "Choose another period to see earlier orders.", Icons.Filled.CalendarMonth)
+        else if (orders.isEmpty()) EmptyView(when(tab) { "sales" -> "No sales yet"; "deliveries" -> "No deliveries yet"; "archived" -> "Nothing archived"; else -> "No purchases yet" },
             when(tab) { "sales" -> "Order requests for your listings appear here."; "deliveries" -> "Deliveries you handle appear here."; "archived" -> "Finished orders can be kept here."; else -> "Your orders appear here." }, Icons.Filled.ReceiptLong)
         else LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(top = 12.dp, bottom = 24.dp)) {
             items(orders, key = { it.id }) { order ->

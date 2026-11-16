@@ -106,6 +106,9 @@ pub struct OrderItem {
     pub price: String,
     pub currency: String,
     pub quantity: u16,
+    /// The exact signed listing revision ordered; `id` stays the replaceable address.
+    #[serde(default, rename = "eventId", skip_serializing_if = "Option::is_none")]
+    pub event_id: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -453,6 +456,12 @@ fn snapshot_with_mint(mut value: Order, developer_mint: Option<&str>) -> Result<
                     .is_ok_and(|p| p.is_finite() && p >= 0.));
         require(
             (1..=999).contains(&item.quantity)
+                && item.event_id.as_ref().is_none_or(|id| {
+                    id.len() == 64
+                        && id
+                            .bytes()
+                            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                })
                 && valid_price
                 && (3..=12).contains(&item.currency.len())
                 && item.currency.bytes().all(|c| c.is_ascii_uppercase())
@@ -1074,6 +1083,8 @@ impl OrderBook {
                     price: listing.price.clone(),
                     currency: listing.currency.clone(),
                     quantity,
+                    event_id: Some(listing.event_id.clone())
+                        .filter(|id| id.len() == 64 && id.bytes().all(|b| b.is_ascii_hexdigit())),
                 }],
                 note: note.into(),
                 status: OrderStatus::Requested,
@@ -1495,6 +1506,24 @@ impl OrderBook {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn order_items_pin_the_listing_revision_by_event_id() {
+        let item: OrderItem = serde_json::from_value(serde_json::json!({"id":"a:b","title":"Mittens","price":"1","currency":"SATS","quantity":1,"eventId":"ab".repeat(32)})).unwrap();
+        assert_eq!(item.event_id.as_deref(), Some("ab".repeat(32).as_str()));
+        assert_eq!(
+            serde_json::to_value(&item).unwrap()["eventId"],
+            "ab".repeat(32)
+        );
+        let legacy: OrderItem = serde_json::from_value(serde_json::json!({"id":"a:b","title":"Mittens","price":"1","currency":"SATS","quantity":1})).unwrap();
+        assert!(
+            legacy.event_id.is_none()
+                && serde_json::to_value(&legacy)
+                    .unwrap()
+                    .get("eventId")
+                    .is_none()
+        );
+    }
     fn listing(seller: &str) -> crate::model::Listing {
         serde_json::from_value(json!({"id":format!("{seller}:lamp"),"author":seller,"title":"Lamp","description":"","side":"offer","price":"12","currency":"EUR","location":"","category":"goods","image_url":null,"created_at":1000,"expires_at":null,"status":"active","saved":false,"mine":false,"delivery":"sent","relevance":null})).unwrap()
     }

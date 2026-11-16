@@ -20,6 +20,8 @@ export interface ComposerOptions {
   account: any; isPreview: () => boolean; onPublished: (event: any, receipt?: any, showSaved?: boolean) => void
   defaultCurrency?: () => string; loadUploader?: () => Promise<any>; page?: HTMLElement
   onNavigate?: () => void; onClose?: () => void; priceNode?: PriceNode
+  /** False while people browsing the default network cannot see this poster yet. */
+  discoverable?: () => boolean
 }
 type AreaPicker = ReturnType<typeof setupServiceAreaPicker>
 export interface ComposerPreview {draft: any; files: DraftFile[]; delivery: string | null; area?: AreaPicker; areaInMedia: boolean}
@@ -296,7 +298,12 @@ export class ComposerState {
     precision.value = exact ? 'exact' : originalPrecision
     fields.pinCoordinates.value = exact ? exact[1] + ', ' + exact[0] : listing.geohash ? '#' + listing.geohash : ''
     this.paintPin(); this.mapPin.open = !!listing.geohash
-    fields.category.value = String(listing.category).toLowerCase(); if (!fields.category.value) fields.category.value = 'other'
+    // Keep a category from another client editable rather than silently replacing it.
+    const category = String(listing.category).toLowerCase()
+    const categories = fields.category as unknown as HTMLSelectElement
+    for (const option of [...categories.options]) if (option.dataset.previous) option.remove()
+    if (category && ![...categories.options].some(option => option.value === category)) { const option = new Option(category[0].toUpperCase() + category.slice(1), category); option.dataset.previous = 'true'; categories.add(option) }
+    categories.value = category || 'other'
     fields.image.value = listing.imageUrl || ''
     this.initialTransportType = listing.category === 'transport' ? courierListingType(listing) || '' : ''
     this.preservedTransportTags = (listing.tags || []).filter(isTransportTag)

@@ -1,4 +1,4 @@
-// Read-only NIP-99 extensions. Product scores must never enter profile star averages.
+// NIP-99 product review extensions. Product scores must never enter profile star averages.
 // https://github.com/GammaMarkets/market-spec/blob/5dc79c5db0d41c0bea774debf445cce041192840/spec.md#5-product-reviews-kind-31555
 // https://github.com/shopstr-eng/shopstr/blob/2e11d0b6d7b8d5d3007c5393882a77dc2f0721e2/packages/shopstr-mcp/src/tools/utils/review-helpers.ts
 // Preserve each dimension's native 0..1 scale: clients disagree about overall weighting.
@@ -62,6 +62,13 @@ function project(event:VerifiedEvent,target:string|undefined,now:number):Product
   return {scope:'product',format:fromD?(d[0][1].startsWith('a:')?'market-spec':'shopstr-legacy'):'shopstr-address',id:event.id,subject:d[0][1],author:event.pubkey,targetAddress,rating:ratings.get('thumb'),ratingMax:1,ratings:Object.fromEntries(ratings),body:event.content,updatedAt:event.created_at,event};
 }
 export function parseProductReview(input:Event,target?:string,now=seconds()):ProductReview {return project(checkedEvent(input,now),target,now);}
+/** A market-spec review: the d tag names the product address and `thumb` is the primary 0..1 recommendation. */
+export function buildProductReviewDraft({address,eventId,recommend,body='',now=seconds()}:{address:string;eventId?:string;recommend:boolean;body?:string;now?:number}) {
+  const target=productReviewTarget(address),text=body.trim();
+  requireValue(Array.from(text).length<=PRODUCT_REVIEW_LIMITS.body,'Keep the review under 3,000 characters.');
+  // The e tag pins the listing revision that was reviewed; the d address keeps working across edits.
+  return {kind:PRODUCT_REVIEW_KIND,created_at:now,content:text,tags:[['d',`a:${target}`],...(eventId&&key.test(eventId)?[['e',eventId]]:[]),['rating',recommend?'1':'0','thumb']]};
+}
 
 function projectVerified(events:VerifiedEvent[],target:string,now:number):ProductReview[] {
   const winners=new Map<string,VerifiedEvent>(),deletions=events.filter(event=>event.kind===5);

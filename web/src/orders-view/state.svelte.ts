@@ -1,4 +1,6 @@
 import { flushSync } from 'svelte';
+import {filterOrders, ordersCsv, type OrderPeriod, type OrderStatusFilter} from './summary.ts';
+import {nameFor} from '../people.ts';
 import { createSurface, type Surface } from '../surface.ts';
 import { createUnreadTracker, orderNotifications, readingSurface } from '../notifications.ts';
 import { element as node } from '../dom.ts';
@@ -36,6 +38,8 @@ const formViews = ['route', 'delivery', 'payment'];
 export class OrdersState {
   view = $state<View>('history');
   tab = $state('purchases');
+  period = $state<OrderPeriod>('all');
+  statusFilter = $state<OrderStatusFilter>('all');
   selected = $state<string|undefined>();
   listing = $state.raw<any>();
   busy = $state(false);
@@ -156,7 +160,7 @@ export class OrdersState {
     if (['purchases', 'sales', 'deliveries', 'archived', 'escrow'].includes(section)) this.tab = section;
     this.data = this.account.state();
     // Opening Orders from its badge shows the unread order rather than an empty tab.
-    if (!section && !id && !this.tabUnread(this.tab)) this.tab = ['purchases', 'sales'].find(tab => this.tabUnread(tab)) ?? (['purchases', 'sales'].includes(this.tab) ? this.tab : 'purchases');
+    if (!section && !id && !this.tabUnread(this.tab)) this.tab = ['purchases', 'sales', ...(this.escrow?.showJobs() ? ['escrow'] : [])].find(tab => this.tabUnread(tab)) ?? (['purchases', 'sales'].includes(this.tab) ? this.tab : 'purchases');
     if (!(this.courierUI && this.tab === 'deliveries' && !id) && !this.requestReady({ type: 'history', id, section })) return;
     const order = id && this.orders().find(item => item.id === id);
     if (order) this.showDetail(order); else { this.showHistory(); if (id) { this.error = 'This order is not available on this device yet.'; this.render(); } }
@@ -176,7 +180,15 @@ export class OrdersState {
     return sections;
   }
   /** True when an order on this tab has an update the reader has not opened. */
-  tabUnread(tab:string) { return ['purchases', 'sales'].includes(tab) && this.filteredOrders(tab).some(order => !!this.unread.unread(order.id)) }
+  tabUnread(tab:string) { return tab === 'escrow' ? (this.escrow?.attention?.() ?? 0) > 0 : ['purchases', 'sales'].includes(tab) && this.filteredOrders(tab).some(order => !!this.unread.unread(order.id)) }
+  /** The current tab after the history filters; unread dots and tab choice ignore these filters. */
+  visibleOrders() { return ['purchases', 'sales', 'archived'].includes(this.tab) ? filterOrders(this.filteredOrders(), {period: this.period, status: this.statusFilter}) : this.filteredOrders() }
+  exportCsv() {
+    const csv = ordersCsv(this.visibleOrders(), this.owner() ?? '', nameFor)
+    const link = document.createElement('a'), url = URL.createObjectURL(new Blob([csv], {type: 'text/csv'}))
+    link.href = url; link.download = `iris-market-${this.tab}-${new Date().toISOString().slice(0, 10)}.csv`; link.click()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }
   filteredOrders(tab = this.tab) {
     const owner = this.owner();
     return this.orders().filter(order => tab === 'archived' ? order.archived : !order.archived && (tab === 'purchases' ? order.buyer === owner : tab === 'sales' ? order.seller === owner : order.shipment?.stops?.some(stop => stop.courierPubkey === owner || order.seller === owner)))

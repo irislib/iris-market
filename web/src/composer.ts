@@ -6,6 +6,7 @@ import { createSurface } from './surface.ts';
 import { nhashDecode, toHex } from '@hashtree/core';
 import {listingPublishedAt} from './listing-dates.ts';
 import {expiryFromChoice} from './expiry.ts';
+import {LISTING_CATEGORIES,LEGACY_CATEGORIES} from './categories.ts';
 import {isTransportTag,transportTypeTags} from './transport-type.ts';
 import {deliveryDraft,validateDelivery} from './delivery.ts';
 import {serviceAreaTags} from './service-area.ts';
@@ -42,7 +43,7 @@ export function listingDraft(values, { identifier=crypto.randomUUID(), createdAt
   if(!/^[A-Z]{3,12}$/.test(currency))throw new Error('Choose a currency.');
   if(Array.from(location).length>160)throw new Error('The location is too long.');
   if(!['offer','request'].includes(values.side))throw new Error('Choose Selling or Buying.');
-  if(!['home','tech','services','transport','work','other'].includes(values.category))throw new Error('Choose a category.');
+  if(!LISTING_CATEGORIES.some(([value])=>value===values.category)&&!LEGACY_CATEGORIES.includes(values.category)&&!/^[\p{L}\p{N}_-]{1,60}$/u.test(values.category??''))throw new Error('Choose a category.');
   if(image){let url;try{url=new URL(image)}catch{throw new Error('Use a secure image URL.')}if(url.protocol!=='https:'||url.username||url.password)throw new Error('Use a secure image URL.');}
   if(!Array.isArray(attachments)||attachments.length>MAX_FILES)throw new Error('Choose up to four photos or files.');
   const files=attachments.map(attachment), links=files.map(file=>`${file.isImage?'!':''}[${markdownLabel(file.name)}](${file.url})`);

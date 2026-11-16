@@ -82,7 +82,7 @@ import org.json.JSONObject
                 Text(category);Spacer(Modifier.weight(1f));Icon(Icons.Filled.ExpandMore,null)
             }
             DropdownMenu(expanded=categoriesOpen,onDismissRequest={categoriesOpen=false}) {
-                listOf("Home","Electronics","Clothing","Outdoors","Transport","Services","Work","Other").forEach { value ->
+                listOf("Food","Home","Clothing","Electronics","Services","Transport","Work","Other").forEach { value ->
                     DropdownMenuItem(text={Text(value)},onClick={category=value;categoriesOpen=false})
                 }
             }
@@ -130,6 +130,8 @@ import org.json.JSONObject
             Text((if(side=="request") "Buying" else "Selling")+(if(escrowEnabled && offerEscrow && bitcoinTrade) " bitcoin" else " · "+category),style=MaterialTheme.typography.labelLarge)
             Text(if(price.isBlank()) (if(side=="request") "Budget by agreement" else "Price by agreement") else price.trim()+" "+currency.trim(),style=MaterialTheme.typography.titleMedium)
             if(location.isNotBlank())Text(location.trim(),style=MaterialTheme.typography.bodyMedium)
+            // Feeds only show followed accounts, so tell a new poster how people will find them.
+            if(state.people[state.publicKey]?.connection?.distance==null) Text("People see listings from accounts followed in their network. Until someone follows you, share your listing link with the people you want to reach.",color=Muted,style=MaterialTheme.typography.bodySmall)
             if(category=="Transport")Text("Service · "+(transport?.label ?: "Other"),style=MaterialTheme.typography.bodyMedium)
             Text(if(expiry==NativeListingExpiry.NEVER) "No expiry" else "Expires "+expiry.label+" after publication",style=MaterialTheme.typography.bodySmall)
             HorizontalDivider()
@@ -312,7 +314,7 @@ import org.json.JSONObject
             if(state.publicKey.isNotBlank()) TextButton(onClick={clipboard.setText(AnnotatedString(state.publicKey))}) {
                 Icon(Icons.Filled.ContentCopy,null,Modifier.size(16.dp));Spacer(Modifier.width(7.dp));Text("Copy profile ID")
             }
-            Text("Iris Market · 0.1.0",color=Muted,style=MaterialTheme.typography.labelSmall)
+            Text("Iris Market · ${BuildConfig.VERSION_NAME}",color=Muted,style=MaterialTheme.typography.labelSmall)
         }
         if(state.demo) Text("Preview makes no provider or network requests.",color=Muted,style=MaterialTheme.typography.bodySmall)
     }

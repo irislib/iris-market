@@ -17,6 +17,8 @@ export function setupProfileReviews(options: ReviewPanelOptions) {
     element: panel,
     summary: () => state.summary(),
     refresh() { state.refresh(); flushSync() },
+    /** Opens the review form, for example when arriving from a finished order. */
+    write() { const opened = state.openForm(); flushSync(); if (opened) panel.querySelector('textarea')?.focus(); return opened },
     close() { state.close(); flushSync(); void unmount(view) },
   }
 }

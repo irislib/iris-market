@@ -17,6 +17,12 @@ final class MarketUITests: XCTestCase {
         app.buttons["closeListingFilters"].tap()
         XCTAssertTrue(app.buttons.matching(identifier: "listingOpen").firstMatch.waitForExistence(timeout: 5))
     }
+    /// Settings live in the main menu rather than a tab.
+    private func openSettings() {
+        app.descendants(matching: .any).matching(identifier: "mainMenu").firstMatch.tap()
+        let settings = app.buttons["Settings"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 5)); settings.tap()
+    }
     private func capture(_ name: String) {
         let image = XCTAttachment(screenshot: app.screenshot())
         image.name = name
@@ -120,7 +126,7 @@ final class MarketUITests: XCTestCase {
     }
 
     func testAISandboxInputsStaySeparateFromFeed() throws {
-        app.buttons["tabProfile"].tap(); app.buttons["aiSettingsRow"].tap()
+        openSettings(); app.buttons["aiSettingsRow"].tap()
         XCTAssertTrue(app.navigationBars["AI search"].waitForExistence(timeout: 5))
         app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Provider")).firstMatch.tap()
         app.buttons["Groq · free quota"].tap()
@@ -141,7 +147,7 @@ final class MarketUITests: XCTestCase {
     }
 
     func testAppleSandboxActualDecisionPreservesFeed() throws {
-        app.buttons["tabProfile"].tap(); app.buttons["aiSettingsRow"].tap()
+        openSettings(); app.buttons["aiSettingsRow"].tap()
         app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Provider")).firstMatch.tap()
         app.buttons["Apple on-device"].tap()
         let readiness = app.staticTexts["appleAIAvailability"]
@@ -172,7 +178,7 @@ final class MarketUITests: XCTestCase {
     }
 
     func testProviderPreferencesAutosaveWithoutCurationControls() throws {
-        app.buttons["tabProfile"].tap()
+        openSettings()
         app.buttons["aiSettingsRow"].tap()
         XCTAssertTrue(app.navigationBars["AI search"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["Save settings"].exists)
@@ -224,7 +230,7 @@ final class MarketUITests: XCTestCase {
     }
 
     func testAllResultsKeepsTheQueryWithAnUnavailableModel() throws {
-        app.buttons["tabProfile"].tap()
+        openSettings()
         app.buttons["aiSettingsRow"].tap()
         app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Provider")).firstMatch.tap()
         app.buttons["Apple on-device"].tap()
@@ -245,17 +251,16 @@ final class MarketUITests: XCTestCase {
     }
 
     func testHomePhotosDefaultDoesNotHideSearchOrSavedListings() throws {
-        app.buttons["listingFilters"].tap(); app.buttons["automaticPhotoFilter"].tap()
-        XCTAssertTrue(app.staticTexts["No listings"].waitForExistence(timeout: 5))
-        XCTAssertFalse(app.buttons.matching(identifier: "listingOpen").firstMatch.exists)
-        capture("home-photo-default-no-placeholder-tiles")
+        // The photo filter narrows search, but never hides a saved listing.
         let search = app.textFields["marketSearch"]
         search.tap(); search.typeText("green\n")
         XCTAssertTrue(app.staticTexts["A little more green"].waitForExistence(timeout: 5))
         let unsave = app.buttons["Unsave A little more green"]
         if unsave.exists { unsave.tap() }
         app.buttons["Save A little more green"].tap()
-        app.buttons["listingFilters"].tap(); app.buttons["hasPhotosFilter"].tap()
+        app.buttons["listingFilters"].tap()
+        let photos = app.switches["hasPhotosFilter"]; XCTAssertTrue(photos.waitForExistence(timeout: 5))
+        photos.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap(); app.buttons["closeListingFilters"].tap()
         XCTAssertTrue(app.staticTexts["No results"].waitForExistence(timeout: 5))
         app.buttons["tabSaved"].tap()
         XCTAssertTrue(app.staticTexts["A little more green"].waitForExistence(timeout: 5))
@@ -333,8 +338,8 @@ final class MarketUITests: XCTestCase {
     func testLocalSignInDoesNotWaitForRelay() throws {
         guard ProcessInfo.processInfo.environment["MARKET_LOCAL_SIGNIN_UI_TEST"] == "1" else { throw XCTSkip("Needs the isolated silent local relay") }
         app.terminate(); app.launchArguments = []; app.launch()
-        XCTAssertTrue(app.buttons["tabProfile"].waitForExistence(timeout: 10))
-        app.buttons["tabProfile"].tap()
+        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "mainMenu").firstMatch.waitForExistence(timeout: 10))
+        openSettings()
         app.buttons["Use another profile"].tap()
         let key = app.secureTextFields["accountSecret"]
         XCTAssertTrue(key.waitForExistence(timeout: 5))
@@ -435,9 +440,9 @@ final class MarketUITests: XCTestCase {
         XCTAssertTrue(app.textFields["profileName"].waitForExistence(timeout: 10))
         app.textFields["profileName"].tap(); app.textFields["profileName"].typeText("Kind Lantern")
         app.buttons["completeProfileName"].tap()
-        XCTAssertTrue(app.buttons["tabProfile"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "mainMenu").firstMatch.waitForExistence(timeout: 5))
         app.terminate(); app.launch()
-        XCTAssertTrue(app.buttons["tabProfile"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "mainMenu").firstMatch.waitForExistence(timeout: 10))
         XCTAssertFalse(app.textFields["profileName"].exists)
         capture("fresh-profile-name-persisted")
     }

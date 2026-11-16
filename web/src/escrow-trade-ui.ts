@@ -5,6 +5,7 @@ import {marketplaceToolEnabled} from './marketplace-tools.ts';
 import {normalizePublicKey} from './social.ts';
 import {escrowCandidates,loadProfileMetadata} from './profiles.ts';
 import {advertisedProviders,findEscrowServices} from './escrow-directory.ts';
+import {getPublicRuntime} from './nostr-runtime.ts';
 import type {MarketListing} from './market.ts';
 import type {OrderView,DeliveryRequest} from './orders.ts';
 import {createUserName,nameFor,warmProfiles} from './people.ts';
@@ -40,7 +41,7 @@ export function setupEscrowTrade({account,wallet,lookup,isPreview,relays,invento
       const s=a.state();if((!enabled()&&!recover())||s.ownerPubkey!==owner||s.status!=='ready')throw Error('Sign back in to this profile to continue.');
       switch(method){
         case 'context':{
-          const names=Object.fromEntries((s.tradeSteps??[]).flatMap(row=>{const d=row.step.deal;return d?[d.buyer,d.seller,d.provider].filter(k=>/^[0-9a-f]{64}$/.test(k)).map(k=>[k,nameFor(k)]):[];}));
+          const names=Object.fromEntries((s.tradeSteps??[]).flatMap(row=>{const d=row.step.deal;return d?[d.buyer,d.seller,d.provider].filter(k=>/^[0-9a-f]{64}$/.test(k)).map(k=>[k,nameFor(k)]):[];}));warmProfiles(Object.keys(names));
           return {owner,names,enabled:true,canProvide:canProvide(),allowFunding:enabled(),contacts:selection.listing_id&&(!activeTrade||selection.order?.resume)?escrowCandidates(owner,maker,s.conversations.map(p=>p.pubkey),relays(),advertisedProviders(inventory(),directory)):s.conversations.map(p=>({id:p.pubkey,name:nameFor(p.pubkey),contact:true})),mints:[configuredLocalTestMint(),...DEFAULT_SUPPORTED_MINTS].filter(Boolean)};}
         case 'discoverProviders':{
           if(!enabled() || activeTrade || args.listing_id!==selection.listing_id)throw Error('Open checkout and enable escrow to find providers.');
@@ -91,13 +92,16 @@ export function setupEscrowTrade({account,wallet,lookup,isPreview,relays,invento
           if(!s.canSend&&['fund','prepare','cosign','complete'].includes(args.op))throw Error('Approve this device for private messages before moving funds.');
           return wallet().escrow(args);
         }
+        case 'openWallet':{dialog.close();wallet().open();return true;}
         case 'rate':return a.messaging.publishEvent(buildReviewDraft({target:args.profile,author:owner,rating:args.rating}));
         default:throw Error('Unavailable trade action.');
       }
     };
     const mounted=engine.mount(body,call,selection);running=mounted;
-    // Advertised providers are known by key from their service listings; load their chosen names in the background.
-    if(selection.listing_id){const keys=[...advertisedProviders(inventory(),directory)].slice(0,64);if(keys.length)void loadProfileMetadata(keys,{relays:relays(),timeoutMs:3000}).then(()=>{if(screen===dialog)(mounted.reload??mounted.refresh)();}).catch(()=>{});}
+    // Providers and traders are known by key; load their chosen names in the background, then redraw.
+    {const deals=(a.state().tradeSteps??[]).flatMap(row=>row.step.deal?[row.step.deal.buyer,row.step.deal.seller,row.step.deal.provider]:[]);
+      const keys=[...new Set([...(selection.listing_id?advertisedProviders(inventory(),directory):[]),...deals])].filter(k=>typeof k==='string'&&/^[0-9a-f]{64}$/.test(k)).slice(0,64);
+      if(keys.length)void loadProfileMetadata(keys,{relays:relays(),runtime:getPublicRuntime(relays()),timeoutMs:3000}).then(()=>{if(screen===dialog)(mounted.reload??mounted.refresh)();}).catch(()=>{});}
     const flagsChanged=()=>{if(!enabled()&&!recover())dialog.close();else mounted.refresh();};
     window.addEventListener('market-tools-change',flagsChanged);
     const listener=a.onState(s=>{if((!enabled()&&!recover())||s.ownerPubkey!==owner||s.status!=='ready'){dialog.close();return;}mounted.refresh();});
@@ -146,6 +150,9 @@ export function setupEscrowTrade({account,wallet,lookup,isPreview,relays,invento
       host.append(list);
     }
   }
+  const statusLabel=(status:string)=>({'Release receipt':'Payment released','Refund receipt':'Refunded'} as Record<string,string>)[status]??status;
+  /** Once escrow funds are locked or settled, cancelling the order would no longer match the money. */
+  function locked(order:OrderView){const s=account()?.state();if(!order.escrowTradeId||s?.status!=='ready')return false;const t=matchingTrade(order,s);return !!t&&((s.tradeSteps??[]).some(r=>r.step?.trade_id===t.id&&!!r.step?.token)||['Release receipt','Refund receipt','Help requested'].includes(t.status));}
   function matchingTrade(order:OrderView,state){
     return engine.list(state.tradeSteps??[],state.ownerPubkey).find(t=>t.id===order.escrowTradeId&&t.deal.order_id===order.id&&
       t.deal.provider===order.escrowProvider&&t.deal.seller===order.seller&&t.deal.buyer===order.buyer&&
@@ -161,18 +168,20 @@ export function setupEscrowTrade({account,wallet,lookup,isPreview,relays,invento
     }
     const panel=document.createElement('section');panel.className='order-payment';
     const h=document.createElement('h3');h.textContent='Escrow';const p=document.createElement('p');p.className='small muted';
-    p.textContent='Provider · '+nameFor(order.escrowProvider);panel.append(h,p);
+    p.append('Provider · ',createUserName(order.escrowProvider));warmProfiles([order.escrowProvider]);panel.append(h,p);
     if(trade){
       const reviewing=order.seller===s.ownerPubkey&&order.status==='requested'&&!trade.joined&&trade.status==='Invitation';
       if(reviewing)panel.append(node('p','The buyer proposed this provider for your order.','small muted'));
-      panel.append(entry(reviewing?'Review order and provider':'Open escrow · '+trade.status,{trade_id:id}));
+      panel.append(entry(reviewing?'Review order and provider':'Open escrow · '+statusLabel(trade.status),{trade_id:id}));
     }
     else if(s.ownerPubkey===order.buyer&&order.status!=='cancelled')
       panel.append(entry('Finish escrow invitation',{trade_id:id,listing_id:order.items[0].id,order:{quantity:order.items[0].quantity,note:order.note,deliveryRequest:order.deliveryRequest,provider:order.escrowProvider,resume:true}},{maker:order.seller}));
     else {const status=document.createElement('p');status.textContent=order.status==='cancelled'?'Order cancelled':'Waiting for the buyer’s private invitation.';panel.append(status);}
     return panel;
   }
-  return {inbox,jobs,showJobs:()=>enabled()||providerJobs().length>0,linked,
+  /** Provider jobs waiting on this person: new invitations and requests for help. */
+  const attention=()=>providerJobs().filter(t=>t.status==='Help requested'||!t.joined&&!['Release receipt','Refund receipt','Declined'].includes(t.status)).length;
+  return {inbox,jobs,attention,locked,showJobs:()=>enabled()||providerJobs().length>0,linked,
     canCheckout:(l:any)=>enabled()&&l.side==='offer'&&l.escrow?.trade==='goods'&&l.author!==account()?.state().ownerPubkey,
     checkout:(l:any,order:Checkout,onOrder:(order:OrderView)=>void)=>open({listing_id:l.id,order},{maker:l.author,onOrder}),
     entry:(l:any)=>enabled()&&l.escrow&&(l.side==='request'||l.escrow.trade==='bitcoin_fiat')&&l.author!==account()?.state().ownerPubkey?entry('Arrange escrow',{listing_id:l.id},{maker:l.author}):null,

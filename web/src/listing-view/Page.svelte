@@ -13,7 +13,7 @@
 
   let {listing, options}: {listing: ListingPresentation; options: ListingPageOptions} = $props()
   const saved = $derived(options.saved ?? false)
-  const {onSave = () => {}, onBuy = () => {}, priceNode, authorRow = () => null, isPreview = false, owner = undefined, onEdit = undefined, onCloseBitcoin = undefined, onToast = () => {}, draftPreview = false, localImage = undefined} = options
+  const {onSave = () => {}, onBuy = () => {}, onMessage = undefined, priceNode, authorRow = () => null, isPreview = false, owner = undefined, onEdit = undefined, onCloseBitcoin = undefined, onToast = () => {}, draftPreview = false, localImage = undefined, discoverable = undefined} = options
 
   const hero = heroImage(listing, {draftPreview, localImage})
   let showingOriginal = $state(false)
@@ -47,6 +47,8 @@
 
   const showBuy = !isPreview && !listing.externalOrder && listing.author !== owner
   const showEdit = !isPreview && !listing.externalOrder && listing.author === owner && !!onEdit
+  // Nostr accounts are free, so feeds only show followed accounts; tell a new poster how people will find them.
+  const undiscovered = showEdit && !!discoverable && !discoverable(listing.author)
   const showClose = !isPreview && !!bitcoin && listing.author === owner && !!onCloseBitcoin
   let closing = $state(false)
   let problem = $state('')
@@ -94,6 +96,7 @@
       {#snippet actions()}
         <div class="detail-actions">
           {#if showBuy}<button class="button primary" onclick={() => onBuy(listing)}>{bitcoin ? (listing.side === 'request' ? 'Message buyer' : 'Message seller') : listing.side === 'request' ? 'Respond' : 'Buy'}</button>{/if}
+          {#if showBuy && onMessage && !bitcoin && listing.side !== 'request'}<button class="button secondary" onclick={() => onMessage(listing)}>Message seller</button>{/if}
           {#if showEdit}<button class="button primary" onclick={() => onEdit(listing)}>Edit listing</button>{/if}
           {#if showClose}
             <details class="account-option">
@@ -106,6 +109,7 @@
           <button class="button secondary" aria-pressed={saved} onclick={() => onSave(listing)}>{saved ? '♥ Saved' : '♡ Save'}</button>
           {#if validListingId(listing.id)}<Share url={listingURL(listing.id)} {onToast} />{/if}
         </div>
+        {#if undiscovered}<p class="small muted detail-discovery-hint">People see listings from accounts followed in their network. Until someone follows you, share this listing’s link with the people you want to reach.</p>{/if}
       {/snippet}
       {#if listing.externalOrder}
         <dl class="order-terms">{#each terms as [label, value]}<dt>{label}</dt><dd>{value}</dd>{/each}</dl>

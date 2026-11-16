@@ -10,6 +10,7 @@ import {contextTags,messageContext,orderContext,validMessageContext,type Message
 import { invitationBase } from '../asset-url.ts';
 import { validateUploadAuthorization } from '../upload-auth.ts';
 import { REVIEW_KIND, parseReview, validateReviewDraft } from '../reviews.ts';
+import { PRODUCT_REVIEW_KIND, parseProductReview } from '../product-reviews.ts';
 import {validateShippingOptionEvent} from '../shipping.ts';
 import {COLLECTION_KIND, checkCollectionRevision, parseCollection, rememberAcceptedCollection, validateCollectionDraft} from '../collections.ts';
 import { finalizeEvent, generateSecretKey, getEventHash, getPublicKey, nip19 } from 'nostr-tools';
@@ -45,6 +46,7 @@ function publicAccountEvent(event:VerifiedEvent):boolean {
   if([0,3,30402,38383].includes(event.kind))return true;
   if(event.kind===COLLECTION_KIND){try{parseCollection(event);return true;}catch{return false;}}
   if(event.kind===30406){try{validateShippingOptionEvent(event);return true;}catch{return false;}}
+  if(event.kind===PRODUCT_REVIEW_KIND){try{parseProductReview(event);return true;}catch{return false;}}
   if(event.kind!==REVIEW_KIND)return false;
   try{parseReview(event);return true;}catch{return false;}
 }
@@ -817,7 +819,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], getPublicRela
       const channel = transportFactory();
       let remote;
       remote = new RemoteSigner({ runtime: channel, relays: getRelays(), bunkerLink, signal, onConnectionLink, onAuthUrl,
-        permissions: ['sign_event:0', 'sign_event:3', 'sign_event:30402', 'sign_event:38383', 'sign_event:30405', 'sign_event:30406', 'sign_event:7368', 'sign_event:24242'], timeoutMs: 15 * 60_000,
+        permissions: ['sign_event:0', 'sign_event:3', 'sign_event:30402', 'sign_event:38383', 'sign_event:30405', 'sign_event:30406', 'sign_event:7368', 'sign_event:31555', 'sign_event:24242'], timeoutMs: 15 * 60_000,
         onClose: () => {
           channel.close();
           if (postingRemote === remote) { postingRemote = postingTransport = undefined; signer = undefined; notify(); }

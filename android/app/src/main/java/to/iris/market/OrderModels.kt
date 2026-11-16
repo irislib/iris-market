@@ -7,7 +7,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
 /** Projection of the shared, authenticated order model. Android never decides wire authorization. */
-data class OrderItem(val id: String, val title: String, val price: String, val currency: String, val quantity: Int) {
+data class OrderItem(val id: String, val title: String, val price: String, val currency: String, val quantity: Int, val eventId: String? = null) {
     val displayPrice: String get() = when {
         price.isBlank() -> "Negotiable"
         price.toDoubleOrNull() == 0.0 -> "Free"
@@ -68,7 +68,7 @@ data class MarketOrder(
             val items = value.optJSONArray("items") ?: JSONArray()
             val location = shipment.optJSONObject("location")
             return MarketOrder(value.getString("id"), value.getString("buyer"), value.getString("seller"),
-                (0 until items.length()).map { i -> items.getJSONObject(i).let { OrderItem(it.getString("id"), it.optString("title"), it.optString("price"), it.optString("currency", "EUR"), it.optInt("quantity", 1)) } },
+                (0 until items.length()).map { i -> items.getJSONObject(i).let { OrderItem(it.getString("id"), it.optString("title"), it.optString("price"), it.optString("currency", "EUR"), it.optInt("quantity", 1), it.optString("eventId").takeIf { id -> id.length == 64 }) } },
                 value.optString("note"), value.optString("status"), value.optLong("createdAt"), value.optLong("updatedAt"),
                 Shipment((0 until stops.length()).map { i -> stops.getJSONObject(i).let { DeliveryStop(it.getString("id"), it.optString("label"), it.optString("address"), coordinates(it.optJSONArray("coordinates")), it.textOrNull("courierPubkey"), it.optString("status", "pending")) } },
                     shipment.textOrNull("trackingUrl"), shipment.optLong("eta").takeIf { it > 0 }, location?.let { coordinates(it.optJSONArray("coordinates"))?.let { point -> DeliveryLocation(point, location.optLong("at")) } }),
@@ -84,3 +84,41 @@ data class MarketOrder(
 }
 internal fun JSONObject.textOrNull(name: String): String? = if (isNull(name)) null else optString(name).takeIf(String::isNotBlank)
 internal fun orderDate(seconds: Long): String = runCatching { DateTimeFormatter.ofPattern("d MMM, HH:mm").withZone(ZoneId.systemDefault()).format(Instant.ofEpochSecond(seconds)) }.getOrDefault("")
+
+
+/** History filters, totals and CSV export for the order lists. */
+enum class OrderPeriod(val label: String) {
+    ALL("All time"), DAYS_30("Last 30 days"), YEAR("This year"), LAST_YEAR("Last year");
+    fun includes(createdAt: Long, now: Long = System.currentTimeMillis() / 1000): Boolean {
+        val zone = java.time.ZoneId.systemDefault()
+        val year = { seconds: Long -> java.time.Instant.ofEpochSecond(seconds).atZone(zone).year }
+        return when (this) { ALL -> true; DAYS_30 -> createdAt >= now - 30 * 86400; YEAR -> year(createdAt) == year(now); LAST_YEAR -> year(createdAt) == year(now) - 1 }
+    }
+}
+object OrderHistory {
+    /** Totals in each listing's own currency; cancelled orders and negotiable prices are left out. */
+    fun summary(orders: List<MarketOrder>): String {
+        val totals = sortedMapOf<String, Double>()
+        orders.filter { it.status != "cancelled" }.flatMap { it.items }.forEach { item -> item.price.toDoubleOrNull()?.takeIf { it.isFinite() }?.let { totals[item.currency] = (totals[item.currency] ?: 0.0) + it * item.quantity } }
+        val format = java.text.NumberFormat.getNumberInstance().apply { maximumFractionDigits = 2 }
+        return (listOf("${orders.size} ${if (orders.size == 1) "order" else "orders"}") + totals.map { (currency, amount) -> "${format.format(amount)} $currency" }).joinToString(" · ")
+    }
+    /** A spreadsheet-safe CSV, one row per item; formula-like text stays text. */
+    fun csv(orders: List<MarketOrder>, owner: String, name: (String) -> String): String {
+        fun cell(value: String): String {
+            val formula = value.firstOrNull()?.let { it in "=+-@\t" } == true
+            if (!formula && value.none { it in ",\"\n\r" }) return value
+            return "\"" + (if (formula) "'" else "") + value.replace("\"", "\"\"") + "\""
+        }
+        val day = java.time.format.DateTimeFormatter.ISO_LOCAL_DATE.withZone(java.time.ZoneOffset.UTC)
+        val rows = mutableListOf(listOf("Date", "Order", "Type", "Item", "Quantity", "Unit price", "Currency", "Total", "Status", "Other person", "Other person ID", "Listing", "Listing revision"))
+        for (order in orders) {
+            val sale = order.seller == owner; val other = if (sale) order.buyer else order.seller
+            for (item in order.items) {
+                val total = item.price.toDoubleOrNull()?.let { java.math.BigDecimal(it * item.quantity).stripTrailingZeros().toPlainString() } ?: ""
+                rows.add(listOf(day.format(java.time.Instant.ofEpochSecond(order.createdAt)), order.id, if (sale) "Sale" else "Purchase", item.title, item.quantity.toString(), item.price, item.currency, total, order.status, name(other), other, item.id, item.eventId ?: ""))
+            }
+        }
+        return rows.joinToString("\r\n") { row -> row.joinToString(",") { cell(it) } } + "\r\n"
+    }
+}

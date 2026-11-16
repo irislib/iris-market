@@ -149,7 +149,8 @@ struct NewListingView: View {
         _title = State(initialValue: providerService ? "Escrow services" : transport?.serviceTitle ?? "")
     }
     @FocusState private var entryFocused: Bool
-    private let categories = ["Electronics", "Home", "Clothing", "Books", "Transport", "Services", "Garden", "Music", "Other"]
+    /// The same set as web and Android; the core stores each as its lowercase tag.
+    private let categories = ["Food", "Home", "Clothing", "Electronics", "Services", "Transport", "Work", "Other"]
     var body: some View {
         #if os(macOS)
         // Keep both steps in the same desktop navigation destination.
@@ -206,6 +207,10 @@ struct NewListingView: View {
                     if store.demo { Label("Preview mode: publishing is turned off.", systemImage: "eye").font(.system(size: 13)).foregroundStyle(MarketTheme.muted) }
                     else if !store.snapshot.canSign { Text("Sign in with your signer or secret key to publish listings.").font(.system(size: 13)).foregroundStyle(MarketTheme.muted) }
                     else { Text("Your listing will be public, and people can contact you privately. Keep exact addresses and private contact details out of your listing.").font(.system(size: 13)).foregroundStyle(MarketTheme.muted).fixedSize(horizontal: false, vertical: true) }
+                    if !store.demo && store.snapshot.canSign && store.snapshot.people[store.snapshot.publicKey]?.connection.followDistance == nil {
+                        // Feeds only show followed accounts, so tell a new poster how people will find them.
+                        Text("People see listings from accounts followed in their network. Until someone follows you, share your listing link with the people you want to reach.").font(.system(size: 13)).foregroundStyle(MarketTheme.muted).fixedSize(horizontal: false, vertical: true)
+                    }
                     MarketInlineError()
                     Button { reviewPublish = true } label: { HStack { Spacer(); Text("Review listing").fontWeight(.semibold); Spacer() }.padding(.vertical, 8) }
                         .disabled(!validBitcoin || store.demo || store.busy || uploading || !store.snapshot.canSign || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || category == "Transport" && transport != nil && serviceAreas == nil).accessibilityIdentifier("publishListing")

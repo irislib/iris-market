@@ -9,7 +9,18 @@ struct OrdersView: View {
     private var jobsAvailable: Bool {
         !store.demo && (store.snapshot.settings.escrowUi || store.snapshot.escrowCards.contains { $0.joined && $0.deal.provider == store.snapshot.publicKey })
     }
-    private var orders: [MarketOrder] { store.snapshot.orders.filter { section.contains($0, owner: store.snapshot.publicKey) } }
+    @State private var period = MarketOrderPeriod.all
+    private var historySection: Bool { [.purchases, .sales, .archived].contains(section) }
+    private var sectionOrders: [MarketOrder] { store.snapshot.orders.filter { section.contains($0, owner: store.snapshot.publicKey) } }
+    private var orders: [MarketOrder] { historySection ? sectionOrders.filter { period.includes($0.createdAt) } : sectionOrders }
+    /// Writes the visible orders to a temporary CSV for the share sheet.
+    private func exportFile() -> URL {
+        let owner = store.snapshot.publicKey
+        let csv = MarketOrderHistory.csv(orders, owner: owner) { key in store.snapshot.people[key]?.name ?? "" }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("iris-market-\(section.rawValue.lowercased()).csv")
+        try? csv.write(to: url, atomically: true, encoding: .utf8)
+        return url
+    }
     private var selection: Binding<OrderSelection?> {
         Binding(get: { store.activeOrderID.map { OrderSelection(id: $0) } }, set: { store.activeOrderID = $0?.id })
     }
@@ -35,6 +46,19 @@ struct OrdersView: View {
                             .disabled(!store.snapshot.canSign)
                         if !store.snapshot.canSign { Text("Use the device holding your profile key to offer escrow services.").font(.caption).foregroundStyle(MarketTheme.muted) }
                     }
+                }
+                if historySection && !sectionOrders.isEmpty {
+                    HStack {
+                        Picker("Period", selection: $period) { ForEach(MarketOrderPeriod.allCases) { Text($0.rawValue).tag($0) } }.pickerStyle(.menu).accessibilityIdentifier("ordersPeriod")
+                        Spacer()
+                        ShareLink(item: exportFile()) { Label("Export CSV", systemImage: "square.and.arrow.up") }.font(.system(size: 14, weight: .medium)).disabled(orders.isEmpty)
+                    }
+                    Text(MarketOrderHistory.summary(orders)).font(.caption).foregroundStyle(MarketTheme.muted)
+                }
+                if section == .escrow && jobsAvailable {
+                    EmptyView() // Escrow jobs are listed above.
+                } else if orders.isEmpty && !sectionOrders.isEmpty {
+                    MarketEmptyState(symbol: "calendar", title: "No orders in this period", description: "Choose another period to see earlier orders.")
                 } else if orders.isEmpty {
                     MarketEmptyState(symbol: "shippingbox.fill", title: section == .archived ? "Nothing archived" : "No \(section.rawValue.lowercased()) yet", description: section == .purchases ? "Your orders appear here." : section == .sales ? "Order requests for your listings appear here." : section == .deliveries ? "Deliveries you handle appear here." : "Finished orders can be kept here.")
                 } else {

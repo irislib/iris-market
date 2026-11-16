@@ -97,7 +97,7 @@ private val DarkColors = darkColorScheme(
         Spacer(Modifier.height(22.dp)); Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(9.dp)); Text(body, color = Muted, style = MaterialTheme.typography.bodyMedium,
             textAlign = androidx.compose.ui.text.style.TextAlign.Center)
-        if (action != null) { Spacer(Modifier.height(22.dp)); Button(onClick = onAction) { Text(action) } }
+        if (action != null) { Spacer(Modifier.height(12.dp)); TextButton(onClick = onAction) { Text(action) } }
     }
 }
 

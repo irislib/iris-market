@@ -21,7 +21,9 @@
       finally{pending=false;if(!disposed)await render(true);}
     }
     const row=(label,value)=>{const el=node('div',null,'esc-row');el.append(node('span',label),node('strong',value));return el;};
-    function banner(parent){if(!error)return;const note=node('p',error,'esc-error');note.setAttribute('role','alert');parent.append(note);}
+    function banner(parent){if(!error)return;const note=node('p',error,'esc-error');note.setAttribute('role','alert');parent.append(note);
+      // A missing or locked wallet is a step, not a dead end.
+      if(/Open Wallet/.test(error)){const open=node('button','Open wallet','esc-primary');open.type='button';open.onclick=()=>void call('openWallet').catch(()=>{});parent.append(open);}}
     function actionBox(title,copy){const section=node('section',null,'esc-panel');section.append(node('h3',title),caption(copy));return section;}
     function heading(title,subtitle){const h=node('header');h.append(node('p','PRIVATE TRADE','esc-eyebrow'),node('h2',title),caption(subtitle));return h;}
     async function state(){
@@ -97,7 +99,7 @@
       search.oninput=()=>{draft.query=search.value;refresh();};
       sats.oninput=()=>{draft.amount=sats.value;};mint.onchange=()=>{draft.mint=mint.value;};
       form.append(field('Search escrow providers',search),status,matches,discover,selected,
-        field(order?'Order total in sats':'Amount in sats',sats),field('Wallet mint',mint),
+        field(order?'Order total in sats':'Amount in sats',sats),field('Wallet service (mint)',mint),
         caption('The merchant and provider can each decline. No funds move until all three people approve and the funder confirms payment.'),btn);
       refresh();
       form.onsubmit=e=>{e.preventDefault();void run(async()=>{
@@ -153,13 +155,14 @@
         }else if(completed){
           const payee=E.recipient(d,completed);
           box(completed==='release'?'Payment released':'Payment refunded',me===payee?'The Iris wallet received the funds.':person(payee)+' confirmed receiving the funds in Iris.');
+          if(me!==d.provider && t.rated)box('Thanks for rating','Your rating of '+person(d.provider)+' is on their public profile.');
           if(me!==d.provider && !t.rated){
             const panel=box('Rate the provider','Your rating is public on the provider’s profile. The trade and its amount stay private.');
             const stars=node('select');for(let i=5;i>=1;i--){const o=node('option',i+' '+(i===1?'star':'stars'));o.value=String(i);stars.append(o);}
             panel.append(field('Rating',stars),button('Publish rating',async()=>{await call('rate',{profile:d.provider,rating:Number(stars.value),trade_id:t.id});await push('rated');},true));
           }
         }else if(!t.joins[me]){
-          const panel=box(me===d.provider?'Invitation to provide escrow':'Review the invitation',me===d.provider?'Review the two traders, total and mint. Accept only if you are willing to help with a dispute. You can review the final terms before funds move.':'Join with a new spending key from your Iris wallet. You will review the agreement before anyone pays.');
+          const panel=box(me===d.provider?'Invitation to provide escrow':'Review the invitation',me===d.provider?'Review the two traders, total and mint. Accept only if you are willing to help with a dispute. You can review the final terms before funds move.':'Join to take part. Your Iris wallet prepares a private key for this trade, and you review the agreement before anyone pays.');
           if(me===d.provider && context.canProvide===false)panel.append(caption('Open this job on a device that stores your profile key to accept it.'));
           else if(!context.mints.includes(d.mint))panel.append(caption('This wallet does not support the proposed mint. Ask the traders to use a supported mint.'));
           else panel.append(button(me===d.provider?'Accept job':me===d.seller && d.order_id?'Accept order and provider':me===d.maker?'Accept proposed provider':'Join trade',async()=>{const fresh=await current();if(fresh.declined)throw Error('This invitation was declined.');await E.join(call,me,fresh);}));
@@ -170,12 +173,12 @@
           const panel=box('Approve the agreement','Two of the three participants must sign to spend the payment. There is no automatic timeout refund.');
           panel.append(button('Approve terms',async()=>{await current();await E.exactListing(call,d);await E.exactOrder(call,me,t.id,d,true);await ownKey();await push('approve');}),button('Decline terms',decline,true));
         }else if(t.approved.size<3){
-          const missing=peers.filter(p=>!t.approved.has(p));box('Waiting for approval',missing.map(person).join(' and ')+(missing.length===1?' still needs':' still need')+' to approve the agreed wallet keys.');
+          const missing=peers.filter(p=>!t.approved.has(p));box('Waiting for approval',missing.map(person).join(' and ')+(missing.length===1?' still needs':' still need')+' to approve the agreement.');
         }else if(!t.token){
           if(me===d.funder){
             const panel=box('Fund escrow','Your Iris wallet will lock the payment at the agreed mint.');
             if(fee)panel.append(row('Maximum wallet fee',amount(fee.fee,d.mint)),row('Maximum total',amount(fee.max_total,d.mint)));
-            if(recovered)panel.append(caption('Your wallet already made this payment. Share its locked proofs with the other participants.'));
+            if(recovered)panel.append(caption('Your wallet already made this payment. Share it with the others so they can check it.'));
             panel.append(button(recovered?'Share saved payment':context.allowFunding===false?'Recover a saved payment':fee?'Confirm and fund escrow':'Review wallet fee',async()=>{
               const s=await current();if(s.token)throw Error('Funding has already been shared.');
               await ownKey();

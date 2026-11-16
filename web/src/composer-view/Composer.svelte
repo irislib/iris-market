@@ -1,5 +1,6 @@
 <script lang="ts">
   import {EXPIRY_CHOICES} from '../expiry.ts'
+  import {LISTING_CATEGORIES, LEGACY_CATEGORIES} from '../categories.ts'
   import {COUNTRY_CODES} from '../shipping.ts'
   import {place} from '../svelte/place.ts'
   import type {ComposerState} from './state.svelte.ts'
@@ -32,7 +33,7 @@
     {/each}
   </div>
   <input type="hidden" name="side" value={c.side} disabled={c.busy}>
-  <label>Category<select name="category" disabled={c.busy} onchange={() => c.syncAreaEditor()}><option value="other">Other</option><option value="home">Home</option><option value="tech">Tech</option><option value="services">Services</option><option value="transport">Transport</option><option value="work">Work</option></select></label>
+  <label>Category<select name="category" disabled={c.busy} onchange={() => c.syncAreaEditor()}>{#each LISTING_CATEGORIES as [value, label]}<option {value}>{label}</option>{/each}{#each LEGACY_CATEGORIES as value}<option {value} hidden>{value[0].toUpperCase() + value.slice(1)}</option>{/each}</select></label>
   <label id="post-transport-type" hidden={c.category !== 'transport'}>Transport type<select name="transportType" disabled={c.controls.transportDisabled}><option value="">Not specified</option><option value="parcel">Delivery</option><option value="passenger">Passenger ride</option><option value="both">Both</option></select></label>
   <label>Title<input name="title" maxlength="160" required autocomplete="off" disabled={c.busy}></label>
   <label>Description<textarea name="description" rows="4" maxlength="12000" disabled={c.busy}></textarea></label>
@@ -86,6 +87,7 @@
     {/if}
   </div>
   <p class="small muted">Your listing and attached files will be public.</p>
+  {#if c.preview && c.options.discoverable && !c.options.discoverable()}<p class="small muted">People see listings from accounts followed in their network. Until someone follows you, share your listing’s link with the people you want to reach.</p>{/if}
   <div class="post-preview-actions">
     <button id="post-edit" type="button" class="button secondary" disabled={c.busy} onclick={() => c.editDraft()}>Edit</button>
     <button id="post-publish" type="button" class="button primary" disabled={c.busy} onclick={() => c.publish()}>{c.publishLabel}</button>

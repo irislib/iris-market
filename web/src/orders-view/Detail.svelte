@@ -39,7 +39,7 @@
     if (order.status === 'accepted' && role === 'seller') add('Mark on the way', () => s.update(order, {status: 'in-transit'}, 'Delivery started'), true)
     if (['accepted', 'in-transit'].includes(order.status) && ['seller', 'buyer'].includes(role)) add(role === 'buyer' ? 'Mark received' : 'Mark delivered', () => s.update(order, {status: 'delivered'}, 'Order delivered'), role === 'buyer' && order.status === 'in-transit')
     if (['buyer', 'seller'].includes(role)) add('Message', () => { s.dialog.hide(); void account.openChat(role === 'buyer' ? order.seller : order.buyer, {context: orderContext(order.id)}) })
-    if (!done && ['buyer', 'seller'].includes(role)) add(order.status === 'requested' && role === 'seller' ? 'Decline request' : 'Cancel order', () => s.update(order, {status: 'cancelled'}, 'Order cancelled'))
+    if (!done && ['buyer', 'seller'].includes(role) && !escrow?.locked?.(order)) add(order.status === 'requested' && role === 'seller' ? 'Decline request' : 'Cancel order', () => s.update(order, {status: 'cancelled'}, 'Order cancelled'))
     if (done) add(order.archived ? 'Restore order' : 'Archive order', () => { void s.perform(async () => { await account.messaging.archiveOrder(order.id, !order.archived); s.announce(order.archived ? 'Order restored' : 'Order archived') }) })
     const peer = role === 'buyer' ? order.seller : order.buyer
     const funds = !order.escrowTradeId && onReceiveToken && order.payment?.status !== 'received'
@@ -149,7 +149,7 @@
     </div>
   {/if}
   {#if order.sync === 'queued'}<p class="small muted order-sync">Update saved. Waiting to reach the other people in this order.</p>{/if}
-  {#if d.routed}
+  {#if d.routed && (d.stops.length || !d.done)}
     <section class="order-shipment">
       <h3>Route</h3>
       {#if !d.stops.length}

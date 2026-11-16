@@ -83,12 +83,13 @@ import org.json.JSONObject
         if (transport == null) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 TextButton(onClick = { choosingPlace = true }, enabled = !state.demo) { Icon(Icons.Filled.Map, null); Spacer(Modifier.width(8.dp)); Text(if (mapPoint == null) "Choose on map" else "Change map point") }
-                if (mapPoint != null) { Text("Shown on the map by district", color = Muted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f)); TextButton(onClick = { mapPoint = null }) { Text("Remove") } }
+                if (mapPoint != null) { Text("People see an area about 20–40 km across", color = Muted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f)); TextButton(onClick = { mapPoint = null }) { Text("Remove") } }
             }
             if (choosingPlace) PrivatePlaceMapEditor(value = JSONObject().put("label", location).put("address", location).apply { mapPoint?.let { put("coordinates", JSONArray(it)) } }.toString(), change = { raw ->
                 if (raw != null) runCatching { OrderDeliveryPlace.parse(JSONObject(raw)) }.getOrNull()?.let { place ->
                     val name = place.label.trim(); val point = place.coordinates?.takeIf { it.size == 2 }
-                    location = if (name.isNotEmpty() && name != "Meeting point") name else place.address.ifBlank { point?.let { "%.4f, %.4f".format(it[1], it[0]) } ?: location }
+                    // Only a place name becomes public words; a typed address or the point never does.
+                    if (name.isNotEmpty() && name != "Meeting point") location = name
                     mapPoint = point
                 }
             }, close = { choosingPlace = false })

@@ -86,7 +86,7 @@
     {#if c.preview}
       {#key c.preview}
         {#if c.preview.delivery}<p class="small muted">{c.preview.delivery}</p>{/if}
-        <Preview draft={c.preview.draft} files={c.preview.files} priceNode={c.options.priceNode} mediaArea={c.preview.areaInMedia ? c.preview.area?.element : undefined} />
+        <Preview draft={c.preview.draft} files={c.preview.files} priceNode={c.options.priceNode} mediaArea={c.preview.areaInMedia ? c.preview.area?.element : undefined} areaReused={c.preview.areaReused} />
         {#if c.preview.area && !c.preview.areaInMedia}<span hidden use:place={() => c.preview.area.element}></span>{/if}
       {/key}
     {/if}

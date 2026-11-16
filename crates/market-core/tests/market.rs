@@ -1602,7 +1602,7 @@ fn listings_posted_across_an_area_border_share_the_earlier_area() {
     let [west, ..] = iris_market_core::geo::bounds(&home).unwrap();
     // Just across the western edge of the first area.
     let points = [[west + 0.001, 60.17], [west - 0.001, 60.17], [-9.14, 38.72]];
-    let mut areas = Vec::new();
+    let (mut areas, mut names) = (Vec::new(), Vec::new());
     for (i, point) in points.iter().enumerate() {
         let state = call(json!({"type":"publish","draft":{
             "title":format!("Bike {i}"),"description":"","side":"offer","price":"10","currency":"EUR",
@@ -1627,8 +1627,25 @@ fn listings_posted_across_an_area_border_share_the_earlier_area() {
             .map(|t| t[1].clone())
             .max_by_key(String::len)
             .unwrap();
+        let words = event
+            .tags
+            .iter()
+            .map(|t| t.as_slice())
+            .find(|t| t[0] == "location")
+            .map(|t| t[1].clone())
+            .unwrap_or_default();
         areas.push(cell);
+        names.push(words);
     }
+    assert_eq!(
+        names[0], "Helsinki area",
+        "an area without words gets its town name"
+    );
+    assert_eq!(
+        names[1], names[0],
+        "the name follows the reused area, not the hidden one"
+    );
+    assert!(!names.iter().any(|n| n.contains("60.") || n.contains('#')));
     assert_eq!(areas[0], home);
     assert_ne!(iris_market_core::geo::encode(points[1], 4).unwrap(), home);
     assert_eq!(

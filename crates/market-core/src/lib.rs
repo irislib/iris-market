@@ -15,6 +15,7 @@ pub mod mobile_push;
 pub mod model;
 pub mod network;
 pub mod orders;
+pub mod places;
 pub mod profile_listings;
 pub mod profiles;
 pub mod public_cache;
@@ -1243,6 +1244,12 @@ impl Market {
                     .map(|cell| geo::sticky(&cell, &s.store.listing_areas().unwrap_or_default()));
                 if let Some(area) = &area {
                     draft.coordinates = geo::decode(area);
+                    // An area without words gets the name of its largest town; never the point itself.
+                    if listing::location_label(&draft.location).is_empty()
+                        && let Some(name) = geo::bounds(area).and_then(places::area_name)
+                    {
+                        draft.location = format!("{name} area");
+                    }
                 }
                 let draft = listing::builder(
                     &draft,

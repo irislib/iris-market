@@ -215,12 +215,13 @@ struct NewListingView: View {
                     Picker("Expires in", selection: $expiry) { ForEach(NativeListingExpiry.presets, id: \.self) { Text($0.label).tag($0) } }.accessibilityIdentifier("listingExpiry")
                     TextField(transport == nil ? "Location" : "Pickup area", text: $location, prompt: Text(transport == nil ? "Location, e.g. Lisbon, Portugal" : "Pickup area").foregroundColor(MarketTheme.muted)).labelsHidden().accessibilityIdentifier("listingLocation")
                     PlaceSearchButton(value: MarketDeliveryPlace(label: location, address: location, coordinates: mapPoint)) { place in
+                        // Only a place name becomes public words; a typed address or the point never does.
                         let name = place.label.trimmingCharacters(in: .whitespacesAndNewlines)
-                        location = name.isEmpty || name == "Meeting point" ? place.address : name
+                        if !name.isEmpty && name != "Meeting point" { location = name }
                         mapPoint = MarketShipment.validCoordinates(place.coordinates) ? place.coordinates : nil
                     }
                     if mapPoint != nil {
-                        HStack { Label("Shown on the map by district", systemImage: "mappin.circle.fill").font(.footnote).foregroundStyle(MarketTheme.muted); Spacer(); Button("Remove") { mapPoint = nil }.font(.footnote) }
+                        HStack { Label("People see an area about 20–40 km across", systemImage: "mappin.circle.fill").font(.footnote).foregroundStyle(MarketTheme.muted); Spacer(); Button("Remove") { mapPoint = nil }.font(.footnote) }
                     }
                     if transport != nil && category == "Transport" {
                         Button { chooseServiceAreas = true } label: { Label(serviceAreas == nil ? "Choose pickup and destination areas" : "Edit service areas", systemImage: "map.fill") }.disabled(store.demo).accessibilityIdentifier("transportServiceAreas")

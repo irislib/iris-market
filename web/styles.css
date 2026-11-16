@@ -275,3 +275,4 @@ button[data-alternate-label]::after { content:attr(data-alternate-label); visibi
 @media(max-width:760px){.download-site .header .quiet{display:none}}
 .post-place-suggestions { list-style: none; margin: -4px 0 8px; padding: 0; display: grid; gap: 2px; }
 .post-place-suggestions .text-button { text-align: left; padding: 6px 0; }
+.post-area-map { height: 220px; margin: 8px 0 14px; border-radius: 16px; overflow: hidden; background: var(--soft); }

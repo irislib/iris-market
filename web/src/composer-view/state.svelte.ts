@@ -3,6 +3,7 @@ import {decodeGeohash,locationHash} from '../map/geohash.ts'
 import {createPlaceSearch} from '../places/search.ts'
 import {exactListingPoint, listingPin} from '../map/listing-pin.ts'
 import {createAreaMemory, stickyArea} from '../map/area-memory.ts'
+import {areaName} from '../places/area-name.ts'
 import {currentPosition} from '../location-filter.ts'
 import {composerTradeTools} from '../marketplace-tools.ts'
 import {byId, formFields} from '../dom.ts'
@@ -26,7 +27,7 @@ export interface ComposerOptions {
   discoverable?: () => boolean
 }
 type AreaPicker = ReturnType<typeof setupServiceAreaPicker>
-export interface ComposerPreview {draft: any; files: DraftFile[]; delivery: string | null; area?: AreaPicker; areaInMedia: boolean}
+export interface ComposerPreview {draft: any; files: DraftFile[]; delivery: string | null; area?: AreaPicker; areaInMedia: boolean; areaReused?: boolean}
 
 const DELIVERY_HINT = 'Choose destinations and a fixed delivery cost.'
 
@@ -42,6 +43,8 @@ export class ComposerState {
   progress = $state('')
   publishLabel = $state('Publish listing')
   side = $state('offer')
+  /** True when the reviewed listing reuses an earlier, neighbouring public area. */
+  areaReused = false
   /** Recent public areas of the signed-in profile, kept only in this browser. */
   private areaMemory = createAreaMemory(globalThis.localStorage, () => this.options.account.state().ownerPubkey || '')
   pinHint = $state('Only a wider area, about 20–40 km across, is public.')
@@ -232,7 +235,7 @@ export class ComposerState {
     const areas = parseServiceAreas(draft.tags)
     if (areas) this.areaPreview = setupServiceAreaPicker({value: areas, readOnly: true})
     const areaInMedia = !draft.tags.some(tag => tag[0] === 'image') && !localFiles.items.some(file => file.image)
-    this.preview = {draft, files: localFiles.items, delivery, area: this.areaPreview, areaInMedia}
+    this.preview = {draft, files: localFiles.items, delivery, area: this.areaPreview, areaInMedia, areaReused: this.areaReused}
     this.reviewing = true; this.dialog.classList.add('showing-preview'); this.heading = 'Preview'; this.publishLabel = this.editing ? 'Save changes' : 'Publish listing'
     flushSync()
     if (this.areaPreview) void this.areaPreview.show()
@@ -256,6 +259,10 @@ export class ComposerState {
       const pin = values.pinCoordinates && values.pinPrecision !== 'exact' ? listingPin(String(values.pinCoordinates), String(values.pinPrecision)) : null
       const area = pin && stickyArea(pin.hash, this.areaMemory.areas())
       if (pin && area !== pin.hash) values.pinCoordinates = '#' + area
+      this.areaReused = !!pin && area !== pin.hash
+      // An area without words gets the name of its largest town, from the place list on this device.
+      const cell = area ? decodeGeohash(area) : null, name = cell && !String(values.location ?? '').trim() ? areaName(cell.bounds) : null
+      if (name) values.location = name + ' area'
       Object.assign(values, this.tradeTools.choices())
       if (this.editing && (values.transportType === undefined || values.transportType === this.initialTransportType)) {
         if (values.transportType === this.initialTransportType) delete values.transportType

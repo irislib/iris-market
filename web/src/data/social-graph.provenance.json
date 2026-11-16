@@ -2,10 +2,10 @@
   "version": 2,
   "root": "336f319763657d6b0e65a5b5876719e8c8dcdcf9396852be71ee26b73368b29b",
   "source": {
-    "package": "nostr-social-graph@4.1.0",
-    "url": "https://github.com/mmalmi/nostr-social-graph/releases/download/v4.1.0/nostr-social-graph-4.1.0.tgz",
-    "sourceCommit": "10088920e577dfc8faf44ccc54157832beddf510",
-    "packageSha256": "211e4ff9223c2c1062252b2643a1c0d8ea2604e69393e00d503be1bd8f1fcf4b",
+    "package": "nostr-social-graph@4.2.0",
+    "url": "https://github.com/mmalmi/nostr-social-graph/releases/download/v4.2.0/nostr-social-graph-4.2.0.tgz",
+    "sourceCommit": "a01737b3035880eb5aeb3fc6fe5381c6c50c39c8",
+    "packageSha256": "158b105ecccb6d5049e4d9944f40c59ea66ac504a9539e11948f33c5bad66f03",
     "path": "data/socialGraph.bin",
     "origin": "https://graph-api.iris.to/social-graph",
     "verifiedEvents": false

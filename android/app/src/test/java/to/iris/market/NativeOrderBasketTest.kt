@@ -18,6 +18,16 @@ class NativeOrderBasketTest {
         assertEquals(null, order(OrderItem("a", "Scarf", "3", "EUR", 1), OrderItem("b", "Mittens", "2000", "SATS", 1)).itemsTotal)
         assertEquals(null, order(OrderItem("a", "Scarf", "3", "EUR", 1)).itemsTotal)
     }
+    @Test fun orderHistoryAndDetailUseTheTotalForRepeatedUnits() {
+        val item = OrderItem("desk", "Desk", "8", "EUR", 2)
+        val order = MarketOrder("o", "b", "s", listOf(item), "", "accepted", 0, 0,
+            Shipment(emptyList(), null, null, null), false, "sent", null, false)
+        assertEquals("€16", order.formattedPrice)
+        val converted = PriceDisplay(12.0, "SATS", true, false)
+        assertEquals(converted.copy(amount = 24.0).formatted, order.copy(displayPrice = converted).formattedPrice)
+        val basket = order.copy(items = listOf(item, item.copy(id = "chair")), displayPrice = converted)
+        assertEquals(converted.formatted, basket.formattedPrice)
+    }
     @Test fun courierBookingBelongsToTheChosenOrganizer() {
         val stop = DeliveryStop("pickup", "Pickup", "Shop", null, null, "pending")
         val order = MarketOrder("id", "buyer", "seller", emptyList(), "", "accepted", 0, 0,

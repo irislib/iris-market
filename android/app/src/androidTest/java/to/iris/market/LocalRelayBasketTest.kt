@@ -9,7 +9,6 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.lifecycle.ViewModel
@@ -52,8 +51,15 @@ class LocalRelayBasketTest {
             override fun <T: ViewModel> create(modelClass: Class<T>): T = MarketModel(isolated, false) as T
         })[MarketModel::class.java]
         val screen = mutableStateOf<Listing?>(null)
+        val sale = mutableStateOf<MarketOrder?>(null)
         // Screenshots for visual review stay in this app's private cache.
-        fun capture(name: String) = File(app.cacheDir, "basket-$name.png").outputStream().use { compose.onRoot().captureToImage().asAndroidBitmap().compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
+        fun capture(name: String) {
+            compose.waitForIdle()
+            val image = checkNotNull(InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot())
+            try {
+                File(app.cacheDir, "basket-$name.png").outputStream().use { check(image.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it)) }
+            } finally { image.recycle() }
+        }
         var opened: String? = null
         try {
             compose.waitUntil(20_000) { model.state.value.publicKey.isNotBlank() }
@@ -71,7 +77,9 @@ class LocalRelayBasketTest {
                 MarketTheme(false) {
                     Box(Modifier.fillMaxSize().systemBarsPadding()) {
                         val shown = screen.value
-                        if (shown != null) ListingDetail(shown, false, model, false, null, {}, {}, {}, viewBasket = { screen.value = null })
+                        val acceptedSale = sale.value
+                        if (acceptedSale != null) OrderDetail(acceptedSale, snapshot.copy(publicKey = acceptedSale.seller), model, false, {}) {}
+                        else if (shown != null) ListingDetail(shown, false, model, false, null, {}, {}, {}, viewBasket = { screen.value = null })
                         else OrdersView(snapshot, model, false) { opened = it }
                     }
                 }
@@ -94,7 +102,11 @@ class LocalRelayBasketTest {
                 compose.onNodeWithText("Use escrow for $title").performScrollTo().performClick()
                 compose.onNodeWithText("Review escrow order").assertExists()
                 compose.onNodeWithText("Quantity · 2").assertExists()
+                val total = requireNotNull(model.state.value.basket.single().items.single { it.listing.title == title }.total)
+                compose.onNodeWithText("Total · ${total.formatted}").performScrollTo().assertIsDisplayed()
+                capture("escrow-quantity")
                 compose.onNodeWithText("Enable escrow and choose provider").performScrollTo().assertIsEnabled()
+                capture("escrow-provider-action")
                 compose.onNodeWithText("Cancel").performScrollTo().performClick()
                 compose.onNodeWithText("3 items").assertExists()
                 assertEquals(3, model.state.value.basket.single().count)
@@ -106,6 +118,46 @@ class LocalRelayBasketTest {
             assertEquals(listOf(first to 1, second to 2), order.items.map { it.title to it.quantity })
             assertEquals("pickup", order.fulfillment)
             assertEquals(emptyList<BasketGroup>(), model.state.value.basket)
+
+            args.getString("basketEscrowListing")?.let { title ->
+                screen.value = listing(title)
+                compose.onNodeWithText("Escrow available at checkout").performScrollTo().assertIsDisplayed()
+                compose.onNodeWithText("Add to basket").performScrollTo().performClick()
+                compose.onNodeWithText("In basket · View basket").performScrollTo().performClick()
+                compose.onNodeWithText("Request order").performScrollTo().performClick()
+                compose.onNodeWithText("1 item").assertExists()
+                compose.onNodeWithText("Use escrow").performScrollTo().performClick()
+                compose.onNodeWithText("Review escrow order").assertExists()
+                compose.onNodeWithText("Quantity · 1").assertExists()
+                compose.onNodeWithText("Enable escrow and choose provider").performScrollTo().performClick()
+                compose.onNodeWithText("Escrow trade").assertExists()
+                waitForEscrowScreen("document.querySelector('input[type=search]') !== null && document.body.innerText.includes('Choose an escrow provider for your order.')")
+                capture("escrow-provider-chooser")
+                compose.onNodeWithText("Close").performClick()
+                assertEquals(1, model.state.value.basket.single().count)
+                compose.onNodeWithText("Cancel").performScrollTo().performClick()
+                compose.onNodeWithText("1 item").assertExists()
+            }
+
+            args.getString("merchantParcel")?.let { title ->
+                // Exercise the seller's review on an accepted-sale projection without sending a booking.
+                sale.value = order.copy(status = "accepted", fulfillment = "merchant-delivery")
+                compose.onNodeWithText("Book a courier").performScrollTo().performClick()
+                compose.onNodeWithText("Review delivery request").performScrollTo().assertIsNotEnabled()
+                val fields = compose.onAllNodes(hasSetTextAction())
+                fields[0].performScrollTo().performTextInput("Sample shop entrance")
+                fields[1].performScrollTo().performTextInput("Sample reception")
+                compose.onNodeWithText(title).performScrollTo().performClick()
+                compose.onNodeWithText("Review delivery request").performScrollTo().performClick()
+                compose.onNodeWithText("Send this delivery request?").assertIsDisplayed()
+                compose.onNodeWithText("Pickup · Sample shop entrance").assertIsDisplayed()
+                compose.onNodeWithText("Destination · Sample reception").assertIsDisplayed()
+                compose.onNodeWithText("Request delivery").assertIsEnabled()
+                capture("merchant-delivery-review")
+                compose.onNodeWithText("Go back").performClick()
+                compose.onNodeWithText("Review delivery request").assertExists()
+                assertEquals(1, model.state.value.orders.size)
+            }
         } finally {
             store.clear()
             root.deleteRecursively()

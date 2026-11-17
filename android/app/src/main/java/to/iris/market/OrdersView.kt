@@ -85,7 +85,7 @@ private data class BasketEscrowReview(val line: BasketLine, val note: String, va
         // The core consumes the ordered basket line before the provider invitation is sent.
         // Keep the review alive until the escrow flow closes, even if the basket is now empty.
         ModalBottomSheet(onDismissRequest = { basketEscrow = null }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = Cream) {
-            OrderReview(escrowReview.line.listing, state, model, busy, escrowReview.line.quantity, escrowReview.note, escrowReview.fulfillment) { id ->
+            OrderReview(escrowReview.line.listing, state, model, busy, escrowReview.line, escrowReview.note, escrowReview.fulfillment) { id ->
                 basketEscrow = null
                 if (id != null) { checkoutSeller = null; openOrder(id) }
             }
@@ -183,7 +183,7 @@ private data class BasketEscrowReview(val line: BasketLine, val note: String, va
     var error by remember(group.seller) { mutableStateOf<String?>(null) }
     var fulfillment by remember(group.seller) { mutableStateOf(OrderFulfillment.MERCHANT_DELIVERY) }
     val goodsOrder = group.items.all { it.listing.isGoodsOffer }
-    AlertDialog(onDismissRequest = close, title = { Text("${group.count} items") }, text = {
+    AlertDialog(onDismissRequest = close, title = { Text(if (group.count == 1) "1 item" else "${group.count} items") }, text = {
         Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             UserRow(state.people[group.seller] ?: PublicPerson.unnamed(group.seller), "Seller")
             group.items.forEach { line -> Row(Modifier.fillMaxWidth()) { Text("${line.quantity} × ${line.listing.title}", Modifier.weight(1f)); Text(line.formattedTotal) } }
@@ -228,8 +228,9 @@ private data class BasketEscrowReview(val line: BasketLine, val note: String, va
 }
 
 @Composable fun OrderReview(listing: Listing, state: MarketSnapshot, model: MarketModel, busy: Boolean,
-    basketQuantity: Int? = null, initialNote: String = "", initialFulfillment: OrderFulfillment = OrderFulfillment.MERCHANT_DELIVERY,
+    basketLine: BasketLine? = null, initialNote: String = "", initialFulfillment: OrderFulfillment = OrderFulfillment.MERCHANT_DELIVERY,
     done: (String?) -> Unit) {
+    val basketQuantity = basketLine?.quantity
     var quantity by remember(listing.id) { mutableStateOf((basketQuantity ?: 1).toString()) }
     var note by remember(listing.id) { mutableStateOf(initialNote) }
     var fulfillment by remember(listing.id) { mutableStateOf(initialFulfillment) }
@@ -253,7 +254,13 @@ private data class BasketEscrowReview(val line: BasketLine, val note: String, va
             TextButton(onClick = { done(null) }) { Text("Cancel") }
         }
         Text(listing.title, style = MaterialTheme.typography.headlineSmall)
-        Text(listing.displayPrice, style = MaterialTheme.typography.titleLarge)
+        val count = quantity.toIntOrNull() ?: 0
+        Text(if (count > 1) "${listing.displayPrice} each" else listing.displayPrice, style = MaterialTheme.typography.titleLarge)
+        if (count > 1) {
+            val unit = listing.priceDisplay ?: listing.price.toDoubleOrNull()?.let { PriceDisplay(it, listing.currency, false, false) }
+            val total = basketLine?.total ?: unit?.copy(amount = unit.amount * count)
+            if (total != null && total.amount.isFinite()) Text("Total · ${total.formatted}", style = MaterialTheme.typography.titleMedium)
+        }
         UserRow(state.people[listing.author] ?: PublicPerson.unnamed(listing.author))
         if (basketQuantity == null) MarketField(quantity, { quantity = it.filter(Char::isDigit).take(3) }, "Quantity", keyboard = KeyboardType.Number)
         else Text("Quantity · $basketQuantity")
@@ -327,8 +334,13 @@ private data class BasketEscrowReview(val line: BasketLine, val note: String, va
             Text(order.statusLabel, fontWeight = FontWeight.SemiBold)
             Text(orderDate(order.createdAt), color = Muted, style = MaterialTheme.typography.bodySmall)
         }
-        // A single item shows the converted order price; a basket lists each item and then its total.
-        if (order.items.size == 1) order.items.forEach { item -> Text("${item.quantity} × ${order.formattedPrice}", style = MaterialTheme.typography.titleMedium);if(order.displayPrice!=null)Text(item.displayPrice,style=MaterialTheme.typography.bodySmall,color=Muted) }
+        // Quantity, unit price and total must stay distinguishable on a single-listing order.
+        if (order.items.size == 1) {
+            val item = order.items.single()
+            if (item.quantity > 1) Text("${item.quantity} × ${item.displayPrice}", style = MaterialTheme.typography.bodyMedium)
+            Text(if (item.quantity > 1) "Total · ${order.formattedPrice}" else order.formattedPrice, style = MaterialTheme.typography.titleMedium)
+            if (item.quantity == 1 && order.displayPrice != null) Text(item.displayPrice, style = MaterialTheme.typography.bodySmall, color = Muted)
+        }
         else {
             order.items.forEach { item -> Row(Modifier.fillMaxWidth()) { Text("${item.quantity} × ${item.title}", Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge); Text(item.lineDisplayPrice, style = MaterialTheme.typography.bodyMedium) } }
             Row(Modifier.fillMaxWidth()) {

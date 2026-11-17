@@ -59,13 +59,14 @@ data class MarketOrder(
     /** A proxied thumbnail of the ordered item from the core. */
     val displayImage:String?=null, val fulfillment:String?=null
 ) {
-    val formattedPrice:String get() {
-        val display=displayPrice?:return items.firstOrNull()?.displayPrice?:"Negotiable"
-        if(!display.amount.isFinite())return items.firstOrNull()?.displayPrice?:"Negotiable"
-        val suffix=if(display.stale)" · older rate" else ""
-        if(display.currency.uppercase() in setOf("TESTSAT","TESTSATS"))return java.text.NumberFormat.getNumberInstance().apply{maximumFractionDigits=0}.format(display.amount)+" test sats"+suffix
-        if(display.currency.uppercase() in setOf("SAT","SATS","BTC"))return java.text.NumberFormat.getNumberInstance().apply{maximumFractionDigits=if(display.currency.uppercase()=="BTC")8 else 0}.format(display.amount)+" "+(if(display.currency.uppercase()=="BTC")"BTC" else "sats")+suffix
-        return runCatching {java.text.NumberFormat.getCurrencyInstance().apply{currency=java.util.Currency.getInstance(display.currency)}.format(display.amount)}.getOrDefault(java.text.NumberFormat.getNumberInstance().format(display.amount)+" "+display.currency)+suffix
+    val formattedPrice: String get() {
+        val display = displayPrice
+        if (display != null) {
+            // The core projects a converted unit price for one line and a converted total for a basket.
+            val total = display.amount * (items.singleOrNull()?.quantity ?: 1)
+            if (total.isFinite()) return display.copy(amount = total).formatted
+        }
+        return itemsTotal ?: items.singleOrNull()?.lineDisplayPrice ?: "See items"
     }
     /** A basket's sum in its items' own currency, when they share one and have numeric prices. */
     val itemsTotal: String? get() {

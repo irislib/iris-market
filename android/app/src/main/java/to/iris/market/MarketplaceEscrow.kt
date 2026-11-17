@@ -71,7 +71,8 @@ private class TradeBridge(val model:MarketModel,val owner:String,val listing:Str
     var revision=-1
     @JavascriptInterface fun request(id:Int,raw:String){
         if(id<1 || raw.length>350000)return
-        scope.launch {
+        // Android invokes JavaScript interfaces on a bridge thread; WebView belongs to the UI thread.
+        scope.launch(Dispatchers.Main.immediate) {
             val web=view ?: return@launch
             val response=JSONObject()
             try {

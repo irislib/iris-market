@@ -28,6 +28,28 @@ import org.junit.Assume.assumeTrue
 import org.junit.Test
 import java.io.File
 
+private fun webView(view: View): WebView? {
+    if (view is WebView) return view
+    if (view is ViewGroup) for (i in 0 until view.childCount) webView(view.getChildAt(i))?.let { return it }
+    return null
+}
+internal fun waitForEscrowScreen(script: String) {
+    val instrumentation = InstrumentationRegistry.getInstrumentation()
+    val deadline = SystemClock.elapsedRealtime() + 30_000
+    while (SystemClock.elapsedRealtime() < deadline) {
+        val reply = CountDownLatch(1)
+        var result: String? = null
+        instrumentation.runOnMainSync {
+            val web = WindowInspector.getGlobalWindowViews().firstNotNullOfOrNull(::webView)
+            if (web == null) reply.countDown()
+            else web.evaluateJavascript(script) { result = it; reply.countDown() }
+        }
+        if (reply.await(2, TimeUnit.SECONDS) && result == "true") return
+        SystemClock.sleep(100)
+    }
+    error("The escrow screen did not reach the expected state.")
+}
+
 /** Requires a dedicated test device with an isolated, synthetic provider fixture. */
 class EscrowWorkspaceTest {
     private val instrumentation get() = InstrumentationRegistry.getInstrumentation()
@@ -49,26 +71,6 @@ class EscrowWorkspaceTest {
         var node: AccessibilityNodeInfo? = waitFor(label)
         while (node != null && !node.isClickable) node = node.parent
         check(node?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true) { "Could not open $label" }
-    }
-    private fun webView(view: View): WebView? {
-        if (view is WebView) return view
-        if (view is ViewGroup) for (i in 0 until view.childCount) webView(view.getChildAt(i))?.let { return it }
-        return null
-    }
-    private fun waitForTrade(script: String) {
-        val deadline = SystemClock.elapsedRealtime() + 30_000
-        while (SystemClock.elapsedRealtime() < deadline) {
-            val reply = CountDownLatch(1)
-            var result: String? = null
-            instrumentation.runOnMainSync {
-                val web = WindowInspector.getGlobalWindowViews().firstNotNullOfOrNull(::webView)
-                if (web == null) reply.countDown()
-                else web.evaluateJavascript(script) { result = it; reply.countDown() }
-            }
-            if (reply.await(2, TimeUnit.SECONDS) && result == "true") return
-            SystemClock.sleep(100)
-        }
-        error("The trade screen did not complete the expected provider action.")
     }
     private fun screenshot(app: Application, name: String) {
         val image = checkNotNull(instrumentation.uiAutomation.takeScreenshot())
@@ -110,10 +112,10 @@ class EscrowWorkspaceTest {
             waitFor("Oak reading lamp")
             screenshot(app, "android-provider-jobs")
             click("Oak reading lamp")
-            waitForTrade("Array.from(document.querySelectorAll('button')).some(b=>b.textContent==='Accept job' && !b.disabled)")
+            waitForEscrowScreen("Array.from(document.querySelectorAll('button')).some(b=>b.textContent==='Accept job' && !b.disabled)")
             screenshot(app, "android-provider-review")
-            waitForTrade("(()=>{const b=Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='Decline job' && !b.disabled);if(!b)return false;b.click();return true})()")
-            waitForTrade("document.body.innerText.includes('Invitation declined')")
+            waitForEscrowScreen("(()=>{const b=Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='Decline job' && !b.disabled);if(!b)return false;b.click();return true})()")
+            waitForEscrowScreen("document.body.innerText.includes('Invitation declined')")
             screenshot(app, "android-provider-declined")
         } catch (error: Throwable) {
             screenshot(app, "android-provider-last-failure")

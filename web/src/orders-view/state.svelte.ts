@@ -49,6 +49,7 @@ export class OrdersState {
   listing = $state.raw<any>();
   basketSelection = $state.raw<{items: BasketItem[]; owner: string}>();
   withEscrow = false;
+  ownCarrier = false;
   busy = $state(false);
   error = $state('');
   announcement = $state('');
@@ -158,6 +159,7 @@ export class OrdersState {
     if (publish && this.data.status === 'ready' && this.data.ownerPubkey === stopped.owner) void this.account.messaging.updateOrder(stopped.orderId, { location: null }).catch(() => {});
   }
   changeView(next:View) { this.clearEditors(); if (next !== 'history') this.courierUI?.hide(); if (next !== 'detail') this.stopLocation(); this.view = next; this.error = ''; if (next !== 'detail') this.dropMap(); }
+  openRoute(ownCarrier = false) { this.changeView('route'); this.ownCarrier = ownCarrier; this.render(); }
   showHistory() { this.changeView('history'); this.selected = undefined; this.render(); if (this.dialog.open) this.onNavigate(undefined, this.tab); }
   showDetail(order) {
     this.clearEditors();

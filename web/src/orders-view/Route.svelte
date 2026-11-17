@@ -13,7 +13,7 @@
   const row = (value: Partial<ShipmentStop> = {}): Row => ({key: String(next++), value, assigned: value.courierPubkey, fields: {}})
   // A courier job starts from the route the customer requested.
   const requested = order.deliveryRequest ? [order.deliveryRequest.pickup, order.deliveryRequest.destination].map((place, index) => ({label: place.label || (index ? 'Destination' : 'Pickup'), address: place.address, ...(place.coordinates ? {coordinates: place.coordinates} : {})})) : null
-  let rows = $state<Row[]>((order.shipment?.stops?.length ? order.shipment.stops : requested ?? [{label: 'Pickup'}, {label: 'Destination'}]).slice(0, limit).map(row))
+  let rows = $state<Row[]>((order.shipment?.stops?.length ? order.shipment.stops : requested ?? (s.ownCarrier || order.shipment.trackingUrl ? [] : [{label: 'Pickup'}, {label: 'Destination'}])).slice(0, limit).map(row))
   let eta: HTMLInputElement, tracking: HTMLInputElement
 
   function read({value, assigned, fields}: Row): ShipmentStop {
@@ -42,6 +42,7 @@
 </script>
 
 <form class="order-route-form" onsubmit={submit}>
+  <label class="order-field"><span>Carrier tracking link</span><input bind:this={tracking} type="url" value={order.shipment?.trackingUrl || ''} placeholder="https://…"></label>
   <div class="order-route-stops">
     {#each rows as stop, index (stop.key)}
       <fieldset class="order-route-stop">
@@ -68,7 +69,6 @@
   </div>
   <button type="button" class="button secondary" data-order-action disabled={s.busy || rows.length >= limit} onclick={() => { if (rows.length < limit) rows.push(row()) }}>Add stop</button>
   <label class="order-field"><span>Expected arrival</span><input bind:this={eta} type="datetime-local" value={localDateTime(order.shipment?.eta)}></label>
-  <label class="order-field"><span>Carrier tracking link</span><input bind:this={tracking} type="url" value={order.shipment?.trackingUrl || ''} placeholder="https://…"></label>
   <div class="order-actions">
     <button type="submit" class="button primary" data-order-action disabled={s.busy}>Save delivery</button>
     <button type="button" class="button secondary" data-order-action disabled={s.busy} onclick={() => { s.view = 'detail'; s.error = ''; s.render() }}>Cancel</button>

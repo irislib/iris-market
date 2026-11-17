@@ -34,7 +34,7 @@
     const stop = s.ownStop(order)
     const actions: Action[] = []
     const add = (label: string, run: () => void, primary = false) => actions.push({label, run, primary})
-    if (deliveryOrganizer(order) === owner && ['accepted', 'in-transit'].includes(order.status) && !order.deliveryRequest && !order.deliveryOrderId && !order.pickupAuthorization && (role === 'seller' || stops.length) && !stops.some(stop => stop.courierPubkey) && courier) add(role === 'seller' ? 'Book a courier' : 'Arrange delivery', () => { s.changeView('delivery'); s.render() }, true)
+    if (deliveryOrganizer(order) === owner && ['accepted', 'in-transit'].includes(order.status) && !order.deliveryRequest && !order.deliveryOrderId && !order.pickupAuthorization && !order.shipment.trackingUrl && (role === 'seller' || stops.length) && !stops.some(stop => stop.courierPubkey) && courier) add(role === 'seller' ? 'Book a courier' : 'Arrange delivery', () => { s.changeView('delivery'); s.render() }, true)
     for (const [id, label] of [[order.deliveryOrderId, 'View delivery'], [order.sourceOrderId, 'View product order']]) { const related = id && s.orders().find(value => value.id === id); if (related) add(label, () => s.showDetail(related)) }
     if (!order.escrowTradeId && role === 'seller' && !done && !order.payment) add('Request payment', () => { s.changeView('payment'); s.render() })
     if (!order.escrowTradeId && role === 'seller' && order.payment?.status === 'requested') add('Confirm payment received', () => s.update(order, {payment: {...order.payment, status: 'received'}}, 'Payment confirmed'))
@@ -155,12 +155,12 @@
     </div>
   {/if}
   {#if order.sync === 'queued'}<p class="small muted order-sync">Update saved. Waiting to reach the other people in this order.</p>{/if}
-  {#if d.routed && (d.stops.length || !d.done)}
+  {#if d.routed && (d.stops.length || d.tracking || !d.done && (!order.pickupAuthorization || d.role === 'seller'))}
     <section class="order-shipment">
       <h3>Route</h3>
-      {#if !d.stops.length}
+      {#if !d.stops.length && !d.tracking && !order.pickupAuthorization}
         <p class="small muted">{order.deliveryRequest && order.seller === d.owner ? 'Confirm the requested route to track each stop.' : 'Delivery or collection details are not set yet.'}</p>
-      {:else}
+      {:else if d.stops.length}
         <ol class="order-timeline">
           {#each d.stops as stop, index}
             <li class="order-stop order-stop-{stop.status}">
@@ -182,7 +182,7 @@
         </ol>
       {/if}
       {#if d.tracking}<a class="button secondary" href={d.tracking} target="_blank" rel="noopener noreferrer">Track with carrier</a>{/if}
-      {#if order.seller === d.owner && !d.done}{@render action(d.stops.length ? 'Edit delivery' : 'Add delivery details', () => { s.changeView('route'); s.render() })}{/if}
+      {#if order.seller === d.owner && !d.done}{@render action(d.stops.length || d.tracking ? 'Edit delivery' : 'Add delivery details', () => s.openRoute())}{/if}
       {#if d.leg}
         {@const leg = d.leg}
         {@const on = s.sharing?.orderId === order.id}

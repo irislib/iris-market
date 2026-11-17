@@ -13,6 +13,8 @@
   const places = [...s.editors]
   let selectedId = $state('')
   let failedAt = $state(-1)
+  let loadingMore = $state(false)
+  const pagination = $derived.by(() => { void s.providers; return courier.pagination?.() })
 
   // Re-read when the public feed changes; the destination editor stays as typed.
   const offers = $derived.by(() => {
@@ -26,9 +28,12 @@
     anchor.before(input.element)
     return {destroy() { input.destroy(); input.element.remove() }}
   }
-  function more() {
-    const at = s.providers
-    void courier.loadMore().then(() => { s.providers++ }).catch(() => { failedAt = at })
+  async function more() {
+    if (loadingMore || pagination?.loading) return
+    loadingMore = true
+    try { await courier.loadMore(); s.providers++ }
+    catch { failedAt = s.providers }
+    finally { loadingMore = false }
   }
   function submit(event: SubmitEvent) {
     event.preventDefault()
@@ -42,8 +47,6 @@
 
 {#if order && courier && places.length}
   <form class="order-delivery-form" onsubmit={submit}>
-    {#if !merchant}<h3>Pickup</h3><p>{pickup.address}</p>{/if}
-    {#each places as input}<span hidden use:editor={input}></span>{/each}
     <h3>Choose a delivery service</h3>
     <div class="order-service-options">
       {#each offers as value (value.id)}
@@ -55,8 +58,13 @@
         </div>
       {/each}
     </div>
-    <p class="small muted">{failedAt === s.providers ? 'No more services found yet.' : offers.length ? '' : 'Looking for delivery services…'}</p>
-    {#if courier.loadMore}{@render action('More services', more)}{/if}
+    {#if loadingMore || pagination?.loading}<p class="small muted" role="status">Looking for delivery services…</p>
+    {:else if failedAt === s.providers || pagination?.error}<p class="small muted" role="status">Couldn’t load more delivery services.</p>
+    {:else if !offers.length}<p class="small muted" role="status">No parcel delivery services found yet.</p>{/if}
+    {#if courier.loadMore}<button type="button" class="button secondary" disabled={s.busy || loadingMore || pagination?.loading} onclick={more}>More services</button>{/if}
+    {#if merchant && !offers.length}{@render action('Use my own carrier', () => s.openRoute(true))}{/if}
+    {#if !merchant}<h3>Pickup</h3><p>{pickup.address}</p>{/if}
+    {#each places as input}<span hidden use:editor={input}></span>{/each}
     {#if service}<p class="small muted">{merchant ? 'This courier will receive the pickup and destination. Your buyer receives the courier’s identity and pickup code.' : 'Only this delivery provider receives your destination. The merchant receives their identity and a pickup reference.'}</p>{/if}
     <button type="submit" class="button primary" data-order-action disabled={!service || s.busy}>Request delivery</button>
     {@render action('Back to order', () => s.showDetail(order))}

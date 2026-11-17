@@ -22,14 +22,14 @@ const all=node=>[node,...node.querySelectorAll('*')];
 const find=(node,text)=>all(node).filter(element=>element.textContent===text).at(-1);
 const submit=form=>{form.dispatchEvent(new SubmitEvent('submit',{bubbles:true,cancelable:true}));flushSync();};
 const buyer='b'.repeat(64),seller='a'.repeat(64),courier='c'.repeat(64);
-function fixture({signedOut=false,delivered=false,eta=undefined,buyerView=false,offers=[],payment=undefined,escrow,basket,requestOrder}={}){
+function fixture({signedOut=false,delivered=false,eta=undefined,buyerView=false,offers=[],payment=undefined,escrow,basket,requestOrder,pagination,loadMore}={}){
   visibility='visible';geo.calls=[];geo.cleared=[];
   let state={status:signedOut?'signed-out':'ready',ownerPubkey:signedOut?undefined:buyerView?buyer:courier,orders:[],conversations:[]},reads=0,signIns=0;
   const listeners=new Set(),updates=[],reviews=[],announced=[],deliveries=[],payments=[];
   const job={id:'job',buyer,seller,payment,items:[{id:'item',title:'Private parcel',price:'10',currency:'EUR',quantity:1}],status:delivered?'delivered':'accepted',createdAt:100,updatedAt:100,shipment:{eta,stops:[{id:'pickup',label:'Pickup',address:'Private pickup',status:'pending',...(buyerView?{}:{courierPubkey:courier})}]},archived:false,sync:'queued',locationFresh:false};state.orders=[job];
   const account={state:()=>state,showAccount:()=>signIns++,closeAccount(){},onState:fn=>{listeners.add(fn);return()=>listeners.delete(fn);},messaging:{requestOrder,requestDelivery:async(id,service,destination,pickup)=>{deliveries.push({id,service,destination,pickup});const result={...job,id:'delivery',seller:service.author,deliveryRequest:{pickup:job.shipment.stops[0],destination}};state.orders.push(result);return result;},updateOrder:async(id,patch)=>{updates.push({id,patch});}}};
   const page=document.createElement('main');document.body.append(page);
-  const ui=setupOrders({account,page,escrow,basket,onPay:order=>payments.push(order),onReview:key=>reviews.push(key),courier:{getListings:()=>{reads++;return[...offers,{id:'public',author:seller,title:'Public parcel request',tags:['parcel'],category:'transport',side:'request',status:'active'}];},onListing(){},onAnnounce:value=>announced.push(value)}});
+  const ui=setupOrders({account,page,escrow,basket,onPay:order=>payments.push(order),onReview:key=>reviews.push(key),courier:{pagination,loadMore,getListings:()=>{reads++;return[...offers,{id:'public',author:seller,title:'Public parcel request',tags:['parcel'],category:'transport',side:'request',status:'active'}];},onListing(){},onAnnounce:value=>announced.push(value)}});
   return{ui,page,job,updates,reviews,announced,deliveries,payments,get reads(){return reads;},get signIns(){return signIns;},setState:patch=>{state={...state,...patch};for(const fn of listeners)fn(state);},cleanup(){window.dispatchEvent(new window.Event('pagehide'));page.remove();}};
 }
 
@@ -237,4 +237,26 @@ test('merchant booking starts without a route, asks for both places and filters 
     assert.equal(f.deliveries.length,1);assert.equal(f.deliveries[0].pickup.address,'Shop door');assert.equal(f.deliveries[0].destination.address,'Agreed meeting point');
     assert.equal(geo.calls.length,0);
   } finally {f.cleanup();}
+});
+
+test('empty courier discovery reports its real state and merchants can save just their own tracking link',async()=>{
+  let moreDone, loading=false;
+  const f=fixture({buyerView:true,pagination:()=>({loading}),loadMore:()=>new Promise(done=>{moreDone=done})});
+  try {
+    f.job.fulfillment='merchant-delivery';f.job.shipment.stops=[];f.setState({ownerPubkey:seller});f.ui.open('job');
+    find(f.page,'Book a courier').click();assert(find(f.page,'No parcel delivery services found yet.'));
+    find(f.page,'More services').click();await settle();assert(find(f.page,'Looking for delivery services…'));
+    moreDone();await settle();assert(find(f.page,'No parcel delivery services found yet.'));
+    loading=true;f.ui.refreshCourier();assert(find(f.page,'Looking for delivery services…'));loading=false;f.ui.refreshCourier();
+    find(f.page,'Use my own carrier').click();
+    const form=f.page.querySelector('.order-route-form');assert(form);assert.equal(f.updates.length,0);assert.equal(f.deliveries.length,0);
+    form.querySelector('input[type=url]').value='https://carrier.example/track/123';submit(form);await settle();
+    assert.deepEqual(f.updates,[{id:'job',patch:{shipment:{stops:[],trackingUrl:'https://carrier.example/track/123'}}}]);
+    f.job.shipment=f.updates[0].patch.shipment;f.setState({});f.ui.open('job');
+    assert(find(f.page,'Track with carrier'));assert(!find(f.page,'Book a courier'));assert(!find(f.page,'Delivery or collection details are not set yet.'));
+    find(f.page,'Edit delivery').click();assert.equal(f.page.querySelectorAll('.order-route-stop').length,0);
+  } finally {f.cleanup();}
+  const b=fixture({buyerView:true});try {
+    b.ui.open('job');find(b.page,'Arrange delivery').click();assert(find(b.page,'No parcel delivery services found yet.'));assert(!find(b.page,'Use my own carrier'));
+  }finally{b.cleanup();}
 });

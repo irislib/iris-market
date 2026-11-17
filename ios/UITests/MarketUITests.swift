@@ -123,7 +123,8 @@ final class MarketUITests: XCTestCase {
         if (control.value as? String) != expected {
             control.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
         }
-        XCTAssertEqual(control.value as? String, expected)
+        let updated = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", expected), object: control)
+        XCTAssertEqual(XCTWaiter.wait(for: [updated], timeout: 5), .completed, identifier)
     }
 
     func testAISandboxInputsStaySeparateFromFeed() throws {
@@ -220,14 +221,62 @@ final class MarketUITests: XCTestCase {
 
     func testKeyboardSubmitsSearchWithoutAnAIButton() throws {
         let search = app.textFields["marketSearch"]
-        search.tap(); search.typeText("no-such-preview-listing-783")
+        let query = "zzzx"
+        search.tap(); search.typeText(query)
+        XCTAssertTrue(app.staticTexts["Listings"].exists)
         XCTAssertFalse(app.staticTexts["No results"].exists)
         search.typeText("\n")
         XCTAssertTrue(app.staticTexts["No results"].waitForExistence(timeout: 5))
-        app.buttons["Clear search"].tap()
+        search.tap()
+        search.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: query.count))
         XCTAssertTrue(app.buttons.matching(identifier: "listingOpen").firstMatch.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Listings"].exists)
         XCTAssertFalse(app.buttons["aiSearchToggle"].exists)
         capture("search-without-ai-button")
+    }
+
+    func testServiceWorkspacesWithAnOfflineProfile() {
+        app.terminate()
+        app.launchArguments = ["--ui-test-mode", "--test-storage", "iris-market-ui-roles-\(UUID().uuidString.prefix(8))"]
+        app.launchEnvironment["MARKET_ESCROW_TEST_RELAY"] = "ws://127.0.0.1:1"
+        app.launch()
+        XCTAssertTrue(app.staticTexts["0 listings"].waitForExistence(timeout: 15))
+        app.buttons["createListing"].tap()
+        let name = app.textFields["profileName"]
+        XCTAssertTrue(name.waitForExistence(timeout: 8))
+        app.buttons["completeProfileName"].tap()
+
+        openSettings()
+        let matching = app.switches["Find a match privately"]
+        for _ in 0..<6 where !matching.isHittable { app.swipeUp() }
+        setSwitch("Escrow", enabled: true)
+        setSwitch("Find a match privately", enabled: true)
+        app.buttons["Private matches"].tap()
+        app.buttons["Helping"].tap()
+        XCTAssertTrue(app.staticTexts["Offers and requests shared with you will appear here."].waitForExistence(timeout: 5))
+        capture("private-helper-inbox")
+        app.buttons["Done"].tap()
+
+        app.buttons["tabOrders"].tap()
+        app.buttons["ordersSales"].tap()
+        XCTAssertTrue(app.staticTexts["No sales yet"].waitForExistence(timeout: 5))
+        app.buttons["ordersEscrow jobs"].tap()
+        let offer = app.buttons["Offer escrow services"]
+        XCTAssertTrue(offer.waitForExistence(timeout: 5))
+        offer.tap()
+        XCTAssertTrue(app.textFields["listingTitle"].waitForExistence(timeout: 5))
+        capture("escrow-provider-draft")
+        app.buttons["Cancel"].tap()
+
+        app.descendants(matching: .any).matching(identifier: "mainMenu").firstMatch.tap()
+        app.buttons["Transport"].tap()
+        let sections = app.segmentedControls["transportSections"]
+        XCTAssertTrue(sections.waitForExistence(timeout: 5))
+        sections.buttons["My jobs"].tap()
+        XCTAssertTrue(app.staticTexts["No jobs yet"].waitForExistence(timeout: 5))
+        sections.buttons["My service"].tap()
+        XCTAssertTrue(app.buttons["announceTransport"].waitForExistence(timeout: 5))
+        capture("courier-service")
     }
 
     func testAllResultsKeepsTheQueryWithAnUnavailableModel() throws {

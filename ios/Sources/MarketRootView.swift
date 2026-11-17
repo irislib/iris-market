@@ -68,7 +68,7 @@ struct MarketRootView: View {
             }.padding(.horizontal, 23).padding(.top, 10).padding(.bottom, 16)
             Group {
                 switch tab {
-                case .browse: BrowseView(selected: $selected, query: $browseQuery, side: $browseSide, photoFilter: $photoFilter)
+                case .browse: BrowseView(selected: $selected, query: searchText, side: $browseSide, photoFilter: $photoFilter)
                 case .saved: SavedView(selected: $selected)
                 case .orders: OrdersView()
                 case .inbox: InboxView()
@@ -148,7 +148,7 @@ struct MarketRootView: View {
                         ListingDetailView(listing: listing, onContact: { desktopNavigation.reset(); tab = .inbox }, onOrder: { desktopNavigation.reset(); tab = .orders }, desktopSearch: desktopSearchBar, onDesktopBack: { selected = nil })
                     } else {
                         switch tab {
-                        case .browse: BrowseView(selected: $selected, query: $browseQuery, side: $browseSide, photoFilter: $photoFilter, desktopSearch: desktopSearchBar)
+                        case .browse: BrowseView(selected: $selected, query: searchText, side: $browseSide, photoFilter: $photoFilter, desktopSearch: desktopSearchBar)
                         case .saved: SavedView(selected: $selected)
                         case .orders: OrdersView()
                         case .inbox: InboxView()
@@ -177,7 +177,7 @@ struct MarketRootView: View {
             .onChange(of: store.pushRoute) { _ in openPushRoute() }
     }
     private var desktopSearchBar: DesktopMarketSearchBar {
-        DesktopMarketSearchBar(query: $browseQuery, submit: submitDesktopSearch)
+        DesktopMarketSearchBar(query: searchText, submit: submitDesktopSearch)
     }
     private func submitDesktopSearch() {
         let reviewing = store.localAIProgress != nil
@@ -211,6 +211,19 @@ struct MarketRootView: View {
         }.accessibilityIdentifier(item == .browse ? "tabExplore" : "tab\(item.rawValue)").accessibilityAddTraits(tab == item ? .isSelected : [])
     }
     #endif
+    /// Both keyboards and clear buttons edit this binding. Only clearing a search submits while typing.
+    private var searchText: Binding<String> {
+        Binding(get: { browseQuery }, set: { value in
+            guard value != browseQuery else { return }
+            browseQuery = value
+            guard value.isEmpty else { return }
+            store.filter(query: "", side: browseSide)
+            #if os(macOS)
+            selected = nil
+            tab = .browse
+            #endif
+        })
+    }
     private func resetBrowse() {
         browseQuery = ""
         browseSide = "offer"
@@ -241,7 +254,7 @@ struct DesktopMarketSearchBar: View {
                 TextField("Search listings", text: $query).textFieldStyle(.plain).font(.system(size: 16))
                     .accessibilityIdentifier("marketSearch").onSubmit(submit)
                 if !query.isEmpty {
-                    Button { query = ""; submit() } label: {
+                    Button { query = "" } label: {
                         Image(systemName: "xmark.circle.fill").foregroundStyle(MarketTheme.muted).frame(width: 36, height: 44)
                     }.buttonStyle(.plain).accessibilityLabel("Clear search")
                 }
@@ -303,6 +316,7 @@ struct BrowseView: View {
     var body: some View {
         // A failed Home review never leaves the feed empty: fall back to every listing, as Show all would.
         let homeFallback = store.homeFilterActive && store.searchPaused
+        let browsing = store.snapshot.query.isEmpty
         let requireMatch = curationActive && !showAllMatches && !homeFallback
         let visibleListings = store.snapshot.listings.filter { listing in
             (!requireMatch || listing.matchesSearch) && NativePhotoFilter.includes(imageURL: listing.imageUrl, choice: photoFilter, query: store.snapshot.query, side: store.snapshot.side, map: showMap, bitcoin: listing.isBitcoinOffer)
@@ -316,7 +330,7 @@ struct BrowseView: View {
                     Image(systemName: "magnifyingglass").font(.system(size: 17)).foregroundStyle(MarketTheme.muted)
                     TextField("Search listings", text: $query, prompt: Text("Search listings").foregroundColor(MarketTheme.muted)).textFieldStyle(.plain).font(.system(size: 14)).submitLabel(.search).accessibilityIdentifier("marketSearch")
                         .onSubmit { submitSearch() }
-                    if !query.isEmpty { Button { query = ""; store.filter(query: "", side: side) } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(MarketTheme.muted) }.accessibilityLabel("Clear search") }
+                    if !query.isEmpty { Button { query = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(MarketTheme.muted) }.accessibilityLabel("Clear search") }
                 }.padding(.horizontal, 16).frame(height: 51).background(MarketTheme.surface.opacity(0.82), in: RoundedRectangle(cornerRadius: 16)).overlay(RoundedRectangle(cornerRadius: 16).stroke(MarketTheme.line, lineWidth: 1))
                 #endif
                 if store.snapshot.settings.ai.provider == "apple", let reason = store.appleAIUnavailableReason {
@@ -360,7 +374,7 @@ struct BrowseView: View {
                     }
                 }
                 HStack {
-                    Text(query.isEmpty ? "Listings" : "Search results").font(.system(size: 20, weight: .semibold)).foregroundStyle(MarketTheme.ink)
+                    Text(browsing ? "Listings" : "Search results").font(.system(size: 20, weight: .semibold)).foregroundStyle(MarketTheme.ink)
                     Spacer()
                     Menu {
                         Button("Relevance") { store.command(["type": "set_sort", "sort": "suggested"]) }
@@ -377,9 +391,9 @@ struct BrowseView: View {
                 } else if visibleListings.isEmpty && !store.demo && store.snapshot.status.hasPrefix("Offline") {
                     MarketEmptyState(symbol: "wifi.slash", title: "You’re offline", description: "No message servers are set up, so only saved listings are available. Add a server in Settings under Connection details.")
                 } else if visibleListings.isEmpty && (!curationActive || homeFallback) && !store.demo && networkOnly {
-                    MarketEmptyState(symbol: query.isEmpty ? "square.grid.2x2" : "magnifyingglass", title: query.isEmpty ? "No listings yet" : "No results", description: "Only showing listings from people in your network.", action: "Show everyone") { setNetworkOnly(false) }
+                    MarketEmptyState(symbol: browsing ? "square.grid.2x2" : "magnifyingglass", title: browsing ? "No listings yet" : "No results", description: "Only showing listings from people in your network.", action: "Show everyone") { setNetworkOnly(false) }
                 } else if visibleListings.isEmpty {
-                    MarketEmptyState(symbol: query.isEmpty ? "square.grid.2x2" : "magnifyingglass", title: curationActive ? (store.searchPaused ? "Review paused" : searching || unfinishedSearch ? "No matches yet" : "No matches") : query.isEmpty ? "No listings yet" : "No results", description: curationActive ? "New matches appear as they are reviewed. Choose Show all to search by text." : query.isEmpty ? "Sell something or post what you want to buy." : "Try another search or post what you want to buy.")
+                    MarketEmptyState(symbol: browsing ? "square.grid.2x2" : "magnifyingglass", title: curationActive ? (store.searchPaused ? "Review paused" : searching || unfinishedSearch ? "No matches yet" : "No matches") : browsing ? "No listings yet" : "No results", description: curationActive ? "New matches appear as they are reviewed. Choose Show all to search by text." : browsing ? "Sell something or post what you want to buy." : "Try another search or post what you want to buy.")
                 } else {
                     let ordered = stableOrder(visibleListings)
                     LazyVGrid(columns: listLayout ? [GridItem(.flexible())] : marketListingColumns, alignment: .leading, spacing: listLayout ? 12 : 21) {

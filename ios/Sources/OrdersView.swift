@@ -1,6 +1,20 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 private struct OrderSelection: Identifiable { let id: String }
+
+private struct OrderHistoryExport: Transferable {
+    let orders: [MarketOrder]
+    let owner: String
+    let people: [String: MarketPerson]
+
+    static var transferRepresentation: some TransferRepresentation {
+        DataRepresentation(exportedContentType: .commaSeparatedText) { (export: Self) in
+            let csv = MarketOrderHistory.csv(export.orders, owner: export.owner) { export.people[$0]?.name ?? "" }
+            return Data(csv.utf8)
+        }.suggestedFileName("iris-market-orders.csv")
+    }
+}
 
 struct OrdersView: View {
     @EnvironmentObject private var store: MarketStore
@@ -13,20 +27,13 @@ struct OrdersView: View {
     @State private var basketSeller: String?
     @State private var requestedOrder: String?
     private var historySection: Bool { [.purchases, .sales, .archived].contains(section) }
-    private var sectionOrders: [MarketOrder] { store.snapshot.orders.filter { section.contains($0, owner: store.snapshot.publicKey) } }
-    private var orders: [MarketOrder] { historySection ? sectionOrders.filter { period.includes($0.createdAt) } : sectionOrders }
-    /// Writes the visible orders to a temporary CSV for the share sheet.
-    private func exportFile() -> URL {
-        let owner = store.snapshot.publicKey
-        let csv = MarketOrderHistory.csv(orders, owner: owner) { key in store.snapshot.people[key]?.name ?? "" }
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("iris-market-\(section.rawValue.lowercased()).csv")
-        try? csv.write(to: url, atomically: true, encoding: .utf8)
-        return url
-    }
     private var selection: Binding<OrderSelection?> {
         Binding(get: { store.activeOrderID.map { OrderSelection(id: $0) } }, set: { store.activeOrderID = $0?.id })
     }
     var body: some View {
+        let owner = store.snapshot.publicKey
+        let sectionOrders = store.snapshot.orders.filter { section.contains($0, owner: owner) }
+        let orders = historySection ? sectionOrders.filter { period.includes($0.createdAt) } : sectionOrders
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 Text("Orders").font(.system(size: 30, weight: .medium)).tracking(-1)
@@ -53,7 +60,10 @@ struct OrdersView: View {
                     HStack {
                         Picker("Period", selection: $period) { ForEach(MarketOrderPeriod.allCases) { Text($0.rawValue).tag($0) } }.pickerStyle(.menu).accessibilityIdentifier("ordersPeriod")
                         Spacer()
-                        ShareLink(item: exportFile()) { Label("Export CSV", systemImage: "square.and.arrow.up") }.font(.system(size: 14, weight: .medium)).disabled(orders.isEmpty)
+                        let export = OrderHistoryExport(orders: orders, owner: owner, people: store.snapshot.people)
+                        ShareLink(item: export, preview: SharePreview("\(section.rawValue) — Iris Market")) {
+                            Label("Export CSV", systemImage: "square.and.arrow.up")
+                        }.font(.system(size: 14, weight: .medium)).disabled(orders.isEmpty)
                     }
                     Text(MarketOrderHistory.summary(orders)).font(.caption).foregroundStyle(MarketTheme.muted)
                 }

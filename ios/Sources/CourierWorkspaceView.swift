@@ -20,10 +20,12 @@ struct CourierWorkspaceView: View {
             .sorted { $0.terminal == $1.terminal ? $0.updatedAt > $1.updatedAt : !$0.terminal }
     }
     private var listings: [MarketListing] {
-        store.snapshot.listings.filter { listing in
-            listing.status == "active" && (listing.expiresAt == nil || listing.expiresAt! > Int64(Date().timeIntervalSince1970)) &&
-            type.includes(listing.tags ?? []) &&
-            (section == "service" ? listing.side == "offer" && listing.author == store.snapshot.publicKey : listing.side == "request" && listing.author != store.snapshot.publicKey) &&
+        let now = Int64(Date().timeIntervalSince1970)
+        let service = section == "service", serviceType = type, owner = store.snapshot.publicKey
+        return store.snapshot.listings.filter { listing in
+            listing.status == "active" && (listing.expiresAt ?? .max) > now &&
+            (service ? listing.side == "offer" && listing.author == owner : listing.side == "request" && listing.author != owner) &&
+            serviceType.includes(listing.tags ?? []) &&
             (appliedArea.isEmpty || listing.location.localizedStandardContains(appliedArea))
         }.sorted { $0.createdAt > $1.createdAt }
     }
@@ -35,7 +37,8 @@ struct CourierWorkspaceView: View {
                         Text("Find work").tag("work"); Text("My jobs").tag("jobs"); Text("My service").tag("service")
                     }.pickerStyle(.segmented).accessibilityIdentifier("transportSections")
                     if section == "jobs" {
-                        HStack { Label("\(jobs.filter { !$0.terminal }.count) active", systemImage: "car.fill"); Spacer(); Text("\(jobs.filter { $0.status == "delivered" }.count) completed") }.font(.subheadline).foregroundStyle(MarketTheme.muted)
+                        let jobs = self.jobs
+                        HStack { Label("\(jobs.lazy.filter { !$0.terminal }.count) active", systemImage: "car.fill"); Spacer(); Text("\(jobs.lazy.filter { $0.status == "delivered" }.count) completed") }.font(.subheadline).foregroundStyle(MarketTheme.muted)
                         if jobs.isEmpty { MarketEmptyState(symbol: "car.fill", title: "No jobs yet", description: "Agree on work through a private enquiry. Assigned delivery stops appear here.") }
                         ForEach(jobs) { job in jobCard(job) }
                     } else {
@@ -53,6 +56,7 @@ struct CourierWorkspaceView: View {
                             Button { compose = true } label: { Label("Announce your service", systemImage: "plus.circle.fill") }.buttonStyle(PrimaryButton()).accessibilityIdentifier("announceTransport")
                             Text("Create a public listing with your service area, rates and availability. Exact routes stay in private orders.").font(.footnote).foregroundStyle(MarketTheme.muted)
                         } else { Text("Public requests · agree on the route and price privately before taking a job.").font(.footnote).foregroundStyle(MarketTheme.muted) }
+                        let listings = self.listings
                         if listings.isEmpty { MarketEmptyState(symbol: "mappin.and.ellipse", title: section == "service" ? "No service listings" : "No matching requests", description: section == "service" ? "Tell people where and when you can help." : "Try another area or service type.") }
                         ForEach(listings) { listing in
                             Button { selected = listing } label: {

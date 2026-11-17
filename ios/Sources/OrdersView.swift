@@ -201,12 +201,10 @@ struct BasketCheckoutView: View {
                     }
                 }.padding(24)
             }.background(MarketTheme.paper).foregroundStyle(MarketTheme.ink).navigationTitle("Review order").marketInlineTitle()
-                .marketPage(isPresented: Binding(get: { escrowReview != nil }, set: { if !$0 { escrowReview = nil } }), onDismiss: {
+                .marketPage(item: $escrowReview, onDismiss: {
                     if let createdOrderID { onRequested(createdOrderID); dismiss() }
-                }) {
-                    if let review = escrowReview {
-                        MarketplaceEscrowView(listingID: review.id, checkout: review.checkout, onOrderCreated: { createdOrderID = $0 }).marketSheetScope()
-                    }
+                }) { review in
+                    MarketplaceEscrowView(listingID: review.id, checkout: review.checkout, onOrderCreated: { createdOrderID = $0 }).marketSheetScope()
                 }
                 .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
         }
@@ -259,7 +257,6 @@ struct OrderReviewView: View {
     @State private var destination = MarketDeliveryPlace(label: "Destination")
     @State private var requestError: String?
     @State private var useEscrow = false
-    @State private var showingEscrow = false
     @State private var checkout: EscrowCheckout?
     @State private var createdOrderID: String?
     @State private var fulfillment: MarketFulfillment? = .merchantDelivery
@@ -303,7 +300,7 @@ struct OrderReviewView: View {
                             if useEscrow {
                                 guard canUseEscrow else { throw MarketRouteError.message("Escrow is unavailable for this listing.") }
                                 let review = EscrowCheckout(quantity: quantity, note: orderNote, delivery: delivery, fulfillment: choice)
-                                store.startEscrowCheckout { checkout = review; showingEscrow = true }
+                                store.startEscrowCheckout { checkout = review }
                             } else {
                                 store.requestOrder(listing, quantity: quantity, note: orderNote, fulfillment: choice, deliveryRequest: delivery) { success in if success { dismiss(); onRequested() } }
                             }
@@ -312,10 +309,10 @@ struct OrderReviewView: View {
                         .buttonStyle(PrimaryButton()).disabled(store.demo || store.busy || !store.snapshot.canSign).accessibilityIdentifier("requestOrder")
                 }.padding(24)
             }.background(MarketTheme.paper).foregroundStyle(MarketTheme.ink).navigationTitle("Review order").marketInlineTitle()
-                .marketPage(isPresented: $showingEscrow, onDismiss: {
+                .marketPage(item: $checkout, onDismiss: {
                     if let createdOrderID { store.activeOrderID = createdOrderID; dismiss(); onRequested() }
-                }) {
-                    MarketplaceEscrowView(listingID: listing.id, checkout: checkout, onOrderCreated: { createdOrderID = $0 }).marketSheetScope()
+                }) { review in
+                    MarketplaceEscrowView(listingID: listing.id, checkout: review, onOrderCreated: { createdOrderID = $0 }).marketSheetScope()
                 }
                 .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
         }

@@ -14,8 +14,8 @@ struct ListingDetailView: View {
     @State private var invitation = false
     @State private var showEscrow = false
     @State private var authorProfile = false
-    @State private var reviewOrder = false
-    @State private var preferEscrow = false
+    private enum Checkout: String, Identifiable { case direct, escrow; var id: Self { self } }
+    @State private var checkout: Checkout?
     @State private var orderRequested = false
     private var latest: MarketListing? {
         store.snapshot.listings.first { $0.id == listing.id }
@@ -62,7 +62,7 @@ struct ListingDetailView: View {
                             Text(fields[0]).font(.system(size: 32, weight: .medium)).tracking(-0.7).foregroundStyle(MarketTheme.ink)
                             HStack { Text(current.formattedPrice).font(.system(size: 28, weight: .semibold)); Spacer(); Label(current.placeLabel, systemImage: "mappin.circle.fill").font(.system(size: 13)).foregroundStyle(MarketTheme.muted) }.foregroundStyle(MarketTheme.ink)
                             if !store.demo && current.offersOrderEscrow {
-                                Button { preferEscrow = true; reviewOrder = true } label: { Label("Buy with escrow", systemImage: "lock.shield.fill") }
+                                Button { checkout = .escrow } label: { Label("Buy with escrow", systemImage: "lock.shield.fill") }
                                     .buttonStyle(.bordered).disabled(store.busy || !store.snapshot.messagingReady).accessibilityIdentifier("buyWithEscrow")
                             }
                             if let terms = current.escrow?.bitcoinTerms { Text(terms).font(.subheadline).foregroundStyle(MarketTheme.muted) }
@@ -114,7 +114,7 @@ struct ListingDetailView: View {
                             // With a basket button the bar keeps both actions and the page shows the price.
                             if !store.demo && !current.price.isEmpty && !current.isTransportService { basketButton }
                             else { Text(current.formattedPrice).font(.system(size: 20, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.7) }
-                            Button { preferEscrow = false; reviewOrder = true } label: { Label(NativeTransportType.classify(current.tags ?? [])?.requestLabel ?? "Buy", systemImage: NativeTransportType.classify(current.tags ?? []) == nil ? "bag.fill" : "car.fill").frame(maxWidth: .infinity) }
+                            Button { checkout = .direct } label: { Label(NativeTransportType.classify(current.tags ?? [])?.requestLabel ?? "Buy", systemImage: NativeTransportType.classify(current.tags ?? []) == nil ? "bag.fill" : "car.fill").frame(maxWidth: .infinity) }
                                 .buttonStyle(PrimaryButton()).disabled(store.demo || store.busy || !store.snapshot.messagingReady).accessibilityIdentifier("buyListing")
                         }.padding(.horizontal, 23).padding(.vertical, 12).background(.bar)
                     }
@@ -133,7 +133,7 @@ struct ListingDetailView: View {
                 .marketPage(isPresented: $authorProfile) { AuthorProfileView(author: current.author).marketSheetScope() }.navigationTitle("Listing").marketInlineTitle()
                 .toolbar { ToolbarItem(placement: .cancellationAction) { MarketDoneButton { closeListing() } }; ToolbarItem(placement: .confirmationAction) { Button { store.save(current) } label: { Image(systemName: current.saved ? "heart.fill" : "heart") }.accessibilityLabel("Save listing") } }
                 .marketPage(isPresented: $invitation) { InvitationView().marketSheetScope() }
-                .marketPage(isPresented: $reviewOrder, onDismiss: { if orderRequested { closeListing(); onOrder?() } }) { OrderReviewView(listing: current, preferEscrow: preferEscrow) { orderRequested = true }.marketSheetScope() }
+                .marketPage(item: $checkout, onDismiss: { if orderRequested { closeListing(); onOrder?() } }) { choice in OrderReviewView(listing: current, preferEscrow: choice == .escrow) { orderRequested = true }.marketSheetScope() }
         }
     }
 }

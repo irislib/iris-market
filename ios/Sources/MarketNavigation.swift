@@ -23,13 +23,13 @@ extension View {
         #endif
     }
 
-    @ViewBuilder func marketPage<Item: Identifiable, Destination: View>(item: Binding<Item?>, @ViewBuilder content: @escaping (Item) -> Destination) -> some View {
+    @ViewBuilder func marketPage<Item: Identifiable, Destination: View>(item: Binding<Item?>, onDismiss: (() -> Void)? = nil, @ViewBuilder content: @escaping (Item) -> Destination) -> some View {
         #if os(macOS)
-        marketPage(isPresented: Binding(get: { item.wrappedValue != nil }, set: { if !$0 { item.wrappedValue = nil } })) {
+        marketPage(isPresented: Binding(get: { item.wrappedValue != nil }, set: { if !$0 { item.wrappedValue = nil } }), onDismiss: onDismiss) {
             if let value = item.wrappedValue { content(value).id(value.id) }
         }
         #else
-        sheet(item: item, content: content)
+        sheet(item: item, onDismiss: onDismiss, content: content)
         #endif
     }
 }

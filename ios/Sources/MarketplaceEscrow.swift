@@ -32,7 +32,8 @@ struct EscrowInboxCards: View {
     }
 }
 
-struct EscrowCheckout {
+struct EscrowCheckout: Identifiable {
+    let id = UUID()
     let quantity: Int
     let note: String
     var delivery: MarketDeliveryRequest?

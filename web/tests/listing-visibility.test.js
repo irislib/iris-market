@@ -1,9 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHiddenListings,wantsPhotos} from '../src/listing-visibility.ts';
-const home={saved:false,map:false,query:'',side:'offer',location:'',shipsTo:'',tags:[],authors:null,network:false};
+const home={preview:false,saved:false,map:false,query:'',side:'offer',location:'',shipsTo:'',tags:[],authors:null,network:false};
 test('photo defaults affect only the entry feed, with explicit include/exclude choices',()=>{
   assert.equal(wantsPhotos(null,home),true);
+  assert.equal(wantsPhotos(null,{...home,preview:true}),false);
+  assert.equal(wantsPhotos(true,{...home,preview:true}),true);
   for(const state of [{saved:true},{map:true},{query:'chair'},{side:'request'},{location:'Helsinki'},{shipsTo:'FI'},{tags:['chair']},{authors:['seller']},{network:true}]){
     assert.equal(wantsPhotos(null,{...home,...state}),false);
     assert.equal(wantsPhotos(true,{...home,...state}),true);

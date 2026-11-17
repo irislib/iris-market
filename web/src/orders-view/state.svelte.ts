@@ -47,9 +47,7 @@ export class OrdersState {
   statusFilter = $state<OrderStatusFilter>('all');
   selected = $state<string|undefined>();
   listing = $state.raw<any>();
-  /** Further basket listings from the same seller, ordered with `listing`. */
-  basketExtra = $state.raw<BasketItem[]>([]);
-  basketQuantity = $state(1);
+  basketSelection = $state.raw<{items: BasketItem[]; owner: string}>();
   busy = $state(false);
   error = $state('');
   announcement = $state('');
@@ -177,20 +175,22 @@ export class OrdersState {
     this.data = this.account.state();
     // Opening Orders from its badge shows the unread order rather than an empty tab.
     if (!section && !id && !this.tabUnread(this.tab)) this.tab = ['purchases', 'sales', ...(this.escrow?.showJobs() ? ['escrow'] : [])].find(tab => this.tabUnread(tab)) ?? (['purchases', 'sales'].includes(this.tab) ? this.tab : 'purchases');
-    if (!(this.courierUI && this.tab === 'deliveries' && !id) && !this.requestReady({ type: 'history', id, section })) return;
+    const guestBasket = !this.isPreview() && !id && this.tab === 'purchases' && this.data.status === 'signed-out' && this.basket?.count();
+    if (!guestBasket && !(this.courierUI && this.tab === 'deliveries' && !id) && !this.requestReady({ type: 'history', id, section })) return;
     const order = id && this.orders().find(item => item.id === id);
     if (order) this.showDetail(order); else { this.showHistory(); if (id) { this.error = 'This order is not available on this device yet.'; this.render(); } }
     if (!this.dialog.open) this.dialog.showModal();
     this.syncUnread();
   }
-  buy(value, extra: BasketItem[] = [], quantity = 1) {
+  buy(value, basketSelection?: {items: BasketItem[]; owner: string}) {
     this.data = this.account.state();
-    if (!this.requestReady({ type: 'buy', listing: value, extra, quantity })) return;
-    this.basketExtra = extra; this.basketQuantity = quantity;
+    if (!this.requestReady({ type: 'buy', listing: value, basketSelection })) return;
+    this.basketSelection = basketSelection;
     this.stopLocation(); this.dropMap(); this.listing = value; this.view = 'review'; this.selected = undefined; this.error = ''; this.render(); if (!this.dialog.open) this.dialog.showModal();
   }
   /** The tabs shown; also falls back from Escrow jobs once they are unavailable. */
   sections():[string,string][] {
+    if (this.data.status === 'signed-out') return [];
     const sections:[string,string][] = [['purchases', 'Purchases'], ['sales', 'Sales'], ['deliveries', 'Transport']];
     if (this.escrow?.showJobs()) sections.push(['escrow', 'Escrow jobs']);
     sections.push(['archived', 'Archived']);
@@ -199,8 +199,7 @@ export class OrdersState {
   /** Opens the order review for one seller's basket group. */
   checkoutBasket(seller: string) {
     const group = this.basket?.groups().find(value => value.seller === seller); if (!group?.items.length) return
-    const [first, ...rest] = group.items
-    this.buy(first.listing, rest, first.quantity)
+    this.buy(group.items[0].listing, {items: group.items, owner: this.owner() || ''})
   }
   basketChanged() { this.basketVersion++ }
   /** True when an order on this tab has an update the reader has not opened. */
@@ -281,7 +280,7 @@ export class OrdersState {
     const order = this.current(), sharing = this.sharing;
     const sharedStop = sharing && order?.shipment?.stops?.find(stop => stop.id === sharing.stopId && stop.status !== 'completed' && (order.seller === this.owner() || stop.courierPubkey === this.owner()));
     if (sharing && (!order || terminal(order) || !sharedStop || order.archived || document.visibilityState === 'hidden')) this.stopLocation();
-    if (this.pending && this.data.status === 'ready') { const intent = this.pending; this.pending = undefined; this.account.closeAccount?.(); if (intent.type === 'buy') this.buy(intent.listing, intent.extra ?? [], intent.quantity ?? 1); else this.open(intent.id, intent.section); return; }
+    if (this.pending && this.data.status === 'ready') { const intent = this.pending; this.pending = undefined; this.account.closeAccount?.(); if (intent.type === 'buy') this.buy(intent.listing, intent.basketSelection); else this.open(intent.id, intent.section); return; }
     // Orders that arrive after opening move an empty, unpicked tab to the one with news.
     if (this.autoTab && this.dialog.open && this.view === 'history' && !this.filteredOrders(this.tab).length) { const next = ['purchases', 'sales'].find(tab => this.tabUnread(tab)); if (next) this.tab = next; }
     // Preserve typing while private updates arrive in the background.

@@ -12,6 +12,7 @@
   const rows = $derived.by(() => { void s.renders; void s.period; void s.statusFilter; return s.visibleOrders() })
   const totals = $derived(orderTotals(rows))
   const tab = $derived(s.tab)
+  const groups = $derived.by(() => { void s.renders; void s.basketVersion; return tab === 'purchases' ? s.basket?.groups() ?? [] : [] })
   const filterable = $derived(['purchases', 'sales', 'archived'].includes(tab) && all.length > 0)
 
   function courierWorkspace(anchor: HTMLElement) {
@@ -23,10 +24,10 @@
 </script>
 
 {#key s.renders + ':' + s.basketVersion}
-  {#if tab === 'purchases' && s.basket?.groups().length}
+  {#if groups.length}
     <section class="order-basket" aria-label="Basket">
       <h3>Basket</h3>
-      {#each s.basket.groups() as group (group.seller)}
+      {#each groups as group (group.seller)}
         <div class="order-basket-group">
           <Person orders={s} pubkey={group.seller} label="Seller" />
           {#each group.items as item (item.listing.id)}

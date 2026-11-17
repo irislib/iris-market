@@ -6,25 +6,28 @@ export interface BasketGroup {seller: string; items: BasketItem[]}
 type Storage = Pick<globalThis.Storage, 'getItem' | 'setItem' | 'removeItem'>;
 
 const key = (owner: string) => `market-basket-v1/${owner || 'guest'}`;
-const keep = ({id, eventId, author, title, price, currency, side, status, expiration, imageUrl}: OrderListing & {imageUrl?: string}): OrderListing =>
-  ({id, eventId, author, title, price, currency, side, status, expiration, imageUrl});
+const keep = ({id, eventId, author, title, price, currency, side, status, expiration, imageUrl, category, escrow}: OrderListing): OrderListing =>
+  ({id, eventId, author, title, price, currency, side, status, expiration, imageUrl, category, escrow});
 
 /**
  * A local, per-profile basket grouped by seller: each group becomes one order request.
  * Nothing here is published; the basket lives only in this browser.
  */
 export function createBasket(storage: Storage | undefined = globalThis.localStorage, owner = () => '') {
-  const read = (): BasketItem[] => {
-    try { const value = JSON.parse(storage?.getItem(key(owner())) ?? '[]'); return Array.isArray(value) ? value.filter(item => item?.listing?.id && item.listing.author && Number.isInteger(item.quantity) && item.quantity >= 1) : []; }
+  const read = (profile = owner()): BasketItem[] => {
+    try { const value = JSON.parse(storage?.getItem(key(profile)) ?? '[]'); return Array.isArray(value) ? value.filter(item => item?.listing?.id && item.listing.author && Number.isInteger(item.quantity) && item.quantity >= 1) : []; }
     catch { return []; }
   };
-  const write = (items: BasketItem[]) => { try { if (items.length) storage?.setItem(key(owner()), JSON.stringify(items)); else storage?.removeItem(key(owner())); } catch { /* A full or blocked store leaves the basket as it was. */ } };
+  const write = (items: BasketItem[], profile = owner()) => { try { if (items.length) storage?.setItem(key(profile), JSON.stringify(items)); else storage?.removeItem(key(profile)); } catch { /* A full or blocked store leaves the basket as it was. */ } };
   return {
     items: read,
     count: () => read().reduce((sum, item) => sum + item.quantity, 0),
     groups(): BasketGroup[] {
       const groups = new Map<string, BasketItem[]>();
-      for (const item of read()) groups.set(item.listing.author, [...(groups.get(item.listing.author) ?? []), item]);
+      for (const item of read()) {
+        const group = groups.get(item.listing.author);
+        if (group) group.push(item); else groups.set(item.listing.author, [item]);
+      }
       return [...groups].map(([seller, items]) => ({seller, items}));
     },
     /** Adds a listing, or one more of it; returns false when that seller's group is full. */
@@ -39,7 +42,14 @@ export function createBasket(storage: Storage | undefined = globalThis.localStor
     },
     setQuantity(id: string, quantity: number) { write(read().flatMap(item => item.listing.id !== id ? [item] : quantity >= 1 ? [{...item, quantity: Math.min(999, Math.floor(quantity))}] : [])); },
     remove(id: string) { write(read().filter(item => item.listing.id !== id)); },
-    clearSeller(seller: string) { write(read().filter(item => item.listing.author !== seller)); },
+    consume(ordered: {id: string; quantity: number}[], profile: string) {
+      const quantities = new Map(ordered.map(item => [item.id, item.quantity]));
+      const remaining = read(profile).filter(item => {
+        item.quantity -= quantities.get(item.listing.id) ?? 0;
+        return item.quantity > 0;
+      });
+      write(remaining, profile);
+    },
   };
 }
 export type Basket = ReturnType<typeof createBasket>;

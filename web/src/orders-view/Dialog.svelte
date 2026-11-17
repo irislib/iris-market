@@ -18,7 +18,7 @@
 <button type="button" class="dialog-close icon-button" aria-label="Close orders" onclick={() => s.dialog.close()}>×</button>
 <button type="button" class="text-button orders-back" hidden={s.view === 'history'} onclick={() => s.showHistory()}>← Orders</button>
 <h2 id="orders-title">{heading}</h2>
-<nav class="orders-tabs" aria-label="Order history" hidden={s.view !== 'history' || !!s.courier && s.tab === 'deliveries'}>
+<nav class="orders-tabs" aria-label="Order history" hidden={!sections.length || s.view !== 'history' || !!s.courier && s.tab === 'deliveries'}>
   {#each sections as [key, label] (key)}
     <button type="button" aria-pressed={s.tab === key} onclick={() => s.showTab(key)}>{label}{#if unreadTabs.has(key)}<span class="unread-dot" aria-hidden="true"></span><span class="sr-only"> · new</span>{/if}</button>
   {/each}

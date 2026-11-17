@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {window,settle} from './support/dom.mjs';
 import {flushSync} from 'svelte';
+import {createBasket} from '../src/basket.ts';
 globalThis.Event=window.Event;
 
 // Assertions follow clicks directly, so apply Svelte's updates synchronously.
@@ -21,14 +22,14 @@ const all=node=>[node,...node.querySelectorAll('*')];
 const find=(node,text)=>all(node).filter(element=>element.textContent===text).at(-1);
 const submit=form=>{form.dispatchEvent(new SubmitEvent('submit',{bubbles:true,cancelable:true}));flushSync();};
 const buyer='b'.repeat(64),seller='a'.repeat(64),courier='c'.repeat(64);
-function fixture({signedOut=false,delivered=false,eta=undefined,buyerView=false,offers=[],payment=undefined,escrow}={}){
+function fixture({signedOut=false,delivered=false,eta=undefined,buyerView=false,offers=[],payment=undefined,escrow,basket,requestOrder}={}){
   visibility='visible';geo.calls=[];geo.cleared=[];
-  let state={status:signedOut?'empty':'ready',ownerPubkey:signedOut?undefined:buyerView?buyer:courier,orders:[],conversations:[]},reads=0,signIns=0;
+  let state={status:signedOut?'signed-out':'ready',ownerPubkey:signedOut?undefined:buyerView?buyer:courier,orders:[],conversations:[]},reads=0,signIns=0;
   const listeners=new Set(),updates=[],reviews=[],announced=[],deliveries=[],payments=[];
   const job={id:'job',buyer,seller,payment,items:[{id:'item',title:'Private parcel',price:'10',currency:'EUR',quantity:1}],status:delivered?'delivered':'accepted',createdAt:100,updatedAt:100,shipment:{eta,stops:[{id:'pickup',label:'Pickup',address:'Private pickup',status:'pending',...(buyerView?{}:{courierPubkey:courier})}]},archived:false,sync:'queued',locationFresh:false};state.orders=[job];
-  const account={state:()=>state,showAccount:()=>signIns++,closeAccount(){},onState:fn=>{listeners.add(fn);return()=>listeners.delete(fn);},messaging:{requestDelivery:async(id,service,destination)=>{deliveries.push({id,service,destination});const result={...job,id:'delivery',seller:service.author,deliveryRequest:{pickup:job.shipment.stops[0],destination}};state.orders.push(result);return result;},updateOrder:async(id,patch)=>{updates.push({id,patch});}}};
+  const account={state:()=>state,showAccount:()=>signIns++,closeAccount(){},onState:fn=>{listeners.add(fn);return()=>listeners.delete(fn);},messaging:{requestOrder,requestDelivery:async(id,service,destination)=>{deliveries.push({id,service,destination});const result={...job,id:'delivery',seller:service.author,deliveryRequest:{pickup:job.shipment.stops[0],destination}};state.orders.push(result);return result;},updateOrder:async(id,patch)=>{updates.push({id,patch});}}};
   const page=document.createElement('main');document.body.append(page);
-  const ui=setupOrders({account,page,escrow,onPay:order=>payments.push(order),onReview:key=>reviews.push(key),courier:{getListings:()=>{reads++;return[...offers,{id:'public',author:seller,title:'Public parcel request',tags:['parcel'],category:'transport',side:'request',status:'active'}];},onListing(){},onAnnounce:value=>announced.push(value)}});
+  const ui=setupOrders({account,page,escrow,basket,onPay:order=>payments.push(order),onReview:key=>reviews.push(key),courier:{getListings:()=>{reads++;return[...offers,{id:'public',author:seller,title:'Public parcel request',tags:['parcel'],category:'transport',side:'request',status:'active'}];},onListing(){},onAnnounce:value=>announced.push(value)}});
   return{ui,page,job,updates,reviews,announced,deliveries,payments,get reads(){return reads;},get signIns(){return signIns;},setState:patch=>{state={...state,...patch};for(const fn of listeners)fn(state);},cleanup(){window.dispatchEvent(new window.Event('pagehide'));page.remove();}};
 }
 
@@ -132,7 +133,7 @@ test('escrow checkout preserves the draft, requests no direct order, and respond
     f.ui.buy({id:seller+':camera',author:seller,title:'Camera',price:'20',currency:'SATS',status:'active',side:'offer',escrow:{trade:'goods'}});
     const form=all(f.page).find(el=>el.className==='order-review'),inputs=all(form);
     const quantity=inputs.find(el=>el.type==='number'),note=inputs.find(el=>el.tagName==='TEXTAREA'),protect=inputs.find(el=>el.type==='checkbox');
-    assert(!protect.checked);quantity.value='3';note.value='Pickup on Saturday';protect.checked=true;protect.dispatchEvent(new window.Event('change',{bubbles:true}));flushSync();
+    assert(!protect.checked);quantity.value='3';quantity.dispatchEvent(new window.Event('input',{bubbles:true}));note.value='Pickup on Saturday';protect.checked=true;protect.dispatchEvent(new window.Event('change',{bubbles:true}));flushSync();
     assert(find(form,'Choose escrow provider'));submit(form);await settle();
     assert.deepEqual(requests,[{quantity:3,note:'Pickup on Saturday'}]);assert(find(f.page,'Choose escrow provider').parentElement===form);
     enabled=false;window.dispatchEvent(new window.Event('market-tools-change'));
@@ -156,4 +157,50 @@ test('provider jobs are reachable from Orders, including after the ordinary orde
     f.setState({orders:[]});f.ui.open();find(f.page,'Escrow jobs').click();assert(find(f.page,'Private invitation'));
     enabled=false;window.dispatchEvent(new window.Event('market-tools-change'));assert(!find(f.page,'Escrow jobs'));assert(!find(f.page,'Private invitation'));
   }finally{f.cleanup();}
+});
+
+
+test('guests can review and check out their basket after signing in without touching a profile basket', async () => {
+  let owner = '';
+  const basket = createBasket(window.localStorage, () => owner);
+  const pie = {id: seller + ':pie', author: seller, title: 'Pie', price: '10', currency: 'EUR', side: 'offer'};
+  const jam = {...pie, id: seller + ':jam', title: 'Jam'};
+  const requests = [];
+  const f = fixture({signedOut: true, basket, requestOrder: async (listing, draft) => { requests.push([listing.id, draft.quantity]); return f.job; }});
+  try {
+    basket.add(pie, 2);
+    f.ui.open(undefined, 'purchases');
+    assert(find(f.page, 'Pie')); assert.equal(f.signIns, 0);
+    find(f.page, 'Request order').click(); await settle();
+    assert.equal(f.signIns, 1);
+    owner = buyer; basket.add(jam);
+    f.setState({status: 'ready', ownerPubkey: buyer});
+    const form = f.page.querySelector('form.order-review');
+    assert.equal(form.querySelector('input[type=number]').value, '2');
+    assert.equal(form.querySelector('.order-review-price').textContent, '20 EUR');
+    submit(form); await settle();
+    assert.deepEqual(requests, [[pie.id, 2]]);
+    assert.deepEqual(basket.items().map(i => i.listing.id), [jam.id]);
+    owner = ''; assert.equal(basket.count(), 0);
+  } finally { f.cleanup(); window.localStorage.clear(); }
+});
+
+test('direct Buy leaves the basket intact and group checkout consumes only reviewed quantities', async () => {
+  const basket = createBasket(window.localStorage, () => buyer);
+  const pie = {id: seller + ':pie', author: seller, title: 'Pie', price: '10', currency: 'EUR', side: 'offer'};
+  const jam = {...pie, id: seller + ':jam', title: 'Jam'};
+  const tea = {...pie, id: seller + ':tea', title: 'Tea'};
+  let finish;
+  const f = fixture({buyerView: true, basket, requestOrder: () => new Promise(resolve => { finish = () => resolve(f.job); })});
+  try {
+    basket.add(pie, 2); basket.add(jam);
+    f.ui.buy(pie);
+    submit(f.page.querySelector('form.order-review')); finish(); await settle();
+    assert.equal(basket.count(), 3, 'direct purchase keeps both basket listings');
+    f.ui.open(undefined, 'purchases');
+    find(f.page, 'Request order').click();
+    submit(f.page.querySelector('form.order-review'));
+    basket.add(pie); basket.add(tea); finish(); await settle();
+    assert.deepEqual(basket.items().map(i => [i.listing.id, i.quantity]), [[pie.id, 1], [tea.id, 1]]);
+  } finally { f.cleanup(); window.localStorage.clear(); }
 });

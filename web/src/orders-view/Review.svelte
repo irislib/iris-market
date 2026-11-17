@@ -12,15 +12,17 @@
   const {account, escrow} = s
   // A fresh form per render; later listing changes never reset what was typed.
   const listing = s.listing
-  const extra = s.basketExtra, firstQuantity = s.basketQuantity
-  // A basket lists every item; its counts were set in the basket.
-  const lines = listing ? [{listing, quantity: firstQuantity}, ...extra] : []
+  const selection = s.basketSelection
+  const lines = selection?.items ?? []
+  const firstQuantity = lines[0]?.quantity ?? 1
+  const extra = lines.slice(1)
   const places = [...s.editors]
   const escrowable = !!(escrow && listing?.escrow?.trade === 'goods' && listing.side === 'offer')
   let image = $state(listing ? imageUrl(listing.imageUrl, {width: 160}) || art(listing) : '')
   let fellBack = false
   let protect = $state(false)
-  let quantity: HTMLInputElement, note: HTMLTextAreaElement, title: HTMLElement
+  let quantity = $state<number | undefined>(firstQuantity)
+  let note: HTMLTextAreaElement, title: HTMLElement
   const eligible = $derived.by(() => { void s.tools; return escrowable && escrow.canCheckout(listing) })
   $effect.pre(() => { if (escrowable && !eligible) protect = false })
 
@@ -31,11 +33,19 @@
 
   function submit(event: SubmitEvent) {
     event.preventDefault()
-    const count = Number(quantity.value), message = note.value.trim()
-    if (!Number.isInteger(count) || count < 1 || count > 999) { quantity.reportValidity(); return }
+    const count = Number(quantity), message = note.value.trim()
+    if (!Number.isInteger(count) || count < 1 || count > 999) { (event.currentTarget as HTMLFormElement).reportValidity(); return }
     void s.perform(async () => {
       const draft = {quantity: count, note: message, ...(extra.length ? {basket: extra.map(item => ({listing: item.listing, quantity: item.quantity}))} : {}), ...(places.length === 2 ? {deliveryRequest: {pickup: places[0].read(), destination: places[1].read()}} : {})}
-      const saved = order => { if (extra.length || s.basket?.items().some(item => item.listing.id === listing.id)) { s.basket?.clearSeller(listing.author); s.basketChanged() } s.data = account.state(); s.showDetail(order); s.announce('Order requested') }
+      const saved = order => {
+        if (selection) {
+          s.basket?.consume([{id: listing.id, quantity: count}, ...extra.map(item => ({id: item.listing.id, quantity: item.quantity}))], selection.owner)
+          s.basketChanged()
+        }
+        s.data = account.state()
+        s.showDetail(order)
+        s.announce('Order requested')
+      }
       if (protect) {
         if (!escrow?.canCheckout(listing)) throw Error('Enable escrow in Settings to use a provider.')
         await escrow.checkout(listing, draft, saved)
@@ -54,14 +64,14 @@
           <p class="order-review-price">{orderPrice({items: lines.map(item => ({...item.listing, quantity: item.quantity}))}, value => s.price(value))}</p>
         {:else}
           <h3 bind:this={title}>{listing.title}</h3>
-          <p class="order-review-price">{s.price(listing)}</p>
+          <p class="order-review-price">{quantity && quantity > 1 ? linePrice({...listing, quantity}, value => s.price(value)) : s.price(listing)}</p>
           <span hidden use:place={() => translateListingTitle(listing, title)}></span>
         {/if}
       </div>
     </div>
     <Person orders={s} pubkey={listing.author} label="Seller" />
     {#each places as value}<span hidden use:editor={value}></span>{/each}
-    <label class="order-field" hidden={extra.length > 0}><span>Quantity</span><input bind:this={quantity} type="number" value={String(firstQuantity)} required min="1" max="999" step="1"></label>
+    <label class="order-field" hidden={extra.length > 0}><span>Quantity</span><input bind:value={quantity} type="number" required min="1" max="999" step="1"></label>
     {#if extra.length}
       <div class="order-basket-items">
         {#each lines as item (item.listing.id)}<p class="order-basket-row"><span>{item.quantity} × {item.listing.title}</span><span>{linePrice({...item.listing, quantity: item.quantity}, value => s.price(value))}</span></p>{/each}

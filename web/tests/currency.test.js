@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { finalizeEvent, generateSecretKey, getPublicKey, verifiedSymbol } from 'nostr-tools'
-import { DEFAULT_CURRENCY, RATE_POLICY, SNORT_RATES, COINBASE_RATES_URL, normalizeCurrency, parseSnortRateEvent, parseCoinbaseRates, fetchCoinbaseRates, setupRates, convert, formatPrice, initialCurrency, formatWalletAmount } from '../src/currency.ts'
+import { DEFAULT_CURRENCY, RATE_POLICY, SNORT_RATES, COINBASE_RATES_URL, normalizeCurrency, parseSnortRateEvent, parseCoinbaseRates, fetchCoinbaseRates, setupRates, convert, formatPrice, sortByPrice, initialCurrency, formatWalletAmount } from '../src/currency.ts'
 
 const now = 1_790_000_000
 const body = { data: { currency: 'BTC', rates: { BTC: '1.0', EUR: '90000', USD: '100000', GBP: '80000', JPY: '15000000' } } }
@@ -33,6 +33,19 @@ test('foreign and satoshi prices convert through consistent BTC base rates for s
   assert.equal(convert('-10', 'USD', 'EUR', rates, { now }), null)
   assert.equal(convert('Infinity', 'USD', 'EUR', rates, { now }), null)
   assert.equal(convert('1e309', 'USD', 'EUR', rates, { now }), null)
+})
+
+test('price sorting shares the card estimate, including free, test currency, unavailable rates and ties', () => {
+  const fixtures = [
+    ['negotiable', '', 'EUR'], ['unquoted', '3', 'XYZ'], ['test', '2', 'TESTSAT'],
+    ['euro', '90', 'EUR'], ['dollar', '100', 'USD'], ['sats', '1000', 'SAT'],
+    ['free', '0', ''], ['free test', '0', 'TESTSAT'], ['invalid', 'ask', 'XYZ'],
+  ].map(([id, price, currency]) => ({ id, price, currency }))
+  const options = { preferredCurrency: 'EUR', rates: snapshot(now), now }
+  const sorted = sortByPrice(fixtures, options)
+  assert.deepEqual(sorted.map(row => row.id), ['free', 'free test', 'sats', 'euro', 'dollar', 'negotiable', 'test', 'unquoted', 'invalid'])
+  assert.deepEqual(sorted.map(row => formatPrice(row, options).converted), [0, 0, 0.9, 90, 90, null, null, null, null])
+  assert.equal(fixtures[0].id, 'negotiable')
 })
 
 test('formatted estimates retain original amounts and expose source, time, and sort value', () => {

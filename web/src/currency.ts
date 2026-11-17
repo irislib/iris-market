@@ -283,15 +283,34 @@ export function formatWalletAmount(sats: string, { preferredCurrency = DEFAULT_C
   return displayAmount(converted.amount, currency, locale, !converted.approximate) + (converted.stale ? ' · older rate' : '');
 }
 
+function listingConversion(price: string | number, currency: string, preferred: string, rates: RateSnapshot | undefined, now: number) {
+  if (numeric(price) === 0) return convert(0, preferred, preferred, rates, { now })
+  return currency === 'TESTSAT' ? null : convert(price, currency, preferred, rates, { now })
+}
+
+/** Compare the numeric estimates once per listing; only visible cards need formatted prices. */
+export function sortByPrice<T extends PriceListing>(listings: T[], { preferredCurrency = DEFAULT_CURRENCY, rates, now = seconds() }: PriceOptions = {}): T[] {
+  const preferred = normalizeCurrency(preferredCurrency) || DEFAULT_CURRENCY
+  const rows = listings.map(listing => ({
+    listing,
+    amount: listingConversion(listing.price, normalizeCurrency(listing.currency), preferred, rates, now)?.amount ?? null,
+  }))
+  return rows.sort((a, b) => {
+    if (a.amount !== null && b.amount !== null) return a.amount - b.amount
+    if (a.amount !== null) return -1
+    if (b.amount !== null) return 1
+    return (a.listing.currency || '').localeCompare(b.listing.currency || '')
+      || (numeric(a.listing.price) ?? Infinity) - (numeric(b.listing.price) ?? Infinity)
+  }).map(row => row.listing)
+}
+
 export function formatPrice(listing: PriceListing, { preferredCurrency = DEFAULT_CURRENCY, rates, locale, now = seconds() }: PriceOptions = {}) {
   const currency = normalizeCurrency(listing.currency), preferred = normalizeCurrency(preferredCurrency) || DEFAULT_CURRENCY
   const blank = { primary: 'Negotiable', original: null, approximate: false, source: null, updatedAt: null, converted: null, stale: false, currency }
   if (listing.price === '' || listing.price == null) return blank
-  const value = numeric(listing.price)
-  if (value === 0) return { ...blank, primary: 'Free', converted: 0, currency: preferred }
+  const conversion = listingConversion(listing.price, currency, preferred, rates, now)
+  if (conversion?.amount === 0 && numeric(listing.price) === 0) return { ...blank, primary: 'Free', converted: 0, currency: preferred }
   const original = displayAmount(listing.price, currency, locale, true)
-  if(currency==='TESTSAT')return { ...blank, primary: original }
-  const conversion = convert(listing.price, currency, preferred, rates, { now })
   if (!conversion) return { ...blank, primary: original }
   const changed = currency !== preferred
   return { primary: `${changed ? displayAmount(conversion.amount, preferred, locale, !conversion.approximate) : original}`, original: changed ? original : null,

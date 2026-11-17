@@ -43,7 +43,7 @@ try {
   await waitFor(()=>app.state().conversations.some(c=>c.messages.some(m=>m.text==='Hello from native')));
   const before=frames.length;
   const order=await app.requestOrder({id:`${initial.owner_public_key}:synthetic-delivery`,author:initial.owner_public_key,title:'Cross-platform delivery',price:'12',currency:'EUR',side:'offer'},{quantity:2,note:'Synthetic private note'});
-  await waitFor(()=>frames.slice(before).some(e=>e.kind===1060));
+  await waitFor(()=>app.state().orders.find(o=>o.id===order.id)?.sync==='sent');
   const incoming=frames.slice(before).filter(e=>[1059,1060].includes(e.kind));
   const accepted=await native({incoming,expected_order:order.id,order_patch:{status:'accepted'}});
   assert.equal(accepted.orders[0].items[0].quantity,2);
@@ -59,7 +59,7 @@ try {
   // This standalone memory harness has no browser settings storage.
   Object.defineProperty(globalThis,'localStorage',{configurable:true,value:{getItem:key=>key===`market-tools-v1/${app.state().ownerPubkey}/escrow`?'1':null}});
   const start=frames.length,linked=await app.requestOrder(listing,selection);
-  await waitFor(()=>frames.slice(start).some(e=>e.kind===1060));
+  await waitFor(()=>app.state().orders.find(o=>o.id===linked.id)?.sync==='sent');
   const next=await native({incoming:frames.slice(start).filter(e=>[1059,1060].includes(e.kind)),expected_order:linked.id,order_patch:{status:'accepted'}});
   const received=next.orders.find(o=>o.id===linked.id);
   assert.equal(received.escrowProvider,provider);assert.equal(received.escrowTradeId,tradeId);

@@ -87,7 +87,7 @@ test('a written product review round-trips as a market-spec recommendation',asyn
   const {buildProductReviewDraft}=await import('../src/product-reviews.ts');
   const seller=getPublicKey(new Uint8Array(32).fill(7)),buyer=new Uint8Array(32).fill(9),address=`30402:${seller}:mittens`;
   const draft=buildProductReviewDraft({address,recommend:true,body:' Warm and soft. ',now:1700000000});
-  assert.deepEqual(draft.tags,[['d',`a:${address}`],['rating','1','thumb']]);
+  assert.deepEqual(draft.tags,[['d',`a:${address}`],['rating','1','thumb'],['client','Iris Market']]);
   assert.deepEqual(buildProductReviewDraft({address,eventId:'a'.repeat(64),recommend:true,now:1}).tags[1],['e','a'.repeat(64)]);assert.equal(draft.content,'Warm and soft.');
   const review=parseProductReview(finalizeEvent(draft,buyer),address,1700000001);
   assert.equal(review.format,'market-spec');assert.equal(review.rating,1);assert.equal(review.body,'Warm and soft.');

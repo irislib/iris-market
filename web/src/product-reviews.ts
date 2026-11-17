@@ -67,7 +67,7 @@ export function buildProductReviewDraft({address,eventId,recommend,body='',now=s
   const target=productReviewTarget(address),text=body.trim();
   requireValue(Array.from(text).length<=PRODUCT_REVIEW_LIMITS.body,'Keep the review under 3,000 characters.');
   // The e tag pins the listing revision that was reviewed; the d address keeps working across edits.
-  return {kind:PRODUCT_REVIEW_KIND,created_at:now,content:text,tags:[['d',`a:${target}`],...(eventId&&key.test(eventId)?[['e',eventId]]:[]),['rating',recommend?'1':'0','thumb']]};
+  return {kind:PRODUCT_REVIEW_KIND,created_at:now,content:text,tags:[['d',`a:${target}`],...(eventId&&key.test(eventId)?[['e',eventId]]:[]),['rating',recommend?'1':'0','thumb'],['client','Iris Market']]};
 }
 
 function projectVerified(events:VerifiedEvent[],target:string,now:number):ProductReview[] {

@@ -50,6 +50,10 @@ struct MarketOrder: Decodable, Hashable, Identifiable {
         for item in items { guard let unit = Decimal(string: item.price) else { return nil }; sum += unit * Decimal(item.quantity) }
         return MarketOrderItem(id: first.id, title: "", price: NSDecimalNumber(decimal: sum).stringValue, currency: first.currency, quantity: 1).formattedPrice
     }
+    var formattedTotal: String {
+        if items.count == 1, let item = items.first { return item.quantity > 1 ? item.lineFormattedPrice : formattedPrice }
+        return itemsTotal ?? (displayPrice == nil ? "See item prices" : formattedPrice)
+    }
     var terminal: Bool { status == "delivered" || status == "cancelled" }
     var title: String { items.map(\.title).filter { !$0.isEmpty }.joined(separator: ", ") }
     var statusLabel: String {

@@ -87,6 +87,7 @@ import Foundation
         let decoded = try decoder.decode(MarketOrder.self, from: JSONSerialization.data(withJSONObject: checkout))
         check(decoded.payment?.amount == "16" && decoded.deliveryRequest?.collection?.reference == "opaque-reference", "Separate delivery request and payment decode")
         check(decoded.pickupAuthorization?.courierPubkey == "courier" && decoded.sourceOrderId == "source-local-only" && decoded.deliveryOrderId == "delivery-local-only", "Authorization and local links decode")
+        check(decoded.formattedTotal == "€24" && decoded.formattedTotal != decoded.formattedPrice, "Two €12 units show €24 due rather than a converted unit price")
         check(decoded.displayPrice?.currency == "USD", "Selected display currency is a local order projection")
         let request = try decoded.deliveryRequest!.projection()
         let privateJSON = String(decoding: try JSONSerialization.data(withJSONObject: request), as: UTF8.self)

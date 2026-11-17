@@ -61,6 +61,10 @@ struct ListingDetailView: View {
                         VStack(alignment: .leading, spacing: 23) {
                             Text(fields[0]).font(.system(size: 32, weight: .medium)).tracking(-0.7).foregroundStyle(MarketTheme.ink)
                             HStack { Text(current.formattedPrice).font(.system(size: 28, weight: .semibold)); Spacer(); Label(current.placeLabel, systemImage: "mappin.circle.fill").font(.system(size: 13)).foregroundStyle(MarketTheme.muted) }.foregroundStyle(MarketTheme.ink)
+                            if !store.demo && current.offersOrderEscrow {
+                                Button { preferEscrow = true; reviewOrder = true } label: { Label("Buy with escrow", systemImage: "lock.shield.fill") }
+                                    .buttonStyle(.bordered).disabled(store.busy || !store.snapshot.messagingReady).accessibilityIdentifier("buyWithEscrow")
+                            }
                             if let terms = current.escrow?.bitcoinTerms { Text(terms).font(.subheadline).foregroundStyle(MarketTheme.muted) }
                             TimelineView(.periodic(from: expiryClockStart, by: 60)) { context in
                                 Text(NativeListingExpiry.detail(deadline: current.expiresAt, now: Int64(context.date.timeIntervalSince1970))).font(.system(size: 13)).foregroundStyle(MarketTheme.muted).accessibilityIdentifier("listingExpiryDetail")
@@ -72,10 +76,6 @@ struct ListingDetailView: View {
                             Rectangle().fill(MarketTheme.line).frame(height: 1)
                             Text(fields[1]).font(.system(size: 16)).lineSpacing(6).foregroundStyle(MarketTheme.ink.opacity(0.90)).textSelection(.enabled)
                         }
-                    }
-                    if !store.demo && current.offersOrderEscrow {
-                        Button { preferEscrow = true; reviewOrder = true } label: { Label("Buy with escrow", systemImage: "lock.shield.fill") }
-                            .buttonStyle(.bordered).disabled(store.busy || !store.snapshot.messagingReady).accessibilityIdentifier("buyWithEscrow")
                     }
                     if current.externalOrder == nil { ReviewsView(target: current.reviewAddress, product: true) }
                     if let relevance = current.relevance { Label(relevance.reason, systemImage: "sparkles").font(.system(size: 13)).foregroundStyle(MarketTheme.green).padding(15).frame(maxWidth: .infinity, alignment: .leading).background(MarketTheme.mint.opacity(0.4), in: RoundedRectangle(cornerRadius: 16)) }

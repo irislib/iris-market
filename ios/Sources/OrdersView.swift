@@ -225,7 +225,7 @@ private struct OrderRow: View {
                 }
                 Text(order.title.isEmpty ? "Order" : order.title).font(.system(size: 17, weight: .semibold)).multilineTextAlignment(.leading)
                 Spacer(minLength: 0)
-                if !order.items.isEmpty { Text(order.formattedPrice).font(.system(size: 16, weight: .medium)) }
+                if !order.items.isEmpty { Text(order.formattedTotal).font(.system(size: 16, weight: .medium)) }
             }
             HStack {
                 Text(Date(timeIntervalSince1970: Double(order.createdAt)), format: .dateTime.day().month()).foregroundStyle(MarketTheme.muted)
@@ -278,7 +278,11 @@ struct OrderReviewView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 23) {
                     Text(listing.title).font(.system(size: 30, weight: .medium))
-                    Text(listing.formattedPrice).font(.system(size: 26, weight: .semibold))
+                    if quantity > 1 {
+                        let item = MarketOrderItem(id: listing.id, title: listing.title, price: listing.price, currency: listing.currency, quantity: quantity)
+                        Text("Total · \(item.lineFormattedPrice)").font(.system(size: 26, weight: .semibold))
+                        Text("\(listing.formattedPrice) each").font(.subheadline).foregroundStyle(MarketTheme.muted)
+                    } else { Text(listing.formattedPrice).font(.system(size: 26, weight: .semibold)) }
                     UserRow(person: store.snapshot.people[listing.author] ?? .unnamed(listing.author))
                     Stepper("Quantity: \(quantity)", value: $quantity, in: 1...999).accessibilityIdentifier("orderQuantity")
                     TextField("Note · optional", text: $note, axis: .vertical).lineLimit(3...6).padding(16).background(MarketTheme.surface, in: RoundedRectangle(cornerRadius: 16)).accessibilityIdentifier("orderNote")
@@ -370,9 +374,12 @@ struct OrderDetailView: View {
         VStack(alignment: .leading, spacing: 21) {
             Text(order.title.isEmpty ? "Order" : order.title).font(.system(size: 30, weight: .medium))
             HStack { Text(order.statusLabel).fontWeight(.semibold); Spacer(); Text(Date(timeIntervalSince1970: Double(order.createdAt)), format: .dateTime.day().month()).foregroundStyle(MarketTheme.muted) }.font(.system(size: 13))
-            // A single item shows the converted order price; a basket lists each item and then its total.
             if order.items.count == 1, let item = order.items.first {
-                VStack(alignment: .leading, spacing: 5) { Text("\(item.quantity) × \(order.formattedPrice)").font(.system(size: 22, weight: .semibold)); if order.displayPrice != nil { Text(item.formattedPrice).font(.caption).foregroundStyle(MarketTheme.muted) } }
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(order.formattedTotal).font(.system(size: 22, weight: .semibold))
+                    if item.quantity > 1 { Text("\(item.quantity) × \(order.formattedPrice) each").font(.caption).foregroundStyle(MarketTheme.muted) }
+                    else if order.displayPrice != nil { Text(item.formattedPrice).font(.caption).foregroundStyle(MarketTheme.muted) }
+                }
             } else {
                 ForEach(order.items) { item in
                     HStack { Text("\(item.quantity) × \(item.title)").font(.system(size: 16, weight: .medium)); Spacer(); Text(item.lineFormattedPrice).font(.system(size: 15)) }
@@ -380,7 +387,7 @@ struct OrderDetailView: View {
                 HStack(alignment: .firstTextBaseline) {
                     Text("Total").font(.system(size: 16, weight: .semibold)); Spacer()
                     VStack(alignment: .trailing, spacing: 2) {
-                        Text(order.itemsTotal ?? order.formattedPrice).font(.system(size: 20, weight: .semibold))
+                        Text(order.formattedTotal).font(.system(size: 20, weight: .semibold))
                         if let total = order.itemsTotal, order.displayPrice != nil, total != order.formattedPrice { Text("≈ \(order.formattedPrice)").font(.caption).foregroundStyle(MarketTheme.muted) }
                     }
                 }

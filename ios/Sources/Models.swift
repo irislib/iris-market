@@ -167,14 +167,7 @@ struct MarketListing: Decodable, Identifiable, Hashable {
         guard !price.isEmpty else { return side == "request" ? "Make an offer" : "Ask for price" }
         guard let amount = displayPrice?.amount ?? Double(price), amount.isFinite else { return "\(price) \(currency)" }
         if amount == 0 { return "Free" }
-        let code = (displayPrice?.currency ?? currency).uppercased()
-        let formatter = NumberFormatter()
-        if ["SAT", "SATS", "BTC"].contains(code) {
-            formatter.numberStyle = .decimal; formatter.maximumFractionDigits = code == "BTC" ? 8 : 0
-            return "\(formatter.string(from: NSNumber(value: amount)) ?? String(amount)) \(code == "BTC" ? "BTC" : "sats")\(displayPrice?.stale == true ? " · older rate" : "")"
-        }
-        formatter.numberStyle = .currency; formatter.currencyCode = code
-        return "\(formatter.string(from: NSNumber(value: amount)) ?? "\(amount) \(code)")\(displayPrice?.stale == true ? " · older rate" : "")"
+        return (displayPrice ?? MarketDisplayPrice(amount: amount, currency: currency, approximate: false, source: nil, updatedAt: nil, stale: false)).formatted
     }
 }
 

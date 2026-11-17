@@ -33,9 +33,19 @@
     if(d.fiat)insist(typeof d.fiat==='object' && typeof d.fiat.price==='string' && /^\d{1,12}(?:\.\d{1,2})?$/.test(d.fiat.price) && /^[A-Z]{3}$/.test(d.fiat.currency) && ['bank_transfer','cash'].includes(d.fiat.method),'The fiat quote is invalid.');
     return d;
   }
+  const isTestCurrency = currency => ['TESTSAT','TESTSATS'].includes(String(currency).toUpperCase());
+  function isTestMint(mint) {
+    try {
+      const url = new URL(mint);
+      return !url.username && !url.password && !url.search && !url.hash && url.pathname === '/' &&
+        (url.origin === 'https://testnut.cashu.space' ||
+          (url.protocol === 'http:' && url.hostname === '127.0.0.1' && !!url.port));
+    } catch { return false; }
+  }
   function dealFromListing(l, taker, provider, mint, sats) {
     insist(l && l.escrow && ['goods','bitcoin_fiat'].includes(l.escrow.trade), 'This listing does not offer escrow.');
     insist(l.status==='active' && (!l.expires_at || l.expires_at>Math.floor(Date.now()/1000)), 'This listing has closed or expired.');
+    insist(!isTestCurrency(l.currency) || isTestMint(mint), 'Choose a test mint for this test-money listing.');
     const bitcoin=l.escrow.trade==='bitcoin_fiat';
     if(bitcoin) insist(sats===l.escrow.sats,'Use the bitcoin amount on the listing.');
     const buyer=l.side==='request'?l.author:taker, seller=l.side==='request'?taker:l.author;
@@ -156,5 +166,5 @@
     }
     return [...items.values()].reverse();
   }
-  globalThis.IrisEscrow = {canonical,hash,uid,parties,recipient,validateDeal,dealFromListing,exactListing,exactOrder,candidates,project,send,wallet,join,list};
+  globalThis.IrisEscrow = {canonical,hash,uid,parties,recipient,isTestCurrency,isTestMint,validateDeal,dealFromListing,exactListing,exactOrder,candidates,project,send,wallet,join,list};
 })();

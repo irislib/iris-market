@@ -3,7 +3,7 @@
   const E=globalThis.IrisEscrow;
   const node=(name,text,cls)=>{const el=document.createElement(name);if(text!=null)el.textContent=String(text);if(cls)el.className=cls;return el;};
   const caption=s=>node('p',s,'esc-caption');
-  const amount=(s,m)=>s.toLocaleString() + (/testnut/.test(new URL(m).hostname)||new URL(m).hostname==='127.0.0.1'?' test sats':' sats');
+  const amount=(s,m)=>s.toLocaleString() + (E.isTestMint(m)?' test sats':' sats');
   const fiatPayment=f=>f.price+' '+f.currency+(f.method==='cash'?' in cash':' by bank transfer');
   function field(label,control){const l=node('label',label,'esc-field');l.append(control);return l;}
   function mount(host,api,selection){
@@ -48,16 +48,19 @@
       const form=node('form',null,'esc-panel');
       form.append(heading(l.title,order?'Choose an escrow provider for your order.':'Choose an escrow provider for this trade.'));
       if(order)form.append(row('Quantity',String(order.quantity)));
+      const testMoney=E.isTestCurrency(l.currency);
       const sats=node('input');sats.type='number';sats.min='1';sats.max='1000000000000';sats.step='1';sats.required=true;
       if(l.escrow?.trade==='bitcoin_fiat'){
         sats.value=String(l.escrow.sats);sats.readOnly=true;
         const fiat=fiatPayment({price:l.price,currency:l.currency,method:l.escrow.method});
         form.append(caption(l.side==='offer'?'You are buying bitcoin. Pay '+fiat+' after verifying the locked bitcoin.':'You are selling bitcoin. Collect '+fiat+' before authorizing its release.'));
       }
-      else if(['SAT','SATS'].includes(l.currency?.toUpperCase())&&Number.isSafeInteger(Number(l.price))&&Number(l.price)>0)sats.value=String(Number(l.price)*(order?.quantity||1));
+      else if((testMoney || ['SAT','SATS'].includes(l.currency?.toUpperCase()))&&Number.isSafeInteger(Number(l.price))&&Number(l.price)>0)sats.value=String(Number(l.price)*(order?.quantity||1));
       // Other currencies start from the app's converted estimate; the buyer can change it.
       else if(Number.isSafeInteger(l.sats_estimate)&&l.sats_estimate>0){sats.value=String(l.sats_estimate*(order?.quantity||1));form.append(caption('Converted from '+l.price+' '+l.currency+' at today’s rate. You can change it.'));}
-      const mint=node('select');for(const url of context.mints){const option=node('option',new URL(url).hostname);option.value=url;mint.append(option);}
+      const mints=testMoney?context.mints.filter(E.isTestMint):context.mints;
+      if(testMoney && !mints.length)form.append(caption('This wallet has no supported test mint for this listing.'));
+      const mint=node('select');for(const url of mints){const option=node('option',new URL(url).hostname);option.value=url;mint.append(option);}
       if(!sats.readOnly && draft.amount)sats.value=draft.amount;
       if(draft.mint && [...mint.options].some(o=>o.value===draft.mint))mint.value=draft.mint;
       const search=node('input');search.type='search';search.placeholder='Name, npub or public key';search.value=draft.query;
@@ -99,7 +102,7 @@
       search.oninput=()=>{draft.query=search.value;refresh();};
       sats.oninput=()=>{draft.amount=sats.value;};mint.onchange=()=>{draft.mint=mint.value;};
       form.append(field('Search escrow providers',search),status,matches,discover,selected,
-        field(order?'Order total in sats':'Amount in sats',sats),field('Wallet service (mint)',mint),
+        field((order?'Order total in ':'Amount in ')+(testMoney?'test sats':'sats'),sats),field('Wallet service (mint)',mint),
         caption('The merchant and provider can each decline. No funds move until all three people approve and the funder confirms payment.'),btn);
       refresh();
       form.onsubmit=e=>{e.preventDefault();void run(async()=>{

@@ -17,6 +17,18 @@ test('the policy pins all three participants and key bindings',()=>{
   assert.equal(verified.approved.size,3);
   assert.equal(verified.token,undefined);
 });
+test('test-money goods can only propose and approve test-mint terms', async()=>{
+  for(const currency of ['TESTSAT','TESTSATS']){
+    const item={...listing,price:'16',currency};
+    for(const url of ['https://testnut.cashu.space','http://127.0.0.1:3338']){
+      assert.equal(E.dealFromListing(item,buyer,provider,url,32).mint,url);
+    }
+    for(const url of [mint,'https://testnut.example','https://testnut.cashu.space.example']){
+      assert.throws(()=>E.dealFromListing(item,buyer,provider,url,32),/Choose a test mint/);
+      await assert.rejects(E.exactListing(async()=>item,{...d,mint:url}),/Choose a test mint/);
+    }
+  }
+});
 test('bitcoin trades reverse who pays and bind the signed fiat quote and sats',async()=>{
   const bitcoin={...listing,price:'10.00',currency:'EUR',escrow:{trade:'bitcoin_fiat',sats:1000,method:'bank_transfer'}};
   const offer=E.dealFromListing(bitcoin,buyer,provider,mint,1000);

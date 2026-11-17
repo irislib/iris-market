@@ -546,6 +546,11 @@ final class MarketUITests: XCTestCase {
         app.buttons["basketRequestOrder"].tap()
         XCTAssertTrue(app.navigationBars["Review order"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["3 items"].exists)
+        let fulfillment = app.buttons["orderFulfillment"]
+        XCTAssertTrue(fulfillment.waitForExistence(timeout: 5))
+        XCTAssertTrue(fulfillment.label.contains("Seller arranges delivery") || (fulfillment.value as? String) == "Seller arranges delivery")
+        fulfillment.tap()
+        app.buttons["Pickup"].tap()
         capture("basket-03-review")
         app.buttons["requestBasketOrder"].tap()
         // A first order asks for a name, then the buyer confirms again.
@@ -559,6 +564,10 @@ final class MarketUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Order"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.staticTexts["Total"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["2 × \(second)"].exists)
+        let pickup = app.staticTexts["Pickup"]
+        for _ in 0..<4 where !pickup.isHittable { app.swipeUp() }
+        XCTAssertTrue(pickup.exists)
+        XCTAssertFalse(app.buttons["buyerBookCourier"].exists)
         capture("basket-04-order-detail")
     }
 }

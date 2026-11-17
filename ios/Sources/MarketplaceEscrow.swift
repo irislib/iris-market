@@ -37,6 +37,8 @@ struct EscrowCheckout {
     let note: String
     var delivery: MarketDeliveryRequest?
     var resumeOrder: MarketOrder?
+    var fulfillment: MarketFulfillment?
+    var consumeBasket = false
 
     var selection: [String: Any] {
         var value: [String: Any] = ["quantity": quantity, "note": note]
@@ -140,18 +142,26 @@ private struct EscrowWeb {
                 guard let checkout, let listing, let id, let provider = args["provider"] as? String,
                       store.snapshot.settings.escrowUi, (trade == nil || trade == id), args["listing_id"] as? String == listing,
                       args["quantity"] as? Int == checkout.quantity, args["note"] as? String == checkout.note else { throw CancellationError() }
+                let fulfillment = checkout.resumeOrder?.fulfillment ?? checkout.fulfillment?.rawValue
+                let delivery = try checkout.delivery.map { try $0.projection() as NSDictionary }
                 func matchingOrder() -> MarketOrder? {
-                    store.snapshot.orders.first { $0.escrowTradeId == id && $0.escrowProvider == provider && $0.buyer == owner &&
-                        $0.items.first?.id == listing && $0.items.first?.quantity == checkout.quantity && $0.note == checkout.note }
+                    store.snapshot.orders.first { order in
+                        guard order.escrowTradeId == id, order.escrowProvider == provider, order.buyer == owner,
+                              order.items.count == 1, order.items.first?.id == listing, order.items.first?.quantity == checkout.quantity,
+                              order.note == checkout.note, order.fulfillment == fulfillment else { return false }
+                        return (try? order.deliveryRequest.map { try $0.projection() as NSDictionary }) == delivery
+                    }
                 }
-                if let existing = matchingOrder() {
+                if let existing = matchingOrder(), !checkout.consumeBasket {
                     if checkout.resumeOrder == nil { onOrderCreated?(existing.id) }
                     return existing.id
                 }
                 guard checkout.resumeOrder == nil else { throw MarketRouteError.message("The order changed. Reopen it to continue.") }
                 var request: [String: Any] = ["type":"request_order", "listing_id":listing, "escrow_trade_id":id,
                     "escrow_provider":provider, "quantity":checkout.quantity, "note":checkout.note]
-                if let delivery = checkout.delivery { request["delivery_request"] = try delivery.projection() }
+                request["fulfillment"] = fulfillment
+                request["delivery_request"] = delivery
+                if checkout.consumeBasket { request["consume_basket"] = true }
                 let ok = await withCheckedContinuation { c in store.command(request) { c.resume(returning: $0) } }
                 guard ok, let order = matchingOrder() else { throw MarketRouteError.message(store.alert ?? "Could not save this order.") }
                 onOrderCreated?(order.id)

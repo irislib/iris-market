@@ -452,15 +452,26 @@ final class MarketStore: ObservableObject {
     /// Zero removes the line.
     func setBasketQuantity(_ id: String, _ quantity: Int) { command(["type": "set_basket_quantity", "id": id, "quantity": max(0, min(999, quantity))]) }
     /// Completes with the new order's ID, or nil when the request failed.
-    func requestBasketOrder(seller: String, note: String, completion: @escaping (String?) -> Void) {
+    func requestBasketOrder(seller: String, note: String, fulfillment: MarketFulfillment?, completion: @escaping (String?) -> Void) {
         let existing = Set(snapshot.orders.map(\.id))
-        command(["type": "request_basket_order", "seller": seller, "note": note]) { success in
+        var request: [String: Any] = ["type": "request_basket_order", "seller": seller, "note": note]
+        request["fulfillment"] = fulfillment?.rawValue
+        command(request) { success in
             completion(success ? self.snapshot.orders.first { !existing.contains($0.id) && $0.buyer == self.snapshot.publicKey && $0.seller == seller }?.id ?? "" : nil)
         }
     }
-    func requestOrder(_ listing: MarketListing, quantity: Int, note: String, deliveryRequest: MarketDeliveryRequest? = nil, completion: @escaping (Bool) -> Void) {
+    /// The checkout button explicitly offers to enable escrow when the optional tool is off.
+    func startEscrowCheckout(_ open: @escaping () -> Void) {
+        guard !demo else { return }
+        if snapshot.settings.escrowUi { open(); return }
+        var settings = snapshot.settings
+        settings.escrowUi = true
+        saveSettings(settings, key: "", replaceKey: false) { success in if success { open() } }
+    }
+    func requestOrder(_ listing: MarketListing, quantity: Int, note: String, fulfillment: MarketFulfillment? = nil, deliveryRequest: MarketDeliveryRequest? = nil, completion: @escaping (Bool) -> Void) {
         let existing = Set(snapshot.orders.map(\.id))
         var request: [String: Any] = ["type": "request_order", "listing_id": listing.id, "quantity": quantity, "note": note]
+        request["fulfillment"] = fulfillment?.rawValue
         do { if let deliveryRequest { request["delivery_request"] = try deliveryRequest.projection() } }
         catch { alert = error.localizedDescription; completion(false); return }
         command(request) { success in
@@ -470,10 +481,12 @@ final class MarketStore: ObservableObject {
             completion(success)
         }
     }
-    func requestDelivery(sourceOrderID: String, listing: MarketListing, destination: MarketDeliveryPlace, completion: @escaping (Bool) -> Void) {
+    func requestDelivery(sourceOrderID: String, listing: MarketListing, pickup: MarketDeliveryPlace? = nil, destination: MarketDeliveryPlace, completion: @escaping (Bool) -> Void) {
         let existing = Set(snapshot.orders.map(\.id))
         do {
-            command(["type": "request_delivery", "source_order_id": sourceOrderID, "listing_id": listing.id, "destination": try destination.projection()]) { success in
+            var request: [String: Any] = ["type": "request_delivery", "source_order_id": sourceOrderID, "listing_id": listing.id, "destination": try destination.projection()]
+            if let pickup { request["pickup"] = try pickup.projection() }
+            command(request) { success in
                 if success { self.activeOrderID = self.snapshot.orders.first { !existing.contains($0.id) && $0.buyer == self.snapshot.publicKey && $0.items.contains { $0.id == listing.id } }?.id }
                 completion(success)
             }

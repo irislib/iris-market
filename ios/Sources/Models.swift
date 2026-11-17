@@ -122,6 +122,15 @@ struct MarketListing: Decodable, Identifiable, Hashable {
     }
     var externalOrder: ExternalOrder? = nil
     var isBitcoinOffer: Bool { externalOrder != nil || escrow?.trade == "bitcoin_fiat" }
+    private var categoryKey: String { category.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+    var isTransportService: Bool { categoryKey == "transport" || NativeTransportType.classify(tags ?? []) != nil }
+    var offersOrderEscrow: Bool {
+        side == "offer" && !mine && status == "active" && (expiresAt ?? .max) > Int64(Date().timeIntervalSince1970)
+            && externalOrder == nil && escrow?.trade == "goods"
+    }
+    var hasGoodsFulfillment: Bool {
+        side == "offer" && !isBitcoinOffer && !isTransportService && (escrow?.trade == "goods" || !["service", "services", "work", "digital"].contains(categoryKey))
+    }
     var reviewAddress: String { isBitcoinOffer ? id : "30402:" + id }
     var escrow: EscrowOffer? = nil
     let side: String
@@ -194,6 +203,7 @@ struct MarketBasketLine: Decodable, Hashable, Identifiable {
     let quantity: Int
     let total: MarketDisplayPrice?
     var id: String { listing.id }
+    var offersEscrowCheckout: Bool { listing.offersOrderEscrow && !listing.isTransportService }
     var formattedTotal: String { total?.formatted ?? listing.formattedPrice }
 }
 

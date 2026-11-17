@@ -19,12 +19,23 @@ struct MarketOrder: Decodable, Hashable, Identifiable {
     let escrowTradeId: String?
     let escrowProvider: String?
     let payment: MarketOrderPayment?
+    let fulfillment: String?
     let deliveryRequest: MarketDeliveryRequest?
     let pickupAuthorization: MarketPickupAuthorization?
     let sourceOrderId: String?
     let deliveryOrderId: String?
     /// A proxied thumbnail of the ordered item from the core.
     let displayImage: String?
+    private var canBookCourier: Bool {
+        ["accepted", "in-transit"].contains(status) && deliveryRequest == nil && deliveryOrderId == nil && pickupAuthorization == nil && !shipment.stops.contains { $0.courierPubkey != nil }
+    }
+    func canBookMerchantCourier(_ owner: String) -> Bool {
+        owner == seller && fulfillment == MarketFulfillment.merchantDelivery.rawValue && canBookCourier
+    }
+    func canBookBuyerCourier(_ owner: String) -> Bool {
+        owner == buyer && (fulfillment == nil || fulfillment == MarketFulfillment.buyerCourier.rawValue) && canBookCourier
+            && shipment.stops.first?.address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    }
     var formattedPrice: String {
         guard let displayPrice, displayPrice.amount.isFinite else { return items.first?.formattedPrice ?? "Negotiable" }
         let format = NumberFormatter(); format.numberStyle = .currency; format.currencyCode = displayPrice.currency
@@ -52,6 +63,17 @@ struct MarketOrder: Decodable, Hashable, Identifiable {
         }
     }
     func handlesDelivery(_ owner: String) -> Bool { (seller == owner && deliveryRequest != nil) || shipment.stops.contains { seller == owner || $0.courierPubkey == owner } }
+}
+
+enum MarketFulfillment: String, CaseIterable {
+    case merchantDelivery = "merchant-delivery", pickup, buyerCourier = "buyer-courier"
+    var label: String {
+        switch self {
+        case .merchantDelivery: return "Seller arranges delivery"
+        case .pickup: return "Pickup"
+        case .buyerCourier: return "Buyer arranges courier"
+        }
+    }
 }
 
 struct MarketOrderDisplayPrice: Decodable, Hashable { let amount: Double; let currency: String; let stale: Bool }

@@ -11,7 +11,13 @@ struct OrderRouteEditor: View {
     @State private var error: String?
     init(order: MarketOrder) {
         self.order = order
-        _stops = State(initialValue: order.shipment.stops.map { MarketStopDraft(stop: $0) })
+        var stops = order.shipment.stops.map { MarketStopDraft(stop: $0) }
+        if stops.isEmpty && [MarketFulfillment.pickup.rawValue, MarketFulfillment.buyerCourier.rawValue].contains(order.fulfillment ?? "") {
+            var pickup = MarketStopDraft()
+            pickup.label = "Pickup"
+            stops = [pickup]
+        }
+        _stops = State(initialValue: stops)
         _tracking = State(initialValue: order.shipment.trackingUrl ?? "")
         _hasETA = State(initialValue: order.shipment.eta != nil)
         _eta = State(initialValue: order.shipment.eta.map { Date(timeIntervalSince1970: Double($0)) } ?? Date())
@@ -39,6 +45,9 @@ struct OrderRouteEditor: View {
     private func moveUp(_ id: String) { if let index = stops.firstIndex(where: { $0.id == id }), index > 0 { stops.swapAt(index, index - 1) } }
     private func save() {
         do {
+            if let first = stops.first, order.fulfillment == MarketFulfillment.buyerCourier.rawValue || order.fulfillment == MarketFulfillment.pickup.rawValue {
+                guard !first.address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw MarketRouteError.message("Enter a pickup address or meeting point.") }
+            }
             let patch = try marketRoutePatch(stops: stops, tracking: tracking, eta: hasETA ? eta : nil)
             error = nil
             store.updateOrder(order.id, patch: patch) { if $0 { dismiss() } }

@@ -42,6 +42,37 @@ import Foundation
         let testCashu = try decoder.decode(CashuPayment.self, from: Data(#"{"token":"synthetic-not-redeemable","amount":"128","mint":"https://testnut.cashu.space","unit":"sat","status":"unverified"}"#.utf8))
         check(testCashu.formattedAmount == "128 test sats" && testCashu.isTestMoney, "Test tokens must remain separate from real sats")
         var checkout = try JSONSerialization.jsonObject(with: Data(source.utf8)) as! [String: Any]
+        func product(_ choice: MarketFulfillment?, status: String = "accepted", address: String? = nil, extra: [String: Any] = [:]) throws -> MarketOrder {
+            var product = checkout
+            product["fulfillment"] = choice?.rawValue
+            product["status"] = status
+            product["shipment"] = ["stops": address.map { [["id": "p", "label": "Pickup", "address": $0, "status": "pending"]] } ?? []]
+            product.merge(extra) { _, updated in updated }
+            return try decoder.decode(MarketOrder.self, from: JSONSerialization.data(withJSONObject: product))
+        }
+        let merchantDelivery = try product(.merchantDelivery)
+        check(merchantDelivery.canBookMerchantCourier("seller") && !merchantDelivery.canBookMerchantCourier("buyer"), "Only the merchant can book merchant delivery")
+        check(!merchantDelivery.canBookBuyerCourier("buyer"), "Merchant delivery never prompts the buyer to book")
+        for choice in [MarketFulfillment.buyerCourier, nil] {
+            let awaitingPickup = try product(choice, address: " ")
+            let pickupShared = try product(choice, address: "Synthetic meeting point")
+            check(!awaitingPickup.canBookBuyerCourier("buyer") && pickupShared.canBookBuyerCourier("buyer"), "Buyer or legacy courier needs the seller's pickup address")
+            check(!pickupShared.canBookBuyerCourier("courier") && !pickupShared.canBookMerchantCourier("seller"), "Only the selected organizer books")
+        }
+        let pickupOrder = try product(.pickup, address: "Synthetic meeting point")
+        check(!pickupOrder.canBookBuyerCourier("buyer") && !pickupOrder.canBookMerchantCourier("seller"), "Pickup requires no courier")
+        for status in ["requested", "cancelled", "delivered"] {
+            let unavailable = try product(.merchantDelivery, status: status)
+            check(!unavailable.canBookMerchantCourier("seller"), "Unavailable orders cannot book a courier")
+        }
+        for extra: [String: Any] in [
+            ["deliveryOrderId": "separate-order"], ["pickupAuthorization": ["courierPubkey": "courier", "reference": "ref"]],
+            ["shipment": checkout["shipment"]!],
+            ["deliveryRequest": ["pickup": ["label": "Pickup", "address": "Here"], "destination": ["label": "Destination", "address": "There"]]]
+        ] {
+            let allocated = try product(.merchantDelivery, extra: extra)
+            check(!allocated.canBookMerchantCourier("seller"), "A service order or an existing courier booking must not be booked again")
+        }
         check(order.escrowTradeId == nil && order.escrowProvider == nil, "Existing direct orders have no escrow")
         var protected = checkout
         protected["escrowTradeId"] = "trade-fixture"

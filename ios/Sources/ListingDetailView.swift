@@ -15,6 +15,7 @@ struct ListingDetailView: View {
     @State private var showEscrow = false
     @State private var authorProfile = false
     @State private var reviewOrder = false
+    @State private var preferEscrow = false
     @State private var orderRequested = false
     private var latest: MarketListing? {
         store.snapshot.listings.first { $0.id == listing.id }
@@ -72,6 +73,10 @@ struct ListingDetailView: View {
                             Text(fields[1]).font(.system(size: 16)).lineSpacing(6).foregroundStyle(MarketTheme.ink.opacity(0.90)).textSelection(.enabled)
                         }
                     }
+                    if !store.demo && current.offersOrderEscrow {
+                        Button { preferEscrow = true; reviewOrder = true } label: { Label("Buy with escrow", systemImage: "lock.shield.fill") }
+                            .buttonStyle(.bordered).disabled(store.busy || !store.snapshot.messagingReady).accessibilityIdentifier("buyWithEscrow")
+                    }
                     if current.externalOrder == nil { ReviewsView(target: current.reviewAddress, product: true) }
                     if let relevance = current.relevance { Label(relevance.reason, systemImage: "sparkles").font(.system(size: 13)).foregroundStyle(MarketTheme.green).padding(15).frame(maxWidth: .infinity, alignment: .leading).background(MarketTheme.mint.opacity(0.4), in: RoundedRectangle(cornerRadius: 16)) }
                     MarketInlineError()
@@ -107,9 +112,9 @@ struct ListingDetailView: View {
                     if current.externalOrder == nil && !current.mine && current.side == "offer" && !current.isBitcoinOffer {
                         HStack(spacing: 16) {
                             // With a basket button the bar keeps both actions and the page shows the price.
-                            if !store.demo && !current.price.isEmpty && NativeTransportType.classify(current.tags ?? []) == nil { basketButton }
+                            if !store.demo && !current.price.isEmpty && !current.isTransportService { basketButton }
                             else { Text(current.formattedPrice).font(.system(size: 20, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.7) }
-                            Button { reviewOrder = true } label: { Label(NativeTransportType.classify(current.tags ?? [])?.requestLabel ?? "Buy", systemImage: NativeTransportType.classify(current.tags ?? []) == nil ? "bag.fill" : "car.fill").frame(maxWidth: .infinity) }
+                            Button { preferEscrow = false; reviewOrder = true } label: { Label(NativeTransportType.classify(current.tags ?? [])?.requestLabel ?? "Buy", systemImage: NativeTransportType.classify(current.tags ?? []) == nil ? "bag.fill" : "car.fill").frame(maxWidth: .infinity) }
                                 .buttonStyle(PrimaryButton()).disabled(store.demo || store.busy || !store.snapshot.messagingReady).accessibilityIdentifier("buyListing")
                         }.padding(.horizontal, 23).padding(.vertical, 12).background(.bar)
                     }
@@ -128,7 +133,7 @@ struct ListingDetailView: View {
                 .marketPage(isPresented: $authorProfile) { AuthorProfileView(author: current.author).marketSheetScope() }.navigationTitle("Listing").marketInlineTitle()
                 .toolbar { ToolbarItem(placement: .cancellationAction) { MarketDoneButton { closeListing() } }; ToolbarItem(placement: .confirmationAction) { Button { store.save(current) } label: { Image(systemName: current.saved ? "heart.fill" : "heart") }.accessibilityLabel("Save listing") } }
                 .marketPage(isPresented: $invitation) { InvitationView().marketSheetScope() }
-                .marketPage(isPresented: $reviewOrder, onDismiss: { if orderRequested { closeListing(); onOrder?() } }) { OrderReviewView(listing: current) { orderRequested = true }.marketSheetScope() }
+                .marketPage(isPresented: $reviewOrder, onDismiss: { if orderRequested { closeListing(); onOrder?() } }) { OrderReviewView(listing: current, preferEscrow: preferEscrow) { orderRequested = true }.marketSheetScope() }
         }
     }
 }

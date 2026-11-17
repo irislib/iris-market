@@ -137,7 +137,7 @@ private struct BasketSection: View {
                         Divider()
                         HStack { Text("Total").fontWeight(.semibold); Spacer(); Text(total.formatted).fontWeight(.semibold) }.font(.system(size: 16))
                     }
-                    Button("Request order") { onCheckout(group) }
+                    Button("Review order") { onCheckout(group) }
                         .buttonStyle(PrimaryButton()).disabled(store.demo || store.busy || !store.snapshot.canSign).accessibilityIdentifier("basketRequestOrder")
                 }.padding(18).frame(maxWidth: .infinity, alignment: .leading).background(MarketTheme.surface, in: RoundedRectangle(cornerRadius: 20))
             }
@@ -152,26 +152,46 @@ struct BasketCheckoutView: View {
     let seller: String
     let onRequested: (String) -> Void
     @State private var note = ""
+    @State private var fulfillment: MarketFulfillment? = .merchantDelivery
+    @State private var escrowReview: BasketEscrowReview?
+    @State private var createdOrderID: String?
+    private struct BasketEscrowReview: Identifiable { let id: String; let checkout: EscrowCheckout }
     private var group: MarketBasketGroup? { store.snapshot.basket?.first { $0.seller == seller } }
     var body: some View {
         MarketNavigationContainer {
             ScrollView {
                 VStack(alignment: .leading, spacing: 23) {
                     if let group {
+                        let goods = group.items.allSatisfy { $0.listing.hasGoodsFulfillment }
                         Text("\(group.count) items").font(.system(size: 30, weight: .medium))
                         if let total = group.total { Text(total.formatted).font(.system(size: 26, weight: .semibold)) }
                         UserRow(person: store.snapshot.people[seller] ?? .unnamed(seller), subtitle: "Seller")
-                        VStack(spacing: 10) {
-                            ForEach(group.items) { line in
-                                HStack(alignment: .firstTextBaseline) { Text("\(line.quantity) × \(line.listing.title)"); Spacer(minLength: 8); Text(line.formattedTotal) }.font(.system(size: 15))
-                            }
-                        }
+                        if goods { FulfillmentPicker(selection: $fulfillment) }
                         TextField("Note · optional", text: $note, axis: .vertical).lineLimit(3...6).padding(16).background(MarketTheme.surface, in: RoundedRectangle(cornerRadius: 16))
                             .onChange(of: note) { value in if value.count > 2000 { note = String(value.prefix(2000)) } }
+                        VStack(spacing: 10) {
+                            ForEach(group.items) { line in
+                                VStack(alignment: .leading, spacing: 8) {
+                                    HStack(alignment: .firstTextBaseline) { Text("\(line.quantity) × \(line.listing.title)"); Spacer(minLength: 8); Text(line.formattedTotal) }.font(.system(size: 15))
+                                    if !store.demo && line.offersEscrowCheckout {
+                                        Button {
+                                            let checkout = EscrowCheckout(quantity: line.quantity, note: note.trimmingCharacters(in: .whitespacesAndNewlines),
+                                                fulfillment: goods ? fulfillment : nil, consumeBasket: true)
+                                            store.startEscrowCheckout { escrowReview = BasketEscrowReview(id: line.id, checkout: checkout) }
+                                        } label: {
+                                            Label(store.snapshot.settings.escrowUi ? "Order this item with escrow" : "Enable escrow for this item", systemImage: "lock.shield.fill")
+                                        }.disabled(store.busy || !store.snapshot.canSign).accessibilityIdentifier("basketEscrow.\(line.id)")
+                                    }
+                                }
+                            }
+                            if !store.demo && group.items.count > 1 && group.items.contains(where: { $0.offersEscrowCheckout }) {
+                                Text("Escrow covers one listing at a time. Your other items stay in the basket.").font(.caption).foregroundStyle(MarketTheme.muted)
+                            }
+                        }
                         Text("The seller will confirm your order. No payment is taken here.").font(.system(size: 13)).foregroundStyle(MarketTheme.muted)
                         MarketInlineError()
                         Button("Request order") {
-                            store.requestBasketOrder(seller: seller, note: note.trimmingCharacters(in: .whitespacesAndNewlines)) { id in
+                            store.requestBasketOrder(seller: seller, note: note.trimmingCharacters(in: .whitespacesAndNewlines), fulfillment: goods ? fulfillment : nil) { id in
                                 guard let id else { return }
                                 onRequested(id); dismiss()
                             }
@@ -181,6 +201,13 @@ struct BasketCheckoutView: View {
                     }
                 }.padding(24)
             }.background(MarketTheme.paper).foregroundStyle(MarketTheme.ink).navigationTitle("Review order").marketInlineTitle()
+                .marketPage(isPresented: Binding(get: { escrowReview != nil }, set: { if !$0 { escrowReview = nil } }), onDismiss: {
+                    if let createdOrderID { onRequested(createdOrderID); dismiss() }
+                }) {
+                    if let review = escrowReview {
+                        MarketplaceEscrowView(listingID: review.id, checkout: review.checkout, onOrderCreated: { createdOrderID = $0 }).marketSheetScope()
+                    }
+                }
                 .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
         }
     }
@@ -210,6 +237,17 @@ private struct OrderRow: View {
     }
 }
 
+private struct FulfillmentPicker: View {
+    @Binding var selection: MarketFulfillment?
+    var body: some View {
+        Picker("Delivery or pickup", selection: $selection) {
+            ForEach(MarketFulfillment.allCases, id: \.self) { option in Text(option.label).tag(Optional(option)) }
+            Text("Agree in chat").tag(nil as MarketFulfillment?)
+        }.accessibilityIdentifier("orderFulfillment")
+        if selection == .merchantDelivery { Text("Agree on the delivery address and cost privately with the seller.").font(.caption).foregroundStyle(MarketTheme.muted) }
+    }
+}
+
 struct OrderReviewView: View {
     @EnvironmentObject private var store: MarketStore
     @Environment(\.dismiss) private var dismiss
@@ -224,7 +262,17 @@ struct OrderReviewView: View {
     @State private var showingEscrow = false
     @State private var checkout: EscrowCheckout?
     @State private var createdOrderID: String?
-    private var canUseEscrow: Bool { !store.demo && store.snapshot.settings.escrowUi && listing.escrow?.trade == "goods" }
+    @State private var fulfillment: MarketFulfillment? = .merchantDelivery
+    init(listing: MarketListing, preferEscrow: Bool = false, onRequested: @escaping () -> Void) {
+        self.listing = listing
+        self.onRequested = onRequested
+        _useEscrow = State(initialValue: preferEscrow)
+    }
+    private var canUseEscrow: Bool { !store.demo && listing.offersOrderEscrow }
+    private var submitLabel: String {
+        if useEscrow { return store.snapshot.settings.escrowUi ? "Choose escrow provider" : "Enable escrow and choose provider" }
+        return NativeTransportType.classify(listing.tags ?? [])?.requestLabel ?? "Request order"
+    }
     var body: some View {
         MarketNavigationContainer {
             ScrollView {
@@ -235,25 +283,28 @@ struct OrderReviewView: View {
                     Stepper("Quantity: \(quantity)", value: $quantity, in: 1...999).accessibilityIdentifier("orderQuantity")
                     TextField("Note · optional", text: $note, axis: .vertical).lineLimit(3...6).padding(16).background(MarketTheme.surface, in: RoundedRectangle(cornerRadius: 16)).accessibilityIdentifier("orderNote")
                         .onChange(of: note) { value in if value.count > 2000 { note = String(value.prefix(2000)) } }
-                    if listing.category.lowercased() == "transport" || NativeTransportType.classify(listing.tags ?? []) != nil { PrivateDeliveryPlaceField(place: $pickup); PrivateDeliveryPlaceField(place: $destination) }
+                    if listing.isTransportService { PrivateDeliveryPlaceField(place: $pickup); PrivateDeliveryPlaceField(place: $destination) }
+                    if listing.hasGoodsFulfillment { FulfillmentPicker(selection: $fulfillment) }
                     if let requestError { Text(requestError).foregroundStyle(.red).font(.caption) }
                     if canUseEscrow { Toggle("Use escrow", isOn: $useEscrow) }
                     Text(canUseEscrow && useEscrow ? "Choose a provider next. The seller and provider each review your request before anyone pays." : "The seller will confirm your order. No payment is taken here.").font(.system(size: 13)).foregroundStyle(MarketTheme.muted)
                     MarketInlineError()
                     Button {
                         do {
-                            let delivery = (listing.category.lowercased() != "transport" && NativeTransportType.classify(listing.tags ?? []) == nil) ? nil : MarketDeliveryRequest(pickup: pickup, destination: destination)
+                            let delivery = listing.isTransportService ? MarketDeliveryRequest(pickup: pickup, destination: destination) : nil
+                            let choice = listing.hasGoodsFulfillment ? fulfillment : nil
                             if let delivery { _ = try delivery.projection() }
                             requestError = nil
                             let orderNote = note.trimmingCharacters(in: .whitespacesAndNewlines)
-                            if useEscrow && canUseEscrow {
-                                checkout = EscrowCheckout(quantity: quantity, note: orderNote, delivery: delivery)
-                                showingEscrow = true
+                            if useEscrow {
+                                guard canUseEscrow else { throw MarketRouteError.message("Escrow is unavailable for this listing.") }
+                                let review = EscrowCheckout(quantity: quantity, note: orderNote, delivery: delivery, fulfillment: choice)
+                                store.startEscrowCheckout { checkout = review; showingEscrow = true }
                             } else {
-                                store.requestOrder(listing, quantity: quantity, note: orderNote, deliveryRequest: delivery) { success in if success { dismiss(); onRequested() } }
+                                store.requestOrder(listing, quantity: quantity, note: orderNote, fulfillment: choice, deliveryRequest: delivery) { success in if success { dismiss(); onRequested() } }
                             }
                         } catch { requestError = error.localizedDescription }
-                    } label: { Text(canUseEscrow && useEscrow ? "Choose escrow provider" : NativeTransportType.classify(listing.tags ?? [])?.requestLabel ?? "Request order") }
+                    } label: { Text(submitLabel) }
                         .buttonStyle(PrimaryButton()).disabled(store.demo || store.busy || !store.snapshot.canSign).accessibilityIdentifier("requestOrder")
                 }.padding(24)
             }.background(MarketTheme.paper).foregroundStyle(MarketTheme.ink).navigationTitle("Review order").marketInlineTitle()
@@ -365,16 +416,25 @@ struct OrderDetailView: View {
             if participant { Button("Message") { store.command(["type": "contact", "author": other]) { if $0 { showingChat = true } } } }
             if let delivery = order.deliveryOrderId { Button("Open delivery order") { relatedOrder = OrderSelection(id: delivery) } }
             if let source = order.sourceOrderId { Button("Open product order") { relatedOrder = OrderSelection(id: source) } }
-            if order.buyer == store.snapshot.publicKey && ["accepted", "in-transit"].contains(order.status) && order.deliveryRequest == nil && order.deliveryOrderId == nil && !order.shipment.stops.isEmpty && !order.shipment.stops.contains(where: { $0.courierPubkey != nil }) { Button("Arrange delivery") { arrangingDelivery = true }.buttonStyle(PrimaryButton()).disabled(store.busy) }
             if !order.terminal {
                 if seller && order.status == "requested" && order.escrowTradeId == nil { statusButton("Accept order", status: "accepted") }
                 if seller && order.status == "accepted" { statusButton("Mark on the way", status: "in-transit") }
                 if participant && ["accepted", "in-transit"].contains(order.status) { statusButton("Mark delivered", status: "delivered", primary: false) }
             }
             Divider().overlay(MarketTheme.line)
-            HStack {
-                Text("Delivery").font(.system(size: 21, weight: .semibold)); Spacer()
-                if seller && !order.terminal && order.status != "requested" { Button("Edit route") { editingRoute = true }.font(.system(size: 13, weight: .semibold)) }
+            Text("Delivery").font(.system(size: 21, weight: .semibold))
+            if participant, let value = order.fulfillment, let choice = MarketFulfillment(rawValue: value) {
+                Label(choice.label, systemImage: choice == .pickup ? "shippingbox.fill" : "truck.box.fill").font(.subheadline)
+            }
+            if order.canBookMerchantCourier(store.snapshot.publicKey) {
+                Button("Book a courier") { arrangingDelivery = true }.buttonStyle(PrimaryButton()).disabled(store.busy).accessibilityIdentifier("merchantBookCourier")
+            } else if order.canBookBuyerCourier(store.snapshot.publicKey) {
+                Button("Book your own courier") { arrangingDelivery = true }.buttonStyle(.bordered).disabled(store.busy).accessibilityIdentifier("buyerBookCourier")
+            }
+            if seller && !order.terminal && order.status != "requested" {
+                let pickup = order.fulfillment == MarketFulfillment.pickup.rawValue || order.fulfillment == MarketFulfillment.buyerCourier.rawValue
+                Button(order.shipment.stops.isEmpty ? (pickup ? "Share pickup details" : "Add delivery details or tracking") : "Edit route") { editingRoute = true }
+                    .accessibilityIdentifier("editOrderDelivery")
             }
             TimelineView(.periodic(from: .now, by: 15)) { context in
                 if let estimate = marketArrivalEstimate(eta: order.shipment.eta, status: order.status, now: Int64(context.date.timeIntervalSince1970)), let eta = order.shipment.eta {

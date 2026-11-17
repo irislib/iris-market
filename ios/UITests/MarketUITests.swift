@@ -508,6 +508,18 @@ final class MarketUITests: XCTestCase {
         guard let relay = ProcessInfo.processInfo.environment["MARKET_BASKET_UI_RELAY"], relay.hasPrefix("ws://127.0.0.1:") else { throw XCTSkip("Needs a seeded loopback relay") }
         let first = ProcessInfo.processInfo.environment["MARKET_BASKET_UI_FIRST"] ?? "Wool scarf"
         let second = ProcessInfo.processInfo.environment["MARKET_BASKET_UI_SECOND"] ?? "Wool mittens"
+        let escrowFixture = ProcessInfo.processInfo.environment["MARKET_BASKET_UI_ESCROW"] == "1"
+        func visitProviderSelection(_ button: XCUIElement, screenshot: String) {
+            for _ in 0..<5 where !button.isHittable { app.swipeUp() }
+            XCTAssertTrue(button.isHittable)
+            button.tap()
+            XCTAssertTrue(app.navigationBars["Escrow trade"].waitForExistence(timeout: 10))
+            let provider = app.webViews.staticTexts.containing(NSPredicate(format: "label CONTAINS[c] %@", "Choose an escrow provider")).firstMatch
+            XCTAssertTrue(provider.waitForExistence(timeout: 10))
+            capture(screenshot)
+            app.navigationBars["Escrow trade"].buttons["Done"].tap()
+            XCTAssertTrue(app.navigationBars["Review order"].waitForExistence(timeout: 5))
+        }
         app.terminate()
         app.launchArguments = ["--ui-test-mode", "--test-storage", "iris-market-ui-basket-\(UUID().uuidString.prefix(8))"]
         app.launchEnvironment["MARKET_ESCROW_TEST_RELAY"] = relay
@@ -530,6 +542,17 @@ final class MarketUITests: XCTestCase {
             for _ in 0..<6 where !card.waitForExistence(timeout: 5) { app.swipeUp() }
             XCTAssertTrue(card.exists, "\(title) arrives from the relay")
             card.tap()
+            if escrowFixture && title == first {
+                let protected = app.buttons["buyWithEscrow"]
+                for _ in 0..<5 where !protected.isHittable { app.swipeUp() }
+                XCTAssertTrue(protected.isHittable)
+                protected.tap()
+                XCTAssertTrue(app.navigationBars["Review order"].waitForExistence(timeout: 5))
+                let choose = app.buttons["requestOrder"]
+                XCTAssertEqual(choose.label, "Enable escrow and choose provider")
+                visitProviderSelection(choose, screenshot: "basket-01-listing-escrow")
+                app.navigationBars["Review order"].buttons["Cancel"].tap()
+            }
             let add = app.buttons["addToBasket"]
             for _ in 0..<4 where !add.isHittable { app.swipeUp() }
             XCTAssertTrue(add.waitForExistence(timeout: 5))
@@ -546,6 +569,12 @@ final class MarketUITests: XCTestCase {
         app.buttons["basketRequestOrder"].tap()
         XCTAssertTrue(app.navigationBars["Review order"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["3 items"].exists)
+        if escrowFixture {
+            let line = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "basketEscrow.")).firstMatch
+            XCTAssertEqual(line.label, "Order this item with escrow")
+            visitProviderSelection(line, screenshot: "basket-03-line-escrow")
+            XCTAssertTrue(app.staticTexts["3 items"].exists)
+        }
         let fulfillment = app.buttons["orderFulfillment"]
         XCTAssertTrue(fulfillment.waitForExistence(timeout: 5))
         XCTAssertTrue(fulfillment.label.contains("Seller arranges delivery") || (fulfillment.value as? String) == "Seller arranges delivery")

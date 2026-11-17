@@ -13,6 +13,8 @@ class OrderProjectionTest {
     }""")
     @Test fun parsesSharedCamelCaseOrderWithoutExposingParticipantsToMap() {
         val value = MarketOrder.parse(order())
+        assertNull(value.fulfillment)
+        assertEquals("merchant-delivery", MarketOrder.parse(order().put("fulfillment", "merchant-delivery")).fulfillment)
         assertEquals("Local delivery", value.title)
         assertEquals(2, value.items.single().quantity)
         assertEquals("Accepted", value.statusLabel)

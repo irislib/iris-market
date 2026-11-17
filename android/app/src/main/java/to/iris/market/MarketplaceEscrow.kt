@@ -21,7 +21,8 @@ data class EscrowInboxCard(val id:String,val title:String,val participants:List<
     fun matches(order:MarketOrder) = id==order.escrowTradeId && orderId==order.id && listing==order.items.firstOrNull()?.id &&
         participants==listOf(order.buyer,order.seller,order.escrowProvider)
 }
-internal data class EscrowCheckout(val quantity:Int,val note:String,val delivery:OrderDeliveryRequest?=null,val resumeOrder:MarketOrder?=null) {
+internal data class EscrowCheckout(val quantity:Int,val note:String,val delivery:OrderDeliveryRequest?=null,val resumeOrder:MarketOrder?=null,
+    val fulfillment:OrderFulfillment?=null, val consumeBasket:Boolean=false) {
     fun selection()=JSONObject().put("quantity",quantity).put("note",note).apply {
         resumeOrder?.let { put("resume",true);put("provider",it.escrowProvider) }
     }
@@ -96,16 +97,19 @@ private class TradeBridge(val model:MarketModel,val owner:String,val listing:Str
                 check(checkout.quantity==args.getInt("quantity") && checkout.note==args.getString("note"))
                 fun existing()=model.state.value.orders.firstOrNull { it.escrowTradeId==id && it.buyer==owner && it.escrowProvider==provider &&
                     it.items.firstOrNull()?.id==listing && it.items.firstOrNull()?.quantity==checkout.quantity && it.note==checkout.note }
-                existing()?.let { if(checkout.resumeOrder==null)orderCreated(it.id); it.id } ?: run {
+                val previous = existing()
+                if (previous == null || checkout.consumeBasket && checkout.resumeOrder == null) {
                     check(checkout.resumeOrder==null) {"The order changed. Reopen it to continue."}
                     val request=JSONObject().put("type","request_order").put("listing_id",listing).put("quantity",checkout.quantity)
                         .put("note",checkout.note).put("escrow_trade_id",id).put("escrow_provider",provider)
                     checkout.delivery?.let {request.put("delivery_request",it.json())}
+                    checkout.fulfillment?.let { request.put("fulfillment",it.wire) }
+                    if (checkout.consumeBasket) request.put("consume_basket",true)
                     model.escrowSend(request,owner)
-                    val order=existing() ?: error("Could not find the saved order.")
-                    orderCreated(order.id)
-                    order.id
                 }
+                val order = previous ?: existing() ?: error("Could not find the saved order.")
+                if (checkout.resumeOrder == null) orderCreated(order.id)
+                order.id
             }
             "acceptOrder"->{
                 check(enabled && trade!=null && args.getString("trade_id")==trade)

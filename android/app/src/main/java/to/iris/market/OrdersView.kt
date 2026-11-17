@@ -18,6 +18,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -32,6 +34,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -49,6 +52,9 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.UUID
 
+private data class BasketEscrowReview(val line: BasketLine, val note: String, val fulfillment: OrderFulfillment)
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable fun OrdersView(state: MarketSnapshot, model:MarketModel, busy:Boolean, openOrder: (String) -> Unit) {
     // Open on the list holding the latest activity, so a new sale is not hidden behind an empty Purchases list.
     // A waiting basket keeps Purchases open.
@@ -73,7 +79,27 @@ import java.util.UUID
     val orders = if (historyTab) sectionOrders.filter { period.includes(it.createdAt) } else sectionOrders
     val basketShown = tab == "purchases" && state.basket.isNotEmpty()
     var checkoutSeller by remember { mutableStateOf<String?>(null) }
-    checkoutSeller?.let { seller -> state.basket.firstOrNull { it.seller == seller }?.let { group -> BasketCheckout(group, state, model, busy, close = { checkoutSeller = null }) { id -> checkoutSeller = null; if (id != null) openOrder(id) } } ?: run { checkoutSeller = null } }
+    var basketEscrow by remember { mutableStateOf<BasketEscrowReview?>(null) }
+    val escrowReview = basketEscrow
+    if (escrowReview != null) {
+        // The core consumes the ordered basket line before the provider invitation is sent.
+        // Keep the review alive until the escrow flow closes, even if the basket is now empty.
+        ModalBottomSheet(onDismissRequest = { basketEscrow = null }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = Cream) {
+            OrderReview(escrowReview.line.listing, state, model, busy, escrowReview.line.quantity, escrowReview.note, escrowReview.fulfillment) { id ->
+                basketEscrow = null
+                if (id != null) { checkoutSeller = null; openOrder(id) }
+            }
+        }
+    } else checkoutSeller?.let { seller ->
+        val currentGroup = state.basket.firstOrNull { it.seller == seller }
+        LaunchedEffect(seller, currentGroup == null) { if (currentGroup == null) checkoutSeller = null }
+        currentGroup?.let { group ->
+            BasketCheckout(group, state, model, busy, close = { checkoutSeller = null }, escrow = { basketEscrow = it }) { id ->
+                checkoutSeller = null
+                if (id != null) openOrder(id)
+            }
+        }
+    }
     Column(Modifier.fillMaxSize().padding(horizontal = 22.dp)) {
         Text("Orders", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.padding(top = 15.dp, bottom = 10.dp))
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -139,7 +165,7 @@ import java.util.UUID
                                 val quantity = { value: Int -> model.command(JSONObject().put("type", "set_basket_quantity").put("id", line.listing.id).put("quantity", value.coerceIn(0, 999))) }
                                 OutlinedIconButton(enabled = !busy, onClick = { quantity(line.quantity - 1) }) { Icon(if (line.quantity == 1) Icons.Filled.Delete else Icons.Filled.Remove, if (line.quantity == 1) "Remove ${line.listing.title}" else "One fewer ${line.listing.title}") }
                                 Text("${line.quantity}", style = MaterialTheme.typography.titleMedium, modifier = Modifier.semantics { contentDescription = "Quantity ${line.quantity}" })
-                                OutlinedIconButton(enabled = !busy, onClick = { quantity(line.quantity + 1) }) { Icon(Icons.Filled.Add, "One more ${line.listing.title}") }
+                                OutlinedIconButton(enabled = !busy && line.quantity < 999, onClick = { quantity(line.quantity + 1) }) { Icon(Icons.Filled.Add, "One more ${line.listing.title}") }
                             }
                         }
                     }
@@ -152,15 +178,25 @@ import java.util.UUID
 }
 
 /** Reviews one seller's basket before it becomes an order request. */
-@Composable private fun BasketCheckout(group: BasketGroup, state: MarketSnapshot, model: MarketModel, busy: Boolean, close: () -> Unit, done: (String?) -> Unit) {
+@Composable private fun BasketCheckout(group: BasketGroup, state: MarketSnapshot, model: MarketModel, busy: Boolean, close: () -> Unit, escrow: (BasketEscrowReview) -> Unit, done: (String?) -> Unit) {
     var note by remember(group.seller) { mutableStateOf("") }
     var error by remember(group.seller) { mutableStateOf<String?>(null) }
+    var fulfillment by remember(group.seller) { mutableStateOf(OrderFulfillment.MERCHANT_DELIVERY) }
+    val goodsOrder = group.items.all { it.listing.isGoodsOffer }
     AlertDialog(onDismissRequest = close, title = { Text("${group.count} items") }, text = {
         Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             UserRow(state.people[group.seller] ?: PublicPerson.unnamed(group.seller), "Seller")
             group.items.forEach { line -> Row(Modifier.fillMaxWidth()) { Text("${line.quantity} × ${line.listing.title}", Modifier.weight(1f)); Text(line.formattedTotal) } }
             group.total?.let { total -> Row(Modifier.fillMaxWidth()) { Text("Total", Modifier.weight(1f), fontWeight = FontWeight.SemiBold); Text(total.formatted, fontWeight = FontWeight.SemiBold) } }
+            if (goodsOrder) FulfillmentChoice(fulfillment) { fulfillment = it }
             OutlinedTextField(note, { note = it.take(2000) }, label = { Text("Note · optional") }, modifier = Modifier.fillMaxWidth(), minLines = 2)
+            val eligible = group.items.filter { it.listing.acceptsEscrowOrder }
+            if (eligible.isNotEmpty() && group.items.size > 1) Text("Escrow orders cover one listing at a time. Other items stay in your basket.", style = MaterialTheme.typography.bodySmall)
+            eligible.forEach { line ->
+                TextButton(enabled = !busy && !state.demo, onClick = { escrow(BasketEscrowReview(line, note.trim(), fulfillment)) }) {
+                    Text(if (group.items.size == 1) "Use escrow" else "Use escrow for ${line.listing.title}")
+                }
+            }
             Text("The seller will confirm your order. No payment is taken here.", color = Muted, style = MaterialTheme.typography.bodySmall)
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         }
@@ -168,21 +204,41 @@ import java.util.UUID
         Button(enabled = !busy && !state.demo, onClick = {
             error = null
             val existing = state.orders.map { it.id }.toSet()
-            model.orderCommand(JSONObject().put("type", "request_basket_order").put("seller", group.seller).put("note", note.trim()),
+            val request = JSONObject().put("type", "request_basket_order").put("seller", group.seller).put("note", note.trim())
+            if (goodsOrder) request.put("fulfillment", fulfillment.wire)
+            model.orderCommand(request,
                 onSuccess = { done(model.state.value.orders.firstOrNull { it.id !in existing && it.buyer == state.publicKey && it.seller == group.seller }?.id) },
                 onError = { error = it })
         }) { Text("Request order") }
     }, dismissButton = { TextButton(onClick = close) { Text("Cancel") } })
 }
 
-@Composable fun OrderReview(listing: Listing, state: MarketSnapshot, model: MarketModel, busy: Boolean, done: (String?) -> Unit) {
-    var quantity by remember(listing.id) { mutableStateOf("1") }
-    var note by remember(listing.id) { mutableStateOf("") }
+@Composable private fun FulfillmentChoice(selected: OrderFulfillment, choose: (OrderFulfillment) -> Unit) {
+    Column {
+        Text("How would you like to receive it?", style = MaterialTheme.typography.titleMedium)
+        OrderFulfillment.entries.forEach { choice ->
+            Row(Modifier.fillMaxWidth().selectable(choice == selected, role = Role.RadioButton, onClick = { choose(choice) })
+                .padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                RadioButton(selected = choice == selected, onClick = null)
+                Spacer(Modifier.width(10.dp))
+                Text(choice.label)
+            }
+        }
+    }
+}
+
+@Composable fun OrderReview(listing: Listing, state: MarketSnapshot, model: MarketModel, busy: Boolean,
+    basketQuantity: Int? = null, initialNote: String = "", initialFulfillment: OrderFulfillment = OrderFulfillment.MERCHANT_DELIVERY,
+    done: (String?) -> Unit) {
+    var quantity by remember(listing.id) { mutableStateOf((basketQuantity ?: 1).toString()) }
+    var note by remember(listing.id) { mutableStateOf(initialNote) }
+    var fulfillment by remember(listing.id) { mutableStateOf(initialFulfillment) }
     var pickup by remember(listing.id){mutableStateOf(OrderDeliveryPlace("Pickup"))}
     var destination by remember(listing.id){mutableStateOf(OrderDeliveryPlace("Destination"))}
     var error by remember { mutableStateOf<String?>(null) }
-    val canUseEscrow=!state.demo && JSONObject(state.settings).optBoolean("escrow_ui") && listing.escrow?.trade=="goods"
-    var useEscrow by remember(listing.id) {mutableStateOf(false)}
+    val canUseEscrow = !state.demo && listing.acceptsEscrowOrder
+    val escrowEnabled = JSONObject(state.settings).optBoolean("escrow_ui")
+    var useEscrow by remember(listing.id) { mutableStateOf(basketQuantity != null) }
     var checkout by remember(listing.id) {mutableStateOf<EscrowCheckout?>(null)}
     var createdOrder by remember(listing.id) {mutableStateOf<String?>(null)}
     checkout?.let { selected ->
@@ -193,18 +249,20 @@ import java.util.UUID
     }
     Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).imePadding().padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Review order", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+            Text(if (basketQuantity != null) "Review escrow order" else "Review order", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
             TextButton(onClick = { done(null) }) { Text("Cancel") }
         }
         Text(listing.title, style = MaterialTheme.typography.headlineSmall)
         Text(listing.displayPrice, style = MaterialTheme.typography.titleLarge)
         UserRow(state.people[listing.author] ?: PublicPerson.unnamed(listing.author))
-        MarketField(quantity, { quantity = it.filter(Char::isDigit).take(3) }, "Quantity", keyboard = KeyboardType.Number)
+        if (basketQuantity == null) MarketField(quantity, { quantity = it.filter(Char::isDigit).take(3) }, "Quantity", keyboard = KeyboardType.Number)
+        else Text("Quantity · $basketQuantity")
+        if (listing.isGoodsOffer) FulfillmentChoice(fulfillment) { fulfillment = it }
         MarketField(note, { note = it.take(2000) }, "Note · optional", lines = 3)
-        if(listing.category.lowercase()=="transport"||NativeTransportType.classify(listing.tags)!=null){PrivateDeliveryPlaceField(pickup,{pickup=it});PrivateDeliveryPlaceField(destination,{destination=it})}
-        if(canUseEscrow) Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically){
+        if(listing.isTransport){PrivateDeliveryPlaceField(pickup,{pickup=it});PrivateDeliveryPlaceField(destination,{destination=it})}
+        if(canUseEscrow && basketQuantity == null) Row(Modifier.fillMaxWidth().toggleable(useEscrow, role = Role.Switch) { useEscrow = it }.padding(vertical = 8.dp),verticalAlignment=Alignment.CenterVertically){
             Text("Use escrow",Modifier.weight(1f))
-            Switch(checked=useEscrow,onCheckedChange={useEscrow=it})
+            Switch(checked=useEscrow,onCheckedChange=null)
         }
         Text(if(canUseEscrow && useEscrow)"Choose a provider next. The seller and provider each review your request before anyone pays." else "The seller will confirm your order. No payment is taken here.", color = Muted, style = MaterialTheme.typography.bodySmall)
         error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
@@ -212,15 +270,22 @@ import java.util.UUID
             error = null
             runCatching {
                 val request=JSONObject().put("type", "request_order").put("listing_id", listing.id).put("quantity", quantity.toInt()).put("note", note.trim())
-                val delivery=if(listing.category.lowercase()=="transport"||NativeTransportType.classify(listing.tags)!=null)OrderDeliveryRequest(pickup,destination) else null
+                if (listing.isGoodsOffer) request.put("fulfillment", fulfillment.wire)
+                val delivery=if(listing.isTransport)OrderDeliveryRequest(pickup,destination) else null
                 delivery?.let {request.put("delivery_request",it.json())}
                 if(canUseEscrow && useEscrow){
-                    checkout=EscrowCheckout(quantity.toInt(),note.trim(),delivery)
+                    val selected = EscrowCheckout(quantity.toInt(), note.trim(), delivery, fulfillment = fulfillment.takeIf { listing.isGoodsOffer }, consumeBasket = basketQuantity != null)
+                    if (escrowEnabled) checkout = selected
+                    else model.orderCommand(JSONObject().put("type","set_settings").put("settings",JSONObject(state.settings).put("escrow_ui",true)),
+                        onSuccess = { checkout = selected }, onError = { error = it })
                     return@runCatching
                 }
-                model.orderCommand(request,onSuccess = { done(model.state.value.orders.filter { order -> order.buyer == state.publicKey && order.items.any { it.id == listing.id } }.maxByOrNull { it.createdAt }?.id) },onError = { error = it })
+                val existing = state.orders.mapTo(mutableSetOf()) { it.id }
+                model.orderCommand(request,onSuccess = { done(model.state.value.orders.firstOrNull { order -> order.id !in existing && order.buyer == state.publicKey && order.items.any { it.id == listing.id } }?.id) },onError = { error = it })
             }.onFailure {error=it.message?:"Enter pickup and destination."}
-        }, modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(16.dp)) { Text(if(canUseEscrow && useEscrow)"Choose escrow provider" else NativeTransportType.classify(listing.tags)?.requestLabel ?: "Request order") }
+        }, modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(16.dp)) {
+            Text(if (canUseEscrow && useEscrow) (if (escrowEnabled) "Choose escrow provider" else "Enable escrow and choose provider") else NativeTransportType.classify(listing.tags)?.requestLabel ?: "Request order")
+        }
     }
 }
 
@@ -306,18 +371,22 @@ import java.util.UUID
         if(participant)TextButton(onClick={model.command(JSONObject().put("type","contact").put("author",if(seller)order.buyer else order.seller)){showingChat=true}}){Text("Message")}
         order.deliveryOrderId?.let {TextButton(onClick={openOrder(it)}){Text("Open delivery order")}}
         order.sourceOrderId?.let {TextButton(onClick={openOrder(it)}){Text("Open product order")}}
-        if(order.buyer==state.publicKey&&order.status in listOf("accepted","in-transit")&&order.deliveryRequest==null&&order.deliveryOrderId==null&&order.shipment.stops.isNotEmpty()&&order.shipment.stops.none {it.courierPubkey!=null})Button(enabled=!busy,onClick={arrangingDelivery=true},modifier=Modifier.fillMaxWidth()){Text("Arrange delivery")}
+        val pickup = order.fulfillment == OrderFulfillment.PICKUP.wire
+        OrderFulfillment.entries.firstOrNull { it.wire == order.fulfillment }?.let { Text(it.label, style = MaterialTheme.typography.titleMedium) }
+        if (order.canBookCourier(state.publicKey)) Button(enabled = !busy, onClick = { arrangingDelivery = true }, modifier = Modifier.fillMaxWidth()) {
+            Text(if (seller) "Book a courier" else "Arrange delivery")
+        }
 
         if (order.sync == "queued") Text("Waiting to send", color = Muted, style = MaterialTheme.typography.bodySmall)
         error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         if (!order.terminal) {
             if (seller && order.status == "requested" && order.escrowTradeId == null) Button(enabled = !busy, onClick = { update(JSONObject().put("status", "accepted")) }, modifier = Modifier.fillMaxWidth()) { Text("Accept order") }
-            if (seller && order.status == "accepted") Button(enabled = !busy, onClick = { update(JSONObject().put("status", "in-transit")) }, modifier = Modifier.fillMaxWidth()) { Text("Mark on the way") }
-            if (participant && order.status in listOf("accepted", "in-transit")) OutlinedButton(enabled = !busy, onClick = { update(JSONObject().put("status", "delivered")) }, modifier = Modifier.fillMaxWidth()) { Text("Mark delivered") }
+            if (seller && order.status == "accepted" && !pickup) Button(enabled = !busy, onClick = { update(JSONObject().put("status", "in-transit")) }, modifier = Modifier.fillMaxWidth()) { Text("Mark on the way") }
+            if (participant && order.status in listOf("accepted", "in-transit")) OutlinedButton(enabled = !busy, onClick = { update(JSONObject().put("status", "delivered")) }, modifier = Modifier.fillMaxWidth()) { Text(if (pickup) "Mark collected" else "Mark delivered") }
         }
         HorizontalDivider(color = Line)
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Delivery", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+            Text(if (pickup) "Pickup details" else "Delivery", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
             if (seller && !order.terminal && order.status != "requested") TextButton(onClick = { editRoute = true }) { Text("Edit route") }
         }
         ArrivalEstimate(order.shipment.eta, order.status)
@@ -325,7 +394,13 @@ import java.util.UUID
             ShipmentMapView(order.shipment, Modifier.fillMaxWidth().height(240.dp))
             Text("Stops joined directly; not driving directions.", color = Muted, style = MaterialTheme.typography.labelSmall)
         }
-        if (order.shipment.stops.isEmpty()) Text(if (seller) "Add delivery details after accepting the order." else "Delivery details will appear here.", color = Muted)
+        if (order.shipment.stops.isEmpty() && !order.terminal) Text(when {
+            pickup -> "Agree on a time and place in your private order chat."
+            order.fulfillment == OrderFulfillment.MERCHANT_DELIVERY.wire && !seller -> "The seller will arrange delivery. Share the destination in your private order chat."
+            seller && order.status == "requested" -> "Add delivery details after accepting the order."
+            seller -> "Add stops or tracking details in Edit route."
+            else -> "Delivery details will appear here."
+        }, color = Muted)
         order.shipment.stops.forEachIndexed { index, stop ->
             Surface(color = White, shape = RoundedCornerShape(18.dp)) {
                 Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {

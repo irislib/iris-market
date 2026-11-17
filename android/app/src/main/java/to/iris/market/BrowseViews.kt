@@ -328,6 +328,7 @@ private fun rememberListLayout(): MutableState<Boolean> {
         Spacer(Modifier.height(24.dp))
         if(demo) Text("Sample listing · Preview stays on this device.",color=Muted,style=MaterialTheme.typography.bodySmall)
         else if(listing.mine) Text(if(listing.delivery == "queued") "Your listing · Waiting to send" else if(listing.delivery == "failed") "Your listing · Not sent" else "Your listing",color=Muted,style=MaterialTheme.typography.bodySmall)
+        else if(listing.acceptsEscrowOrder) Text("Escrow available at checkout", color=Forest, style=MaterialTheme.typography.bodyMedium)
         Spacer(Modifier.height(14.dp))
         Row(horizontalArrangement=Arrangement.spacedBy(10.dp)) {
             OutlinedButton(onClick={model.save(listing.id)},modifier=Modifier.weight(1f).height(51.dp),shape=RoundedCornerShape(15.dp)) {

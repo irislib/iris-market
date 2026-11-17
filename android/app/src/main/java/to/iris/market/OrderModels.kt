@@ -45,6 +45,11 @@ data class OrderDeliveryRequest(val pickup:OrderDeliveryPlace,val destination:Or
 }
 data class OrderPayment(val mint:String,val amount:String,val unit:String,val status:String)
 data class PickupAuthorization(val courierPubkey:String,val reference:String)
+enum class OrderFulfillment(val wire: String, val label: String) {
+    MERCHANT_DELIVERY("merchant-delivery", "Seller delivery"),
+    PICKUP("pickup", "Pickup"),
+    BUYER_COURIER("buyer-courier", "Buyer-arranged courier");
+}
 data class MarketOrder(
     val id: String, val buyer: String, val seller: String, val items: List<OrderItem>, val note: String,
     val status: String, val createdAt: Long, val updatedAt: Long, val shipment: Shipment,
@@ -52,7 +57,7 @@ data class MarketOrder(
     val displayPrice:PriceDisplay?=null,val payment:OrderPayment?=null,val deliveryRequest:OrderDeliveryRequest?=null,val pickupAuthorization:PickupAuthorization?=null,val sourceOrderId:String?=null,val deliveryOrderId:String?=null,
     val escrowTradeId:String?=null,val escrowProvider:String?=null,
     /** A proxied thumbnail of the ordered item from the core. */
-    val displayImage:String?=null
+    val displayImage:String?=null, val fulfillment:String?=null
 ) {
     val formattedPrice:String get() {
         val display=displayPrice?:return items.firstOrNull()?.displayPrice?:"Negotiable"
@@ -73,6 +78,15 @@ data class MarketOrder(
     val title: String get() = items.joinToString { it.title }.ifBlank { "Order" }
     val statusLabel: String get() = when(status) { "requested" -> "Requested"; "accepted" -> "Accepted"; "in-transit" -> "On the way"; "delivered" -> "Delivered"; "cancelled" -> "Cancelled"; else -> "Updating" }
     fun handlesDelivery(owner: String) = (seller==owner&&deliveryRequest!=null)||shipment.stops.any { it.courierPubkey == owner || seller == owner }
+    fun canBookCourier(owner: String): Boolean {
+        if (status !in setOf("accepted", "in-transit") || deliveryRequest != null || deliveryOrderId != null ||
+            pickupAuthorization != null || shipment.stops.any { it.courierPubkey != null }) return false
+        return when (fulfillment) {
+            OrderFulfillment.MERCHANT_DELIVERY.wire -> owner == seller
+            null, OrderFulfillment.BUYER_COURIER.wire -> owner == buyer && shipment.stops.isNotEmpty()
+            else -> false
+        }
+    }
     companion object {
         fun parse(value: JSONObject): MarketOrder {
             val shipment = value.optJSONObject("shipment") ?: JSONObject()
@@ -89,7 +103,7 @@ data class MarketOrder(
                 value.optJSONObject("payment")?.let {OrderPayment(it.getString("mint"),it.getString("amount"),it.getString("unit"),it.getString("status"))},
                 value.optJSONObject("deliveryRequest")?.let {OrderDeliveryRequest.parse(it)},
                 value.optJSONObject("pickupAuthorization")?.let {PickupAuthorization(it.getString("courierPubkey"),it.getString("reference"))},value.textOrNull("sourceOrderId"),value.textOrNull("deliveryOrderId"),
-                value.textOrNull("escrowTradeId"), value.textOrNull("escrowProvider"), value.textOrNull("display_image"))
+                value.textOrNull("escrowTradeId"), value.textOrNull("escrowProvider"), value.textOrNull("display_image"), value.textOrNull("fulfillment"))
         }
         private fun coordinates(value: JSONArray?): List<Double>? = value?.takeIf { it.length() == 2 }?.let { listOf(it.optDouble(0), it.optDouble(1)) }?.takeIf { it.all(Double::isFinite) && kotlin.math.abs(it[0]) <= 180 && kotlin.math.abs(it[1]) <= 90 }
     }

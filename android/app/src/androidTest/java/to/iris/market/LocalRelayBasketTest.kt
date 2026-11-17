@@ -90,10 +90,21 @@ class LocalRelayBasketTest {
             capture("orders")
             compose.onNodeWithText("Request order").performClick()
             compose.onNodeWithText("3 items").assertExists()
+            args.getString("basketEscrowListing")?.let { title ->
+                compose.onNodeWithText("Use escrow for $title").performScrollTo().performClick()
+                compose.onNodeWithText("Review escrow order").assertExists()
+                compose.onNodeWithText("Quantity · 2").assertExists()
+                compose.onNodeWithText("Enable escrow and choose provider").performScrollTo().assertIsEnabled()
+                compose.onNodeWithText("Cancel").performScrollTo().performClick()
+                compose.onNodeWithText("3 items").assertExists()
+                assertEquals(3, model.state.value.basket.single().count)
+            }
+            compose.onNodeWithText("Pickup").performScrollTo().performClick().assertIsSelected()
             compose.onAllNodesWithText("Request order").filterToOne(hasClickAction() and hasAnyAncestor(isDialog())).performClick()
             compose.waitUntil(20_000) { opened != null }
             val order = model.state.value.orders.single { it.id == opened }
             assertEquals(listOf(first to 1, second to 2), order.items.map { it.title to it.quantity })
+            assertEquals("pickup", order.fulfillment)
             assertEquals(emptyList<BasketGroup>(), model.state.value.basket)
         } finally {
             store.clear()

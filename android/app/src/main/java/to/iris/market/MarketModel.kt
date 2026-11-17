@@ -40,6 +40,10 @@ data class Listing(
     val eventId: String = "", val externalOrder: ExternalBitcoinOrder? = null
 ) {
     val isBitcoinOffer: Boolean get() = externalOrder != null || escrow?.trade == "bitcoin_fiat"
+    val isTransport: Boolean get() = category.trim().equals("transport", ignoreCase = true) || NativeTransportType.classify(tags) != null
+    val isGoodsOffer: Boolean get() = side == "offer" && !isBitcoinOffer && !isTransport &&
+        (escrow?.trade == "goods" || category.trim().lowercase() !in setOf("services", "service", "work", "digital"))
+    val acceptsEscrowOrder: Boolean get() = isGoodsOffer && status == "active" && !mine && escrow?.trade == "goods"
     val reviewAddress: String get() = if(isBitcoinOffer) id else "30402:" + id
     val matchesSearch: Boolean get() = externalOrder != null || relevanceShow == true
     val localSearchRevision: String get() {

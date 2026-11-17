@@ -6,8 +6,8 @@ export interface BasketGroup {seller: string; items: BasketItem[]}
 type Storage = Pick<globalThis.Storage, 'getItem' | 'setItem' | 'removeItem'>;
 
 const key = (owner: string) => `market-basket-v1/${owner || 'guest'}`;
-const keep = ({id, eventId, author, title, price, currency, side, status, expiration, imageUrl, category, escrow}: OrderListing): OrderListing =>
-  ({id, eventId, author, title, price, currency, side, status, expiration, imageUrl, category, escrow});
+const keep = ({id, eventId, author, title, price, currency, side, status, expiration, imageUrl, category, tags, escrow}: OrderListing): OrderListing =>
+  ({id, eventId, author, title, price, currency, side, status, expiration, imageUrl, category, tags, escrow});
 
 /**
  * A local, per-profile basket grouped by seller: each group becomes one order request.

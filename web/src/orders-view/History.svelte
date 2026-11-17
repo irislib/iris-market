@@ -4,6 +4,7 @@
   import type {OrdersState} from './state.svelte.ts'
   import {ORDER_PERIODS, ORDER_STATUS_FILTERS, orderTotals} from './summary.ts'
   import {linePrice, orderPrice} from './summary.ts'
+  import {offersGoodsEscrow} from '../orders.ts'
   import Person from './Person.svelte'
 
   let {orders: s}: {orders: OrdersState} = $props()
@@ -40,6 +41,9 @@
               </span>
               <span>{linePrice({...item.listing, quantity: item.quantity}, value => s.price(value))}</span>
             </div>
+            {#if s.escrow && item.listing.author !== s.owner() && offersGoodsEscrow(item.listing)}
+              <button type="button" class="text-button" aria-label={'Buy ' + item.listing.title + ' with escrow'} onclick={() => s.buy(item.listing, {items:[item], owner:s.owner() || ''}, true)}>Buy {group.items.length > 1 ? item.listing.title + ' ' : ''}with escrow</button>
+            {/if}
           {/each}
           {#if group.items.length > 1}<p class="order-basket-row order-basket-total"><span>Total</span><span>{orderPrice({items: group.items.map(item => ({...item.listing, quantity: item.quantity}))}, value => s.price(value))}</span></p>{/if}
           <button type="button" class="button primary" onclick={() => s.checkoutBasket(group.seller)}>Request order</button>

@@ -27,7 +27,7 @@ function fixture({signedOut=false,delivered=false,eta=undefined,buyerView=false,
   let state={status:signedOut?'signed-out':'ready',ownerPubkey:signedOut?undefined:buyerView?buyer:courier,orders:[],conversations:[]},reads=0,signIns=0;
   const listeners=new Set(),updates=[],reviews=[],announced=[],deliveries=[],payments=[];
   const job={id:'job',buyer,seller,payment,items:[{id:'item',title:'Private parcel',price:'10',currency:'EUR',quantity:1}],status:delivered?'delivered':'accepted',createdAt:100,updatedAt:100,shipment:{eta,stops:[{id:'pickup',label:'Pickup',address:'Private pickup',status:'pending',...(buyerView?{}:{courierPubkey:courier})}]},archived:false,sync:'queued',locationFresh:false};state.orders=[job];
-  const account={state:()=>state,showAccount:()=>signIns++,closeAccount(){},onState:fn=>{listeners.add(fn);return()=>listeners.delete(fn);},messaging:{requestOrder,requestDelivery:async(id,service,destination)=>{deliveries.push({id,service,destination});const result={...job,id:'delivery',seller:service.author,deliveryRequest:{pickup:job.shipment.stops[0],destination}};state.orders.push(result);return result;},updateOrder:async(id,patch)=>{updates.push({id,patch});}}};
+  const account={state:()=>state,showAccount:()=>signIns++,closeAccount(){},onState:fn=>{listeners.add(fn);return()=>listeners.delete(fn);},messaging:{requestOrder,requestDelivery:async(id,service,destination,pickup)=>{deliveries.push({id,service,destination,pickup});const result={...job,id:'delivery',seller:service.author,deliveryRequest:{pickup:job.shipment.stops[0],destination}};state.orders.push(result);return result;},updateOrder:async(id,patch)=>{updates.push({id,patch});}}};
   const page=document.createElement('main');document.body.append(page);
   const ui=setupOrders({account,page,escrow,basket,onPay:order=>payments.push(order),onReview:key=>reviews.push(key),courier:{getListings:()=>{reads++;return[...offers,{id:'public',author:seller,title:'Public parcel request',tags:['parcel'],category:'transport',side:'request',status:'active'}];},onListing(){},onAnnounce:value=>announced.push(value)}});
   return{ui,page,job,updates,reviews,announced,deliveries,payments,get reads(){return reads;},get signIns(){return signIns;},setState:patch=>{state={...state,...patch};for(const fn of listeners)fn(state);},cleanup(){window.dispatchEvent(new window.Event('pagehide'));page.remove();}};
@@ -135,9 +135,9 @@ test('escrow checkout preserves the draft, requests no direct order, and respond
     const quantity=inputs.find(el=>el.type==='number'),note=inputs.find(el=>el.tagName==='TEXTAREA'),protect=inputs.find(el=>el.type==='checkbox');
     assert(!protect.checked);quantity.value='3';quantity.dispatchEvent(new window.Event('input',{bubbles:true}));note.value='Pickup on Saturday';protect.checked=true;protect.dispatchEvent(new window.Event('change',{bubbles:true}));flushSync();
     assert(find(form,'Choose escrow provider'));submit(form);await settle();
-    assert.deepEqual(requests,[{quantity:3,note:'Pickup on Saturday'}]);assert(find(f.page,'Choose escrow provider').parentElement===form);
+    assert.deepEqual(requests,[{quantity:3,note:'Pickup on Saturday',fulfillment:'merchant-delivery'}]);assert(find(f.page,'Choose escrow provider').parentElement===form);
     enabled=false;window.dispatchEvent(new window.Event('market-tools-change'));
-    assert.equal(protect.parentElement.hidden,true);assert.equal(protect.checked,false);assert.equal(quantity.value,'3');assert(find(form,'Request order'));
+    assert.equal(protect.checked,true);assert.equal(quantity.value,'3');assert(find(form,'Enable escrow and choose provider'));
   }finally{f.cleanup();}
 });
 
@@ -203,4 +203,38 @@ test('direct Buy leaves the basket intact and group checkout consumes only revie
     basket.add(pie); basket.add(tea); finish(); await settle();
     assert.deepEqual(basket.items().map(i => [i.listing.id, i.quantity]), [[pie.id, 1], [tea.id, 1]]);
   } finally { f.cleanup(); window.localStorage.clear(); }
+});
+
+test('a single item can enter protected checkout from a one-item or multi-item basket',async()=>{
+  const basket=createBasket(window.localStorage,()=>buyer), camera={id:seller+':camera',author:seller,title:'Camera',price:'5',currency:'EUR',side:'offer',escrow:{trade:'goods'}};
+  const jam={...camera,id:seller+':jam',title:'Jam',escrow:undefined};
+  let enabled=false, chosen, direct=0;
+  const escrow={showJobs:()=>enabled,canCheckout:()=>enabled,enableCheckout:()=>{enabled=true},checkout:async(listing,draft,saved)=>{chosen={listing,draft,saved}}};
+  const f=fixture({basket,buyerView:true,escrow,requestOrder:()=>{direct++}});
+  try {
+    basket.add(camera,2);f.ui.open(undefined,'purchases');
+    find(f.page,'Buy with escrow').click();assert(find(f.page,'Enable escrow and choose provider'));assert.equal(enabled,false);
+    find(f.page,'← Orders').click();basket.add(jam);f.ui.open(undefined,'purchases');
+    find(f.page,'Buy Camera with escrow').click();submit(f.page.querySelector('form.order-review'));await settle();
+    assert.equal(enabled,true);assert.equal(chosen.listing.id,camera.id);assert.equal(chosen.draft.quantity,2);assert.equal(chosen.draft.basket,undefined);
+    assert.equal(basket.count(),3);assert.equal(direct,0);
+    basket.add(camera);chosen.saved(f.job);await settle();
+    assert.deepEqual(basket.items().map(i=>[i.listing.id,i.quantity]),[[camera.id,1],[jam.id,1]]);
+  } finally {f.cleanup();window.localStorage.clear();}
+});
+
+test('merchant booking starts without a route, asks for both places and filters out product participants',async()=>{
+  const offer={id:courier+':delivery',author:courier,title:'Parcel service',side:'offer',category:'transport',tags:['parcel'],price:'3',currency:'EUR'};
+  const f=fixture({buyerView:true,offers:[offer,{...offer,id:buyer+':delivery',author:buyer,title:'Buyer service'}]});
+  try {
+    f.job.fulfillment='merchant-delivery';f.job.shipment.stops=[];f.setState({ownerPubkey:buyer});f.ui.open('job');
+    assert(!find(f.page,'Arrange delivery'));f.setState({ownerPubkey:seller});f.ui.open('job');
+    find(f.page,'Book a courier').click();assert(!find(f.page,'Buyer service'));assert.equal(f.deliveries.length,0);
+    const input=label=>f.page.querySelector('[aria-label="'+label+' address or meeting point"]');
+    input('Pickup').value='Shop door';input('Destination').value='Agreed meeting point';f.ui.refreshCourier();
+    f.page.querySelector('.order-service-option').click();assert(find(f.page,'This courier will receive the pickup and destination. Your buyer receives the courier’s identity and pickup code.'));
+    submit(f.page.querySelector('.order-delivery-form'));await settle();
+    assert.equal(f.deliveries.length,1);assert.equal(f.deliveries[0].pickup.address,'Shop door');assert.equal(f.deliveries[0].destination.address,'Agreed meeting point');
+    assert.equal(geo.calls.length,0);
+  } finally {f.cleanup();}
 });

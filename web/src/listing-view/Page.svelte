@@ -6,6 +6,7 @@
   import {listingPublishedAt} from '../listing-dates.ts'
   import {relativeExpiry} from '../expiry.ts'
   import {courierListingType} from '../transport-type.ts'
+  import {offersGoodsEscrow} from '../orders.ts'
   import {place} from '../svelte/place.ts'
   import {heroImage} from './hero.ts'
   import Share from './Share.svelte'
@@ -13,7 +14,7 @@
 
   let {listing, options}: {listing: ListingPresentation; options: ListingPageOptions} = $props()
   const saved = $derived(options.saved ?? false)
-  const {onSave = () => {}, onBuy = () => {}, onMessage = undefined, onAddToBasket = undefined, onViewBasket = undefined, priceNode, authorRow = () => null, isPreview = false, owner = undefined, onEdit = undefined, onCloseBitcoin = undefined, onToast = () => {}, draftPreview = false, localImage = undefined, discoverable = undefined} = options
+  const {onSave = () => {}, onBuy = () => {}, onBuyWithEscrow, onMessage = undefined, onAddToBasket = undefined, onViewBasket = undefined, priceNode, authorRow = () => null, isPreview = false, owner = undefined, onEdit = undefined, onCloseBitcoin = undefined, onToast = () => {}, draftPreview = false, localImage = undefined, discoverable = undefined} = options
 
   const hero = heroImage(listing, {draftPreview, localImage})
   let showingOriginal = $state(false)
@@ -97,6 +98,7 @@
       {#snippet actions()}
         <div class="detail-actions">
           {#if showBuy}<button class="button primary" onclick={() => onBuy(listing)}>{bitcoin ? (listing.side === 'request' ? 'Message buyer' : 'Message seller') : listing.side === 'request' ? 'Respond' : 'Buy'}</button>{/if}
+          {#if showBuy && onBuyWithEscrow && offersGoodsEscrow(listing)}<button class="button secondary" onclick={() => onBuyWithEscrow(listing)}>Buy with escrow</button>{/if}
           {#if showBuy && onAddToBasket && !bitcoin && listing.side === 'offer' && String(listing.price ?? '') !== ''}
             {#if inBasket && onViewBasket}<button class="button secondary" onclick={() => onViewBasket()}>View basket</button>
             {:else}<button class="button secondary" onclick={() => { inBasket = onAddToBasket(listing) !== false }}>Add to basket</button>{/if}

@@ -18,6 +18,6 @@ export function setupMarketplaceFlags(account:{state():{ownerPubkey?:string|null
     flags?.refresh();
     if(previous!==owner)window.dispatchEvent(new Event('market-tools-change'));
   }
-  account.onState(sync);window.addEventListener('storage',()=>{sync();window.dispatchEvent(new Event('market-tools-change'));});sync();
+  account.onState(sync);window.addEventListener('market-tools-change',()=>flags?.refresh());window.addEventListener('storage',()=>{sync();window.dispatchEvent(new Event('market-tools-change'));});sync();
   return preferences?.lastElementChild as HTMLElement|undefined;
 }

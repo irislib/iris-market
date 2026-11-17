@@ -866,7 +866,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], getPublicRela
       if((options?.escrowTradeId!=null || options?.escrowProvider!=null) && !marketplaceToolEnabled('escrow',account.owner))throw Error('Enable escrow in Settings to request an escrow order.');
       const order=await orders.request(listing,options);scheduleBackground();return order;
     },
-    async requestDelivery(sourceOrderId:string, serviceListing:OrderListing, destination:DeliveryPlace) { requireReady();const order=await orders.requestDelivery(sourceOrderId,serviceListing,destination);scheduleBackground();return order; },
+    async requestDelivery(sourceOrderId:string, serviceListing:OrderListing, destination:DeliveryPlace, pickup?:DeliveryPlace) { requireReady();const order=await orders.requestDelivery(sourceOrderId,serviceListing,destination,pickup);scheduleBackground();return order; },
     async updateOrder(id:string, patch:OrderPatch) { requireReady();const order=await orders.update(id,patch);await pruneOrderQueues();scheduleBackground();return order; },
     async archiveOrder(id, archived=true) { requireReady();return orders.archive(id,archived); },
     inviteUrl() { requireChat(); const invite = Invite.deserialize(runtime.getDelegateManager().getInvite().serialize()); invite.ownerPubkey = account.owner; return invite.getUrl(invitationBase(undefined)); },

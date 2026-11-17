@@ -48,6 +48,7 @@ export class OrdersState {
   selected = $state<string|undefined>();
   listing = $state.raw<any>();
   basketSelection = $state.raw<{items: BasketItem[]; owner: string}>();
+  withEscrow = false;
   busy = $state(false);
   error = $state('');
   announcement = $state('');
@@ -182,10 +183,10 @@ export class OrdersState {
     if (!this.dialog.open) this.dialog.showModal();
     this.syncUnread();
   }
-  buy(value, basketSelection?: {items: BasketItem[]; owner: string}) {
+  buy(value, basketSelection?: {items: BasketItem[]; owner: string}, withEscrow = false) {
     this.data = this.account.state();
-    if (!this.requestReady({ type: 'buy', listing: value, basketSelection })) return;
-    this.basketSelection = basketSelection;
+    if (!this.requestReady({ type: 'buy', listing: value, basketSelection, withEscrow })) return;
+    this.basketSelection = basketSelection; this.withEscrow = withEscrow;
     this.stopLocation(); this.dropMap(); this.listing = value; this.view = 'review'; this.selected = undefined; this.error = ''; this.render(); if (!this.dialog.open) this.dialog.showModal();
   }
   /** The tabs shown; also falls back from Escrow jobs once they are unavailable. */
@@ -264,9 +265,9 @@ export class OrdersState {
     this.renderVersion++; this.clearEditors();
     if (this.view === 'review' && this.listing?.category === 'transport') this.editors = [createDeliveryPlaceInput({label:'Pickup'}), createDeliveryPlaceInput({label:'Destination'})];
     if (this.view === 'delivery' && this.current() && this.courier) {
-      // Start from the destination already on the order, so the buyer only confirms it.
-      const stop = this.current().shipment.stops.at(-1), known = this.current().shipment.stops.length > 1 && stop?.address;
-      this.editors = [createDeliveryPlaceInput({label:'Destination', ...(known ? {value:{label:'Destination', address:stop.address, ...(stop.coordinates ? {coordinates:stop.coordinates} : {})}} : {})})];
+      const order = this.current(), stops = order.shipment.stops;
+      const place = (label:string, stop?:OrderView['shipment']['stops'][number]) => createDeliveryPlaceInput({label, ...(stop?.address ? {value:{label, address:stop.address, coordinates:stop.coordinates}} : {})});
+      this.editors = [...(order.seller === this.owner() ? [place('Pickup', stops[0])] : []), place('Destination', stops.length > 1 ? stops.at(-1) : undefined)];
     }
     this.renders++;
     flushSync();
@@ -280,7 +281,7 @@ export class OrdersState {
     const order = this.current(), sharing = this.sharing;
     const sharedStop = sharing && order?.shipment?.stops?.find(stop => stop.id === sharing.stopId && stop.status !== 'completed' && (order.seller === this.owner() || stop.courierPubkey === this.owner()));
     if (sharing && (!order || terminal(order) || !sharedStop || order.archived || document.visibilityState === 'hidden')) this.stopLocation();
-    if (this.pending && this.data.status === 'ready') { const intent = this.pending; this.pending = undefined; this.account.closeAccount?.(); if (intent.type === 'buy') this.buy(intent.listing, intent.basketSelection); else this.open(intent.id, intent.section); return; }
+    if (this.pending && this.data.status === 'ready') { const intent = this.pending; this.pending = undefined; this.account.closeAccount?.(); if (intent.type === 'buy') this.buy(intent.listing, intent.basketSelection, intent.withEscrow); else this.open(intent.id, intent.section); return; }
     // Orders that arrive after opening move an empty, unpicked tab to the one with news.
     if (this.autoTab && this.dialog.open && this.view === 'history' && !this.filteredOrders(this.tab).length) { const next = ['purchases', 'sales'].find(tab => this.tabUnread(tab)); if (next) this.tab = next; }
     // Preserve typing while private updates arrive in the background.

@@ -5,6 +5,7 @@
   import type {createDeliveryPlaceInput} from '../delivery-place-ui.ts'
   import {place} from '../svelte/place.ts'
   import Person from './Person.svelte'
+  import {goodsCheckout, offersGoodsEscrow, type Fulfillment} from '../orders.ts'
   import {linePrice, orderPrice} from './summary.ts'
   import type {OrdersState} from './state.svelte.ts'
 
@@ -17,14 +18,15 @@
   const firstQuantity = lines[0]?.quantity ?? 1
   const extra = lines.slice(1)
   const places = [...s.editors]
-  const escrowable = !!(escrow && listing?.escrow?.trade === 'goods' && listing.side === 'offer')
+  const escrowable = !!(escrow && !extra.length && listing && listing.author !== s.owner() && offersGoodsEscrow(listing))
+  const physical = listing && goodsCheckout(listing) && extra.every(item => goodsCheckout(item.listing))
+  let fulfillment = $state<Fulfillment>('merchant-delivery')
   let image = $state(listing ? imageUrl(listing.imageUrl, {width: 160}) || art(listing) : '')
   let fellBack = false
-  let protect = $state(false)
+  let protect = $state(s.withEscrow && escrowable)
   let quantity = $state<number | undefined>(firstQuantity)
   let note: HTMLTextAreaElement, title: HTMLElement
   const eligible = $derived.by(() => { void s.tools; return escrowable && escrow.canCheckout(listing) })
-  $effect.pre(() => { if (escrowable && !eligible) protect = false })
 
   function editor(anchor: HTMLElement, value: ReturnType<typeof createDeliveryPlaceInput>) {
     anchor.before(value.element)
@@ -36,7 +38,7 @@
     const count = Number(quantity), message = note.value.trim()
     if (!Number.isInteger(count) || count < 1 || count > 999) { (event.currentTarget as HTMLFormElement).reportValidity(); return }
     void s.perform(async () => {
-      const draft = {quantity: count, note: message, ...(extra.length ? {basket: extra.map(item => ({listing: item.listing, quantity: item.quantity}))} : {}), ...(places.length === 2 ? {deliveryRequest: {pickup: places[0].read(), destination: places[1].read()}} : {})}
+      const draft = {quantity: count, note: message, ...(physical ? {fulfillment} : {}), ...(extra.length ? {basket: extra.map(item => ({listing: item.listing, quantity: item.quantity}))} : {}), ...(places.length === 2 ? {deliveryRequest: {pickup: places[0].read(), destination: places[1].read()}} : {})}
       const saved = order => {
         if (selection) {
           s.basket?.consume([{id: listing.id, quantity: count}, ...extra.map(item => ({id: item.listing.id, quantity: item.quantity}))], selection.owner)
@@ -47,7 +49,7 @@
         s.announce('Order requested')
       }
       if (protect) {
-        if (!escrow?.canCheckout(listing)) throw Error('Enable escrow in Settings to use a provider.')
+        if (!escrow.canCheckout(listing)) escrow.enableCheckout(listing)
         await escrow.checkout(listing, draft, saved)
       } else saved(await account.messaging.requestOrder(listing, draft))
     })
@@ -77,11 +79,18 @@
         {#each lines as item (item.listing.id)}<p class="order-basket-row"><span>{item.quantity} × {item.listing.title}</span><span>{linePrice({...item.listing, quantity: item.quantity}, value => s.price(value))}</span></p>{/each}
       </div>
     {/if}
+    {#if physical}
+      <label class="order-field"><span>How would you like to receive your order?</span>
+        <select bind:value={fulfillment}><option value="merchant-delivery">Seller arranges delivery</option><option value="pickup">I’ll pick it up</option><option value="buyer-courier">I’ll book my own courier</option></select>
+      </label>
+      {#if fulfillment === 'merchant-delivery'}<p class="small muted">Agree on the address and delivery cost privately with the seller.</p>{/if}
+    {/if}
     <label class="order-field"><span>Message to the seller</span><textarea bind:this={note} value="" maxlength="2000" placeholder="Optional" rows="3"></textarea></label>
-    {#if escrowable && !extra.length}
-      <label class="checkbox-label" hidden={!eligible}><input type="checkbox" bind:checked={protect}><span>Use escrow</span></label>
+    {#if escrowable}
+      <label class="checkbox-label"><input type="checkbox" bind:checked={protect}><span>Use escrow</span></label>
+      {#if protect && !eligible}<p class="small muted">Choosing a provider turns on escrow for this profile.</p>{/if}
     {/if}
     <p class="small muted">The seller will confirm your request. No payment is taken here.</p>
-    <button type="submit" class="button primary" data-order-action disabled={s.busy || listing.author === s.owner()}>{protect ? 'Choose escrow provider' : 'Request order'}</button>
+    <button type="submit" class="button primary" data-order-action disabled={s.busy || listing.author === s.owner()}>{protect ? (eligible ? 'Choose escrow provider' : 'Enable escrow and choose provider') : 'Request order'}</button>
   </form>
 {/if}

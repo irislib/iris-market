@@ -1,19 +1,21 @@
 import '../../shared/escrow/trade.js';
 import '../../shared/escrow/screen.js';
 import {element as node} from './dom.ts';
+import {saveMarketplaceTool} from './marketplace-flags.ts';
+import {offersGoodsEscrow} from './orders.ts';
 import {marketplaceToolEnabled} from './marketplace-tools.ts';
 import {normalizePublicKey} from './social.ts';
 import {escrowCandidates,loadProfileMetadata} from './profiles.ts';
 import {advertisedProviders,findEscrowServices} from './escrow-directory.ts';
 import {getPublicRuntime} from './nostr-runtime.ts';
 import type {MarketListing} from './market.ts';
-import type {OrderView,DeliveryRequest} from './orders.ts';
+import type {OrderView,DeliveryRequest,Fulfillment} from './orders.ts';
 import {createUserName,nameFor,warmProfiles} from './people.ts';
 import {buildReviewDraft} from './reviews.ts';
 import {configuredLocalTestMint,DEFAULT_SUPPORTED_MINTS,mintUnitLabel} from './wallet/mints.ts';
 import {createSurface} from './surface.ts';
 
-type Checkout={quantity:number;note:string;deliveryRequest?:DeliveryRequest;provider?:string;resume?:boolean};
+type Checkout={quantity:number;note:string;deliveryRequest?:DeliveryRequest;fulfillment?:Fulfillment;provider?:string;resume?:boolean};
 type Selection={trade_id?:string;listing_id?:string;order?:Checkout};
 type ProviderDraft={title:string;side:'offer';category:'services';tags:string[]};
 type OpenOptions={onOrder?:(order:OrderView)=>void;maker?:string};
@@ -58,7 +60,7 @@ export function setupEscrowTrade({account,wallet,lookup,isPreview,relays,invento
           // Use the already reviewed listing. The ceremony separately verifies its signed revision.
           const listing=await lookup(args.listing_id);
           if(!listing||listing.author!==maker)throw Error('Reopen the listing to review this order.');
-          const order=await a.messaging.requestOrder(listing,{quantity:checkout.quantity,note:checkout.note,deliveryRequest:checkout.deliveryRequest,escrowProvider:args.provider,escrowTradeId:args.trade_id});
+          const order=await a.messaging.requestOrder(listing,{quantity:checkout.quantity,note:checkout.note,deliveryRequest:checkout.deliveryRequest,fulfillment:checkout.fulfillment,escrowProvider:args.provider,escrowTradeId:args.trade_id});
           activeTrade=args.trade_id;onOrder?.(order);return order.id;
         }
         case 'order':{
@@ -175,14 +177,20 @@ export function setupEscrowTrade({account,wallet,lookup,isPreview,relays,invento
       panel.append(entry(reviewing?'Review order and provider':'Open escrow · '+statusLabel(trade.status),{trade_id:id}));
     }
     else if(s.ownerPubkey===order.buyer&&order.status!=='cancelled')
-      panel.append(entry('Finish escrow invitation',{trade_id:id,listing_id:order.items[0].id,order:{quantity:order.items[0].quantity,note:order.note,deliveryRequest:order.deliveryRequest,provider:order.escrowProvider,resume:true}},{maker:order.seller}));
+      panel.append(entry('Finish escrow invitation',{trade_id:id,listing_id:order.items[0].id,order:{quantity:order.items[0].quantity,note:order.note,deliveryRequest:order.deliveryRequest,fulfillment:order.fulfillment,provider:order.escrowProvider,resume:true}},{maker:order.seller}));
     else {const status=document.createElement('p');status.textContent=order.status==='cancelled'?'Order cancelled':'Waiting for the buyer’s private invitation.';panel.append(status);}
     return panel;
   }
   /** Provider jobs waiting on this person: new invitations and requests for help. */
   const attention=()=>providerJobs().filter(t=>t.status==='Help requested'||!t.joined&&!['Release receipt','Refund receipt','Declined'].includes(t.status)).length;
   return {inbox,jobs,attention,locked,showJobs:()=>enabled()||providerJobs().length>0,linked,
-    canCheckout:(l:any)=>enabled()&&l.side==='offer'&&l.escrow?.trade==='goods'&&l.author!==account()?.state().ownerPubkey,
+    canCheckout:(l:any)=>enabled() && offersGoodsEscrow(l) && l.author!==account()?.state().ownerPubkey,
+    enableCheckout:(listing:any)=>{
+      const state=account()?.state();
+      if(isPreview() || state?.status!=='ready' || listing.author===state.ownerPubkey || !offersGoodsEscrow(listing))throw Error('Choose an available offer from another seller.');
+      saveMarketplaceTool('escrow',true,state.ownerPubkey);
+      window.dispatchEvent(new Event('market-tools-change'));
+    },
     checkout:(l:any,order:Checkout,onOrder:(order:OrderView)=>void)=>open({listing_id:l.id,order},{maker:l.author,onOrder}),
     entry:(l:any)=>enabled()&&l.escrow&&(l.side==='request'||l.escrow.trade==='bitcoin_fiat')&&l.author!==account()?.state().ownerPubkey?entry('Arrange escrow',{listing_id:l.id},{maker:l.author}):null,
     refresh:()=>running?.refresh()};

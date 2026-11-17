@@ -266,14 +266,14 @@ test('Buying listing inquiry uses the real card coordinate through NDR request a
  assert(!bus.frames.some(event=>JSON.stringify(event).includes(context.thread_id)||JSON.stringify(event).includes(buying.id)), 'Buying context stays inside encrypted rumors');
 });
 
-async function privatePickup(){
+async function privatePickup(fulfillment){
  const a=await book(buyer),b=await book(seller),c=await book(courier);
- const source=await a.book.request(listing);await b.book.receive(rumorFor(a.book,'request'),buyer);
+ const source=await a.book.request(listing,{fulfillment});await b.book.receive(rumorFor(a.book,'request'),buyer);
  await b.book.update(source.id,{status:'accepted'});await a.book.receive(rumorFor(b.book,'status'),seller);
  await b.book.update(source.id,{shipment:{stops:[{id:'pickup',label:'Shop',address:'Merchant shop',coordinates:[24,60]}]}});
  await a.book.receive(rumorFor(b.book,'route'),seller);return {a,b,c,id:source.id};
 }
-const transport={...listing,id:`${courier}:transport`,author:courier,title:'Transport'};
+const transport={...listing,id:`${courier}:transport`,author:courier,title:'Transport',category:'transport',tags:['parcel']};
 const destination={label:'Home',address:'Secret destination',coordinates:[25,61]};
 test('separate delivery uses exact private peers, collection reference, and local-only order links',async()=>{
  const {a,b,c,id}=await privatePickup();const delivery=await a.book.requestDelivery(id,transport,destination);
@@ -287,7 +287,7 @@ test('separate delivery uses exact private peers, collection reference, and loca
  assert.equal(b.book.state()[0].pickupAuthorization.courierPubkey,courier);
  assert.equal(c.book.state()[0].deliveryRequest.collection.reference,b.book.state()[0].pickupAuthorization.reference);
  assert.equal(c.book.state()[0].sourceOrderId,undefined);assert.equal(b.book.state()[0].deliveryRequest,undefined);
- await assert.rejects(b.book.update(id,{pickupAuthorization:{courierPubkey:courier,reference:'bad'}}),/Only the buyer/);
+ await assert.rejects(b.book.update(id,{pickupAuthorization:{courierPubkey:courier,reference:'bad'}}),/designated delivery organizer/);
  await assert.rejects(b.book.requestDelivery(id,transport,destination),/your accepted/);
  await assert.rejects(a.book.requestDelivery(id,transport,destination),/already/);
  await c.book.update(delivery.id,{status:'accepted'});
@@ -376,4 +376,44 @@ test('a basket orders several listings from one seller in a single order',async(
   const other={...listing,id:`${courier}:chair`,author:courier};
   assert.throws(()=>a.book.request(listing,{basket:[{listing:other,quantity:1}]}),/no longer available from this seller/);
   assert.throws(()=>a.book.request(listing,{basket:[{listing,quantity:1}]}),/appears once/);
+});
+
+test('merchant arranges a separate, private delivery only for a buyer who chose seller delivery',async()=>{
+  const a=await book(buyer), b=await book(seller), c=await book(courier);
+  const source=await a.book.request(listing,{fulfillment:'merchant-delivery'});
+  await b.book.receive(rumorFor(a.book,'request'),buyer);
+  await b.book.update(source.id,{status:'accepted'});await a.book.receive(rumorFor(b.book,'status'),seller);
+  const pickup={label:'Shop',address:'Merchant door'};
+  await assert.rejects(a.book.requestDelivery(source.id,transport,destination),/accepted/);
+  for(const bad of [{...transport,author:buyer},{...transport,tags:['passenger']}])await assert.rejects(b.book.requestDelivery(source.id,bad,destination,pickup),/separate parcel/);
+  const delivery=await b.book.requestDelivery(source.id,transport,destination,pickup);
+  const request=rumorFor(b.book,'request',courier),auth=rumorFor(b.book,'pickup',buyer);
+  for(const privateValue of [buyer,source.id,listing.title])assert(!JSON.stringify(request).includes(privateValue));
+  for(const privateValue of [destination.address,pickup.address,delivery.id])assert(!JSON.stringify(auth).includes(privateValue));
+  await c.book.receive(request,seller);await a.book.receive(auth,seller);
+  assert.equal(c.book.state()[0].deliveryRequest.collection.reference,a.book.state()[0].pickupAuthorization.reference);
+  assert.equal(c.book.state()[0].buyer,seller);assert.equal(a.book.state()[0].deliveryOrderId,undefined);
+  await assert.rejects(b.book.requestDelivery(source.id,transport,destination,pickup),/already/);
+  await assert.rejects(a.book.update(source.id,{pickupAuthorization:null}),/designated/);
+  const legacy=eventFor(b.book,'status');delete legacy.snapshot.fulfillment;
+  const original={order:source,clocks:{},archived:false};
+  assert.equal(applyOrderEnvelope(original,legacy,seller,buyer,1800000000).record.order.fulfillment,'merchant-delivery');
+  const alreadyAuthorized={order:a.book.state()[0],clocks:{},archived:false};
+  assert.deepEqual(applyOrderEnvelope(alreadyAuthorized,legacy,seller,buyer,1800000000).record.order.pickupAuthorization,alreadyAuthorized.order.pickupAuthorization);
+  legacy.snapshot.fulfillment='buyer-courier';assert.throws(()=>applyOrderEnvelope(original,legacy,seller,buyer,1800000000),/changed the order/);
+  const chosen=await privatePickup('pickup');
+  for(const who of [chosen.a,chosen.b])await assert.rejects(who.book.requestDelivery(chosen.id,transport,destination),/accepted/);
+  const own=await privatePickup('buyer-courier');
+  await assert.rejects(own.a.book.requestDelivery(own.id,transport,destination,pickup),/provided by the merchant/);
+  assert.equal((await own.a.book.requestDelivery(own.id,transport,destination)).buyer,buyer);
+});
+
+test('fulfillment can be chosen only for physical goods, including every item in a basket',async()=>{
+  const a=await book(buyer);
+  for(const patch of [{category:' Services '},{category:'digital'},{tags:['courier']},{category:'transport',escrow:{trade:'goods'}}]){
+    const other={...listing,...patch,id:seller+':other'};
+    assert.throws(()=>a.book.request(other,{fulfillment:'pickup'}),/physical goods/);
+    assert.throws(()=>a.book.request(listing,{fulfillment:'merchant-delivery',basket:[{listing:other,quantity:1}]}),/physical goods/);
+  }
+  assert.equal((await a.book.request({...listing,category:'services',escrow:{trade:'goods'}},{fulfillment:'pickup'})).fulfillment,'pickup');
 });

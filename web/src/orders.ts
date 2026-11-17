@@ -1,5 +1,6 @@
 import { getEventHash } from 'nostr-tools';
 import type { UnsignedEvent } from 'nostr-tools';
+import {courierListingType} from './transport-type.ts';
 import {localTestMint} from './wallet/mints.ts';
 import type { Vault } from './messaging/vault.ts';
 
@@ -15,16 +16,26 @@ const orderImage=(url:unknown):url is string=>typeof url==='string'&&url.length<
 export const MAX_ITEMS=20;
 export interface OrderItem {id:string;title:string;price:string;currency:string;quantity:number;eventId?:string;image?:string}
 export interface DeliveryPlace {label:string;address:string;coordinates?:Coordinates}
+export type Fulfillment='merchant-delivery'|'pickup'|'buyer-courier';
 export interface DeliveryRequest {pickup:DeliveryPlace;destination:DeliveryPlace;collection?:{merchant:string;reference:string}}
 export interface PickupAuthorization {courierPubkey:string;reference:string}
 export interface OrderPayment {mint:string;amount:string;unit:'sat';status:'requested'|'received'}
 export interface OrderEscrow {escrowTradeId?:string;escrowProvider?:string}
-export interface OrderRequestOptions extends OrderEscrow {quantity?:number;note?:string;deliveryRequest?:DeliveryRequest;
+export interface OrderRequestOptions extends OrderEscrow {quantity?:number;note?:string;deliveryRequest?:DeliveryRequest;fulfillment?:Fulfillment;
   /** Further listings from the same seller, ordered together. */
   basket?:Array<{listing:OrderListing;quantity:number}>}
-export interface Order extends OrderEscrow {payment?:OrderPayment;deliveryRequest?:DeliveryRequest;pickupAuthorization?:PickupAuthorization;id:string;buyer:string;seller:string;items:OrderItem[];note:string;status:OrderStatus;createdAt:number;updatedAt:number;shipment:Shipment;routeId:string}
+export interface Order extends OrderEscrow {payment?:OrderPayment;deliveryRequest?:DeliveryRequest;fulfillment?:Fulfillment;pickupAuthorization?:PickupAuthorization;id:string;buyer:string;seller:string;items:OrderItem[];note:string;status:OrderStatus;createdAt:number;updatedAt:number;shipment:Shipment;routeId:string}
 export interface OrderView extends Order {sourceOrderId?:string;deliveryOrderId?:string;archived:boolean;role:'buyer'|'seller'|'courier'|null;sync:'queued'|'sent';locationFresh:boolean}
-export interface OrderListing {id:string;category?:string;eventId?:string;imageUrl?:string;author:string;title:string;price:string|number;currency:string;side?:string;status?:string;expiration?:number;escrow?:{trade:string};externalOrder?:unknown}
+export interface OrderListing {id:string;category?:string;tags?:readonly string[];eventId?:string;imageUrl?:string;author:string;title:string;price:string|number;currency:string;side?:string;status?:string;expiration?:number;escrow?:{trade:string};externalOrder?:unknown}
+type CheckoutListing = Pick<OrderListing,'side'|'escrow'|'externalOrder'|'category'|'tags'|'expiration'|'status'>;
+export function goodsCheckout(listing:CheckoutListing) {
+  const category=listing.category?.trim().toLowerCase();
+  return listing.side==='offer' && !listing.externalOrder && category!=='transport' && !courierListingType(listing)
+    && (listing.escrow?.trade==='goods' || !['service','services','work','digital'].includes(category??''));
+}
+export function offersGoodsEscrow(listing:CheckoutListing) {
+  return listing.escrow?.trade==='goods' && goodsCheckout(listing) && listing.status!=='sold' && (!listing.expiration || listing.expiration>Date.now()/1000);
+}
 export type OrderPatch={payment:OrderPayment}|{pickupAuthorization:PickupAuthorization|null}|{status:OrderStatus}|{shipment:Shipment}|{stopId:string;status:StopStatus}|{location:{coordinates:Coordinates;stopId:string}|null};
 type EnvelopeBase={v:1;id:string;opId:string;seq:number;at:number;routeId?:string;snapshot?:Order};
 export type OrderEnvelope=EnvelopeBase&({action:'request';payload:Order}|{action:'payment';payload:OrderPayment}|{action:'pickup';payload:PickupAuthorization|null}|{action:'status';payload:{status:OrderStatus}}|{action:'route';payload:Shipment}|{action:'stop';payload:{stopId:string;status:StopStatus}}|{action:'location';payload:{stopId:string;coordinates:Coordinates}|null});
@@ -80,6 +91,10 @@ function pickupAuthorization(raw:unknown):PickupAuthorization {
   const value=raw as PickupAuthorization;if(!value||typeof value!=='object')fail('Invalid pickup authorization.');
   return {courierPubkey:pubkey(value.courierPubkey),reference:text(value.reference,80,'collection reference')};
 }
+export function deliveryOrganizer(order:Pick<Order,'fulfillment'|'buyer'|'seller'>):string|undefined {
+  if(order.fulfillment==='pickup')return undefined;
+  return order.fulfillment==='merchant-delivery'?order.seller:order.buyer;
+}
 function deliveryRequest(raw:unknown):DeliveryRequest {
   const value=raw as DeliveryRequest;if(!value||typeof value!=='object')fail('Invalid delivery request.');
   return {pickup:deliveryPlace(value.pickup),destination:deliveryPlace(value.destination),...(value.collection?{collection:{merchant:pubkey(value.collection.merchant),reference:text(value.collection.reference,80,'collection reference')}}:{})};
@@ -115,7 +130,8 @@ function validateSnapshot(raw:unknown,options:OrderValidationOptions={}):Order {
     return {id:text(item.id,240,'listing ID'),title:text(item.title,160,'listing title'),price,currency,quantity:item.quantity,...(item.eventId?{eventId:item.eventId}:{}),...(item.image?{image:item.image}:{})};
   });
   if(!statusValues.includes(value.status)||!Number.isSafeInteger(value.createdAt)||value.createdAt<0||!Number.isSafeInteger(value.updatedAt)||value.updatedAt<value.createdAt)fail('Invalid order state.');
-  return {...escrow,...(value.payment!==undefined?{payment:validatePayment(value.payment,options)}:{}),...(value.deliveryRequest!==undefined?{deliveryRequest:deliveryRequest(value.deliveryRequest)}:{}),...(value.pickupAuthorization!==undefined?{pickupAuthorization:pickupAuthorization(value.pickupAuthorization)}:{}),id:value.id,buyer,seller,items,note:text(value.note??'',2000,'note',true),status:value.status,createdAt:value.createdAt,updatedAt:value.updatedAt,shipment:shipment(value.shipment),routeId:typeof value.routeId==='string'?text(value.routeId,36,'route ID',true):''};
+  if(value.fulfillment!=null && (value.deliveryRequest || !['merchant-delivery','pickup','buyer-courier'].includes(value.fulfillment)))fail('Choose a valid order fulfillment method.');
+  return {...escrow,...(value.fulfillment?{fulfillment:value.fulfillment}:{}),...(value.payment!==undefined?{payment:validatePayment(value.payment,options)}:{}),...(value.deliveryRequest!==undefined?{deliveryRequest:deliveryRequest(value.deliveryRequest)}:{}),...(value.pickupAuthorization!==undefined?{pickupAuthorization:pickupAuthorization(value.pickupAuthorization)}:{}),id:value.id,buyer,seller,items,note:text(value.note??'',2000,'note',true),status:value.status,createdAt:value.createdAt,updatedAt:value.updatedAt,shipment:shipment(value.shipment),routeId:typeof value.routeId==='string'?text(value.routeId,36,'route ID',true):''};
 }
 const immutable = (order:Order) => JSON.stringify([order.id,order.buyer,order.seller,order.items,order.note,order.createdAt,order.deliveryRequest,order.escrowTradeId,order.escrowProvider]);
 // Older clients must not silently interpret an escrow checkout as direct payment.
@@ -168,7 +184,7 @@ export function applyOrderEnvelope(previous:OrderRecord|undefined, event:OrderEn
   if(!role)fail('This person cannot update the order.');
   if(previous && ['seller','buyer'].includes(role) && event.snapshot){
     const current=snapshot(event.snapshot);
-    if(immutable(current)!==immutable(order))fail('Delivery update changed the order.');
+    if((current.fulfillment && current.fulfillment!==order.fulfillment) || immutable(current)!==immutable(order))fail('Delivery update changed the order.');
     // A later message advances this device's clock past earlier messages. Recover
     // each party's owned fields from its snapshot, never from the other party.
     if(role==='seller'){
@@ -177,7 +193,8 @@ export function applyOrderEnvelope(previous:OrderRecord|undefined, event:OrderEn
         if(current.routeId){order.shipment=current.shipment;order.routeId=current.routeId;}
         if(['requested','accepted','in-transit'].includes(current.status)&&statusValues.indexOf(current.status)>statusValues.indexOf(order.status))order.status=current.status;
       }
-    }else if(['accepted','in-transit'].includes(order.status)){
+    }
+    if(sender===deliveryOrganizer(order) && ['accepted','in-transit'].includes(order.status) && (!order.fulfillment || current.fulfillment===order.fulfillment)){
       if(current.pickupAuthorization)order.pickupAuthorization=current.pickupAuthorization;
       else delete order.pickupAuthorization;
     }
@@ -191,7 +208,8 @@ export function applyOrderEnvelope(previous:OrderRecord|undefined, event:OrderEn
     if(order.payment?.status==='received'&&JSON.stringify(order.payment)!==JSON.stringify(next))fail('Received payment cannot change.');
     order.payment=next;
   }else if(event.action==='pickup'){
-    if(role!=='buyer'||!['accepted','in-transit'].includes(order.status))fail('Only the buyer can authorize pickup on an accepted order.');
+    if(sender!==deliveryOrganizer(order)||!['accepted','in-transit'].includes(order.status))fail('Only the designated delivery organizer can authorize pickup on an accepted order.');
+    if(event.payload && [order.buyer,order.seller].includes(event.payload.courierPubkey))fail('Choose an independent delivery service.');
     if(event.payload===null)delete order.pickupAuthorization;else order.pickupAuthorization=pickupAuthorization(event.payload);
   }else if(event.action==='status'){
     const next=event.payload?.status;
@@ -273,7 +291,7 @@ export function createOrderBook({vault,owner,device,notify=()=>{},now=time,check
       if(prior){
         const order=prior.order;
         if(order.escrowProvider!==payload.escrowProvider || order.items[0].id!==payload.items[0].id
-          || order.items[0].quantity!==payload.items[0].quantity || order.note!==payload.note
+          || order.items[0].quantity!==payload.items[0].quantity || order.note!==payload.note || order.fulfillment!==payload.fulfillment
           || JSON.stringify(order.deliveryRequest)!==JSON.stringify(payload.deliveryRequest)){
           fail('This escrow invitation already belongs to a different order request.');
         }
@@ -292,22 +310,24 @@ export function createOrderBook({vault,owner,device,notify=()=>{},now=time,check
     state:()=>data.records.map(project).sort((a,b)=>b.updatedAt-a.updatedAt||a.id.localeCompare(b.id)),
     async load(){const stored=await vault.get<OrderData>(KEY);check();if(stored){if(!Array.isArray(stored.records)||stored.records.length>MAX_ORDERS||!Array.isArray(stored.jobs)||stored.jobs.length>MAX_JOBS||!Array.isArray(stored.ephemeral))fail('Invalid private order storage.');data={...stored,blocked:stored.blocked??[],pending:stored.pending??[]};}},
     flush:()=>writes,
-    request(listing:OrderListing,{quantity=1,note='',deliveryRequest:delivery,basket,...selected}:OrderRequestOptions={}){
+    request(listing:OrderListing,{quantity=1,note='',deliveryRequest:delivery,fulfillment,basket,...selected}:OrderRequestOptions={}){
       if(!listing||listing.side==='request'||listing.status==='sold'||listing.expiration&&listing.expiration<=now())fail('Choose an available selling listing.');
       const escrow=escrowAttachment(selected,owner,listing.author);
+      if(fulfillment && (!goodsCheckout(listing) || basket?.some(item=>!goodsCheckout(item.listing))))fail('Delivery choices are available for physical goods.');
       if(escrow.escrowTradeId && (listing.externalOrder || listing.escrow?.trade!=='goods'))fail('This listing does not offer escrow for orders.');
       const item=(value:OrderListing,count:number)=>({id:value.id,title:value.title,price:value.price,currency:value.currency,quantity:count,...(/^[a-f0-9]{64}$/.test(value.eventId??'')?{eventId:value.eventId}:{}),...(orderImage(value.imageUrl)?{image:value.imageUrl}:{})});
       for(const extra of basket??[])if(!extra?.listing||extra.listing.author!==listing.author||extra.listing.side==='request'||extra.listing.status==='sold'||extra.listing.expiration&&extra.listing.expiration<=now())fail('A basket item is no longer available from this seller.');
-      const order=snapshot({...escrow,id:`${owner}:${crypto.randomUUID()}`,buyer:owner,seller:listing.author,items:[item(listing,quantity),...(basket??[]).map(extra=>item(extra.listing,extra.quantity))],...(delivery?{deliveryRequest:delivery}:{}),note,status:'requested',createdAt:now(),updatedAt:now(),shipment:{stops:[]},routeId:''});
+      const order=snapshot({...escrow,fulfillment,id:`${owner}:${crypto.randomUUID()}`,buyer:owner,seller:listing.author,items:[item(listing,quantity),...(basket??[]).map(extra=>item(extra.listing,extra.quantity))],...(delivery?{deliveryRequest:delivery}:{}),note,status:'requested',createdAt:now(),updatedAt:now(),shipment:{stops:[]},routeId:''});
       return local(order.id,'request',order,true);
     },
-    requestDelivery(sourceOrderId:string,serviceListing:OrderListing,destination:DeliveryPlace){return serial(async()=>{
+    requestDelivery(sourceOrderId:string,serviceListing:OrderListing,destination:DeliveryPlace,merchantPickup?:DeliveryPlace){return serial(async()=>{
       const next=copy(data),source=next.records.find(record=>record.order.id===sourceOrderId);
-      if(!source||source.order.buyer!==owner||!['accepted','in-transit'].includes(source.order.status))fail('Choose your accepted product order.');
-      if(source.deliveryOrderId)fail('Delivery has already been requested.');
+      if(!source||deliveryOrganizer(source.order)!==owner||!['accepted','in-transit'].includes(source.order.status))fail('Choose your accepted product order.');
+      if(source.deliveryOrderId||source.order.pickupAuthorization)fail('Delivery has already been requested.');
       if(source.order.deliveryRequest||source.order.shipment.stops.some(stop=>stop.courierPubkey))fail('Choose a product pickup shared only with its merchant.');
-      const pickup=source.order.shipment.stops[0];if(!pickup)fail('The merchant must provide a pickup place first.');
-      const listing=serviceListing;if(!listing||listing.side==='request'||listing.status==='sold'||listing.expiration&&listing.expiration<=now()||listing.author===source.order.seller)fail('Choose an available separate delivery service.');
+      if(merchantPickup && owner!==source.order.seller)fail('Use the pickup place provided by the merchant.');
+      const pickup=owner===source.order.seller?merchantPickup:source.order.shipment.stops[0];if(!pickup)fail('Provide a pickup place first.');
+      const listing=serviceListing;if(!listing||listing.side!=='offer'||listing.status==='sold'||listing.expiration&&listing.expiration<=now()||[source.order.seller,source.order.buyer].includes(listing.author)||!['parcel','both'].includes(courierListingType(listing)??''))fail('Choose an available separate parcel delivery service.');
       if(next.records.length>=MAX_ORDERS)fail('The local order limit has been reached.');
       const at=now(),reference=crypto.randomUUID(),id=`${owner}:${crypto.randomUUID()}`;
       const order=snapshot({id,buyer:owner,seller:listing.author,items:[{id:listing.id,title:listing.title,price:listing.price,currency:listing.currency,quantity:1,...(/^[a-f0-9]{64}$/.test(listing.eventId??'')?{eventId:listing.eventId}:{}),...(orderImage(listing.imageUrl)?{image:listing.imageUrl}:{})}],note:'',status:'requested',createdAt:at,updatedAt:at,shipment:{stops:[]},routeId:'',deliveryRequest:{pickup:deliveryPlace(pickup),destination:deliveryPlace(destination),collection:{merchant:source.order.seller,reference}}});

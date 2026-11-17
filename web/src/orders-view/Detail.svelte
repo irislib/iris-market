@@ -1,4 +1,5 @@
 <script lang="ts">
+  import {deliveryOrganizer} from '../orders.ts'
   import {orderContext} from '../message-context.ts'
   import {translateListingTitle} from '../translation-content.ts'
   import {orderReviewParticipants} from '../courier-ui.ts'
@@ -33,14 +34,14 @@
     const stop = s.ownStop(order)
     const actions: Action[] = []
     const add = (label: string, run: () => void, primary = false) => actions.push({label, run, primary})
-    if (role === 'buyer' && ['accepted', 'in-transit'].includes(order.status) && !order.deliveryRequest && !order.deliveryOrderId && order.shipment.stops.length && !order.shipment.stops.some(stop => stop.courierPubkey) && courier) add('Arrange delivery', () => { s.changeView('delivery'); s.render() }, true)
+    if (deliveryOrganizer(order) === owner && ['accepted', 'in-transit'].includes(order.status) && !order.deliveryRequest && !order.deliveryOrderId && !order.pickupAuthorization && (role === 'seller' || stops.length) && !stops.some(stop => stop.courierPubkey) && courier) add(role === 'seller' ? 'Book a courier' : 'Arrange delivery', () => { s.changeView('delivery'); s.render() }, true)
     for (const [id, label] of [[order.deliveryOrderId, 'View delivery'], [order.sourceOrderId, 'View product order']]) { const related = id && s.orders().find(value => value.id === id); if (related) add(label, () => s.showDetail(related)) }
     if (!order.escrowTradeId && role === 'seller' && !done && !order.payment) add('Request payment', () => { s.changeView('payment'); s.render() })
     if (!order.escrowTradeId && role === 'seller' && order.payment?.status === 'requested') add('Confirm payment received', () => s.update(order, {payment: {...order.payment, status: 'received'}}, 'Payment confirmed'))
     if (!order.escrowTradeId && order.status === 'requested' && role === 'seller') add('Accept order', () => s.update(order, {status: 'accepted'}, 'Order accepted'), true)
     if (order.status === 'accepted' && role === 'seller') add('Mark on the way', () => s.update(order, {status: 'in-transit'}, 'Delivery started'), true)
     if (['accepted', 'in-transit'].includes(order.status) && ['seller', 'buyer'].includes(role)) add(role === 'buyer' ? 'Mark received' : 'Mark delivered', () => s.update(order, {status: 'delivered'}, 'Order delivered'), role === 'buyer' && order.status === 'in-transit')
-    if (['buyer', 'seller'].includes(role)) add('Message', () => { s.dialog.hide(); void account.openChat(role === 'buyer' ? order.seller : order.buyer, {context: orderContext(order.id)}) })
+    if (['buyer', 'seller'].includes(role)) add(order.fulfillment === 'merchant-delivery' && !done ? (role === 'buyer' ? 'Message seller about delivery' : 'Message buyer about delivery') : 'Message', () => { s.dialog.hide(); void account.openChat(role === 'buyer' ? order.seller : order.buyer, {context: orderContext(order.id)}) })
     if (!done && ['buyer', 'seller'].includes(role) && !escrow?.locked?.(order)) add(order.status === 'requested' && role === 'seller' ? 'Decline request' : 'Cancel order', () => s.update(order, {status: 'cancelled'}, 'Order cancelled'))
     if (done) add(order.archived ? 'Restore order' : 'Archive order', () => { void s.perform(async () => { await account.messaging.archiveOrder(order.id, !order.archived); s.announce(order.archived ? 'Order restored' : 'Order archived') }) })
     const peer = role === 'buyer' ? order.seller : order.buyer
@@ -117,6 +118,7 @@
     <Person orders={s} pubkey={order.buyer} label="Buyer" />
     <Person orders={s} pubkey={order.seller} label="Seller" />
   </div>
+  {#if order.fulfillment}<p class="order-fulfillment">{order.fulfillment === 'merchant-delivery' ? 'Seller arranges delivery' : order.fulfillment === 'buyer-courier' ? 'Buyer arranges a courier' : 'Buyer picks up'}</p>{/if}
   {#if order.note}<p class="order-note">{order.note}</p>{/if}
   {#if order.deliveryRequest}
     <section class="order-request-route">

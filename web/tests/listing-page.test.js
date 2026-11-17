@@ -128,3 +128,11 @@ test('card and detail hearts stay in sync and preserve the open photo', () => {
   assert.equal(original.getAttribute('aria-pressed'), 'true');
   disposeCard(card);
 });
+
+test('available goods offers expose escrow alongside Buy, including before sign-in',()=>{
+  let chosen;
+  const item={...listing,escrow:{trade:'goods'}},action={onBuyWithEscrow:value=>chosen=value};
+  find(render(item,action),'Buy with escrow').click();assert.equal(chosen,item);
+  for(const extra of [{isPreview:true},{owner:item.author},{draftPreview:true}])assert(!find(render(item,{...action,...extra}),'Buy with escrow'));
+  for(const patch of [{side:'request'},{status:'sold'},{expiration:1},{escrow:undefined},{category:'transport'}])assert(!find(render({...item,...patch},action),'Buy with escrow'));
+});

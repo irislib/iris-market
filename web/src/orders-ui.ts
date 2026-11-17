@@ -10,7 +10,7 @@ export function setupOrders(options: OrdersOptions) {
   window.addEventListener('pagehide', () => orders.destroy());
   return {
     open: (id?:string, section?:string) => orders.open(id, section),
-    buy: value => orders.buy(value),
+    buy: (value, withEscrow = false) => orders.buy(value, undefined, withEscrow),
     refresh: (value?) => orders.refresh(value),
     refreshCourier: () => orders.refreshCourier(),
     hide: () => orders.dialog.hide(),

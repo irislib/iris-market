@@ -178,9 +178,19 @@ impl OrderEscrow {
         }
     }
 }
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum Fulfillment {
+    MerchantDelivery,
+    Pickup,
+    BuyerCourier,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Order {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fulfillment: Option<Fulfillment>,
     #[serde(flatten)]
     pub escrow: OrderEscrow,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -202,6 +212,16 @@ pub struct Order {
     #[serde(default)]
     pub route_id: String,
 }
+impl Order {
+    fn delivery_organizer(&self) -> Option<&str> {
+        match self.fulfillment {
+            Some(Fulfillment::MerchantDelivery) => Some(&self.seller),
+            Some(Fulfillment::Pickup) => None,
+            Some(Fulfillment::BuyerCourier) | None => Some(&self.buyer),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OrderView {
@@ -370,6 +390,40 @@ fn pickup_authorization(value: &PickupAuthorization) -> Result<()> {
     )
 }
 
+/// Same explicit service tags as the web and native transport browsers.
+fn transport_modes(tags: &[String]) -> (bool, bool) {
+    use unicode_normalization::UnicodeNormalization;
+    let (mut parcel, mut passenger, mut courier) = (false, false, false);
+    for tag in tags.iter().take(64) {
+        match tag
+            .nfkc()
+            .collect::<String>()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "parcel" | "parcels" | "delivery" | "deliveries" => parcel = true,
+            "passenger" | "passengers" | "ride" | "rides" => passenger = true,
+            "courier" => courier = true,
+            _ => {}
+        }
+    }
+    (parcel || (courier && !passenger), passenger)
+}
+
+fn goods_checkout(listing: &crate::model::Listing) -> bool {
+    let category = listing.category.trim().to_ascii_lowercase();
+    listing.side == "offer"
+        && listing.external_order.is_none()
+        && category != "transport"
+        && transport_modes(&listing.tags) == (false, false)
+        && (matches!(listing.escrow, Some(crate::escrow::Offer::Goods))
+            || !matches!(
+                category.as_str(),
+                "service" | "services" | "work" | "digital"
+            ))
+}
+
 fn require(condition: bool, message: &str) -> Result<()> {
     if condition {
         Ok(())
@@ -470,8 +524,12 @@ fn snapshot_with_mint(mut value: Order, developer_mint: Option<&str>) -> Result<
         .payment
         .map(|value| payment(value, developer_mint))
         .transpose()?;
-    if let Some(value) = &value.delivery_request {
-        delivery_request(value)?;
+    if let Some(request) = &value.delivery_request {
+        require(
+            value.fulfillment.is_none(),
+            "A transport order already has a requested route",
+        )?;
+        delivery_request(request)?;
     }
     if let Some(value) = &value.pickup_authorization {
         pickup_authorization(value)?;
@@ -555,6 +613,8 @@ fn immutable(a: &Order, b: &Order) -> bool {
         && a.note == b.note
         && a.created_at == b.created_at
         && a.delivery_request == b.delivery_request
+        // An older client can omit this field from its echo of the initial request.
+        && (b.fulfillment.is_none() || a.fulfillment == b.fulfillment)
 }
 fn role(order: &Order, owner: &str) -> Option<&'static str> {
     if order.buyer == owner {
@@ -686,7 +746,11 @@ fn apply_with_mint(
                     order.status = current.status;
                 }
             }
-        } else if matches!(order.status, OrderStatus::Accepted | OrderStatus::InTransit) {
+        }
+        if order.delivery_organizer() == Some(sender)
+            && matches!(order.status, OrderStatus::Accepted | OrderStatus::InTransit)
+            && (order.fulfillment.is_none() || current.fulfillment == order.fulfillment)
+        {
             order.pickup_authorization = current.pickup_authorization;
         }
     }
@@ -717,15 +781,19 @@ fn apply_with_mint(
         }
         "pickup" => {
             require(
-                sender_role == "buyer"
+                order.delivery_organizer() == Some(sender)
                     && matches!(order.status, OrderStatus::Accepted | OrderStatus::InTransit),
-                "Only the buyer can authorize pickup on an accepted order",
+                "Only the person arranging delivery can authorize collection on an accepted order",
             )?;
             order.pickup_authorization = if event.payload.is_null() {
                 None
             } else {
                 let value: PickupAuthorization = parse(event.payload.clone())?;
                 pickup_authorization(&value)?;
+                require(
+                    value.courier_pubkey != order.buyer && value.courier_pubkey != order.seller,
+                    "Choose an independent delivery service",
+                )?;
                 Some(value)
             };
         }
@@ -1077,6 +1145,7 @@ impl OrderBook {
             note,
             delivery,
             OrderEscrow::default(),
+            None,
             owner,
             device,
             now,
@@ -1090,6 +1159,7 @@ impl OrderBook {
         note: &str,
         delivery: Option<DeliveryRequest>,
         escrow: OrderEscrow,
+        fulfillment: Option<Fulfillment>,
         owner: &str,
         device: &str,
         now: u64,
@@ -1107,7 +1177,8 @@ impl OrderBook {
                         && existing.items[0].id == listing.id
                         && existing.items[0].quantity == quantity
                         && existing.note == note
-                        && existing.delivery_request == delivery,
+                        && existing.delivery_request == delivery
+                        && existing.fulfillment == fulfillment,
                     "This escrow invitation already belongs to a different order request",
                 )?;
                 return Ok(existing.id.clone());
@@ -1117,9 +1188,14 @@ impl OrderBook {
                 "This listing does not offer escrow for orders",
             )?;
         }
+        require(
+            fulfillment.is_none() || goods_checkout(listing),
+            "Delivery choices are available for physical goods",
+        )?;
         let item = order_item(listing, quantity, now)?;
         let order = snapshot_with_mint(
             Order {
+                fulfillment,
                 escrow,
                 payment: None,
                 pickup_authorization: None,
@@ -1142,10 +1218,12 @@ impl OrderBook {
         Ok(id)
     }
     /// One order for several listings from one seller, as a basket checkout makes.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn request_basket(
         &mut self,
         lines: &[(crate::model::Listing, u16)],
         note: &str,
+        fulfillment: Option<Fulfillment>,
         owner: &str,
         device: &str,
         now: u64,
@@ -1155,6 +1233,10 @@ impl OrderBook {
             .iter()
             .map(|(listing, quantity)| {
                 require(
+                    fulfillment.is_none() || goods_checkout(listing),
+                    "Delivery choices are available for physical goods",
+                )?;
+                require(
                     &listing.author == seller,
                     "One order holds listings from one seller",
                 )?;
@@ -1163,6 +1245,7 @@ impl OrderBook {
             .collect::<Result<Vec<_>>>()?;
         let order = snapshot_with_mint(
             Order {
+                fulfillment,
                 escrow: OrderEscrow::default(),
                 payment: None,
                 pickup_authorization: None,
@@ -1198,9 +1281,22 @@ impl OrderBook {
         device: &str,
         now: u64,
     ) -> Result<String> {
+        self.book_delivery(source_id, listing, destination, None, owner, device, now)
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn book_delivery(
+        &mut self,
+        source_id: &str,
+        listing: &crate::model::Listing,
+        destination: DeliveryPlace,
+        merchant_pickup: Option<DeliveryPlace>,
+        owner: &str,
+        device: &str,
+        now: u64,
+    ) -> Result<String> {
         let source = self.records.get(source_id).ok_or("Order not found")?;
         require(
-            source.order.buyer == owner
+            source.order.delivery_organizer() == Some(owner)
                 && matches!(
                     source.order.status,
                     OrderStatus::Accepted | OrderStatus::InTransit
@@ -1208,7 +1304,7 @@ impl OrderBook {
             "Choose your accepted product order",
         )?;
         require(
-            source.delivery_order_id.is_none(),
+            source.delivery_order_id.is_none() && source.order.pickup_authorization.is_none(),
             "Delivery has already been requested",
         )?;
         require(
@@ -1221,23 +1317,34 @@ impl OrderBook {
                     .any(|stop| stop.courier_pubkey.is_some()),
             "Choose a product pickup shared only with its merchant",
         )?;
-        let pickup = source
-            .order
-            .shipment
-            .stops
-            .first()
-            .ok_or("The merchant must provide a pickup place first")?;
+        let pickup = if source.order.fulfillment == Some(Fulfillment::MerchantDelivery) {
+            merchant_pickup.ok_or("Enter the pickup place to share with this courier")?
+        } else {
+            require(
+                merchant_pickup.is_none(),
+                "Use the pickup place the merchant shared",
+            )?;
+            let stop = source
+                .order
+                .shipment
+                .stops
+                .first()
+                .ok_or("The merchant must provide a pickup place first")?;
+            DeliveryPlace {
+                label: stop.label.clone(),
+                address: stop.address.clone(),
+                coordinates: stop.coordinates,
+            }
+        };
         require(
-            listing.author != source.order.seller,
-            "Choose a separate delivery service",
+            listing.author != source.order.seller
+                && listing.author != source.order.buyer
+                && transport_modes(&listing.tags).0,
+            "Choose an independent parcel delivery service",
         )?;
         let reference = Uuid::new_v4().to_string();
         let delivery = DeliveryRequest {
-            pickup: DeliveryPlace {
-                label: pickup.label.clone(),
-                address: pickup.address.clone(),
-                coordinates: pickup.coordinates,
-            },
+            pickup,
             destination,
             collection: Some(Collection {
                 merchant: source.order.seller.clone(),
@@ -1645,6 +1752,7 @@ mod tests {
                 "Ring twice",
                 None,
                 link,
+                None,
                 &buyer,
                 &buyer,
                 1000,
@@ -1908,6 +2016,119 @@ mod tests {
         assert_eq!(restored.views(&buyer, 1000)[0].sync, "queued");
     }
     #[test]
+    fn merchant_books_private_parcel_without_charging_buyer_or_sharing_the_product() {
+        let buyer = "1".repeat(64);
+        let seller = "2".repeat(64);
+        let courier = "3".repeat(64);
+        let mut shopper = OrderBook::default();
+        let mut merchant = OrderBook::default();
+        let mut driver = OrderBook::default();
+        let mut service = listing(&courier);
+        service.tags = vec!["courier".into(), "parcel".into()];
+        let place = |label: &str| DeliveryPlace {
+            label: label.into(),
+            address: format!("{label} private address"),
+            coordinates: None,
+        };
+        for method in [
+            Fulfillment::Pickup,
+            Fulfillment::BuyerCourier,
+            Fulfillment::MerchantDelivery,
+        ] {
+            let id = shopper
+                .request_basket(
+                    &[(listing(&seller), 2)],
+                    "private product note",
+                    Some(method),
+                    &buyer,
+                    &buyer,
+                    1000,
+                )
+                .unwrap();
+            receive(
+                &mut merchant,
+                &take(&shopper, "request", &seller),
+                &buyer,
+                &seller,
+            );
+            merchant
+                .update(&id, json!({"status":"accepted"}), &seller, &seller, 1000)
+                .unwrap();
+            receive(
+                &mut shopper,
+                &take(&merchant, "status", &buyer),
+                &seller,
+                &buyer,
+            );
+            let book = |agent: &mut OrderBook, actor: &str, service: &crate::model::Listing| {
+                agent.book_delivery(
+                    &id,
+                    service,
+                    place("Destination"),
+                    Some(place("Pickup")),
+                    actor,
+                    actor,
+                    1000,
+                )
+            };
+            assert!(book(&mut shopper, &buyer, &service).is_err());
+            if method != Fulfillment::MerchantDelivery {
+                assert!(book(&mut merchant, &seller, &service).is_err());
+                continue;
+            }
+            assert!(book(&mut merchant, &seller, &listing(&buyer)).is_err());
+            let mut ride = service.clone();
+            ride.tags = vec!["courier".into(), "passenger".into()];
+            assert!(book(&mut merchant, &seller, &ride).is_err());
+            let job = book(&mut merchant, &seller, &service).unwrap();
+            assert!(book(&mut merchant, &seller, &service).is_err());
+            assert_eq!(merchant.records[&job].order.buyer, seller);
+            assert_eq!(merchant.records[&id].delivery_order_id.as_ref(), Some(&job));
+            let request = take(&merchant, "request", &courier);
+            assert!(
+                !request.as_json().contains("private product note")
+                    && !request.as_json().contains(&buyer)
+                    && !request.as_json().contains(&id)
+            );
+            assert!(receive(&mut driver, &request, &seller, &courier));
+            let private_route = driver.records[&job]
+                .order
+                .delivery_request
+                .as_ref()
+                .unwrap();
+            assert_eq!(private_route.destination, place("Destination"));
+            let authorization = take(&merchant, "pickup", &buyer);
+            assert!(
+                !authorization
+                    .as_json()
+                    .contains("Destination private address")
+            );
+            assert!(receive(&mut shopper, &authorization, &seller, &buyer));
+            assert_eq!(
+                shopper.records[&id]
+                    .order
+                    .pickup_authorization
+                    .as_ref()
+                    .unwrap()
+                    .reference,
+                private_route.collection.as_ref().unwrap().reference
+            );
+            assert!(
+                shopper
+                    .update(
+                        &id,
+                        json!({"pickupAuthorization":null}),
+                        &buyer,
+                        &buyer,
+                        1000
+                    )
+                    .is_err()
+            );
+            assert!(!driver.records.contains_key(&id));
+        }
+    }
+
+    #[test]
     fn separate_checkout_keeps_product_private_and_links_only_local_records() {
         let buyer = "a".repeat(64);
         let merchant = "b".repeat(64);
@@ -1948,10 +2169,12 @@ mod tests {
             address: "Private destination".into(),
             coordinates: Some([25.0, 61.0]),
         };
+        let mut service = listing(&courier);
+        service.tags = vec!["parcel".into()];
         let delivery = b
             .request_delivery(
                 &product,
-                &listing(&courier),
+                &service,
                 destination.clone(),
                 &buyer,
                 &buyer,
@@ -1994,15 +2217,8 @@ mod tests {
             courier
         );
         assert!(
-            b.request_delivery(
-                &product,
-                &listing(&courier),
-                destination,
-                &buyer,
-                &buyer,
-                1000
-            )
-            .is_err()
+            b.request_delivery(&product, &service, destination, &buyer, &buyer, 1000)
+                .is_err()
         );
         let restored: OrderBook =
             serde_json::from_str(&serde_json::to_string(&b).unwrap()).unwrap();

@@ -207,6 +207,9 @@ struct PrivateState {
     authorization_heads: BTreeMap<String, Vec<Event>>,
     #[serde(default)]
     orders: crate::orders::OrderBook,
+    // Written with the private order, cleared after the basket has its durable receipt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pending_basket_order: Option<String>,
     #[serde(default)]
     friend_posts: friend_posts::Inbox,
     #[serde(default)]
@@ -1180,8 +1183,11 @@ impl Messaging {
             note,
             delivery,
             crate::orders::OrderEscrow::default(),
+            None,
+            false,
         )
     }
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn request_order_with_escrow(
         &mut self,
         listing: &crate::model::Listing,
@@ -1189,6 +1195,8 @@ impl Messaging {
         note: &str,
         delivery: Option<crate::orders::DeliveryRequest>,
         escrow: crate::orders::OrderEscrow,
+        fulfillment: Option<crate::orders::Fulfillment>,
+        consume_basket: bool,
     ) -> MessagingResult<String> {
         self.transaction(|this| {
             let id = this.state.orders.request_with_escrow(
@@ -1197,12 +1205,37 @@ impl Messaging {
                 note,
                 delivery,
                 escrow,
+                fulfillment,
                 &this.owner.to_hex(),
                 &this.keys.public_key().to_hex(),
                 now(),
             )?;
+            if consume_basket {
+                this.state.pending_basket_order = Some(id.clone());
+            }
             this.prepare_order_threads()?;
             Ok(id)
+        })
+    }
+    pub(crate) fn finish_basket_checkout(
+        &mut self,
+        store: &mut crate::store::Store,
+    ) -> MessagingResult<()> {
+        let Some(id) = &self.state.pending_basket_order else {
+            return Ok(());
+        };
+        let item = self
+            .state
+            .orders
+            .get(id)
+            .and_then(|order| order.items.first())
+            .ok_or("Missing saved basket order")?;
+        store
+            .consume_basket_order(id, &item.id, item.quantity)
+            .map_err(|error| error.to_string())?;
+        self.transaction(|this| {
+            this.state.pending_basket_order = None;
+            Ok(())
         })
     }
     pub fn request_basket_order(
@@ -1210,10 +1243,19 @@ impl Messaging {
         lines: &[(crate::model::Listing, u16)],
         note: &str,
     ) -> MessagingResult<String> {
+        self.request_basket_with_fulfillment(lines, note, None)
+    }
+    pub(crate) fn request_basket_with_fulfillment(
+        &mut self,
+        lines: &[(crate::model::Listing, u16)],
+        note: &str,
+        fulfillment: Option<crate::orders::Fulfillment>,
+    ) -> MessagingResult<String> {
         self.transaction(|this| {
             let id = this.state.orders.request_basket(
                 lines,
                 note,
+                fulfillment,
                 &this.owner.to_hex(),
                 &this.keys.public_key().to_hex(),
                 now(),
@@ -1228,11 +1270,21 @@ impl Messaging {
         listing: &crate::model::Listing,
         destination: crate::orders::DeliveryPlace,
     ) -> MessagingResult<String> {
+        self.book_delivery(source_id, listing, destination, None)
+    }
+    pub(crate) fn book_delivery(
+        &mut self,
+        source_id: &str,
+        listing: &crate::model::Listing,
+        destination: crate::orders::DeliveryPlace,
+        pickup: Option<crate::orders::DeliveryPlace>,
+    ) -> MessagingResult<String> {
         self.transaction(|this| {
-            let id = this.state.orders.request_delivery(
+            let id = this.state.orders.book_delivery(
                 source_id,
                 listing,
                 destination,
+                pickup,
                 &this.owner.to_hex(),
                 &this.keys.public_key().to_hex(),
                 now(),

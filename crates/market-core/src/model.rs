@@ -408,6 +408,8 @@ pub enum Command {
         quantity: u16,
     },
     RequestBasketOrder {
+        #[serde(default)]
+        fulfillment: Option<crate::orders::Fulfillment>,
         seller: String,
         #[serde(default)]
         note: String,
@@ -562,6 +564,10 @@ pub enum Command {
         body: String,
     },
     RequestOrder {
+        #[serde(default)]
+        fulfillment: Option<crate::orders::Fulfillment>,
+        #[serde(default)]
+        consume_basket: bool,
         listing_id: String,
         #[serde(default = "one")]
         quantity: u16,
@@ -575,6 +581,8 @@ pub enum Command {
         escrow_provider: Option<String>,
     },
     RequestDelivery {
+        #[serde(default)]
+        pickup: Option<crate::orders::DeliveryPlace>,
         source_order_id: String,
         listing_id: String,
         destination: crate::orders::DeliveryPlace,

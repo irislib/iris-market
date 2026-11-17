@@ -328,10 +328,12 @@ fn private_separate_checkout_payment_send_boundary_and_live_location_actual_ndr(
         .unwrap();
     m.update_order(&product,json!({"shipment":{"stops":[{"id":"shop","label":"Shop","address":"Private pickup","coordinates":[24.,60.]}]}})).unwrap();
     relay_three(&mut b, &mut m, &mut c);
+    let mut service = listing(&ck);
+    service.tags = vec!["courier".into()];
     let delivery = b
         .request_delivery(
             &product,
-            &listing(&ck),
+            &service,
             DeliveryPlace {
                 label: "Home".into(),
                 address: "Private destination".into(),

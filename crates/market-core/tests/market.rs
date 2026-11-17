@@ -1654,3 +1654,49 @@ fn listings_posted_across_an_area_border_share_the_earlier_area() {
     );
     assert_ne!(areas[2], home, "a distant point gets its own area");
 }
+
+#[test]
+fn reopening_finishes_a_protected_basket_checkout_after_an_interrupted_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("market.sqlite");
+    Store::open(&db)
+        .unwrap()
+        .save_settings(&Settings {
+            relays: Vec::new(),
+            escrow_ui: true,
+            ..Default::default()
+        })
+        .unwrap();
+    let secret = Keys::generate().secret_key().to_secret_hex();
+    let seller = Keys::generate();
+    let listing_id = format!("{}:camera", seller.public_key());
+    let offer = Draft {
+        escrow: Some(iris_market_core::escrow::Offer::Goods),
+        ..draft()
+    };
+    let app = Market::open(dir.path(), &secret, false).unwrap();
+    app.ingest_event(&listing::build(&seller, &offer, "camera", listing::now(), false).unwrap())
+        .unwrap();
+    for _ in 0..3 {
+        app.command(&json!({"type":"add_to_basket", "id":listing_id}).to_string())
+            .unwrap();
+    }
+    let checkout = json!({"type":"request_order","listing_id":listing_id,"quantity":2,"fulfillment":"pickup",
+        "escrow_trade_id":"1".repeat(64),"escrow_provider":Keys::generate().public_key().to_hex(),"consume_basket":true}).to_string();
+    let connection = rusqlite::Connection::open(db).unwrap();
+    connection.execute_batch("CREATE TRIGGER interrupt_receipt BEFORE INSERT ON basket_receipts BEGIN SELECT RAISE(ABORT, 'simulated interruption'); END;").unwrap();
+    assert!(app.command(&checkout).is_err());
+    app.shutdown();
+    drop(app);
+    connection
+        .execute_batch("DROP TRIGGER interrupt_receipt")
+        .unwrap();
+    let app = Market::open(dir.path(), &secret, false).unwrap();
+    let recovered: Value = serde_json::from_str(&app.snapshot().unwrap()).unwrap();
+    assert_eq!(recovered["basket"][0]["items"][0]["quantity"], 1);
+    assert_eq!(recovered["orders"][0]["fulfillment"], "pickup");
+    let retried: Value = serde_json::from_str(&app.command(&checkout).unwrap()).unwrap();
+    assert_eq!(retried["orders"].as_array().unwrap().len(), 1);
+    assert_eq!(retried["basket"][0]["items"][0]["quantity"], 1);
+    app.shutdown();
+}

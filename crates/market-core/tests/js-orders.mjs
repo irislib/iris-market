@@ -42,11 +42,15 @@ try {
   const initial=await native({send_text:'Hello from native'});
   await waitFor(()=>app.state().conversations.some(c=>c.messages.some(m=>m.text==='Hello from native')));
   const before=frames.length;
-  const order=await app.requestOrder({id:`${initial.owner_public_key}:synthetic-delivery`,author:initial.owner_public_key,title:'Cross-platform delivery',price:'12',currency:'EUR',side:'offer'},{quantity:2,note:'Synthetic private note'});
+  const order=await app.requestOrder({id:`${initial.owner_public_key}:synthetic-delivery`,author:initial.owner_public_key,title:'Cross-platform delivery',price:'12',currency:'EUR',side:'offer'},{quantity:2,note:'Synthetic private note',fulfillment:'merchant-delivery'});
   await waitFor(()=>app.state().orders.find(o=>o.id===order.id)?.sync==='sent');
   const incoming=frames.slice(before).filter(e=>[1059,1060].includes(e.kind));
   const accepted=await native({incoming,expected_order:order.id,order_patch:{status:'accepted'}});
   assert.equal(accepted.orders[0].items[0].quantity,2);
+  assert.equal(accepted.orders[0].fulfillment,'merchant-delivery');
+  const courier=getPublicKey(generateSecretKey()),pickupAuthorization={courierPubkey:courier,reference:'Synthetic collection'};
+  await native({expected_order:order.id,order_patch:{pickupAuthorization}});
+  await waitFor(()=>app.state().orders.find(o=>o.id===order.id)?.pickupAuthorization?.courierPubkey===courier);
   await waitFor(()=>app.state().orders.find(o=>o.id===order.id)?.status==='accepted');
   const routed=await native({expected_order:order.id,order_patch:{shipment:{stops:[{id:'pickup',label:'Pickup',address:'Private synthetic address',coordinates:[24.94,60.17]}],trackingUrl:'https://tracking.example/test'}}});
   await waitFor(()=>app.state().orders.find(o=>o.id===order.id)?.shipment.stops.length===1);
@@ -54,7 +58,7 @@ try {
   assert(routed.outgoing.every(e=>!JSON.stringify(e).includes('Private synthetic address')));
   const provider=getPublicKey(generateSecretKey()),tradeId='5'.repeat(64);
   const listing={id:`${initial.owner_public_key}:protected`,author:initial.owner_public_key,title:'Escrow pickup',price:'12',currency:'SATS',side:'offer',escrow:{trade:'goods'}};
-  const selection={escrowTradeId:tradeId,escrowProvider:provider};
+  const selection={escrowTradeId:tradeId,escrowProvider:provider,fulfillment:'pickup'};
   await assert.rejects(app.requestOrder(listing,selection),/Enable escrow/);
   // This standalone memory harness has no browser settings storage.
   Object.defineProperty(globalThis,'localStorage',{configurable:true,value:{getItem:key=>key===`market-tools-v1/${app.state().ownerPubkey}/escrow`?'1':null}});
@@ -62,7 +66,7 @@ try {
   await waitFor(()=>app.state().orders.find(o=>o.id===linked.id)?.sync==='sent');
   const next=await native({incoming:frames.slice(start).filter(e=>[1059,1060].includes(e.kind)),expected_order:linked.id,order_patch:{status:'accepted'}});
   const received=next.orders.find(o=>o.id===linked.id);
-  assert.equal(received.escrowProvider,provider);assert.equal(received.escrowTradeId,tradeId);
+  assert.equal(received.fulfillment,'pickup');assert.equal(received.escrowProvider,provider);assert.equal(received.escrowTradeId,tradeId);
   await waitFor(()=>app.state().orders.find(o=>o.id===linked.id)?.status==='accepted');
   assert(frames.slice(start).every(e=>!JSON.stringify(e).includes(provider)&&!JSON.stringify(e).includes(tradeId)));
   console.log('PASS: direct and escrow JS requests → Rust accept → JS projection; authenticated NDR, no public provider or trade ID');

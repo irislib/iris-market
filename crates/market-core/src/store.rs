@@ -19,6 +19,31 @@ mod snapshot_cpu_tests {
     use nostr::Keys;
 
     #[test]
+    fn escrow_basket_retry_preserves_new_quantities_and_other_items() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("market.sqlite");
+        let mut store = Store::open(&path).unwrap();
+        store
+            .db
+            .execute(
+                "INSERT INTO basket VALUES ('scarf',3,1),('mittens',1,2)",
+                [],
+            )
+            .unwrap();
+        store.consume_basket_order("first", "scarf", 2).unwrap();
+        assert_eq!(
+            store.basket().unwrap(),
+            vec![("scarf".into(), 1), ("mittens".into(), 1)]
+        );
+        drop(store);
+        let mut store = Store::open(&path).unwrap();
+        store.set_basket_quantity("scarf", 3).unwrap();
+        store.consume_basket_order("first", "scarf", 2).unwrap();
+        assert_eq!(store.basket().unwrap()[0].1, 3);
+        store.consume_basket_order("second", "scarf", 3).unwrap();
+        assert_eq!(store.basket().unwrap(), vec![("mittens".into(), 1)]);
+    }
+    #[test]
     fn warm_thousand_listing_polls_do_not_repeat_signature_verification() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("market.sqlite");
@@ -178,6 +203,7 @@ impl Store {
             CREATE TABLE IF NOT EXISTS outbox (event_id TEXT PRIMARY KEY, raw TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS relevance (coordinate TEXT PRIMARY KEY, event_id TEXT NOT NULL, value TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS basket_receipts (digest BLOB PRIMARY KEY) WITHOUT ROWID;
             CREATE TABLE IF NOT EXISTS basket (coordinate TEXT PRIMARY KEY, quantity INTEGER NOT NULL, added_at INTEGER NOT NULL);")?;
         collections::schema(&db)?;
         Ok(Self {
@@ -575,6 +601,33 @@ impl Store {
                 params![coordinate, quantity.min(999)],
             )?;
         }
+        Ok(())
+    }
+    /// The private order is already durable. A retry must never consume an item added later.
+    pub fn consume_basket_order(
+        &mut self,
+        order_id: &str,
+        coordinate: &str,
+        quantity: u16,
+    ) -> Result<()> {
+        use sha2::{Digest, Sha256};
+        let receipt = Sha256::digest(order_id.as_bytes());
+        let tx = self.db.transaction()?;
+        if tx.execute(
+            "INSERT OR IGNORE INTO basket_receipts VALUES (?1)",
+            [receipt.as_slice()],
+        )? == 1
+        {
+            tx.execute(
+                "UPDATE basket SET quantity=quantity-?2 WHERE coordinate=?1",
+                params![coordinate, quantity],
+            )?;
+            tx.execute(
+                "DELETE FROM basket WHERE coordinate=?1 AND quantity<=0",
+                [coordinate],
+            )?;
+        }
+        tx.commit()?;
         Ok(())
     }
     pub fn clear_basket_seller(&self, seller: &str) -> Result<()> {

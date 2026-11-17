@@ -186,7 +186,7 @@ fn fresh_native_profile_orders_with_strict_js_peer() {
         std::thread::sleep(Duration::from_millis(50));
     }
     let id = snapshot()["listings"][0]["id"].clone();
-    market.command(&json!({"type":"request_order","listing_id":id,"quantity":1,"note":"Synthetic native order"}).to_string()).unwrap();
+    market.command(&json!({"type":"request_order","listing_id":id,"quantity":1,"note":"Synthetic native order","fulfillment":"pickup"}).to_string()).unwrap();
     if legacy {
         assert_eq!(snapshot()["needs_chat_device_approval"], true);
     }

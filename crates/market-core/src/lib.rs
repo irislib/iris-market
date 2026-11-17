@@ -652,7 +652,7 @@ impl Market {
         {
             bail!("The profile key does not match this profile");
         }
-        let store = store::Store::open(&data_dir.join(if demo {
+        let mut store = store::Store::open(&data_dir.join(if demo {
             "preview.sqlite"
         } else {
             "market.sqlite"
@@ -688,6 +688,9 @@ impl Market {
             )
         };
         if let Some(messaging) = messaging.as_mut() {
+            messaging
+                .finish_basket_checkout(&mut store)
+                .map_err(anyhow::Error::msg)?;
             messaging
                 .set_receipt_preferences(
                     settings.send_delivery_receipts,
@@ -1123,7 +1126,11 @@ impl Market {
             Command::SetBasketQuantity { id, quantity } => {
                 s.store.set_basket_quantity(&id, quantity)?
             }
-            Command::RequestBasketOrder { seller, note } => {
+            Command::RequestBasketOrder {
+                seller,
+                note,
+                fulfillment,
+            } => {
                 let now = listing::now();
                 let lines: Vec<(Listing, u16)> = s
                     .store
@@ -1140,7 +1147,7 @@ impl Market {
                 s.messaging
                     .as_mut()
                     .context("Leave Preview to request an order")?
-                    .request_basket_order(&lines, &note)
+                    .request_basket_with_fulfillment(&lines, &note, fulfillment)
                     .map_err(anyhow::Error::msg)?;
                 s.store.clear_basket_seller(&seller)?;
                 self.notify.notify_waiters();
@@ -1594,6 +1601,8 @@ impl Market {
             }
             Command::RequestOrder {
                 listing_id,
+                fulfillment,
+                consume_basket,
                 quantity,
                 note,
                 delivery_request,
@@ -1605,21 +1614,45 @@ impl Market {
                         || (escrow_trade_id.is_none() && escrow_provider.is_none()),
                     "Enable escrow in Settings to request an escrow order"
                 );
+                ensure!(
+                    !consume_basket || escrow_trade_id.is_some(),
+                    "Choose escrow to check out one basket item"
+                );
                 let escrow = orders::OrderEscrow {
                     escrow_trade_id,
                     escrow_provider,
                 };
                 let event = s.store.event(&listing_id)?;
                 let listing = listing::parse(&event, listing::now())?;
-                s.messaging
+                let State {
+                    messaging, store, ..
+                } = &mut *s;
+                let messaging = messaging
                     .as_mut()
-                    .context("Leave Preview to request an order")?
-                    .request_order_with_escrow(&listing, quantity, &note, delivery_request, escrow)
+                    .context("Leave Preview to request an order")?;
+                // Complete any interrupted basket write before accepting a new checkout.
+                messaging
+                    .finish_basket_checkout(store)
+                    .map_err(anyhow::Error::msg)?;
+                messaging
+                    .request_order_with_escrow(
+                        &listing,
+                        quantity,
+                        &note,
+                        delivery_request,
+                        escrow,
+                        fulfillment,
+                        consume_basket,
+                    )
+                    .map_err(anyhow::Error::msg)?;
+                messaging
+                    .finish_basket_checkout(store)
                     .map_err(anyhow::Error::msg)?;
                 self.notify.notify_waiters();
             }
             Command::RequestDelivery {
                 source_order_id,
+                pickup,
                 listing_id,
                 destination,
             } => {
@@ -1628,7 +1661,7 @@ impl Market {
                 s.messaging
                     .as_mut()
                     .context("Private orders unavailable")?
-                    .request_delivery(&source_order_id, &listing, destination)
+                    .book_delivery(&source_order_id, &listing, destination, pickup)
                     .map_err(anyhow::Error::msg)?;
                 self.notify.notify_waiters();
             }

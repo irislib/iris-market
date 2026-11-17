@@ -64,6 +64,7 @@ try {
   const code=await new Promise((resolve,reject)=>{child.on('error',reject);child.on('exit',resolve);});clearTimeout(timer);
   assert.equal(code,0,'Fresh native profile order exchange failed');
   assert.equal(accepted.size,1);
+  assert.equal(seller.state().orders.find(order=>accepted.has(order.id)).fulfillment,'pickup');
   if(!legacy)assert([...events.values()].filter(event=>event.kind===37368).length>=2,'Native app did not publish its signed roster');
   if(legacy)assert.equal([...events.values()].filter(e=>e.kind===37368&&e.pubkey!==seller.state().ownerPubkey).length,0,'Buyer was silently enrolled');
   assert([...events.values()].filter(e=>e.kind===1060).every(e=>e.tags.every(t=>t[0]!=='p')),'A private message disclosed its recipient');

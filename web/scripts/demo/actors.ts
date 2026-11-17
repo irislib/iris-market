@@ -97,6 +97,11 @@ export async function startDemoActors({relay,publicRelays,origin,durationMs=1200
           if(order.status==='requested'){await seller.client.updateOrder(order.id,{status:'cancelled'});await speak(seller.client,order.buyer,'Please request one demo at its listed test-sat price.',order.id);}continue;
         }
         if(order.status==='requested'){
+          if(seller.kind==='product' && order.fulfillment==='merchant-delivery'){
+            await seller.client.updateOrder(order.id,{status:'cancelled'});
+            await speak(seller.client,order.buyer,'This demo shop offers pickup. To try the simulated delivery, request the parcel again and choose “I’ll book my own courier” at checkout.',order.id);
+            continue;
+          }
           if(seller.kind==='delivery'&&!order.deliveryRequest){await seller.client.updateOrder(order.id,{status:'cancelled'});await speak(seller.client,order.buyer,'Choose pickup and destination when requesting this courier.',order.id);continue;}
           const money=monies[clients.indexOf(seller.client)];
           if(!order.payment){await seller.client.updateOrder(order.id,{payment:{mint:mintUrl,amount:seller.price,unit:'sat',status:'requested'}});}
@@ -112,7 +117,7 @@ export async function startDemoActors({relay,publicRelays,origin,durationMs=1200
           await seller.client.updateOrder(order.id,{status:'accepted'});
         }
         if(seller.kind==='product'){
-          if(!order.shipment.stops.length){const pickup=DEMO_SCENARIOS.delivery.pickup;await seller.client.updateOrder(order.id,{shipment:{stops:[{id:pickup.id,label:'Collect imaginary parcel',address:pickup.name,coordinates:pickup.coordinates,status:'pending'}]}});await speak(seller.client,order.buyer,'Test payment received. Your imaginary parcel is ready for collection. Choose Arrange delivery to hire a courier separately.',order.id);}continue;
+          if(!order.shipment.stops.length){const pickup=DEMO_SCENARIOS.delivery.pickup;await seller.client.updateOrder(order.id,{shipment:{stops:[{id:pickup.id,label:'Collect imaginary parcel',address:pickup.name,coordinates:pickup.coordinates,status:'pending'}]}});await speak(seller.client,order.buyer,'Test payment received. Your imaginary parcel is ready for collection.'+(order.fulfillment==='pickup'?'':' Choose Arrange delivery to hire a courier separately.'),order.id);}continue;
         }
         if(order.payment?.status!=='received')continue;
         let journey=journeys.get(order.id);

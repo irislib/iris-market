@@ -45,6 +45,10 @@ private fun rememberListLayout(): MutableState<Boolean> {
 @Composable fun BrowseView(state: MarketSnapshot, model: MarketModel, busy: Boolean,
     selected: (Listing) -> Unit, settings: () -> Unit, photoFilter: Boolean?, changePhotoFilter: (Boolean?) -> Unit) {
     var query by remember { mutableStateOf(state.query) }
+    fun editQuery(value: String) {
+        if (query.isNotBlank() && value.isBlank()) model.filter("", state.side)
+        query = value
+    }
     val showAll = state.showAllResults
     var listLayout by rememberListLayout()
     var showMap by remember { mutableStateOf(false) }
@@ -59,25 +63,28 @@ private fun rememberListLayout(): MutableState<Boolean> {
     val homeFeed = model.homeFilterActive()
     val canCurate = homeFeed || ai?.optBoolean("enabled") == true && state.aiSearch && state.query.isNotBlank()
     val searching = localInference || state.searchDiscovery?.loading == true || canCurate && busy
-    val matchCount = state.listings.count { it.matchesSearch }
+    val matchCount = if (canCurate) remember(state.listings) { state.listings.count { it.matchesSearch } } else 0
     val wantsPhotos = NativePhotoFilter.wantsPhotos(photoFilter,state.query,state.side,showMap)
     // A failed Home review never leaves the feed empty: fall back to every listing, as Show all would.
     val homeFallback = homeFeed && state.error != null
-    val rankedListings = state.listings.filter { listing ->
-        (!canCurate || showAll || homeFallback || listing.matchesSearch) && NativePhotoFilter.includes(listing.imageUrl,photoFilter,state.query,state.side,showMap,listing.isBitcoinOffer)
-    }
+    val onlyMatches = canCurate && !showAll && !homeFallback
     // Cards already shown keep their places when more load; new ones join at the end (as on the web).
-    val orderKey = listOf(state.query, state.side, state.sort, showAll, state.networkOnly, photoFilter, showMap).joinToString("|")
-    val shown = remember { mutableStateOf(orderKey to emptyList<String>()) }
-    val visibleListings = remember(rankedListings, orderKey) {
-        val (key, ids) = shown.value
-        if (key != orderKey || ids.isEmpty()) rankedListings else {
-            val byId = rankedListings.associateBy { it.id }
-            val kept = ids.mapNotNull { byId[it] }; val keptIds = kept.map { it.id }.toSet()
-            kept + rankedListings.filter { it.id !in keptIds }
+    val shown = remember(state.query, state.side, state.sort, showAll, state.networkOnly, photoFilter, showMap) {
+        mutableStateOf(emptyList<Listing>())
+    }
+    val visibleListings = remember(state.listings, shown, onlyMatches, wantsPhotos) {
+        val eligible = if (!onlyMatches && !wantsPhotos) state.listings else state.listings.filter { listing ->
+            (!onlyMatches || listing.matchesSearch) && NativePhotoFilter.includes(listing.imageUrl,photoFilter,state.query,state.side,showMap,listing.isBitcoinOffer)
+        }
+        if (shown.value.isEmpty()) eligible else {
+            val remaining = eligible.associateByTo(LinkedHashMap()) { it.id }
+            buildList(eligible.size) {
+                for (previous in shown.value) remaining.remove(previous.id)?.let { add(it) }
+                addAll(remaining.values)
+            }
         }
     }
-    SideEffect { shown.value = orderKey to visibleListings.map { it.id } }
+    SideEffect { shown.value = visibleListings }
     LazyVerticalGrid(columns = GridCells.Fixed(if(listLayout) 1 else 2), horizontalArrangement = Arrangement.spacedBy(14.dp),
         verticalArrangement = Arrangement.spacedBy(18.dp), contentPadding = PaddingValues(start=22.dp,end=22.dp,bottom=90.dp)) {
         item(span = { GridItemSpan(maxLineSpan) }) {
@@ -97,10 +104,10 @@ private fun rememberListLayout(): MutableState<Boolean> {
                     IconButton(onClick = { model.action("refresh") }, enabled = !busy) { Icon(Icons.Filled.Refresh, "Refresh listings", tint=Forest,modifier=Modifier.size(22.dp)) }
                 }
                 Spacer(Modifier.height(16.dp))
-                OutlinedTextField(value = query, onValueChange = { query = it }, placeholder = { Text("Search listings") },
+                OutlinedTextField(value = query, onValueChange = ::editQuery, placeholder = { Text("Search listings") },
                     leadingIcon = { Icon(Icons.Filled.Search, null, tint = Forest) },
                     trailingIcon = { Row(verticalAlignment = Alignment.CenterVertically) {
-                        if(query.isNotBlank()) IconButton(onClick={query="";model.filter("",state.side)},modifier=Modifier.size(36.dp)) { Icon(Icons.Filled.Close,"Clear search") }
+                        if(query.isNotBlank()) IconButton(onClick={editQuery("")},modifier=Modifier.size(36.dp)) { Icon(Icons.Filled.Close,"Clear search") }
                     } },
                     keyboardOptions=KeyboardOptions(imeAction=ImeAction.Search), keyboardActions=KeyboardActions(onSearch={when(NativeAIReadiness.searchAction(!showAll&&ai?.optBoolean("enabled")==true,aiSearch,busy,localInference,query)) {
                         NativeAISearchAction.WAIT -> Unit
@@ -168,12 +175,12 @@ private fun rememberListLayout(): MutableState<Boolean> {
         if (!showMap && visibleListings.isEmpty() && !state.demo && state.status.startsWith("Offline")) item(span={GridItemSpan(maxLineSpan)}) {
             EmptyView("You’re offline", "No message servers are set up, so only saved listings are available. Add a server in Settings under Connection details.", Icons.Filled.CloudOff)
         } else if (!showMap && visibleListings.isEmpty() && (!(canCurate && !showAll) || homeFallback) && !searching && !state.demo && state.networkOnly) item(span={GridItemSpan(maxLineSpan)}) {
-            EmptyView(if(query.isBlank()) "No listings yet" else "No matches", "Only showing listings from people in your network.", Icons.Filled.Storefront, "Show everyone") {
+            EmptyView(if(state.query.isBlank()) "No listings yet" else "No matches", "Only showing listings from people in your network.", Icons.Filled.Storefront, "Show everyone") {
                 model.filter(state.query, state.side, state.aiSearch, networkOnly=false)
             }
         } else if (!showMap && visibleListings.isEmpty()) item(span={GridItemSpan(maxLineSpan)}) {
-            EmptyView(if(canCurate && !showAll && state.error != null) "Search paused" else if(searching || canCurate && !showAll && (state.searchDiscovery?.hasMore == true || state.listings.any { it.externalOrder == null && it.relevanceShow == null })) "No matches yet" else if(canCurate && !showAll) "No matching listings" else if(query.isBlank()) "No listings yet" else "No matches",
-                if(canCurate && !showAll && state.error != null) "Check your AI settings, then try again." else if(searching) "New matches appear here as they arrive." else if(canCurate && !showAll && (state.searchDiscovery?.hasMore == true || state.listings.any { it.externalOrder == null && it.relevanceShow == null })) "Load more to keep searching, or choose Show all." else if(canCurate && !showAll) "Choose Show all or change your AI settings." else if(query.isBlank()) "Sell something or post what you want to buy." else "Try a different search or clear the filters.",
+            EmptyView(if(canCurate && !showAll && state.error != null) "Search paused" else if(searching || canCurate && !showAll && (state.searchDiscovery?.hasMore == true || state.listings.any { it.externalOrder == null && it.relevanceShow == null })) "No matches yet" else if(canCurate && !showAll) "No matching listings" else if(state.query.isBlank()) "No listings yet" else "No matches",
+                if(canCurate && !showAll && state.error != null) "Check your AI settings, then try again." else if(searching) "New matches appear here as they arrive." else if(canCurate && !showAll && (state.searchDiscovery?.hasMore == true || state.listings.any { it.externalOrder == null && it.relevanceShow == null })) "Load more to keep searching, or choose Show all." else if(canCurate && !showAll) "Choose Show all or change your AI settings." else if(state.query.isBlank()) "Sell something or post what you want to buy." else "Try a different search or clear the filters.",
                 Icons.Filled.Storefront)
         }
         if(!showMap) items(visibleListings, key={it.id}) { listing -> ListingCard(listing, state.demo, {selected(listing)}, {model.save(listing.id)}, compact=listLayout) }

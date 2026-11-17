@@ -2,6 +2,7 @@ package to.iris.market
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -10,6 +11,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import java.text.DateFormat
@@ -26,11 +28,16 @@ private fun matchAction(op: String, vararg fields: Pair<String, Any>): JSONObjec
 
 @Composable
 internal fun PrivateMatchingSettings(state: MarketSnapshot, model: MarketModel, busy: Boolean) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Text("Find a match privately", Modifier.weight(1f))
-        Switch(state.privateMatching != null, onCheckedChange = {
+    val active = state.privateMatching != null
+    val available = !state.demo && !busy
+    Row(
+        Modifier.fillMaxWidth().toggleable(active, enabled = available, role = Role.Switch) {
             model.command(matchAction("enable", "enabled" to it))
-        }, enabled = !busy)
+        }.padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text("Find a match privately", Modifier.weight(1f))
+        Switch(active, onCheckedChange = null, enabled = available)
     }
     PrivateMatchesLink(state, model, busy)
 }

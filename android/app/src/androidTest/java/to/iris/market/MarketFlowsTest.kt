@@ -60,6 +60,20 @@ class MarketFlowsTest {
         compose.onNodeWithContentDescription("Clear search").performClick()
         compose.waitUntil(5_000) { compose.onAllNodesWithText("A little more green").fetchSemanticsNodes().isNotEmpty() }
     }
+    @Test fun deletingTheLastSearchCharacterRestoresTheFeed() {
+        val field = compose.onNode(hasSetTextAction())
+        field.performTextInput("nothing-will-match-this-phrase")
+        field.performImeAction()
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("No matches").fetchSemanticsNodes().isNotEmpty() }
+        field.performTextClearance()
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("A little more green").fetchSemanticsNodes().isNotEmpty() }
+        capture("search-cleared-feed")
+    }
+    @Test fun privateMatchingRequiresTheLiveMarket() {
+        compose.onNodeWithContentDescription("Menu").performClick()
+        compose.onNodeWithText("Settings").performClick()
+        compose.onNodeWithText("Find a match privately").performScrollTo().assertIsNotEnabled()
+    }
     @Test fun buyingFilterAndBrowseResetUseTwoClearChoices() {
         compose.onNodeWithText("Buying").performClick().assertIsSelected()
         compose.waitUntil(5_000) { compose.onAllNodesWithText("A ride across town").fetchSemanticsNodes().isNotEmpty() }

@@ -1,5 +1,6 @@
-Iris Kit @iris/svelte-ui profile helpers. The source package declares MIT.
-Source commit: f412197215d78fb5fdb02f8a444f189d0bec1d8d
+Iris Kit profile helpers. Both source packages declare MIT.
+@iris/svelte-ui source commit: f412197215d78fb5fdb02f8a444f189d0bec1d8d
+@iris/profile-events 0.1.0: https://github.com/mmalmi/iris-kit/releases/tag/runtime-v0.2.13
 
 MIT License
 

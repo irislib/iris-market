@@ -38,10 +38,12 @@ async function writeNotices(dest: string, moduleIds: Iterable<string>, includeRu
     const files = (await readdir(folder, { withFileTypes: true }))
       .filter(file => file.isFile() && /^(licen[sc]e|copying|notice)(?:[.-]|$)/i.test(file.name))
       .map(file => file.name).sort();
-    if (!files.length && !['pmtiles','nostr-double-ratchet','@fips/tcp','qrcode-generator'].includes(info.name) && !info.name.startsWith('onnxruntime-')) {
+    const irisProfileLicense = info.name === '@iris/profile-events' && info.version === '0.1.0' && info.license === 'MIT';
+    if (!files.length && !irisProfileLicense && !['pmtiles','nostr-double-ratchet','@fips/tcp','qrcode-generator'].includes(info.name) && !info.name.startsWith('onnxruntime-')) {
       throw new Error(`Missing bundled dependency license: ${info.name}@${info.version}`);
     }
     const texts = await Promise.all(files.map(file => readFile(resolve(folder, file), 'utf8')));
+    if (irisProfileLicense && !files.length) texts.push(await readFile(resolve(root, 'src/shared/iris-kit/LICENSE.txt'), 'utf8'));
     if (info.name === 'nostr-social-graph') {
       texts.push(await readFile(resolve(folder, 'src/vendor/LICENSE.negentropy'), 'utf8'));
     }

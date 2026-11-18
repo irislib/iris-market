@@ -190,3 +190,42 @@ fn local_actions_and_restoration_finish_without_relay_replies() {
     );
     restored.shutdown();
 }
+
+#[test]
+fn restored_owner_keeps_a_name_edit_unsigned_until_profile_history_is_checked() {
+    let dir = tempfile::tempdir().unwrap();
+    let keys = Keys::generate();
+    let owner = keys.public_key();
+    let store = Store::open(&dir.path().join("market.sqlite")).unwrap();
+    store
+        .save_settings(&Settings {
+            relays: vec![],
+            ..Default::default()
+        })
+        .unwrap();
+    store.complete_profile_setup(owner).unwrap();
+    let open = || Market::open(dir.path(), &keys.secret_key().to_secret_hex(), false).unwrap();
+    let market = open();
+    command(&market, json!({"type":"update_profile", "name":"Curator"}));
+    assert_eq!(
+        store.pending_profile_name(owner).unwrap().as_deref(),
+        Some("Curator")
+    );
+    assert!(store.profile_metadata(&owner.to_hex()).unwrap().is_none());
+    assert!(
+        !store
+            .pending()
+            .unwrap()
+            .iter()
+            .any(|event| event.kind == nostr::Kind::Metadata)
+    );
+    market.shutdown();
+    drop(market);
+    let reopened = open();
+    assert_eq!(
+        store.pending_profile_name(owner).unwrap().as_deref(),
+        Some("Curator")
+    );
+    assert!(store.profile_metadata(&owner.to_hex()).unwrap().is_none());
+    reopened.shutdown();
+}

@@ -540,12 +540,26 @@ export function createMessaging({ developerMint, getRelays=()=>[], getPublicRela
     })().catch(()=>{}).finally(()=>{if(attempt===generation){syncing=undefined;notify();if([...publicQueue.keys()].some(id=>!attempted.has(id)))queueMicrotask(()=>void syncPublic());}});
     return syncing;
   }
+  // Update the durable patch and its in-memory copy in the same order when a
+  // second edit arrives while the first one is waiting on a signer or the vault.
+  let profileWrites = Promise.resolve();
+  function changeProfilePatch(attempt:number, update:(previous:typeof profilePatch)=>typeof profilePatch) {
+    const write = profileWrites.then(async () => {
+      check(attempt);
+      const next = update(profilePatch);
+      if (next === profilePatch) return;
+      if (next) await vault.put('market/profile-patch',next);
+      else await vault.del('market/profile-patch');
+      check(attempt); profilePatch = next;
+    });
+    profileWrites = write.catch(() => {});
+    return write;
+  }
   async function syncProfile() {
     if (syncingProfile || !profilePatch || !signer || status !== 'ready') return syncingProfile;
-    const attempt = generation;
+    const attempt = generation, patch = profilePatch;
     syncingProfile = (async () => {
-      if (profilePatch && signer) {
-        const patch = profilePatch;
+      if (patch && signer) {
         const owner = account.owner;
         const first = initialProfileOwner === owner && !account.profileEvent;
         const response = first ? {events:[],complete:true} : await transport.query([{kinds:[0],authors:[owner],limit:1}],{relays:getPublicRelays(),signal:controller.signal,waitForAll:true});
@@ -569,11 +583,17 @@ export function createMessaging({ developerMint, getRelays=()=>[], getPublicRela
         if (profilePatch !== patch || ownHead([known(),latest])?.id !== latest?.id) return;
         await queuePublic(event); check(attempt);
         initialProfileOwner = undefined;
-        account.profileEvent=event; account.displayName=readProfileFields(event.content).display_name as string || previous.name as string || '';
+        const metadata = readProfileFields(event.content);
+        account.profileEvent=event;
+        account.displayName=typeof metadata.display_name === 'string' ? metadata.display_name : typeof metadata.name === 'string' ? metadata.name : undefined;
         await vault.put('market/account',account);
-        if (profilePatch === patch) {await vault.del('market/profile-patch');check(attempt);profilePatch=undefined;}
+        await changeProfilePatch(attempt, pending => pending === patch ? undefined : pending);
       }
-    })().catch(() => {}).finally(() => { if (attempt === generation) { syncingProfile = undefined; notify(); } });
+    })().catch(() => {}).finally(() => {
+      if (attempt !== generation) return;
+      syncingProfile = undefined; notify();
+      if (profilePatch && profilePatch !== patch) queueMicrotask(() => void syncProfile());
+    });
     return syncingProfile;
   }
   async function activateChat() {
@@ -962,8 +982,9 @@ export function createMessaging({ developerMint, getRelays=()=>[], getPublicRela
       if (name !== undefined && (typeof name !== 'string' || !name.trim() || name.length > 80)) throw new Error('Choose a name of up to 80 characters.');
       if (picture) { const url = new URL(picture); if (url.protocol !== 'https:' || url.username || url.password) throw new Error('Use a secure profile photo URL.'); }
       if (name === undefined && picture === undefined) return {delivery:'unchanged',accepted:[]};
-      const patch={...profilePatch,...(name!==undefined?{name:name.trim()}:{}),...(picture!==undefined?{picture}:{})};
-      const attempt=generation;await vault.put('market/profile-patch',patch);check(attempt);profilePatch=patch;notify();scheduleBackground();
+      const attempt=generation;
+      await changeProfilePatch(attempt, previous => ({...previous,...(name!==undefined?{name:name.trim()}:{}),...(picture!==undefined?{picture}:{})}));
+      notify();scheduleBackground();
       return {delivery:'queued',accepted:[]};
     },
     exportKey() { if (!ownerSecret) throw new Error('Your account key is held by your signer.'); return nip19.nsecEncode(ownerSecret); },

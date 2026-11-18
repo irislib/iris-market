@@ -284,6 +284,23 @@ impl Store {
         })
         .transpose()
     }
+    pub fn pending_profile_name(&self, owner: nostr::PublicKey) -> Result<Option<String>> {
+        Ok(self
+            .db
+            .query_row(
+                "SELECT value FROM preferences WHERE key=?1",
+                [format!("pending-profile-name:{owner}")],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+    pub fn save_profile_name(&self, owner: nostr::PublicKey, name: &str) -> Result<()> {
+        self.db.execute(
+            "INSERT OR REPLACE INTO preferences VALUES (?1,?2)",
+            params![format!("pending-profile-name:{owner}"), name],
+        )?;
+        Ok(())
+    }
     /// Local name and exact publication intent commit together before network work.
     pub fn queue_profile_metadata(&mut self, event: &Event) -> Result<()> {
         event.verify()?;
@@ -302,6 +319,10 @@ impl Store {
         tx.execute(
             "INSERT OR REPLACE INTO outbox VALUES (?1,?2)",
             params![event.id.to_hex(), event.as_json()],
+        )?;
+        tx.execute(
+            "DELETE FROM preferences WHERE key=?1",
+            [format!("pending-profile-name:{}", event.pubkey)],
         )?;
         tx.commit()?;
         Ok(())

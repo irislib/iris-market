@@ -133,8 +133,13 @@ fn pair_register_reopen_and_publish_without_owner_key() {
         .unwrap();
     let old_profile = EventBuilder::new(
         Kind::Metadata,
-        json!({"name":"Old","about":"Retain this"}).to_string(),
+        r#"{"name":"seller","display_name":"Old","about":"Retain this","count":9007199254740993}"#,
     )
+    .allow_self_tagging()
+    .tags([
+        Tag::public_key(owner.public_key()),
+        Tag::parse(["custom", "two", "values"]).unwrap(),
+    ])
     .sign_with_keys(&owner)
     .unwrap();
     store.queue_profile_metadata(&old_profile).unwrap();
@@ -159,13 +164,27 @@ fn pair_register_reopen_and_publish_without_owner_key() {
     event.verify().unwrap();
     app.command(&json!({"type":"update_profile","name":"New name"}).to_string())
         .unwrap();
-    let profile = store
-        .profile_metadata(&owner.public_key().to_hex())
-        .unwrap()
-        .unwrap();
+    let stop = std::time::Instant::now() + std::time::Duration::from_secs(12);
+    let profile = loop {
+        let current = store
+            .profile_metadata(&owner.public_key().to_hex())
+            .unwrap()
+            .unwrap();
+        if current.id != old_profile.id {
+            break current;
+        }
+        assert!(
+            std::time::Instant::now() < stop,
+            "queued profile must reach the signing path"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    };
+    assert_eq!(profile.tags, old_profile.tags);
+    assert!(profile.content.contains("9007199254740993"));
     profile.verify().unwrap();
     let content: Value = serde_json::from_str(&profile.content).unwrap();
     assert_eq!(content["display_name"], "New name");
+    assert_eq!(content["name"], "seller");
     assert_eq!(content["about"], "Retain this");
     tamper.store(true, Ordering::Relaxed);
     assert!(

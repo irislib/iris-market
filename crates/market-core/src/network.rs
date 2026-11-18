@@ -34,6 +34,11 @@ pub fn validate_relays(relays: &[String]) -> Result<()> {
 
 pub(crate) async fn run(state: Arc<Mutex<State>>, notify: Arc<Notify>, stopped: Arc<AtomicBool>) {
     tokio::spawn(run_outbox(state.clone(), stopped.clone(), false));
+    tokio::spawn(crate::profile_edit::sync(
+        state.clone(),
+        notify.clone(),
+        stopped.clone(),
+    ));
     while !stopped.load(Ordering::Acquire) {
         let relays = { state.lock().unwrap().settings.relays.clone() };
         if relays.is_empty() {

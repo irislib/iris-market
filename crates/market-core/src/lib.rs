@@ -16,6 +16,7 @@ pub mod model;
 pub mod network;
 pub mod orders;
 pub mod places;
+mod profile_edit;
 pub mod profile_listings;
 pub mod profiles;
 pub mod public_cache;
@@ -54,6 +55,9 @@ pub(crate) struct State {
     ai_configured: bool,
     approving_chat_device: bool,
     profile_name_required: bool,
+    fresh_profile_key: bool,
+    pending_profile_name: Option<String>,
+    profile_signing_paused: bool,
     demo: bool,
     query: String,
     side: String,
@@ -586,7 +590,9 @@ impl Market {
         let keys = Keys::new(SecretKey::parse(secret).context("Invalid profile secret")?);
         std::fs::create_dir_all(data_dir)?;
         let mut store = store::Store::open(&data_dir.join("market.sqlite"))?;
-        let authorization = if let Some(event) = store.initial_authorization()? {
+        let initial = store.initial_authorization()?;
+        let generated_now = initial.is_none();
+        let authorization = if let Some(event) = initial {
             event.verify()?;
             anyhow::ensure!(
                 event.pubkey == keys.public_key(),
@@ -609,14 +615,16 @@ impl Market {
             event
         };
         drop(store);
-        Self::open_identity(
+        let market = Self::open_identity(
             data_dir,
             keys.public_key(),
             Some(keys.clone()),
             keys,
             Some(authorization),
             false,
-        )
+        )?;
+        market.state.lock().unwrap().fresh_profile_key = generated_now;
+        Ok(market)
     }
     pub fn open_identity(
         data_dir: &Path,
@@ -666,6 +674,7 @@ impl Market {
         let rates = store.exchange_rates().unwrap_or_default();
         let ai_configured = store.ai_configured()?;
         let local_profile = store.profile_metadata(&owner.to_hex())?;
+        let pending_profile_name = store.pending_profile_name(owner)?;
         let profile_name_required = !demo
             && owner_keys.is_some()
             && local_profile.is_none()
@@ -728,6 +737,9 @@ impl Market {
             ai_configured,
             approving_chat_device: false,
             profile_name_required,
+            fresh_profile_key: false,
+            pending_profile_name,
+            profile_signing_paused: false,
             demo,
             query: String::new(),
             side: "all".into(),
@@ -1204,53 +1216,34 @@ impl Market {
                         "Enter a name of up to 100 characters"
                     );
                     s.store.complete_profile_setup(s.owner)?;
-                } else {
-                    let owner = s.owner.to_hex();
-                    let previous = s.profiles.metadata_event(&owner).cloned();
-                    anyhow::ensure!(
-                        s.profile_name_required
-                            || previous.is_some()
-                            || s.store.profile_setup_complete(s.owner)?,
-                        "Load your profile before editing its name"
-                    );
-                    let mut metadata = match &previous {
-                        Some(event) => serde_json::from_str::<serde_json::Value>(&event.content)?
-                            .as_object()
-                            .cloned()
-                            .context("Existing profile metadata cannot be edited")?,
-                        None => serde_json::Map::new(),
-                    };
-                    metadata.insert("name".into(), name.into());
-                    metadata.insert("display_name".into(), name.into());
-                    let at = listing::now().max(
-                        previous
-                            .as_ref()
-                            .map(|event| event.created_at.as_secs().saturating_add(1))
-                            .unwrap_or(0),
-                    );
-                    anyhow::ensure!(
-                        at <= listing::now() + 600,
-                        "The latest profile date is ahead. Try again later"
-                    );
-                    let event = nostr::EventBuilder::new(
-                        nostr::Kind::Metadata,
-                        serde_json::to_string(&metadata)?,
-                    )
-                    .custom_created_at(nostr::Timestamp::from(at))
-                    .build(s.owner);
-                    drop(s);
-                    let event = self.sign_owner_event(event)?;
-                    s = self.state.lock().unwrap();
-                    anyhow::ensure!(
-                        s.profiles.metadata_event(&owner).map(|event| event.id)
-                            == previous.map(|event| event.id),
-                        "Your profile changed. Reopen it before editing"
-                    );
+                } else if s.fresh_profile_key && s.profile_name_required {
+                    let draft = profile_edit::draft(
+                        s.owner,
+                        name,
+                        s.profiles.metadata_event(&s.owner.to_hex()),
+                    )?;
+                    let keys = s.owner_keys.as_ref().context("Unlock your profile")?;
+                    let event = draft.sign_with_keys(keys)?;
                     s.store.queue_profile_metadata(&event)?;
-                    let _ = s.profiles.ingest_public(event);
+                    s.profiles.ingest_public(event)?;
+                } else {
+                    anyhow::ensure!(
+                        s.owner_keys.is_some() || s.remote_signer.is_some(),
+                        "Connect a signer to edit your profile"
+                    );
+                    s.store.save_profile_name(s.owner, name)?;
+                    s.pending_profile_name = Some(name.to_owned());
+                    s.profile_signing_paused = false;
+                    s.store.complete_profile_setup(s.owner)?;
                 }
+                s.fresh_profile_key = false;
                 s.profile_name_required = false;
-                s.status = "Profile saved".into();
+                s.status = if s.pending_profile_name.is_some() {
+                    "Name saved · waiting to check your profile"
+                } else {
+                    "Profile saved"
+                }
+                .into();
                 self.notify.notify_waiters();
             }
             Command::SaveCollection {

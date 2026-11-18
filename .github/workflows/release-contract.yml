@@ -1,29 +1,43 @@
-name: Release contract
-
+name: Qualify Market web profile changes
 on:
-  pull_request:
   push:
-    branches: [main]
-  workflow_dispatch:
+    branches: [codex/market-web-profile-linux-20261118]
 
 permissions:
   contents: read
 
 jobs:
-  source-checks:
+  qualify:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 25
+    env:
+      CANDIDATE: e838a4b7ff0ae330dea36750c5fc40661388b075
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - name: Check pinned inputs and artifact acceptance contract
-        env:
-          PYTHONDONTWRITEBYTECODE: '1'
+          fetch-depth: 2
+      - name: Check out the unmodified product source
         run: |
-          python3 scripts/release-build-inputs.py --check
-          python3 scripts/android-release-inputs.py --check
-          python3 scripts/test_alpha_release.py -v
-          python3 scripts/native-alpha.py --help
-          node --test scripts/publish-alpha.test.mjs
-      # Native builds, signing and publication are separately owned release gates.
+          test "$(git rev-parse HEAD^1)" = "$CANDIDATE"
+          test "$(git diff --name-only HEAD^1 HEAD)" = '.github/workflows/release-contract.yml'
+          git switch --detach "$CANDIDATE"
+          test "$(git rev-parse HEAD)" = "$CANDIDATE"
+          test -z "$(git status --porcelain)"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '26.12.0'
+      - name: Install frozen web dependencies
+        working-directory: web
+        run: |
+          node --version
+          npm --version
+          npm ci --no-audit --no-fund
+      - name: Run the complete web suite serially with loopback only
+        working-directory: web
+        run: |
+          sudo --preserve-env=PATH -- unshare --net -- bash -eu -c '
+            ip link set lo up
+            test -z "$(ip route show default)"
+            exec runuser -u runner -- env -i HOME=/home/runner USER=runner PATH="$PATH" node --import ./tests/support/svelte.mjs --test --test-concurrency=1 tests/*.test.js
+          '

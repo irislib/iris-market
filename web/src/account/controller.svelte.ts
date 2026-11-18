@@ -333,7 +333,7 @@ export class AccountController {
     })
   }
   usePostingRemote() { this.signingOnly = true; this.loginView = 'existing'; this.renderAccount(); flushNow(); if (this.remoteOption) this.remoteOption.open = true }
-  editDefaults() { const person = personFor(this.state.ownerPubkey); return {name: this.state.displayName || person.name || '', picture: person.pictureUrl || ''} }
+  editDefaults() { const person = personFor(this.state.ownerPubkey); return {name: this.state.displayName ?? person.publishedName ?? '', picture: person.pictureUrl || ''} }
   saveProfile(name?: string, picture?: string) {
     return this.login(async () => { await this.messaging.updateProfile({name, picture: picture?.trim()}); resetPeople(); warmProfiles([this.state.ownerPubkey]); this.accountStatus = 'Profile saved' })
   }

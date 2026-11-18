@@ -33,7 +33,7 @@ export interface ProfileFilter extends Filter { kinds?: number[]; authors?: stri
 export interface ProfileQueryOptions { relays?: readonly string[]; signal?: AbortSignal; WebSocketImpl?: typeof WebSocket; runtime?: PublicEventRuntime; now?: () => number; timeoutMs?: number }
 export interface ProfileQueryResult { events: NostrEvent[]; completed: number; limited: boolean; partial: boolean }
 export interface CurationOptions extends ProfileQueryOptions { contextPubkey?: string; targetAuthors?: string[]; bootstrapLoader?: typeof loadGraphBootstrap; signedLoader?: typeof readSignedDiscovery }
-export interface PublicProfile { pubkey: string; eventId?: string; createdAt?: number; name: string; about: string; pictureUrl: string | null; website: string | null; nip05: string; metadataFound: boolean }
+export interface PublicProfile { pubkey: string; eventId?: string; createdAt?: number; name: string; publishedName?: string; about: string; pictureUrl: string | null; website: string | null; nip05: string; metadataFound: boolean }
 interface ProfileConnection { id: string; socket: WebSocket | null; settled: boolean; frames: number }
 interface FollowRecord { event: NostrEvent; follows: string[] | null }
 interface ProfileRecord { event: NostrEvent; profile: PublicProfile | null }
@@ -111,8 +111,9 @@ export function parseProfileEvent(input: NostrEvent, options?: {now?: number}): 
   let data
   try { data = JSON.parse(event.content) } catch { throw new Error('Invalid profile metadata') }
   if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('Invalid profile metadata')
+  const publishedName = cleanText(getProfileName(data), 100)
   return Object.freeze({ pubkey: event.pubkey, eventId: event.id, createdAt: event.created_at,
-    name: cleanText(getProfileName(data), 100) || profileLabel(event.pubkey),
+    name: publishedName || profileLabel(event.pubkey), publishedName,
     about: cleanText(data.about, 2000), pictureUrl: safeUrl(data.picture), website: safeUrl(data.website),
     // A self-declared address is text only; it is never an identity-verification badge.
     nip05: cleanText(data.nip05, 200), metadataFound: true })

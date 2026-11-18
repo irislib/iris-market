@@ -15,6 +15,7 @@ import {validateShippingOptionEvent} from '../shipping.ts';
 import {COLLECTION_KIND, checkCollectionRevision, parseCollection, rememberAcceptedCollection, validateCollectionDraft} from '../collections.ts';
 import { finalizeEvent, generateSecretKey, getEventHash, getPublicKey, nip19 } from 'nostr-tools';
 import { AppKeys, Invite, NdrRuntime, hasExistingSessionWithRecipient, CHAT_SETTINGS_KIND, getExpirationTimestampSeconds, createPersistentNostrOutbox, hasMetadataPrivacyVersion } from 'nostr-double-ratchet';
+import { buildProfileDraft, readProfileFields } from '@iris/profile-events';
 import { createVault } from './vault.ts';
 import { createPrivateTransport, verifiedPrivateEvent } from './transport.ts';
 import { RemoteSigner } from './remote-signer.ts';
@@ -121,7 +122,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], getPublicRela
   let status = 'signed-out', error = '', authorizationChecked = false, savedStatus;
   let chatStatus = 'connecting', activation, syncing, syncingProfile, retryTimer, enrollmentSigner, enrollmentRemote;
   const collectionWrites=new Set<string>();
-  let publicQueue = new Map<string,VerifiedEvent>(), profilePatch:{name:string;picture?:string};
+  let publicQueue = new Map<string,VerifiedEvent>(), profilePatch:{name?:string;picture?:string}, initialProfileOwner:string|undefined;
   let conversations = new Map<string,ChatMessage[]>();
   let matches:ReturnType<typeof createMatchBook>,syncingMatches:Promise<void>;
   let orders:ReturnType<typeof createOrderBook>, syncingOrders:Promise<void>;
@@ -520,7 +521,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], getPublicRela
   async function queuePublic(event) { return (await queuePublicEvents([event]))[0]; }
   async function acceptPublic(event:VerifiedEvent,attempt:number) {
     check(attempt);if(!publicQueue.has(event.id))return;
-    if (event.kind===0 && (!account.profileEvent || event.created_at>=account.profileEvent.created_at)) {account.profileEvent=event;account.displayName=JSON.parse(event.content).display_name||JSON.parse(event.content).name;await vault.put('market/account',account);}
+    if (event.kind===0 && event.pubkey===account.owner && (!account.profileEvent || event.created_at>account.profileEvent.created_at || (event.created_at===account.profileEvent.created_at && event.id<account.profileEvent.id))) {account.profileEvent=event;account.displayName=JSON.parse(event.content).display_name||JSON.parse(event.content).name;await vault.put('market/account',account);}
     if(event.kind===COLLECTION_KIND)rememberAcceptedCollection(event);
     await vault.del(`market/public/${event.id}`);check(attempt);publicQueue.delete(event.id);notify();
   }
@@ -545,18 +546,31 @@ export function createMessaging({ developerMint, getRelays=()=>[], getPublicRela
     syncingProfile = (async () => {
       if (profilePatch && signer) {
         const patch = profilePatch;
-        const cached = account.profileEvent;
-        const response = account.freshOwner && !cached ? {events:[],complete:true} : await transport.query([{kinds:[0],authors:[account.owner],limit:20}],{relays:getPublicRelays(),signal:controller.signal});
+        const owner = account.owner;
+        const first = initialProfileOwner === owner && !account.profileEvent;
+        const response = first ? {events:[],complete:true} : await transport.query([{kinds:[0],authors:[owner],limit:1}],{relays:getPublicRelays(),signal:controller.signal,waitForAll:true});
         check(attempt);
-        const latest = [...response.events,...(cached?[cached]:[])].sort((a,b)=>b.created_at-a.created_at||a.id.localeCompare(b.id))[0];
-        if (!latest && !response.complete) throw new Error('Profile update is waiting for a connection.');
-        const previous = latest ? JSON.parse(latest.content) : {};
-        if (!previous || typeof previous !== 'object' || Array.isArray(previous)) throw new Error('Existing profile is unreadable.');
-        const created_at = Math.max(now(),(latest?.created_at??0)+1);
-        if (created_at > now()+300) throw new Error('Profile update is dated too far ahead.');
-        const event = await signing({kind:0,tags:[],created_at,content:JSON.stringify({...previous,name:patch.name,display_name:patch.name,...(patch.picture!==undefined?{picture:patch.picture}:{})})});
+        if (!response.complete) throw new Error('Profile update is waiting for a connection.');
+        const ownHead = (events:unknown[]) => events.map(verifiedPrivateEvent).filter((e):e is VerifiedEvent => !!e && e.pubkey === owner && e.kind === 0)
+          .sort((a,b) => b.created_at-a.created_at || a.id.localeCompare(b.id))[0];
+        const known = () => ownHead([account.profileEvent, ...publicQueue.values()]);
+        const latest = ownHead([...response.events, known()]);
+        const previous = readProfileFields(latest?.content ?? '{}');
+        const edits:Record<string,unknown> = {};
+        if (patch.name !== undefined) {
+          edits.display_name = patch.name;
+          if (!latest || !Object.hasOwn(previous,'name')) edits.name = patch.name;
+        }
+        if (patch.picture !== undefined) edits.picture = patch.picture || undefined;
+        const draft = buildProfileDraft(latest ?? null, edits, now());
+        if (draft.created_at > now()+300) throw new Error('Profile update is dated too far ahead.');
+        const event = await signing(draft);
+        check(attempt);
+        if (profilePatch !== patch || ownHead([known(),latest])?.id !== latest?.id) return;
         await queuePublic(event); check(attempt);
-        account.profileEvent=event; account.displayName=patch.name; await vault.put('market/account',account);
+        initialProfileOwner = undefined;
+        account.profileEvent=event; account.displayName=readProfileFields(event.content).display_name as string || previous.name as string || '';
+        await vault.put('market/account',account);
         if (profilePatch === patch) {await vault.del('market/profile-patch');check(attempt);profilePatch=undefined;}
       }
     })().catch(() => {}).finally(() => { if (attempt === generation) { syncingProfile = undefined; notify(); } });
@@ -778,7 +792,10 @@ export function createMessaging({ developerMint, getRelays=()=>[], getPublicRela
         if (pending?.installed !== false || pending.mode !== 'local') throw new Error('An account already exists on this device.');
         key = Uint8Array.from(pending.ownerSecret);
       } else key = generateSecretKey();
-      return authorize({ owner: getPublicKey(key), mode: 'local', sign: draft => finalizeEvent(draft, key), password, localSecret: key, freshOwner: !(await vault.status()).exists });
+      const freshOwner = !(await vault.status()).exists;
+      const session = await authorize({ owner: getPublicKey(key), mode: 'local', sign: draft => finalizeEvent(draft, key), password, localSecret: key, freshOwner });
+      if (freshOwner) initialProfileOwner = session.ownerPubkey;
+      return session;
     },
     async loginWithKey({ key, password }:{key?:string|Uint8Array;password?:string} = {}) {
       const bytes = secretBytes(key);
@@ -942,15 +959,16 @@ export function createMessaging({ developerMint, getRelays=()=>[], getPublicRela
     },
     async updateProfile({ name, picture }:{name?:string;picture?:string} = {}) {
       requireReady();
-      if (typeof name !== 'string' || !name.trim() || name.length > 80) throw new Error('Choose a name of up to 80 characters.');
+      if (name !== undefined && (typeof name !== 'string' || !name.trim() || name.length > 80)) throw new Error('Choose a name of up to 80 characters.');
       if (picture) { const url = new URL(picture); if (url.protocol !== 'https:' || url.username || url.password) throw new Error('Use a secure profile photo URL.'); }
-      const patch={name:name.trim(),...(picture!==undefined?{picture}:{})};
+      if (name === undefined && picture === undefined) return {delivery:'unchanged',accepted:[]};
+      const patch={...profilePatch,...(name!==undefined?{name:name.trim()}:{}),...(picture!==undefined?{picture}:{})};
       const attempt=generation;await vault.put('market/profile-patch',patch);check(attempt);profilePatch=patch;notify();scheduleBackground();
       return {delivery:'queued',accepted:[]};
     },
     exportKey() { if (!ownerSecret) throw new Error('Your account key is held by your signer.'); return nip19.nsecEncode(ownerSecret); },
     async lock() {
-      generation++;clearTimeout(expiryTimer);accountNotices=undefined;clearTimeout(retryTimer);retryTimer=undefined;enrollmentRemote?.close();enrollmentRemote=undefined;activation=syncing=syncingProfile=undefined; postingRemote?.close(); postingTransport?.close(); postingRemote = postingTransport = undefined; controller?.abort(); const closing = outbox?.close(); runtime?.close(); transport?.close();
+      initialProfileOwner=undefined;generation++;clearTimeout(expiryTimer);accountNotices=undefined;clearTimeout(retryTimer);retryTimer=undefined;enrollmentRemote?.close();enrollmentRemote=undefined;activation=syncing=syncingProfile=undefined; postingRemote?.close(); postingTransport?.close(); postingRemote = postingTransport = undefined; controller?.abort(); const closing = outbox?.close(); runtime?.close(); transport?.close();
       await closing;
       await messageWrites; await orders?.flush();await controls?.flush();await matches?.flush();await tradeBook?.flush(); await vault.flush(); vault.lock();
       ownerSecret?.fill(0); account = runtime = transport = outbox = signer = ownerSecret = undefined;

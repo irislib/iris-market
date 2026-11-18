@@ -210,14 +210,24 @@ test('failed registration resumes the same device key after restart without losi
 test('public posting signs the account identity and profile updates preserve existing fields', async t => {
   const bus = memoryRelay(), { app } = client(bus); t.after(() => app.destroy());
   await app.createAccount();
-  const before = await app.publishEvent({ kind: 0, tags: [], created_at: 1, content: JSON.stringify({ name: 'Before', about: 'Keep me' }) });
+  const before = await app.publishEvent({ kind: 0, tags: [['i','test',''],['t','shop']], created_at: 1, content: '{"name":"seller","display_name":"Before","about":"Keep me","count":9007199254740993}' });
   assert.equal(before.delivery, 'queued'); assert.deepEqual(before.accepted, []);
   await waitFor(() => bus.events.has(before.event.id) && app.state().pendingPublic === 0);
   const profileReceipt = await app.updateProfile({ name: 'Alice' });
   assert.equal(profileReceipt.delivery, 'queued'); assert.deepEqual(profileReceipt.accepted, []);
   await waitFor(() => bus.frames.some(event => event.kind === 0 && event.id !== before.event.id));
   const profile = bus.frames.find(event => event.kind === 0 && event.id !== before.event.id);
-  assert.deepEqual(JSON.parse(profile.content), { name: 'Alice', about: 'Keep me', display_name: 'Alice' });
+  assert.equal(JSON.parse(profile.content).display_name,'Alice');
+  assert.equal(JSON.parse(profile.content).name,'seller');
+  assert.equal(JSON.parse(profile.content).about,'Keep me');
+  assert.match(profile.content,/9007199254740993/);
+  assert.deepEqual(profile.tags, before.event.tags);
+  await app.updateProfile({picture:'https://example.org/avatar.jpg'});
+  await waitFor(() => bus.frames.some(e => e.kind === 0 && e.content.includes('avatar.jpg')));
+  const photo = bus.frames.find(e => e.kind === 0 && e.content.includes('avatar.jpg'));
+  assert.equal(JSON.parse(photo.content).name,'seller');
+  assert.equal(JSON.parse(photo.content).display_name,'Alice');
+  assert.deepEqual(photo.tags, before.event.tags);
   const draft = { kind: 30402, created_at: 1, tags: [['d', 'test-listing'], ['title', 'A bicycle']], content: 'Test inventory' };
   const listingReceipt = await app.publishEvent(draft), listing = listingReceipt.event;
   assert.equal(listingReceipt.delivery, 'queued'); assert.deepEqual(listingReceipt.accepted, []);

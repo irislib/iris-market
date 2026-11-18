@@ -561,14 +561,21 @@ export function createMessaging({ developerMint, getRelays=()=>[], getPublicRela
     syncingProfile = (async () => {
       if (patch && signer) {
         const owner = account.owner;
-        const first = initialProfileOwner === owner && !account.profileEvent;
-        const response = first ? {events:[],complete:true} : await transport.query([{kinds:[0],authors:[owner],limit:1}],{relays:getPublicRelays(),signal:controller.signal,waitForAll:true});
-        check(attempt);
-        if (!response.complete) throw new Error('Profile update is waiting for a connection.');
-        const ownHead = (events:unknown[]) => events.map(verifiedPrivateEvent).filter((e):e is VerifiedEvent => !!e && e.pubkey === owner && e.kind === 0)
+        const externalSigner = account.mode !== 'local' || signer !== enrollmentSigner;
+        const first = initialProfileOwner === owner && !account.profileEvent && !externalSigner;
+        const ownHead = (events:unknown[]) => events
+          .filter((e):e is VerifiedEvent => !!e && typeof e === 'object' && 'kind' in e && e.kind === 0 && 'pubkey' in e && e.pubkey === owner)
+          .map(verifiedPrivateEvent).filter((e):e is VerifiedEvent => !!e)
           .sort((a,b) => b.created_at-a.created_at || a.id.localeCompare(b.id))[0];
         const known = () => ownHead([account.profileEvent, ...publicQueue.values()]);
-        const latest = ownHead([...response.events, known()]);
+        async function readHead() {
+          const response = await transport.query([{kinds:[0],authors:[owner],limit:1}],
+            {relays:getPublicRelays(),signal:controller.signal,waitForAll:true});
+          check(attempt);
+          if (!response.complete) throw new Error('Profile update is waiting for a connection.');
+          return ownHead([...response.events, known()]);
+        }
+        const latest = first ? known() : await readHead();
         const previous = readProfileFields(latest?.content ?? '{}');
         const edits:Record<string,unknown> = {};
         if (patch.name !== undefined) {
@@ -580,7 +587,10 @@ export function createMessaging({ developerMint, getRelays=()=>[], getPublicRela
         if (draft.created_at > now()+300) throw new Error('Profile update is dated too far ahead.');
         const event = await signing(draft);
         check(attempt);
-        if (profilePatch !== patch || ownHead([known(),latest])?.id !== latest?.id) return;
+        // A remote signer can stay open while another client publishes new fields.
+        const confirmed = externalSigner ? await readHead() : known();
+        check(attempt);
+        if (profilePatch !== patch || ownHead([confirmed,latest])?.id !== latest?.id) return;
         await queuePublic(event); check(attempt);
         initialProfileOwner = undefined;
         const metadata = readProfileFields(event.content);

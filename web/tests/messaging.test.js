@@ -237,6 +237,34 @@ test('public posting signs the account identity and profile updates preserve exi
   assert.equal(JSON.stringify(app.state()).includes('ownerSecret'), false);
 });
 
+test('a relay update during extension approval is kept on the next profile save', async t => {
+  const bus=memoryRelay(), key=generateSecretKey(), owner=getPublicKey(key);
+  const original=finalizeEvent({kind:0,created_at:1,tags:[],content:'{"name":"seller"}'},key);
+  const advanced=finalizeEvent({kind:0,created_at:2,tags:[['client','other']],content:'{"name":"seller","custom":"later"}'},key);
+  bus.events.set(original.id,original);
+  let signatures=0, checked=false;
+  const app=createMessaging({getRelays:()=>['wss://test.invalid'],vault:createVault({backend:memoryBackend()}),
+    transportFactory:()=>{const t=bus.factory();return {...t,async query(filters,...opts) {
+      const result=await t.query(filters,...opts);
+      if(signatures===1 && filters.some(f=>f.kinds?.includes(0)) && result.events.some(e=>e.id===advanced.id)) checked=true;
+      return result;
+    }};},
+    extension:()=>({getPublicKey:async()=>owner,signEvent:async draft=>{
+      if(draft.kind===0 && ++signatures===1) bus.events.set(advanced.id,advanced);
+      return finalizeEvent(draft,key);
+    }})});
+  t.after(()=>app.destroy());
+  await app.loginWithExtension();
+  await app.updateProfile({name:'New display'});
+  await waitFor(()=>checked);
+  assert.equal(bus.frames.filter(e=>e.kind===0).length,0);
+  await app.updateProfile({name:'New display'});
+  await waitFor(()=>bus.frames.some(e=>e.kind===0));
+  const published=bus.frames.find(e=>e.kind===0);
+  assert.deepEqual(JSON.parse(published.content),{name:'seller',display_name:'New display',custom:'later'});
+  assert.deepEqual(published.tags,advanced.tags);
+});
+
 test('extension login keeps the owner key outside the vault and rejects a different posting signer', async t => {
   const bus = memoryRelay(), backend = memoryBackend(), vault = createVault({ backend }), ownerKey = generateSecretKey();
   let selected = ownerKey;

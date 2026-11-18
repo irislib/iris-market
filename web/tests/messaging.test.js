@@ -310,7 +310,7 @@ test('locking during a pending unlock prevents a late messaging runtime from reo
   backend.read = async () => { entered(); await new Promise(resolve => { release = resolve; }); backend.read = read; return read(); };
   const unlocking = app.unlock(); await reading;
   const locking = app.lock(); release();
-  await assert.rejects(unlocking, /Account changed/); await locking;
+  await assert.rejects(unlocking, /Profile changed/); await locking;
   assert.equal(app.state().status, 'locked'); assert.equal(app.state().canSend, false); assert.equal(app.state().ownerPubkey, undefined);
 });
 

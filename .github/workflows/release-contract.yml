@@ -1,29 +1,53 @@
-name: Release contract
-
+name: Qualify native Market profile changes
 on:
-  pull_request:
   push:
-    branches: [main]
-  workflow_dispatch:
+    branches: [codex/market-native-profile-linux-20261118]
 
 permissions:
   contents: read
 
 jobs:
-  source-checks:
+  qualify:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 45
+    env:
+      CARGO_BUILD_JOBS: '3'
+      CANDIDATE: b04a4c3807a41d9b1e48505a119ac97d460bc0d7
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - name: Check pinned inputs and artifact acceptance contract
-        env:
-          PYTHONDONTWRITEBYTECODE: '1'
+          fetch-depth: 2
+      - name: Check out the unmodified product source
         run: |
-          python3 scripts/release-build-inputs.py --check
-          python3 scripts/android-release-inputs.py --check
-          python3 scripts/test_alpha_release.py -v
-          python3 scripts/native-alpha.py --help
-          node --test scripts/publish-alpha.test.mjs
-      # Native builds, signing and publication are separately owned release gates.
+          test "$(git rev-parse HEAD^1)" = "$CANDIDATE"
+          test "$(git diff --name-only HEAD^1 HEAD)" = '.github/workflows/release-contract.yml'
+          git switch --detach "$CANDIDATE"
+          test "$(git rev-parse HEAD)" = "$CANDIDATE"
+          test -z "$(git status --porcelain)"
+      - name: Install the pinned Linux toolchain
+        run: python3 scripts/release-build-inputs.py --install --work "$RUNNER_TEMP/market-rust" --target x86_64-unknown-linux-gnu
+      - name: Build locked core, signer, guest, local-first and market tests
+        run: |
+          "$CARGO" test --locked -p iris-market-core --lib --test remote_signer --test guest_network --test local_first --test market --no-run
+      - name: Run native tests with loopback only
+        run: |
+          sudo --preserve-env=PATH,RUNNER_TEMP,CARGO,RUSTC -- unshare --net -- bash -eu -o pipefail -c '
+            ip link set lo up
+            test -z "$(ip route show default)"
+            exec runuser -u runner -- env -i HOME=/home/runner USER=runner PATH="$PATH" CARGO="$CARGO" RUSTC="$RUSTC" RUNNER_TEMP="$RUNNER_TEMP" bash -eu -o pipefail -c '\''
+              result=0
+              for suite in local_first remote_signer guest_network market lib; do
+                if [ "$suite" = lib ]; then selector=(--lib); else selector=(--test "$suite"); fi
+                "$CARGO" test --offline --locked -p iris-market-core "${selector[@]}" -- --test-threads=1 || result=1
+              done
+              exit "$result"
+            '\''
+          '
+      - name: Recheck silent-relay timing in a fresh profile
+        run: |
+          sudo --preserve-env=PATH,CARGO,RUSTC -- unshare --net -- bash -eu -c '
+            ip link set lo up
+            test -z "$(ip route show default)"
+            exec runuser -u runner -- env -i HOME=/home/runner USER=runner PATH="$PATH" RUSTC="$RUSTC" "$CARGO" test --offline --locked -p iris-market-core --test local_first local_actions_and_restoration_finish_without_relay_replies -- --exact --test-threads=1
+          '

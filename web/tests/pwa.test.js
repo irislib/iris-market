@@ -2,6 +2,9 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {createHash} from 'node:crypto'
 import {readFile} from 'node:fs/promises'
+import {fileURLToPath} from 'node:url'
+import {runInNewContext} from 'node:vm'
+import {build} from 'esbuild'
 import {createOfflineShell} from '../src/offline-shell.ts'
 import {registerPwa} from '../src/pwa.ts'
 
@@ -53,6 +56,22 @@ test('activation retires only old releases from the same mount, preserving priva
   await caches.open('private-vault');await caches.open(`iris-market-shell:https://example.com/other/:${revision}`)
   const next=createOfflineShell({scope,revision:hash('next'),assets,caches,fetch:fetchAsset});await next.install();await next.activate()
   assert.deepEqual((await caches.keys()).sort(),['private-vault',`iris-market-shell:https://example.com/other/:${revision}`,next.name].sort())
+})
+
+test('the installed worker claims open pages after retiring its old cache',async()=>{
+  const workerPath=fileURLToPath(new URL('../src/service-worker.ts',import.meta.url))
+  const current=hash('next'),caches=memoryCaches(),listeners=new Map(),claims=[]
+  const cacheKey=version=>`iris-market-shell:${scope}:${version}`
+  await caches.open(cacheKey(revision));await caches.open(cacheKey(current))
+  const {outputFiles}=await build({entryPoints:[workerPath],bundle:true,write:false,format:'iife',
+    define:{__MARKET_SHELL__:JSON.stringify(assets),__MARKET_REVISION__:JSON.stringify(current)}})
+  const self={registration:{scope},caches,clients:{claim:async()=>claims.push(await caches.keys())},
+    addEventListener:(type,fn)=>listeners.set(type,fn)}
+  runInNewContext(outputFiles[0].text,{self,URL})
+  let activation
+  listeners.get('activate')({waitUntil:work=>{activation=work}})
+  await activation
+  assert.deepEqual(claims,[[cacheKey(current)]])
 })
 
 test('cache eviction uses network without persisting an unverified replacement',async()=>{

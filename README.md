@@ -25,13 +25,13 @@ A general marketplace for things, skills and opportunities. Native iOS, Android 
 - One search field for text or optional AI matching. Browser-local AI can prepare its local model automatically, with inline progress, cancellation and a remembered result view. It is experimental; marketplace accuracy is not established.
 - Named CLI commands, a local JSON action interface and MCP stdio tools for search, publication, saved listings, contact, messages and private orders.
 
-This is a development prototype. The browser includes an optional Cashu wallet; shipping guarantees, automatic transfer of earlier private chat history, general group conversations and saved matching watches are not implemented. Apple and Android source now includes an opt-in Cashu wallet; its capabilities and remaining acceptance gates are described below. Native local AI supports Apple Foundation Models and two optional Android downloads. Compact search and Gemma 4 E2B have both been exercised on a physical Pixel with real signed marketplace listings. The CLI source package 0.1.4 remains published on crates.io; the alpha.23 downloads are separate release artifacts and do not republish that crate. Signed Android, notarized macOS, Linux desktop and CLI downloads are available in [v0.1.4-alpha.23](https://github.com/irislib/iris-market/releases/tag/v0.1.4-alpha.23). iOS 0.1.4 (34) is available to the existing internal TestFlight group. Home and listing search default to your social network. The Mac toolbar uses the standard sidebar control.
+This is a development prototype. The browser includes an optional Cashu wallet; shipping guarantees, automatic transfer of earlier private chat history, general group conversations and saved matching watches are not implemented. Apple and Android source now includes an opt-in Cashu wallet; its capabilities and remaining acceptance gates are described below. Native local AI supports Apple Foundation Models and two optional Android downloads. Compact search and Gemma 4 E2B have both been exercised on a physical Pixel with real signed marketplace listings. The CLI source package 0.1.4 remains published on crates.io; the alpha.26 downloads are separate release artifacts and do not republish that crate. Signed Android, notarized macOS, Linux desktop and CLI downloads are available in [v0.1.4-alpha.26](https://github.com/irislib/iris-market/releases/tag/v0.1.4-alpha.26). iOS 0.1.4 (36) is available to the existing internal TestFlight group. Home and listing search default to your social network. The Mac toolbar uses the standard sidebar control.
 
 On the web and Linux, you can review your basket before signing in and buy one listing without removing other items. Clearing a search on Android, iPhone or Mac returns you to browsing. Apple apps prepare the order-history CSV when you choose to share it.
 
 Web: [market.iris.to](https://market.iris.to) · [App builds and CLI](https://getmarket.iris.to). Source: [GitHub](https://github.com/irislib/iris-market). Hashtree source: [iris-market](https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/iris-market).
 
-Windows currently uses the [web app](https://market.iris.to/) or the [x64 CLI download](https://github.com/irislib/iris-market/releases/download/v0.1.4-alpha.23/iris-market-v0.1.4-alpha.23-cli-x86_64-pc-windows-msvc.zip). The Windows CLI requires the [Microsoft Visual C++ v14 x64 runtime](https://aka.ms/vc14/vc_redist.x64.exe). A native Windows GUI is not implemented; Windows PWA installation and runtime have not been manually verified.
+Windows currently uses the [web app](https://market.iris.to/) or the [x64 CLI download](https://github.com/irislib/iris-market/releases/download/v0.1.4-alpha.26/iris-market-v0.1.4-alpha.26-cli-x86_64-pc-windows-msvc.zip). The Windows CLI requires the [Microsoft Visual C++ v14 x64 runtime](https://aka.ms/vc14/vc_redist.x64.exe). A native Windows GUI is not implemented; Windows PWA installation and runtime have not been manually verified.
 
 The browser feed below uses real public listings. Native alpha builds share the same visual direction and use platform system fonts.
 
@@ -514,7 +514,7 @@ node scripts/publish-alpha.mjs --help
 
 ### Linux desktop
 
-`linux/iris_market.py` runs the bundled browser client in a persistent WebKitGTK window. It uses system Python 3.10+, GTK 3, PyGObject and WebKitGTK 4.1 API (WebKit 2.42+); it does not bundle these runtimes. Linux x64 is the release target. Download the [Debian package](https://github.com/irislib/iris-market/releases/download/v0.1.4-alpha.12/iris-market-v0.1.4-alpha.12-linux-x64.deb) or [portable archive](https://github.com/irislib/iris-market/releases/download/v0.1.4-alpha.12/iris-market-v0.1.4-alpha.12-linux-x64.tar.gz). Browser accounts, encrypted local storage, transport workspaces and optional CPU/WASM AI use the same web implementation; this is not a separate Rust-native Linux interface.
+`linux/iris_market.py` runs the bundled browser client in a persistent WebKitGTK window. It uses system Python 3.10+, GTK 3, PyGObject and WebKitGTK 4.1 API (WebKit 2.42+); it does not bundle these runtimes. Linux x64 is the release target. Download the [Debian package](https://github.com/irislib/iris-market/releases/download/v0.1.4-alpha.26/iris-market-v0.1.4-alpha.26-linux-x64.deb) or [portable archive](https://github.com/irislib/iris-market/releases/download/v0.1.4-alpha.26/iris-market-v0.1.4-alpha.26-linux-x64.tar.gz). Browser accounts, encrypted local storage, transport workspaces and optional CPU/WASM AI use the same web implementation; this is not a separate Rust-native Linux interface.
 
 The GUI was verified on Ubuntu 26.04 x64 with Python 3.14.4, PyGObject 3.56.2, GTK 3.24.52 and WebKitGTK 2.52.6. The launcher uses one WASM compiler thread and disables WebKit’s optimizing WASM tier for this process, retaining baseline WASM and JavaScript JITs. This avoids excessive memory use while preparing the pinned AI runtime; explicit launcher environment overrides are preserved. System libraries are not bundled or pinned by the package, so identical application assets do not guarantee identical behavior or memory use across distributions and WebKit versions.
 
@@ -618,7 +618,7 @@ Receipt and reaction records use Iris Chat's existing private inner kinds: 15 fo
 
 ### Platform coverage
 
-This describes alpha.23/build 34. Linux bundles the accepted browser interface. Windows uses the browser/PWA or CLI.
+This describes alpha.26/build 36. Linux bundles the accepted browser interface. Windows uses the browser/PWA or CLI.
 
 | Area | Browser / Linux interface | iOS / macOS / Android source |
 | --- | --- | --- |
@@ -626,6 +626,7 @@ This describes alpha.23/build 34. Linux bundles the accepted browser interface. 
 | Private chat, thread grouping, delivered/seen and emoji reactions | Available | Available through the shared Rust core |
 | Orders, transport provider workspace and tracking | Available | Available |
 | Seller-arranged delivery, personal pickup and buyer-arranged delivery | Available | Included in build 34 |
+| Offline signed pickup and delivery passes | Available | Included in build 36 |
 | Escrow checkout from an eligible listing or one basket item | Available | Included in build 34 |
 | Cashu receive/send, token reclaim and Lightning top-up | Available | Included in build 13; isolated-mint tests passed |
 | Outgoing Lightning payments, fee preview and encrypted wallet backup | Available | Included in build 13 |

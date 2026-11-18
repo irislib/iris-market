@@ -633,7 +633,7 @@ fn blank_fresh_setup_is_owner_scoped_durable_and_never_queues_metadata() {
 }
 
 #[test]
-fn imported_name_edit_preserves_signed_metadata_and_does_not_require_signup() {
+fn imported_profile_holds_an_offline_name_edit_and_keeps_the_cached_signed_event() {
     let dir = tempfile::tempdir().unwrap();
     offline(dir.path());
     let keys = Keys::generate();
@@ -650,16 +650,28 @@ fn imported_name_edit_preserves_signed_metadata_and_does_not_require_signup() {
     app.command(r#"{"type":"update_profile","name":"New"}"#)
         .unwrap();
     let store = Store::open(&dir.path().join("market.sqlite")).unwrap();
-    let current = store
-        .profile_metadata(&keys.public_key().to_hex())
-        .unwrap()
-        .unwrap();
-    let value: Value = serde_json::from_str(&current.content).unwrap();
-    assert_eq!(value["name"], "New");
-    assert_eq!(value["about"], "Original description");
-    assert_eq!(value["custom"]["preserve"], true);
-    assert_eq!(value["website"], "https://example.com");
-    assert!(current.created_at > metadata.created_at);
+    let owner = keys.public_key();
+    assert_eq!(
+        store.pending_profile_name(owner).unwrap().as_deref(),
+        Some("New")
+    );
+    assert!(store.profile_metadata(&owner.to_hex()).unwrap().is_none());
+    assert!(
+        store
+            .pending()
+            .unwrap()
+            .iter()
+            .all(|event| event.kind != nostr::Kind::Metadata)
+    );
+    app.shutdown();
+    let cache = iris_market_core::public_cache::PublicEventCache::open(
+        &dir.path().join("public-events.sqlite"),
+    )
+    .unwrap();
+    let filter = nostr::Filter::new()
+        .kind(nostr::Kind::Metadata)
+        .author(owner);
+    assert_eq!(cache.query_local(&[filter], 1).unwrap(), vec![metadata]);
 }
 
 #[test]

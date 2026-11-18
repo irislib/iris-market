@@ -102,9 +102,12 @@ struct MarketQRScanner: View {
         NavigationStack {
             VStack(spacing: 18) {
                 if cameraEnabled {
-                    WalletCameraPreview(session: camera.session).frame(minHeight: 220, idealHeight: 320).clipShape(RoundedRectangle(cornerRadius: 20))
-                    if let error = camera.error { Text(error).foregroundStyle(MarketTheme.muted) }
-                    else { Text("Place the QR code inside the camera view.").foregroundStyle(MarketTheme.muted) }
+                    if let error = camera.error {
+                        Label(error, systemImage: "camera.fill").foregroundStyle(MarketTheme.muted)
+                    } else {
+                        WalletCameraPreview(session: camera.session).frame(minHeight: 220, idealHeight: 320).clipShape(RoundedRectangle(cornerRadius: 20))
+                        Text("Place the QR code inside the camera view.").foregroundStyle(MarketTheme.muted)
+                    }
                 } else {
                     Button("Use camera") { cameraEnabled = true; camera.start() }.buttonStyle(PrimaryButton())
                 }
@@ -114,7 +117,7 @@ struct MarketQRScanner: View {
                 } else if camera.error != nil {
                     Text("You can paste the " + kind.name + " instead.").foregroundStyle(MarketTheme.muted)
                 }
-                if let feedback { Text(feedback).foregroundStyle(MarketTheme.muted) }
+                if let feedback, !failedVerification { Text(feedback).foregroundStyle(MarketTheme.muted) }
             }.padding(24).navigationTitle("Scan " + kind.name).marketInlineTitle()
                 .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
         }

@@ -1,7 +1,6 @@
 import SwiftUI
 import CoreImage.CIFilterBuiltins
 import ImageIO
-import Vision
 
 struct MarketQRCode: View {
     let text: String
@@ -42,11 +41,10 @@ enum MarketQRImage {
                 kCGImageSourceCreateThumbnailWithTransform: true,
                 kCGImageSourceThumbnailMaxPixelSize: 2048
               ] as CFDictionary) else { throw ReadError.unreadable }
-        let request = VNDetectBarcodesRequest()
-        request.symbologies = [.qr]
-        try VNImageRequestHandler(cgImage: image).perform([request])
-        guard let codes = request.results, codes.count == 1,
-              let value = codes[0].payloadStringValue else { throw ReadError.noSingleCode }
+        let context = CIContext(options: [.useSoftwareRenderer: true, .cacheIntermediates: false])
+        guard let detector = CIDetector(ofType: CIDetectorTypeQRCode, context: context, options: [CIDetectorAccuracy: CIDetectorAccuracyHigh]) else { throw ReadError.unreadable }
+        let codes = detector.features(in: CIImage(cgImage: image))
+        guard codes.count == 1, let value = (codes[0] as? CIQRCodeFeature)?.messageString else { throw ReadError.noSingleCode }
         return value
     }
 }

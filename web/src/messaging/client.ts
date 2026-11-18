@@ -32,10 +32,10 @@ import type { DeliveryPlace, OrderListing, OrderPatch, OrderRequestOptions, Orde
 type AccountMode='local'|'extension'|'linked';
 interface AccountRecord {owner:string;mode:AccountMode;deviceSecret:number[];ownerSecret?:number[];proof?:VerifiedEvent;installed?:boolean;freshOwner?:boolean;displayName?:string;profileEvent?:VerifiedEvent}
 export interface ChatMessage {id:string;text:string;mine:boolean;createdAt:number;createdAtMs?:number;expiresAt?:number;delivery:'queued'|'sent'|'delivered'|'seen'|'received'|'failed';reactions?:ReactionSummary[];_chat?:ChatControlMeta;orderId?:string;context?:MessageContext;system?:boolean}
-export interface MessagingState {retention:Retention;chatTimers:Record<string,Timer>;tradeSteps:ReturnType<ReturnType<typeof createMarketTrades>["rows"]>;receiptPreferences:ReceiptPreferences;status:string;error:string;password:boolean;ownerPubkey?:string;devicePubkey?:string;displayName?:string;pendingPublic:number;chatStatus:string;profileEvent?:VerifiedEvent;pendingListings:VerifiedEvent[];pendingReviews:VerifiedEvent[];pendingCollections:VerifiedEvent[];orders:OrderView[];canSend:boolean;canSign:boolean;mode?:AccountMode;needsLogin:boolean;devices:{pubkey:string;current:boolean}[];conversations:{pubkey:string;messages:ChatMessage[]}[]}
+export interface MessagingState {retention:Retention;chatTimers:Record<string,Timer>;tradeSteps:ReturnType<ReturnType<typeof createMarketTrades>["rows"]>;receiptPreferences:ReceiptPreferences;status:string;error:string;password:boolean;explicitSignOut?:boolean;ownerPubkey?:string;devicePubkey?:string;displayName?:string;pendingPublic:number;chatStatus:string;profileEvent?:VerifiedEvent;pendingListings:VerifiedEvent[];pendingReviews:VerifiedEvent[];pendingCollections:VerifiedEvent[];orders:OrderView[];canSend:boolean;canSign:boolean;mode?:AccountMode;needsLogin:boolean;devices:{pubkey:string;current:boolean}[];conversations:{pubkey:string;messages:ChatMessage[]}[]}
 type AccountSigner=(event:UnsignedEvent)=>Event|Promise<Event>;
 interface BrowserSigner {getPublicKey():Promise<string>;signEvent:AccountSigner}
-interface MessagingOptions {developerMint?:string;getRelays?:()=>string[];getPublicRelays?:()=>string[];onChange?:(state:MessagingState)=>void;vault?:Vault;transportFactory?:()=>PrivateTransport;extension?:()=>BrowserSigner|undefined}
+interface MessagingOptions {developerMint?:string;getRelays?:()=>string[];getPublicRelays?:()=>string[];onChange?:(state:MessagingState)=>void;vault?:Vault;transportFactory?:()=>PrivateTransport;extension?:()=>BrowserSigner|undefined;profileSessionStorage?:Pick<Storage,'getItem'|'setItem'|'removeItem'>}
 interface SignerLoginOptions {password?:string;bunkerLink?:string;signal?:AbortSignal;onConnectionLink?:(url:string)=>void;onAuthUrl?:(url:string)=>void;onCommitting?:()=>void}
 type PublicationContext=NostrPublishContext&{recipientDeviceOwnerPubkey?:string;recipientDevicePubkey?:string;wireDeadline?:number};
 
@@ -43,6 +43,10 @@ class PendingRelayAcceptance extends Error {}
 
 const HEX = /^[a-f0-9]{64}$/;
 const DEVICE_PREFIX = 'v1/device-manager/';
+const PROFILE_SIGN_OUT_KEY = 'market-profile-signed-out';
+function browserProfileSessionStorage() {
+  try { return globalThis.localStorage; } catch { return undefined; }
+}
 const now = () => Math.floor(Date.now() / 1000);
 function publicAccountEvent(event:VerifiedEvent):boolean {
   if([0,3,30402,38383].includes(event.kind))return true;
@@ -116,10 +120,10 @@ export function messageProjection(rumor:Rumor, from:string, meta:OnEventMeta, ow
 }
 
 /** Public account identity and per-device chat key follow the active Iris Chat NDR runtime. */
-export function createMessaging({ developerMint, getRelays=()=>[], getPublicRelays=getRelays, onChange = () => {}, vault = createVault(),
+export function createMessaging({ developerMint, getRelays=()=>[], getPublicRelays=getRelays, onChange = () => {}, vault = createVault(), profileSessionStorage = browserProfileSessionStorage(),
   transportFactory = () => createPrivateTransport(getRelays), extension = () => (globalThis.window as Window&{nostr?:BrowserSigner})?.nostr }:MessagingOptions = {}) {
   let account:AccountRecord,runtime:NdrRuntime,transport:PrivateTransport,outbox:ReturnType<typeof createPersistentNostrOutbox>,ownerSecret:Uint8Array,signer:AccountSigner,controller:AbortController,postingRemote:RemoteSigner,postingTransport:PrivateTransport,generation = 0;
-  let status = 'signed-out', error = '', authorizationChecked = false, savedStatus;
+  let status = 'signed-out', error = '', authorizationChecked = false, savedStatus, explicitSignOut = false;
   let chatStatus = 'connecting', activation, syncing, syncingProfile, retryTimer, enrollmentSigner, enrollmentRemote;
   const collectionWrites=new Set<string>();
   let publicQueue = new Map<string,VerifiedEvent>(), profilePatch:{name?:string;picture?:string}, initialProfileOwner:string|undefined;
@@ -144,7 +148,8 @@ export function createMessaging({ developerMint, getRelays=()=>[], getPublicRela
     pendingReviews: [...publicQueue.values()].filter(event => event.kind === REVIEW_KIND).map(event => structuredClone(event)),
     orders: orders?.state() ?? [],
     canSend: canSend(),
-    canSign: !!signer && status === 'ready', mode: account?.mode, needsLogin: status === 'locked' && !account?.ownerSecret,
+    canSign: !!signer && status === 'ready', mode: account?.mode, explicitSignOut,
+    needsLogin: status === 'locked' && !explicitSignOut && !account?.ownerSecret,
     devices: runtime?.getState().registeredDevices.map(device => ({ pubkey: device.identityPubkey,
       current: device.identityPubkey === runtime.getState().currentDevicePubkey })) ?? [],
     conversations: [...conversations].map(([pubkey, messages]) => ({ pubkey, messages: messages.filter(message => (deadline(retention,message)??Infinity)>now()).map(({_chat,...message}) => ({ ...message,delivery:message.delivery==='queued' && message.expiresAt<=now()?'failed':message.delivery,reactions:messageReactions({...message,_chat},account?.owner) })) })) });
@@ -754,7 +759,12 @@ export function createMessaging({ developerMint, getRelays=()=>[], getPublicRela
     publicQueue=new Map();
     for(const key of await vault.list('market/public/')){const event=verifiedPrivateEvent(await vault.get(key));if(event&&event.pubkey===account.owner&&(publicAccountEvent(event)||(event.kind===37368&&event.id===account.proof?.id)))publicQueue.set(event.id,event);}
     profilePatch=await vault.get<{name:string;picture?:string}>('market/profile-patch');
-    check(attempt);status='ready';error='';chatStatus='connecting';notify();scheduleBackground();
+    check(attempt);
+    if (explicitSignOut) {
+      profileSessionStorage?.removeItem(PROFILE_SIGN_OUT_KEY);
+      explicitSignOut = false;
+    }
+    status='ready';error='';chatStatus='connecting';notify();scheduleBackground();
     if(account.mode==='extension'&&!signer){const nip07=extension();if(nip07)void nip07.getPublicKey().then(owner=>{if(attempt===generation&&owner===account.owner){signer=enrollmentSigner=draft=>nip07.signEvent(draft);notify();scheduleBackground();}}).catch(()=>{});}
     return state();
   }
@@ -803,8 +813,9 @@ export function createMessaging({ developerMint, getRelays=()=>[], getPublicRela
       const attempt = generation;
       savedStatus = await vault.status();
       check(attempt);
+      explicitSignOut = profileSessionStorage?.getItem(PROFILE_SIGN_OUT_KEY) === '1';
       if (!savedStatus.exists) return state();
-      if (!savedStatus.password) return this.unlock();
+      if (!savedStatus.password && !explicitSignOut) return this.unlock();
       status = 'locked'; notify();
       return state();
     },
@@ -997,13 +1008,25 @@ export function createMessaging({ developerMint, getRelays=()=>[], getPublicRela
       notify();scheduleBackground();
       return {delivery:'queued',accepted:[]};
     },
-    exportKey() { if (!ownerSecret) throw new Error('Your account key is held by your signer.'); return nip19.nsecEncode(ownerSecret); },
+    exportKey() { requireReady(); if (!ownerSecret) throw new Error('Your account key is held by your signer.'); return nip19.nsecEncode(ownerSecret); },
+    async signOut() {
+      requireReady();
+      if (!profileSessionStorage) throw new Error('Could not keep this profile signed out in this browser.');
+      profileSessionStorage.setItem(PROFILE_SIGN_OUT_KEY, '1');
+      explicitSignOut = true;
+      await this.lock();
+    },
     async lock() {
+      status='locked'; signer=undefined;
       initialProfileOwner=undefined;generation++;clearTimeout(expiryTimer);accountNotices=undefined;clearTimeout(retryTimer);retryTimer=undefined;enrollmentRemote?.close();enrollmentRemote=undefined;activation=syncing=syncingProfile=undefined; postingRemote?.close(); postingTransport?.close(); postingRemote = postingTransport = undefined; controller?.abort(); const closing = outbox?.close(); runtime?.close(); transport?.close();
-      await closing;
-      await messageWrites; await orders?.flush();await controls?.flush();await matches?.flush();await tradeBook?.flush(); await vault.flush(); vault.lock();
-      ownerSecret?.fill(0); account = runtime = transport = outbox = signer = ownerSecret = undefined;
-      conversations.clear();retention=follow;chatTimers={};wireDeadlines.clear();lastChatMs=0;matches=undefined;syncingMatches=undefined;for(const sub of aliasSubscriptions.values())sub.close();aliasSubscriptions.clear();tradeBook=undefined;syncingTrades=undefined;controls=undefined;syncingControls=undefined;orders=undefined;syncingOrders=undefined;publicQueue.clear();profilePatch=undefined;enrollmentSigner=undefined;controller=undefined;authorizationChecked = false;status='locked';chatStatus='connecting';error='';notify();
+      try {
+        await closing;
+        await messageWrites; await orders?.flush();await controls?.flush();await matches?.flush();await tradeBook?.flush(); await vault.flush();
+      } finally {
+        vault.lock();
+        ownerSecret?.fill(0); account = runtime = transport = outbox = signer = ownerSecret = undefined;
+        conversations.clear();retention=follow;chatTimers={};wireDeadlines.clear();lastChatMs=0;matches=undefined;syncingMatches=undefined;for(const sub of aliasSubscriptions.values())sub.close();aliasSubscriptions.clear();tradeBook=undefined;syncingTrades=undefined;controls=undefined;syncingControls=undefined;orders=undefined;syncingOrders=undefined;publicQueue.clear();profilePatch=undefined;enrollmentSigner=undefined;controller=undefined;authorizationChecked = false;status='locked';chatStatus='connecting';error='';notify();
+      }
     },
     async destroy() { await this.lock(); },
   };

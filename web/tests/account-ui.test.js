@@ -26,6 +26,7 @@ function fakeMessaging(initial){
     restore:async()=>initial,state:()=>initial,destroy(){},refreshHistory:async()=>{},markSeen:async()=>{},
     loginWithKey:async options=>{calls.push(['loginWithKey',options.key]);},
     unlock:async password=>{calls.push(['unlock',password]);},
+    signOut:async()=>{calls.push(['signOut']);},
     open:async key=>{calls.push(['open',key]);},
     send:async(key,text)=>{calls.push(['send',key,text]);},
     privateMatchView:()=>null,setReceiptPreferences:async()=>{},
@@ -90,6 +91,24 @@ test('locked and ready profiles show unlock, devices and receipt settings',async
   assert.equal(byText(settings,'Messages').tagName,'SUMMARY');
   assert.equal(byText(settings,'Message retention · Follow the conversation timer').disabled,false);
   assert.deepEqual([...settings.querySelectorAll('input[type=checkbox]')].slice(0,2).map(input=>input.checked),[true,true]);
+});
+
+test('profile settings signs out and offers explicit sign-in for the saved profile',async()=>{
+  const {api,calls,emit}=setup({...base,status:'ready',ownerPubkey:owner,canSign:true,mode:'local'});
+  await api.restored;await settle();
+  api.showAccount();
+  const surface=accountSurface();
+  const signOut=surface.querySelector('#account-sign-out');
+  assert.equal(signOut.textContent,'Sign out');
+  signOut.click();await settle();
+  assert.deepEqual(calls.at(-1),['signOut']);
+
+  emit({...base,status:'locked',explicitSignOut:true,needsLogin:false});flushSync();
+  assert.equal(surface.querySelector('h2').textContent,'You’re signed out');
+  assert.equal(surface.querySelector('#account-ready').hidden,true);
+  assert.equal(surface.querySelector('#account-unlock button').textContent,'Sign in');
+  surface.querySelector('#account-unlock').requestSubmit();await settle();
+  assert.deepEqual(calls.at(-1),['unlock','']);
 });
 
 test('Messages lists threads, marks unread, shows queued delivery and sends without waiting on relays',async()=>{

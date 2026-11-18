@@ -48,6 +48,51 @@ test('new profile, name, listing and conversation persist while every relay stay
   assert.equal(network.calls.some(call=>call.kind==='publish'&&[1059,1060].includes(call.value.kind)),false);
 });
 
+test('explicit sign-out keeps a passwordless profile locked across reload until the user signs in', {timeout:3000}, async t=>{
+  const backend = memoryBackend();
+  const values = new Map();
+  const profileSessionStorage = {
+    getItem: key => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, value),
+    removeItem: key => values.delete(key),
+  };
+  const network = silentNetwork();
+  const newClient = () => createMessaging({
+    vault: createVault({backend}), profileSessionStorage, getRelays: () => ['wss://silent.invalid'],
+    transportFactory: network.factory,
+  });
+  const app = newClient();
+  const owner = (await app.createAccount()).ownerPubkey;
+  await app.updateProfile({name:'Saved profile'});
+  const receipt = await app.publishEvent(listing);
+  const signingOut = app.signOut();
+  await assert.rejects(app.signEvent(listing));
+  await signingOut;
+  assert.equal(app.state().ownerPubkey, undefined);
+  assert.equal(app.state().canSign, false);
+  assert.throws(() => app.exportKey());
+
+  const restarted = newClient();
+  t.after(() => restarted.destroy());
+  const locked = await restarted.restore();
+  assert.equal(locked.status, 'locked');
+  assert.equal(locked.explicitSignOut, true);
+  assert.equal(locked.needsLogin, false);
+  assert.equal(locked.ownerPubkey, undefined);
+  assert.equal(locked.pendingListings.length, 0);
+
+  const restored = await restarted.unlock();
+  assert.equal(restored.explicitSignOut, false);
+  assert.equal(restored.ownerPubkey, owner);
+  assert.equal(restored.displayName, 'Saved profile');
+  assert.equal(restored.pendingListings[0].id, receipt.event.id);
+  await restarted.lock();
+
+  const afterSignIn = newClient();
+  t.after(() => afterSignIn.destroy());
+  assert.equal((await afterSignIn.restore()).ownerPubkey, owner);
+});
+
 for(const hasPreparedProof of [false,true])test(`legacy incomplete local profile restores without discovery (${hasPreparedProof?'saved proof':'no proof'})`,{timeout:2000},async t=>{
   const key=generateSecretKey(),owner=getPublicKey(key),device=generateSecretKey(),network=silentNetwork(),vault=createVault({backend:memoryBackend()});
   const proof=hasPreparedProof?finalizeEvent(prepareSignerAuthorization(owner,getPublicKey(device),null),key):undefined;

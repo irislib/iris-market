@@ -35,7 +35,7 @@ type Defaulted = Required<Omit<AccountOptions, 'guestNotices' | 'accountPage' | 
 
 export type AccountView = {
   heading: string; headingHidden: boolean; existing: boolean; signingOnly: boolean; busy: boolean
-  loginHidden: boolean; unlockHidden: boolean; passwordHidden: boolean; readyHidden: boolean; openInviteHidden: boolean
+  loginHidden: boolean; unlockHidden: boolean; unlockLabel: string; passwordHidden: boolean; readyHidden: boolean; openInviteHidden: boolean
   backupHidden: boolean; postingSignerHidden: boolean; owner?: string; displayName?: string; canSign: boolean
   devices: Array<{pubkey: string; label: string; revocable: boolean}>
   retentionDisabled: boolean; retentionText: string; receipts: Record<'delivered' | 'seen', boolean>; receiptsDisabled: boolean
@@ -49,7 +49,7 @@ export type InboxView = {
 const emptyInbox = (): InboxView => ({revision: 0, threadMode: true, guest: false, rows: [], escrow: null, person: null, messages: [], empty: false, sendHidden: false, canSend: false, status: '', nearBottom: false})
 
 // Matches the markup before the first render point.
-const initialView: AccountView = {heading: 'Your profile', headingHidden: false, existing: false, signingOnly: false, busy: false, loginHidden: false, unlockHidden: true,
+const initialView: AccountView = {heading: 'Your profile', headingHidden: false, existing: false, signingOnly: false, busy: false, loginHidden: false, unlockHidden: true, unlockLabel: 'Continue',
   passwordHidden: false, readyHidden: true, openInviteHidden: true, backupHidden: false, postingSignerHidden: true, canSign: false, devices: [],
   retentionDisabled: false, retentionText: 'Message retention', receipts: {delivered: true, seen: true}, receiptsDisabled: false}
 const profileCopy = (value: unknown) => String(value).replace(/\baccounts\b/gi, 'profiles').replace(/\baccount\b/gi, 'profile')
@@ -188,14 +188,16 @@ export class AccountController {
     const state = this.state, ready = state.status === 'ready', locked = state.status === 'locked', guestNotices = this.options.guestNotices
     if (locked && state.needsLogin) this.loginView = 'existing'
     const existing = this.loginView === 'existing' || this.signingOnly
+    const unlockHeading = state.explicitSignOut ? 'You’re signed out' : 'Continue with your profile'
+    const unlockLabel = state.explicitSignOut ? 'Sign in' : 'Continue'
     this.account?.classList.toggle('profile-onboarding', !ready && !locked && !existing && !this.pendingInvite)
     this.accountStatus = ''
     this.accountView = {
-      heading: this.pendingInvite ? 'Private chat invitation' : locked ? 'Continue with your profile' : ready && !this.signingOnly ? 'Your profile' : existing ? 'Existing profile' : 'Create your profile',
+      heading: this.pendingInvite ? 'Private chat invitation' : locked ? unlockHeading : ready && !this.signingOnly ? 'Your profile' : existing ? 'Existing profile' : 'Create your profile',
       headingHidden: false,
       existing, signingOnly: this.signingOnly, busy: this.busy,
       loginHidden: ready && !this.signingOnly || locked && !state.needsLogin,
-      unlockHidden: !locked || !!state.needsLogin, passwordHidden: !state.password,
+      unlockHidden: !locked || !!state.needsLogin, unlockLabel, passwordHidden: !state.password,
       readyHidden: !ready || this.signingOnly, openInviteHidden: !this.pendingInvite,
       backupHidden: state.mode !== 'local', postingSignerHidden: !!state.canSign,
       owner: state.ownerPubkey, displayName: state.displayName, canSign: !!state.canSign,
@@ -340,7 +342,7 @@ export class AccountController {
   openInvite() { return this.withBusy(async () => { const peer = await this.messaging.acceptInvite(this.pendingInvite); this.pendingInvite = null; this.account.hide(); await this.openChat(peer) }).catch(() => {}) }
   openInboxFromAccount() { this.account.hide(); void this.showInbox() }
   openOwnProfile() { this.account.hide(); this.options.onProfile(this.state.ownerPubkey) }
-  lock() { return this.login(() => this.messaging.lock()) }
+  signOut() { return this.login(() => this.messaging.signOut()) }
   copyId() { return navigator.clipboard.writeText(npubEncode(this.state.ownerPubkey)).then(() => { this.accountStatus = 'Profile ID copied' }).catch(this.fail) }
   copyBackup() { return this.withBusy(async () => { await navigator.clipboard.writeText(await this.messaging.exportKey()); this.accountStatus = 'Backup key copied. Store it privately.' }).catch(() => {}) }
   /** New chat, as in Iris Chat: show your invitation as a QR code with share and copy. */

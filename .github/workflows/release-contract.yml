@@ -1,29 +1,42 @@
-name: Release contract
-
+name: Exercise signed graph reads in Market's browser
 on:
-  pull_request:
   push:
-    branches: [main]
-  workflow_dispatch:
-
+    branches: [codex/market-mobile-fallback-browser]
 permissions:
   contents: read
-
+  actions: read
 jobs:
-  source-checks:
+  browser:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - name: Check pinned inputs and artifact acceptance contract
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '26.12.0'
+      - name: Prepare the pinned distribution and browser
         env:
-          PYTHONDONTWRITEBYTECODE: '1'
+          GH_TOKEN: ${{ github.token }}
         run: |
-          python3 scripts/release-build-inputs.py --check
-          python3 scripts/android-release-inputs.py --check
-          python3 scripts/test_alpha_release.py -v
-          python3 scripts/native-alpha.py --help
-          node --test scripts/publish-alpha.test.mjs
-      # Native builds, signing and publication are separately owned release gates.
+          set -euo pipefail
+          cd web && npm ci --ignore-scripts --no-audit --no-fund && cd ..
+          mkdir -p "$RUNNER_TEMP/market-driver" "$RUNNER_TEMP/result" "$RUNNER_TEMP/upstream"
+          gh run download 44334300881 --repo irislib/iris-market -n signed-graph-market -D "$RUNNER_TEMP/upstream"
+          test "$(sha256sum "$RUNNER_TEMP/upstream/dist.tar.gz" | cut -d' ' -f1)" = 1d07c7da07400df94fc9099cbd6f8047cd2d32ca02130a08af696da8d463548d
+          tar xzf "$RUNNER_TEMP/upstream/dist.tar.gz" -C web
+          curl -fsSL https://registry.npmjs.org/playwright-core/-/playwright-core-1.61.1.tgz -o "$RUNNER_TEMP/driver.tgz"
+          test "$(openssl dgst -sha512 -binary "$RUNNER_TEMP/driver.tgz" | base64 -w0)" = 'h7Qlt6m4REp25qvIdvbDtVmD4LqVXfpRxhORv9L0jzETM05p4fuPJ3dKyuSXQxDSbXnmS79HAgi9589lGSpLkg=='
+          tar xzf "$RUNNER_TEMP/driver.tgz" -C "$RUNNER_TEMP/market-driver"
+          docker pull mcr.microsoft.com/playwright@sha256:cf0daee9b994042e011bc29f20cdff1a9f682a039b43fcd738f7d8a9d3bcd9d6
+          chmod 777 "$RUNNER_TEMP/result"
+      - name: Exercise the actual web app with isolated relay and block fixtures
+        run: |
+          docker run --rm --init --network none --ipc=host --user pwuser -v "$PWD:/repo:ro" -v "$RUNNER_TEMP/market-driver:/driver:ro" -v "$RUNNER_TEMP/result:/out" mcr.microsoft.com/playwright@sha256:cf0daee9b994042e011bc29f20cdff1a9f682a039b43fcd738f7d8a9d3bcd9d6 node /repo/market-graph-browser.mjs
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: market-browser-receipt
+          path: ${{ runner.temp }}/result
+          retention-days: 7

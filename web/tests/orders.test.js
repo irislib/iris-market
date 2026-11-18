@@ -417,3 +417,27 @@ test('fulfillment can be chosen only for physical goods, including every item in
   }
   assert.equal((await a.book.request({...listing,category:'services',escrow:{trade:'goods'}},{fulfillment:'pickup'})).fulfillment,'pickup');
 });
+
+test('buyer-arranged pickup shares a two-signature receipt over fresh merchant/courier sessions without creating receipt chats',{timeout:45000},async t=>{
+  const bus=relay(),a=app(bus),m=app(bus),c=app(bus),apps=[a,m,c];t.after(async()=>{for(const x of apps)await x.destroy()});
+  for(const x of apps)await x.createAccount();await waitFor(()=>apps.every(x=>x.state().canSend));
+  const merchant=m.state().ownerPubkey,courier=c.state().ownerPubkey;
+  const view=(client,id)=>client.state().orders.find(o=>o.id===id);
+  const product=await a.requestOrder({...listing,side:'offer',author:merchant,id:merchant+':lamp'},{fulfillment:'buyer-courier',note:'Private product note'});
+  await waitFor(()=>view(m,product.id));await m.updateOrder(product.id,{status:'accepted'});
+  await waitFor(()=>view(a,product.id).status==='accepted');
+  await m.updateOrder(product.id,{shipment:{stops:[{id:'counter',label:'Store',address:'Synthetic pickup'}]}});
+  await waitFor(()=>view(a,product.id).shipment.stops.length);
+  const delivery=await a.requestDelivery(product.id,{...listing,side:'offer',category:'transport',tags:['parcel'],title:'Synthetic delivery',author:courier,id:courier+':delivery'},{label:'Customer',address:'Synthetic address'});
+  await waitFor(()=>view(c,delivery.id)&&view(m,product.id).pickupAuthorization);
+  await c.updateOrder(delivery.id,{status:'accepted'});
+  await c.acknowledgeOrderPickup(delivery.id);
+  await waitFor(()=>view(m,product.id).pickupReceipt?.state==='awaiting-confirmation');
+  await m.confirmOrderPickup(product.id);
+  await waitFor(()=>view(a,product.id).pickupReceipt?.state==='confirmed' && view(c,delivery.id).pickupReceipt?.state==='confirmed');
+  assert.equal(await a.showPickupReceipt(product.id),await c.showPickupReceipt(delivery.id));
+  assert.equal(view(a,product.id).status,'accepted');assert.equal(view(a,product.id).payment,undefined);
+  assert(!c.state().orders.some(o=>o.id===product.id));
+  assert(![m,c].some(x=>x.state().conversations.some(chat=>chat.pubkey===(x===m?courier:merchant) && chat.messages.length)));
+  assert(!JSON.stringify(bus.frames).includes('iris-market/pickup-'));
+});

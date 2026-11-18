@@ -201,6 +201,12 @@ test('independent courier and buyer obtain a private receipt for both booking ar
     assert.equal(view(b,id).pickupReceipt,undefined);assert.equal(view(a,id).previousPickupReceipts[0].reference,oldRef);
     assert.equal(await a.book.showPickupReceipt(id,oldRef),proof);assert.throws(()=>a.book.showPickupReceipt(id));await a.book.verifyPickupReceipt(id,proof);
     await assert.rejects(b.book.checkHandoff(id,'pickup',intent));assert.equal(view(a,id).status,'accepted');
+    const freshOrder=await a.book.request(product(b),{fulfillment:mode});await deliver(a,b,'request');
+    await b.book.update(freshOrder.id,{status:'accepted'});await deliver(b,a,'status');
+    await organizer.book.update(freshOrder.id,{pickupAuthorization:{courierPubkey:c.owner,reference:oldRef}});
+    if(organizer===a)await deliver(a,b,'pickup');
+    await assert.rejects(b.book.checkHandoff(freshOrder.id,'pickup',intent),/unavailable/);
+    assert.equal(view(b,freshOrder.id).pickupReceipt,undefined);
   }
 });
 

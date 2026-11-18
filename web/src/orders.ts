@@ -298,6 +298,14 @@ export function createOrderBook({vault,owner,device,handoffKeys,notify=()=>{},no
       const ctx=pickupContext(record.order,owner);
       return ctx?.ref===ref?[{record,ctx}]:[];
     });
+    // A receipt kept on a cleared/reassigned order still owns its reference.
+    for(const record of next.records){
+      if(record.pickupHistory?.some(saved=>saved.proof.ref===ref))return [];
+      if(record.pickup?.proof.ref===ref){
+        const current=matches.find(match=>match.record===record)?.ctx;
+        if(!current || !currentPickup(record,current))return [];
+      }
+    }
     if(matches.length<=1)return matches;
     // The organizer owns a linked goods order and delivery job. An unrelated order
     // reusing the same random reference cannot claim either receipt.

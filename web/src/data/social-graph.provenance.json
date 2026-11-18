@@ -2,7 +2,7 @@
   "version": 3,
   "root": "336f319763657d6b0e65a5b5876719e8c8dcdcf9396852be71ee26b73368b29b",
   "source": {
-    "package": "nostr-social-graph@4.2.1",
+    "package": "nostr-social-graph@4.2.3",
     "url": "htree://npub1yscmnnadrmvape0mvgzfx9uyl267klnhzy8znsr6ysl8wtxngpqsnx6dm0/social-graph/mobile-336f319763657d6b0e65a5b5876719e8c8dcdcf9396852be71ee26b73368b29b.bin",
     "eventId": "89416ffecfb072fbb90805def7858801b3b5770c4a5bb5cc5fd0cecebb2d2d7e",
     "directoryHash": "18b8449d3c36d5665496137597fc0fdfae6109bdd90b2af4eaa39f8f767d30f7",

@@ -98,10 +98,17 @@ class LocalRelayBasketTest {
             capture("orders")
             compose.onNodeWithText("Request order").performClick()
             compose.onNodeWithText("3 items").assertExists()
+            val ownDelivery = "I’ll arrange my own delivery"
+            val destinationHint = "Only the delivery provider you choose receives your destination."
+            compose.onNodeWithText(destinationHint).assertDoesNotExist()
+            compose.onNodeWithText(ownDelivery).performScrollTo().performClick().assertIsSelected()
+            compose.onNodeWithText(destinationHint).performScrollTo().assertIsDisplayed()
+            capture("buyer-arranges-delivery")
             args.getString("basketEscrowListing")?.let { title ->
                 compose.onNodeWithText("Use escrow for $title").performScrollTo().performClick()
                 compose.onNodeWithText("Review escrow order").assertExists()
                 compose.onNodeWithText("Quantity · 2").assertExists()
+                compose.onNodeWithText(ownDelivery).assertIsSelected()
                 val total = requireNotNull(model.state.value.basket.single().items.single { it.listing.title == title }.total)
                 compose.onNodeWithText("Total · ${total.formatted}").performScrollTo().assertIsDisplayed()
                 capture("escrow-quantity")
@@ -112,6 +119,7 @@ class LocalRelayBasketTest {
                 assertEquals(3, model.state.value.basket.single().count)
             }
             compose.onNodeWithText("Pickup").performScrollTo().performClick().assertIsSelected()
+            compose.onNodeWithText(destinationHint).assertDoesNotExist()
             compose.onAllNodesWithText("Request order").filterToOne(hasClickAction() and hasAnyAncestor(isDialog())).performClick()
             compose.waitUntil(20_000) { opened != null }
             val order = model.state.value.orders.single { it.id == opened }
@@ -141,8 +149,11 @@ class LocalRelayBasketTest {
 
             args.getString("merchantParcel")?.let { title ->
                 // Exercise the seller's review on an accepted-sale projection without sending a booking.
+                sale.value = order.copy(status = "accepted", fulfillment = "buyer-courier")
+                compose.onNodeWithText("Buyer arranges delivery").performScrollTo().assertIsDisplayed()
+                capture("buyer-arranges-delivery-status")
                 sale.value = order.copy(status = "accepted", fulfillment = "merchant-delivery")
-                compose.onNodeWithText("Book a courier").performScrollTo().performClick()
+                compose.onNodeWithText("Arrange delivery").performScrollTo().performClick()
                 compose.onNodeWithText("Review delivery request").performScrollTo().assertIsNotEnabled()
                 val fields = compose.onAllNodes(hasSetTextAction())
                 fields[0].performScrollTo().performTextInput("Sample shop entrance")

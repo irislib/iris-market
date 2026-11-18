@@ -143,7 +143,7 @@ private fun inboxContextTitle(context:MessageContext?,state:MarketSnapshot):Stri
             val invite=state.invite
             if(invite.isNullOrBlank()) Text(if(state.demo)"Invitations are unavailable in preview mode." else "Preparing your invitation…",color=Muted,style=MaterialTheme.typography.bodySmall)
             else {
-                state.inviteQr?.let { InvitationQr(it) }
+                state.inviteQr?.let { MarketQr(it, "Invitation QR code") }
                 val context=androidx.compose.ui.platform.LocalContext.current
                 Row(horizontalArrangement=Arrangement.spacedBy(10.dp)) {
                     Button(onClick={context.startActivity(android.content.Intent.createChooser(android.content.Intent(android.content.Intent.ACTION_SEND).setType("text/plain").putExtra(android.content.Intent.EXTRA_TEXT,invite),"Share invitation"))},modifier=Modifier.weight(1f)) { Icon(Icons.Filled.Share,null,Modifier.size(18.dp));Spacer(Modifier.width(6.dp));Text("Share") }
@@ -332,10 +332,10 @@ private fun inboxContextTitle(context:MessageContext?,state:MarketSnapshot):Stri
 }
 
 
-/** The invitation as a QR code, drawn from the modules the core computes. */
-@Composable private fun InvitationQr(modules: List<List<Boolean>>) {
+/** Draw a square QR with a four-module quiet zone and an accessible label. */
+@Composable internal fun MarketQr(modules: List<List<Boolean>>, description: String) {
     if (modules.isEmpty() || modules.size > 177) return
-    androidx.compose.foundation.Canvas(Modifier.size(240.dp).background(Color.White, RoundedCornerShape(16.dp)).padding(12.dp).semantics { contentDescription = "Invitation QR code" }) {
+    androidx.compose.foundation.Canvas(Modifier.size(240.dp).background(Color.White, RoundedCornerShape(16.dp)).padding(12.dp).semantics { contentDescription = description }) {
         val count = modules.size; val step = size.minDimension / (count + 8)
         modules.forEachIndexed { y, row -> row.forEachIndexed { x, dark -> if (dark) drawRect(Color.Black, androidx.compose.ui.geometry.Offset((x + 4) * step, (y + 4) * step), androidx.compose.ui.geometry.Size(step, step)) } }
     }

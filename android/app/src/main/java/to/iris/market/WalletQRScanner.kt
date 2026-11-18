@@ -38,9 +38,26 @@ internal fun normalizeWalletQR(value:String,invoice:Boolean):String? {
     return raw.takeIf{it.length<=2*1024*1024&&(it.startsWith("cashuA")||it.startsWith("cashuB"))&&it.none(Char::isWhitespace)}
 }
 
+/** Decode a single luminance frame using the same reader for successive camera frames. */
+internal class CameraQRDecoder {
+    private val reader = MultiFormatReader().apply {
+        setHints(mapOf(DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.QR_CODE), DecodeHintType.TRY_HARDER to true))
+    }
+
+    fun decode(bytes: ByteArray, width: Int, height: Int): String? {
+        var source: LuminanceSource = PlanarYUVLuminanceSource(bytes, width, height, 0, 0, width, height, false)
+        repeat(if (source.isRotateSupported) 4 else 1) {
+            try { return reader.decodeWithState(BinaryBitmap(HybridBinarizer(source))).text }
+            catch (_: ReaderException) { if (source.isRotateSupported) source = source.rotateCounterClockwise() }
+            finally { reader.reset() }
+        }
+        return null
+    }
+}
+
 /** Frames stay on this device and are discarded after decoding. */
-private class WalletCameraQR(private val context:Context,private val result:(String)->Unit,private val failure:()->Unit):TextureView.SurfaceTextureListener {
-    private val thread=HandlerThread("market-wallet-qr").apply{start()}
+private class LocalCameraQR(private val context:Context,private val result:(String)->Unit,private val failure:()->Unit):TextureView.SurfaceTextureListener {
+    private val thread=HandlerThread("market-qr").apply{start()}
     private val handler=Handler(thread.looper)
     private val main=Handler(Looper.getMainLooper())
     private val closed=AtomicBoolean(false)
@@ -49,7 +66,7 @@ private class WalletCameraQR(private val context:Context,private val result:(Str
     private var capture:CameraCaptureSession?=null
     private var reader:ImageReader?=null
     private var preview:Surface?=null
-    private val decoder=MultiFormatReader().apply{setHints(mapOf(DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.QR_CODE),DecodeHintType.TRY_HARDER to true))}
+    private val decoder = CameraQRDecoder()
     override fun onSurfaceTextureAvailable(texture:SurfaceTexture,width:Int,height:Int){
         handler.post {
             if(closed.get())return@post
@@ -65,10 +82,8 @@ private class WalletCameraQR(private val context:Context,private val result:(Str
                         if(closed.get()||delivered.get())return@setOnImageAvailableListener
                         val plane=image.planes[0];val bytes=ByteArray(image.width*image.height)
                         for(y in 0 until image.height)for(x in 0 until image.width)bytes[y*image.width+x]=plane.buffer.get(y*plane.rowStride+x*plane.pixelStride)
-                        var luminance:LuminanceSource=PlanarYUVLuminanceSource(bytes,image.width,image.height,0,0,image.width,image.height,false)
-                        var value:String?=null
-                        repeat(4){if(value==null){value=runCatching{decoder.decodeWithState(BinaryBitmap(HybridBinarizer(luminance))).text}.getOrNull();decoder.reset();if(luminance.isRotateSupported)luminance=luminance.rotateCounterClockwise()}}
-                        value?.let{if(delivered.compareAndSet(false,true))main.post{result(it)}}
+                        val value = decoder.decode(bytes, image.width, image.height)
+                        value?.let{if(delivered.compareAndSet(false,true))main.post{if(!closed.get())result(it)}}
                     } finally {image.close()}
                 },handler)}
                 if(ContextCompat.checkSelfPermission(context,Manifest.permission.CAMERA)!=PackageManager.PERMISSION_GRANTED){fail();return@post}
@@ -88,7 +103,7 @@ private class WalletCameraQR(private val context:Context,private val result:(Str
             }catch(_:Exception){fail()}
         }
     }
-    private fun fail(){if(!closed.get())main.post{failure()}}
+    private fun fail(){if(!closed.get())main.post{if(!closed.get())failure()}}
     fun close(){if(!closed.compareAndSet(false,true))return;handler.post{runCatching{capture?.stopRepeating()};capture?.close();camera?.close();reader?.close();preview?.release();thread.quitSafely()}}
     override fun onSurfaceTextureDestroyed(texture:SurfaceTexture):Boolean{close();return true}
     override fun onSurfaceTextureSizeChanged(texture:SurfaceTexture,width:Int,height:Int){}
@@ -96,23 +111,40 @@ private class WalletCameraQR(private val context:Context,private val result:(Str
 }
 
 @Composable internal fun WalletQRScannerDialog(invoice:Boolean,onValue:(String)->Unit,close:()->Unit) {
+    val type = if (invoice) "Lightning invoice" else "Cashu token"
+    LocalQRScannerDialog(if (invoice) "Scan invoice" else "Scan token", "This code is not a supported $type.",
+        "You can paste instead.", { normalizeWalletQR(it, invoice) }, onValue, close)
+}
+
+@Composable internal fun LocalQRScannerDialog(title: String, invalid: String, cameraHint: String,
+    normalize: (String) -> String?, onValue: (String) -> Unit, close: () -> Unit) {
+    val handleValue by rememberUpdatedState(onValue)
+    val dismiss by rememberUpdatedState(close)
     val context=LocalContext.current
     val lifecycle=LocalLifecycleOwner.current.lifecycle
     var resumed by remember(lifecycle){mutableStateOf(lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))}
     DisposableEffect(lifecycle){val observer=LifecycleEventObserver{_,_->resumed=lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)};lifecycle.addObserver(observer);onDispose{lifecycle.removeObserver(observer)}}
     var allowed by remember{mutableStateOf(ContextCompat.checkSelfPermission(context,Manifest.permission.CAMERA)==PackageManager.PERMISSION_GRANTED)}
     var error by remember{mutableStateOf("")}
-    val permission=rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()){granted->allowed=granted;if(!granted)error="Camera access is off. You can paste instead."}
+    val permission=rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()){granted->allowed=granted;if(!granted)error="Camera access is off. $cameraHint"}
     LaunchedEffect(Unit){if(!allowed)permission.launch(Manifest.permission.CAMERA)}
     Dialog(onDismissRequest=close,properties=DialogProperties(usePlatformDefaultWidth=false)) {
         Surface(Modifier.fillMaxWidth().padding(20.dp),shape=MaterialTheme.shapes.large){Column(Modifier.padding(24.dp),verticalArrangement=Arrangement.spacedBy(16.dp)){
-            Text(if(invoice)"Scan invoice" else "Scan token",style=MaterialTheme.typography.titleLarge)
+            Text(title,style=MaterialTheme.typography.titleLarge)
             if(allowed&&resumed&&error.isBlank()){
-    val camera=remember{WalletCameraQR(context,{raw->val value=normalizeWalletQR(raw,invoice);if(value!=null){onValue(value);close()}else{error="This QR is not a supported ${if(invoice)"Lightning invoice" else "Cashu token"}. Close and scan again."}},{error="Camera unavailable. You can paste the ${if(invoice)"invoice" else "token"} instead."})}
+                val camera = remember(title) { LocalCameraQR(context, { raw ->
+                    val value = normalize(raw)
+                    if (value == null) error = invalid
+                    else { handleValue(value); dismiss() }
+                }, { error = "Camera unavailable. $cameraHint" }) }
                 DisposableEffect(camera){onDispose{camera.close()}}
                 AndroidView(factory={TextureView(it).apply{surfaceTextureListener=camera}},modifier=Modifier.fillMaxWidth().height(320.dp))
             }
             Text(error.ifBlank{"Place the QR code inside the camera view."},style=MaterialTheme.typography.bodyMedium)
+            if (error.isNotBlank()) TextButton(onClick = {
+                error = ""
+                if (!allowed) permission.launch(Manifest.permission.CAMERA)
+            }) { Text("Try again") }
             TextButton(onClick=close){Text("Cancel")}
         }}
     }

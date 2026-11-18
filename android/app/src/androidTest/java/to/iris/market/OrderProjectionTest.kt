@@ -13,6 +13,7 @@ class OrderProjectionTest {
     }""")
     @Test fun parsesSharedCamelCaseOrderWithoutExposingParticipantsToMap() {
         val value = MarketOrder.parse(order())
+        assertTrue(value.handoffs.isEmpty())
         assertNull(value.fulfillment)
         assertEquals("merchant-delivery", MarketOrder.parse(order().put("fulfillment", "merchant-delivery")).fulfillment)
         assertEquals("Local delivery", value.title)
@@ -25,6 +26,10 @@ class OrderProjectionTest {
         val stop = map.getJSONArray("stops").getJSONObject(0)
         assertFalse(stop.has("courierPubkey"))
         assertEquals(24.94, stop.getJSONArray("coordinates").getDouble(0), 0.0001)
+    }
+    @Test fun readsOnlySupportedHandoffActions() {
+        val rows = org.json.JSONArray("""[{"kind":"pickup","action":"checked"},{"kind":"dropoff","action":"show"},{"kind":"return","action":"scan"},{"kind":"pickup","action":"future"}]""")
+        assertEquals(listOf(OrderHandoff("pickup","checked"), OrderHandoff("dropoff","show")), MarketOrder.parse(order().put("handoffs", rows)).handoffs)
     }
     @Test fun onlyTheSelectedOrderAndProviderMatchItsInvitation() {
         val direct = MarketOrder.parse(order())

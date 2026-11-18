@@ -679,6 +679,28 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
             submit(request,{if(c.isActive)c.resumeWith(Result.success(Unit))},{error->if(c.isActive)c.resumeWith(Result.failure(IllegalStateException(error)))})
         }
     }
+    /** A shown pass is returned only to its open dialog. Only successful checks enter the order snapshot. */
+    internal suspend fun orderHandoff(owner: String, orderId: String, kind: String, scanned: String? = null): String? {
+        val generation = accountGeneration
+        return withContext(Dispatchers.IO) {
+            mutex.withLock {
+                check(!preview && generation == accountGeneration && state.value.publicKey == owner)
+                val request = JSONObject().put("order_id", orderId).put("kind", kind)
+                if (scanned == null) request.put("type", "show_order_handoff")
+                else request.put("type", "verify_order_handoff").put("pass", scanned)
+                val raw = (core ?: error("Profile unavailable")).command(request.toString())
+                if (generation != accountGeneration || state.value.publicKey != owner) throw CancellationException("Profile changed")
+                if (scanned == null) JSONObject(raw).getString("handoff_pass")
+                else {
+                    val next = MarketSnapshot.parse(raw)
+                    check(next.orders.any { it.id == orderId && OrderHandoff(kind, "checked") in it.handoffs })
+                    publishSnapshot(next)
+                    null
+                }
+            }
+        }
+    }
+
     fun publishListing(draft: JSONObject, expiry: NativeListingExpiry, onSuccess: () -> Unit) = submit(JSONObject().put("type","publish").put("draft",JSONObject(draft.toString())), onSuccess, null, publishExpiry=expiry)
     fun orderCommand(request: JSONObject, onSuccess: () -> Unit = {}, onError: (String) -> Unit) = submit(request, onSuccess, onError)
     private fun submit(request: JSONObject, onSuccess: (() -> Unit)?, onError: ((String) -> Unit)?, expectedAIIntent: Long? = null, publishExpiry: NativeListingExpiry? = null) {

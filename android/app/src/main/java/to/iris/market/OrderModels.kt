@@ -45,11 +45,28 @@ data class OrderDeliveryRequest(val pickup:OrderDeliveryPlace,val destination:Or
 }
 data class OrderPayment(val mint:String,val amount:String,val unit:String,val status:String)
 data class PickupAuthorization(val courierPubkey:String,val reference:String)
-enum class OrderFulfillment(val wire: String, val label: String) {
+enum class OrderFulfillment(val wire: String, val statusLabel: String, val checkoutLabel: String = statusLabel) {
     MERCHANT_DELIVERY("merchant-delivery", "Seller delivery"),
     PICKUP("pickup", "Pickup"),
-    BUYER_COURIER("buyer-courier", "Buyer-arranged courier");
+    BUYER_COURIER("buyer-courier", "Buyer arranges delivery", "I’ll arrange my own delivery");
 }
+data class OrderHandoff(val kind: String, val action: String) {
+    val label: String get() = if (kind == "pickup") "pickup" else "recipient"
+
+    companion object {
+        fun parse(rows: JSONArray?): List<OrderHandoff> = buildList<OrderHandoff> {
+            if (rows != null) for (i in 0 until rows.length()) {
+                val row = rows.optJSONObject(i) ?: continue
+                val kind = row.optString("kind")
+                val action = row.optString("action")
+                if (kind in setOf("pickup", "dropoff") && action in setOf("show", "scan", "checked") && none { it.kind == kind }) {
+                    add(OrderHandoff(kind, action))
+                }
+            }
+        }
+    }
+}
+
 data class MarketOrder(
     val id: String, val buyer: String, val seller: String, val items: List<OrderItem>, val note: String,
     val status: String, val createdAt: Long, val updatedAt: Long, val shipment: Shipment,
@@ -57,7 +74,7 @@ data class MarketOrder(
     val displayPrice:PriceDisplay?=null,val payment:OrderPayment?=null,val deliveryRequest:OrderDeliveryRequest?=null,val pickupAuthorization:PickupAuthorization?=null,val sourceOrderId:String?=null,val deliveryOrderId:String?=null,
     val escrowTradeId:String?=null,val escrowProvider:String?=null,
     /** A proxied thumbnail of the ordered item from the core. */
-    val displayImage:String?=null, val fulfillment:String?=null
+    val displayImage:String?=null, val fulfillment:String?=null, val handoffs: List<OrderHandoff> = emptyList()
 ) {
     val formattedPrice: String get() {
         val display = displayPrice
@@ -104,7 +121,8 @@ data class MarketOrder(
                 value.optJSONObject("payment")?.let {OrderPayment(it.getString("mint"),it.getString("amount"),it.getString("unit"),it.getString("status"))},
                 value.optJSONObject("deliveryRequest")?.let {OrderDeliveryRequest.parse(it)},
                 value.optJSONObject("pickupAuthorization")?.let {PickupAuthorization(it.getString("courierPubkey"),it.getString("reference"))},value.textOrNull("sourceOrderId"),value.textOrNull("deliveryOrderId"),
-                value.textOrNull("escrowTradeId"), value.textOrNull("escrowProvider"), value.textOrNull("display_image"), value.textOrNull("fulfillment"))
+                value.textOrNull("escrowTradeId"), value.textOrNull("escrowProvider"), value.textOrNull("display_image"), value.textOrNull("fulfillment"),
+                OrderHandoff.parse(value.optJSONArray("handoffs")))
         }
         private fun coordinates(value: JSONArray?): List<Double>? = value?.takeIf { it.length() == 2 }?.let { listOf(it.optDouble(0), it.optDouble(1)) }?.takeIf { it.all(Double::isFinite) && kotlin.math.abs(it[0]) <= 180 && kotlin.math.abs(it[1]) <= 90 }
     }

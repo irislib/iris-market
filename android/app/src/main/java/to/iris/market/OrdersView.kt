@@ -221,8 +221,11 @@ private data class BasketEscrowReview(val line: BasketLine, val note: String, va
                 .padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 RadioButton(selected = choice == selected, onClick = null)
                 Spacer(Modifier.width(10.dp))
-                Text(choice.label)
+                Text(choice.checkoutLabel)
             }
+        }
+        if (selected == OrderFulfillment.BUYER_COURIER) {
+            Text("Only the delivery provider you choose receives your destination.", style = MaterialTheme.typography.bodySmall, color = Muted)
         }
     }
 }
@@ -384,11 +387,16 @@ private data class BasketEscrowReview(val line: BasketLine, val note: String, va
         order.deliveryOrderId?.let {TextButton(onClick={openOrder(it)}){Text("Open delivery order")}}
         order.sourceOrderId?.let {TextButton(onClick={openOrder(it)}){Text("Open product order")}}
         val pickup = order.fulfillment == OrderFulfillment.PICKUP.wire
-        OrderFulfillment.entries.firstOrNull { it.wire == order.fulfillment }?.let { Text(it.label, style = MaterialTheme.typography.titleMedium) }
+        OrderFulfillment.entries.firstOrNull { it.wire == order.fulfillment }?.let { Text(it.statusLabel, style = MaterialTheme.typography.titleMedium) }
         if (order.canBookCourier(state.publicKey)) Button(enabled = !busy, onClick = { arrangingDelivery = true }, modifier = Modifier.fillMaxWidth()) {
-            Text(if (seller) "Book a courier" else "Arrange delivery")
+            Text("Arrange delivery")
         }
 
+        if (order.handoffs.isNotEmpty()) key(state.publicKey, order.id) {
+            OrderHandoffActions(order.handoffs, busy,
+                show = { kind -> requireNotNull(model.orderHandoff(state.publicKey, order.id, kind)) },
+                verify = { kind, pass -> model.orderHandoff(state.publicKey, order.id, kind, pass) })
+        }
         if (order.sync == "queued") Text("Waiting to send", color = Muted, style = MaterialTheme.typography.bodySmall)
         error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         if (!order.terminal) {

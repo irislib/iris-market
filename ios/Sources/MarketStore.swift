@@ -190,7 +190,7 @@ final class MarketStore: ObservableObject {
                     #endif
                 } else if !demo, let owner = try SecureStore.read("active.account") {
                     guard let bundle = try NativeAccountBundle.load(owner) else { throw SecureStore.StorageError.status(-25300) }
-                    let folder = bundle.legacy ? baseFolder : baseFolder.appendingPathComponent("accounts/\(bundle.ownerPublicKey)", isDirectory: true)
+                    let folder = NativeAccountFolder.url(base: baseFolder, owner: bundle.ownerPublicKey, legacy: bundle.legacy)
                     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
                     publicDirectory = folder; notificationDeviceSecret = bundle.deviceSecret
                     if let shared = NativePushStorage.directory(owner:bundle.ownerPublicKey), FileManager.default.fileExists(atPath:shared.appendingPathComponent("private-messages/messages.sqlite3").path) {
@@ -823,6 +823,12 @@ final class MarketStore: ObservableObject {
                 var bundle = try NativeAccountBundle.load(owner) ?? NativeAccountBundle(ownerPublicKey: owner, ownerSecret: secret, deviceSecret: usesLegacy ? legacy! : generateSecretKey(), authorization: nil, legacy: usesLegacy)
                 bundle.ownerSecret = secret
                 bundle.remoteSigner = paired?.credential
+                // A profile new to this device starts on the servers already chosen here, before
+                // its first connection; an existing profile keeps its own. Local only, no relay wait.
+                let base = try NativeTestStorage.applicationSupportDirectory().appendingPathComponent("IrisMarket", isDirectory: true)
+                if let folder = NativeAccountFolder.seedTarget(base: base, owner: owner, legacy: bundle.legacy) {
+                    _ = try seedNewProfileRelays(dataDir: folder.path, relays: relays)
+                }
                 let saved = bundle
                 let servers = String(decoding: try JSONEncoder().encode(relays), as: UTF8.self)
                 Task { @MainActor in

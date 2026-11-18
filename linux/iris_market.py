@@ -371,6 +371,26 @@ def main():
             return True
         download.connect('decide-destination', destination)
 
+    def camera_permission(browser, request):
+        if not isinstance(request, WebKit2.UserMediaPermissionRequest):
+            return False
+        if not ((browser.get_uri() or '').startswith(ORIGIN + '/')
+                and request.props.is_for_video_device and not request.props.is_for_audio_device):
+            request.deny()
+            return True
+        dialog = Gtk.MessageDialog(transient_for=window, modal=True,
+                                   message_type=Gtk.MessageType.QUESTION, buttons=Gtk.ButtonsType.NONE,
+                                   text='Use the camera to scan this handoff code?')
+        dialog.add_buttons('Cancel', Gtk.ResponseType.CANCEL, 'Use camera', Gtk.ResponseType.ACCEPT)
+        allowed = dialog.run() == Gtk.ResponseType.ACCEPT
+        dialog.destroy()
+        if allowed and (browser.get_uri() or '').startswith(ORIGIN + '/'):
+            request.allow()
+        else:
+            request.deny()
+        return True
+
+    view.connect('permission-request', camera_permission)
     view.connect('decide-policy', policy)
     context.connect('download-started', download_started)
     threading.Thread(target=server.serve_forever, daemon=True).start()

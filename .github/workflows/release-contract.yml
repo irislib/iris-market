@@ -1,29 +1,102 @@
-name: Release contract
-
+name: Qualify Market web and native profile changes
 on:
-  pull_request:
   push:
-    branches: [main]
-  workflow_dispatch:
+    branches: [codex/market-native-profile-linux-20261118]
 
 permissions:
   contents: read
 
 jobs:
-  source-checks:
+  qualify:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 45
+    env:
+      CARGO_BUILD_JOBS: '3'
+      CANDIDATE: d22bc9eeaf79936eb1d1b852ad043a2ff17a906b
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - name: Check pinned inputs and artifact acceptance contract
-        env:
-          PYTHONDONTWRITEBYTECODE: '1'
+          fetch-depth: 3
+      - name: Check out the unmodified product source
         run: |
-          python3 scripts/release-build-inputs.py --check
-          python3 scripts/android-release-inputs.py --check
-          python3 scripts/test_alpha_release.py -v
-          python3 scripts/native-alpha.py --help
-          node --test scripts/publish-alpha.test.mjs
-      # Native builds, signing and publication are separately owned release gates.
+          test "$(git rev-parse HEAD^1)" = "$CANDIDATE"
+          test "$(git diff --name-only HEAD^1 HEAD)" = '.github/workflows/release-contract.yml'
+          git switch --detach "$CANDIDATE"
+          test "$(git rev-parse HEAD)" = "$CANDIDATE"
+          test -z "$(git status --porcelain)"
+      - name: Install the pinned Linux toolchain
+        run: python3 scripts/release-build-inputs.py --install --work "$RUNNER_TEMP/market-rust" --target x86_64-unknown-linux-gnu
+      - name: Build locked core, signer, guest, local-first and market tests
+        run: |
+          "$CARGO" test --locked -p iris-market-core --lib --test remote_signer --test guest_network --test local_first --test market --no-run
+      - name: Run native tests with loopback only
+        run: |
+          sudo --preserve-env=PATH,RUNNER_TEMP,CARGO,RUSTC -- unshare --net -- bash -eu -o pipefail -c '
+            ip link set lo up
+            test -z "$(ip route show default)"
+            exec runuser -u runner -- env -i HOME=/home/runner USER=runner PATH="$PATH" CARGO="$CARGO" RUSTC="$RUSTC" RUNNER_TEMP="$RUNNER_TEMP" bash -eu -o pipefail -c '\''
+              result=0
+              for suite in local_first remote_signer guest_network market lib; do
+                if [ "$suite" = lib ]; then selector=(--lib); else selector=(--test "$suite"); fi
+                "$CARGO" test --offline --locked -p iris-market-core "${selector[@]}" -- --test-threads=1 || result=1
+              done
+              exit "$result"
+            '\''
+          '
+      - name: Recheck silent-relay timing in a fresh profile
+        run: |
+          sudo --preserve-env=PATH,CARGO,RUSTC -- unshare --net -- bash -eu -c '
+            ip link set lo up
+            test -z "$(ip route show default)"
+            exec runuser -u runner -- env -i HOME=/home/runner USER=runner PATH="$PATH" RUSTC="$RUSTC" "$CARGO" test --offline --locked -p iris-market-core --test local_first local_actions_and_restoration_finish_without_relay_replies -- --exact --test-threads=1
+          '
+      - name: Verify the signing race catches the previous implementation
+        run: |
+          source_file=crates/market-core/src/profile_edit.rs
+          git show "$CANDIDATE^:$source_file" > "$source_file"
+          trap 'git restore -- "$source_file"' EXIT
+          "$CARGO" test --offline --locked -p iris-market-core --test remote_signer --no-run
+          if sudo --preserve-env=PATH,CARGO,RUSTC -- unshare --net -- bash -eu -c '
+            ip link set lo up
+            test -z "$(ip route show default)"
+            exec runuser -u runner -- env -i HOME=/home/runner USER=runner PATH="$PATH" RUSTC="$RUSTC" "$CARGO" test --offline --locked -p iris-market-core --test remote_signer -- --test-threads=1
+          ' > "$RUNNER_TEMP/negative-control.log" 2>&1; then
+            echo 'The regression fixture accepted the previous signer behavior.'
+            exit 1
+          fi
+          grep -F 'the stale signature must never enter the outbox' "$RUNNER_TEMP/negative-control.log"
+  web:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      CANDIDATE: d22bc9eeaf79936eb1d1b852ad043a2ff17a906b
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Check out the unmodified product source
+        run: |
+          test "$(git rev-parse HEAD^1)" = "$CANDIDATE"
+          test "$(git diff --name-only HEAD^1 HEAD)" = '.github/workflows/release-contract.yml'
+          git switch --detach "$CANDIDATE"
+          test "$(git rev-parse HEAD)" = "$CANDIDATE"
+          test -z "$(git status --porcelain)"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '26.12.0'
+      - name: Install frozen web dependencies
+        working-directory: web
+        run: |
+          node --version
+          npm --version
+          npm ci --no-audit --no-fund
+      - name: Run the complete web suite serially with loopback only
+        working-directory: web
+        run: |
+          sudo --preserve-env=PATH -- unshare --net -- bash -eu -c '
+            ip link set lo up
+            test -z "$(ip route show default)"
+            exec runuser -u runner -- env -i HOME=/home/runner USER=runner PATH="$PATH" node --import ./tests/support/svelte.mjs --test --test-concurrency=1 tests/*.test.js
+          '

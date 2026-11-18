@@ -6,3 +6,10 @@
 </script>
 
 <details class="settings-section"><summary>Messages</summary>{#each receipts as [key, title] (key)}<label class="checkbox-label">{title}<input type="checkbox" checked={view.receipts[key]} disabled={view.receiptsDisabled} onchange={e => c.setReceipt(key, e.currentTarget)}></label>{/each}<button class="button secondary" type="button" disabled={view.retentionDisabled} onclick={() => c.editRetention()}>{view.retentionText}</button><p class="error small" role="alert">{c.receiptError}</p><p class="small muted">Let people know when their messages reach you or are visible on your screen. Saved per profile on this device.</p></details>
+
+{#if !view.readyHidden}
+  <div class="settings-section">
+    <button id="settings-sign-out" class="button secondary" type="button" disabled={view.busy} onclick={() => c.signOut()}>Sign out</button>
+    {#if c.accountError}<p class="error small" role="alert">{c.accountError}</p>{/if}
+  </div>
+{/if}

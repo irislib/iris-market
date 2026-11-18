@@ -93,17 +93,19 @@ test('locked and ready profiles show unlock, devices and receipt settings',async
   assert.deepEqual([...settings.querySelectorAll('input[type=checkbox]')].slice(0,2).map(input=>input.checked),[true,true]);
 });
 
-test('profile settings signs out and offers explicit sign-in for the saved profile',async()=>{
+test('main Settings signs out and the saved profile requires explicit sign-in',async()=>{
   const {api,calls,emit}=setup({...base,status:'ready',ownerPubkey:owner,canSign:true,mode:'local'});
   await api.restored;await settle();
-  api.showAccount();
-  const surface=accountSurface();
-  const signOut=surface.querySelector('#account-sign-out');
+  const settings=document.getElementById('preferences-dialog');
+  const signOut=settings.querySelector('#settings-sign-out');
   assert.equal(signOut.textContent,'Sign out');
   signOut.click();await settle();
   assert.deepEqual(calls.at(-1),['signOut']);
 
   emit({...base,status:'locked',explicitSignOut:true,needsLogin:false});flushSync();
+  assert.equal(settings.querySelector('#settings-sign-out'),null);
+  api.showAccount();flushSync();
+  const surface=accountSurface();
   assert.equal(surface.querySelector('h2').textContent,'You’re signed out');
   assert.equal(surface.querySelector('#account-ready').hidden,true);
   assert.equal(surface.querySelector('#account-unlock button').textContent,'Sign in');

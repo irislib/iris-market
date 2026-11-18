@@ -3,7 +3,7 @@
 // and manifest printed by inspect. No build, download, or forced update occurs.
 import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { lstat, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -61,9 +61,9 @@ export function parsePublication(output) {
 }
 
 function git(...args) { return run('git', args, { cwd: root }).trim(); }
-function runHtree(binary, args, options) {
+function runReleaseCommand(binary, args, options) {
   const result = spawnSync(binary, args, { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'], ...options });
-  if (result.error || result.status !== 0) throw new Error(`htree command failed (${result.status ?? result.error?.code ?? result.signal})`);
+  if (result.error || result.status !== 0) throw new Error(`Release command failed (${result.status ?? result.error?.code ?? result.signal})`);
   return `${result.stdout}\n${result.stderr}`;
 }
 async function helper() {
@@ -76,7 +76,7 @@ async function helper() {
 export async function main(argv = process.argv.slice(2)) {
   const [operation, target, ...flags] = argv;
   if (!operation || operation === '--help') {
-    console.log('node scripts/publish-hashtree.mjs inspect web|downloads\nnode scripts/publish-hashtree.mjs publish web|downloads --commit FULL_COMMIT --assets MANIFEST_SHA256\nnode scripts/publish-hashtree.mjs verify web|downloads --ref NHASH --assets MANIFEST_SHA256\nPublishing and verification require HTREE_BIN. Publish only after UI and production build acceptance.');
+    console.log('node scripts/publish-hashtree.mjs inspect web|downloads\nnode scripts/publish-hashtree.mjs publish web|downloads --commit FULL_COMMIT --assets MANIFEST_SHA256\nnode scripts/publish-hashtree.mjs verify web|downloads --ref NHASH --assets MANIFEST_SHA256\nPublishing and verification require HTREE_BIN. Publication also requires IRIS_NATIVE_RELEASE_GATE, the absolute path to the pinned Iris Sites gate. Publish only after UI and production build acceptance.');
     return;
   }
   if (!['inspect', 'publish', 'verify'].includes(operation) || !Object.hasOwn(targets, target)) throw new Error('Unknown operation or target; use --help');
@@ -101,7 +101,7 @@ export async function main(argv = process.argv.slice(2)) {
       await mkdir(env.HTREE_CONFIG_DIR);
       await writeFile(path.join(env.HTREE_CONFIG_DIR, 'config.toml'), '[updater]\nauto_check = false\nauto_install = false\n');
       const output = path.join(temporary, 'site');
-      runHtree(binary, ['get', options['--ref'], '-o', output], { env });
+      runReleaseCommand(binary, ['get', options['--ref'], '-o', output], { env });
       const downloaded = await manifest(output);
       requireManifest(downloaded, options['--assets']);
       console.log(JSON.stringify({ target, verified: true, nhash: options['--ref'], sha256: downloaded.sha256, bytes: downloaded.bytes, files: downloaded.files.length, reader: 'fresh config and cache, no signing identity or local daemon' }));
@@ -118,8 +118,18 @@ export async function main(argv = process.argv.slice(2)) {
   for (const key of ['NOSTR_SECRET_KEY', 'HTREE_LOCAL_DAEMON_ONLY', 'HTREE_GIT_REBUILD_FROM_LOCAL']) delete env[key];
   // Capture tool output so identity/key lines and operational paths never enter
   // the public release record. An upload failure still fails this command.
-  const publication = runHtree(binary, ['add', '.', '--publish', targets[target].tree], { cwd: directory, env });
+  const gate = env.IRIS_NATIVE_RELEASE_GATE;
+  if (!gate || !path.isAbsolute(gate) || !(await stat(gate).catch(() => null))?.isFile()) {
+    throw new Error('Set IRIS_NATIVE_RELEASE_GATE to the absolute path of the pinned Iris Sites gate');
+  }
+  const tree = targets[target].tree;
+  const publication = runReleaseCommand(process.execPath, [
+    gate, '--dist', directory, '--tree', tree, '--htree', binary,
+  ], { cwd: directory, env });
   const result = parsePublication(publication);
+  if (result.published.split('/').slice(1).join('/') !== tree) {
+    throw new Error(`Native release did not promote the live Hashtree tree ${tree}`);
+  }
   requireManifest(await manifest(directory), assets.sha256);
   console.log(JSON.stringify({ target, commit, sha256: assets.sha256, bytes: assets.bytes, files: assets.files.length, ...result }));
 }

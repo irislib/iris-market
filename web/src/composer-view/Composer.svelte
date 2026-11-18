@@ -92,7 +92,7 @@
     {/if}
   </div>
   <p class="small muted">Your listing and attached files will be public.</p>
-  {#if c.preview && c.options.discoverable && !c.options.discoverable()}<p class="small muted">People see listings from accounts followed in their network. Until someone follows you, share your listing’s link with the people you want to reach.</p>{/if}
+  {#if c.preview && c.options.discoverable && !c.options.discoverable()}<p class="small muted">People see listings from profiles followed in their network. Until someone follows you, share your listing’s link with the people you want to reach.</p>{/if}
   <div class="post-preview-actions">
     <button id="post-edit" type="button" class="button secondary" disabled={c.busy} onclick={() => c.editDraft()}>Edit</button>
     <button id="post-publish" type="button" class="button primary" disabled={c.busy} onclick={() => c.publish()}>{c.publishLabel}</button>

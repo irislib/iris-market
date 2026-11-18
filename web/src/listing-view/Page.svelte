@@ -116,7 +116,7 @@
           <button class="button secondary" aria-pressed={saved} onclick={() => onSave(listing)}>{saved ? '♥ Saved' : '♡ Save'}</button>
           {#if validListingId(listing.id)}<Share url={listingURL(listing.id)} {onToast} />{/if}
         </div>
-        {#if undiscovered}<p class="small muted detail-discovery-hint">People see listings from accounts followed in their network. Until someone follows you, share this listing’s link with the people you want to reach.</p>{/if}
+        {#if undiscovered}<p class="small muted detail-discovery-hint">People see listings from profiles followed in their network. Until someone follows you, share this listing’s link with the people you want to reach.</p>{/if}
       {/snippet}
       {#if listing.externalOrder}
         <dl class="order-terms">{#each terms as [label, value]}<dt>{label}</dt><dd>{value}</dd>{/each}</dl>

@@ -156,7 +156,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], getPublicRela
   };
   const notify = () => onChange(state());
   const report = () => { if (status !== 'ready') return; error = 'Some messages are waiting for a connection.'; notify(); };
-  const check = attempt => { if (attempt !== generation) throw new Error('Account changed.'); };
+  const check = attempt => { if (attempt !== generation) throw new Error('Profile changed.'); };
   const requireReady = () => { if (!account || status !== 'ready') throw new Error('Sign in to continue.'); };
   const requireChat = () => { requireReady(); if (!runtime) throw new Error('Chat is connecting. Your profile is ready.'); };
   const signing = async draft => {

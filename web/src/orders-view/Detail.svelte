@@ -154,7 +154,7 @@
     {#if d.role === 'buyer' && order.fulfillment && order.recipientHandoff && !order.handoffs?.some(item => item.action === 'show')}
       <p class="small muted">Show your handoff code on the device used at checkout.</p>
     {:else if d.role === 'seller' && isHandoffId(order.deliveryRequest?.collection?.reference) && !order.handoffs?.some(item => item.kind === 'pickup' && item.action === 'show')}
-      <p class="small muted">Connect your courier account signer to show the pickup code.</p>
+      <p class="small muted">Connect the signer for your courier profile to show the pickup code.</p>
     {/if}
   {/if}
   {#if order.escrowTradeId}

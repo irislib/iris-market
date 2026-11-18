@@ -59,6 +59,6 @@
 	</dict>
 	<key>MarketPushConfigured</key>
 	<string>$(MARKET_PUSH_CONFIGURED)</string>
-<key>NSCameraUsageDescription</key><string>Scan a Cashu token or Lightning invoice when you choose Scan.</string>
+<key>NSCameraUsageDescription</key><string>Scan an order handoff code, Cashu token or Lightning invoice when you choose the camera.</string>
 </dict>
 </plist>

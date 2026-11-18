@@ -1,5 +1,6 @@
 import SwiftUI
 import AVFoundation
+import UniformTypeIdentifiers
 
 /// QR content is input to review, never an instruction to send or redeem funds.
 enum WalletQRInput {
@@ -28,8 +29,8 @@ private final class WalletCamera: NSObject, ObservableObject, AVCaptureMetadataO
         active = true
         switch AVCaptureDevice.authorizationStatus(for: .video) {
         case .authorized: configure()
-        case .notDetermined: AVCaptureDevice.requestAccess(for: .video) { [weak self] allowed in DispatchQueue.main.async { guard let self, self.active else { return }; if allowed { self.configure() } else { self.error = "Camera access is off. You can paste the token or invoice instead." } } }
-        default: error = "Camera access is off. You can paste the token or invoice instead."
+        case .notDetermined: AVCaptureDevice.requestAccess(for: .video) { [weak self] allowed in DispatchQueue.main.async { guard let self, self.active else { return }; if allowed { self.configure() } else { self.error = "Camera access is off." } } }
+        default: error = "Camera access is off."
         }
     }
     func stop() { active = false; queue.async { [weak self] in self?.session.stopRunning() } }
@@ -48,7 +49,7 @@ private final class WalletCamera: NSObject, ObservableObject, AVCaptureMetadataO
                     guard output.availableMetadataObjectTypes.contains(.qr) else { self.session.commitConfiguration(); throw CameraFailure.unavailable }
                     output.metadataObjectTypes = [.qr]
                     self.session.commitConfiguration(); self.configured = true
-                } catch { DispatchQueue.main.async { self.error = "This camera cannot scan QR codes. Paste the token or invoice instead." }; return }
+                } catch { DispatchQueue.main.async { self.error = "This camera cannot scan QR codes." }; return }
             }
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.active else { return }
@@ -63,34 +64,105 @@ private final class WalletCamera: NSObject, ObservableObject, AVCaptureMetadataO
     private enum CameraFailure: Error { case unavailable }
 }
 
-struct WalletQRScanner: View {
-    enum Kind { case token, invoice }
+struct MarketQRScanner: View {
+    enum Kind {
+        case token, invoice, handoff(String)
+        var name: String {
+            switch self { case .token: return "token"; case .invoice: return "invoice"; case .handoff(let name): return name }
+        }
+        var isHandoff: Bool { if case .handoff = self { return true }; return false }
+        func input(_ value: String) -> String? {
+            switch self {
+            case .token: return WalletQRInput.token(value)
+            case .invoice: return WalletQRInput.invoice(value)
+            case .handoff: return MarketOrderHandoff.passInput(value)
+            }
+        }
+    }
     let kind: Kind
-    let onValue: (String) -> Void
+    let onValue: (String, @escaping (String?) -> Void) -> Void
+    init(kind: Kind, onValue: @escaping (String) -> Void) {
+        self.kind = kind
+        self.onValue = { value, done in onValue(value); done(nil) }
+    }
+    init(handoff name: String, verify: @escaping (String, @escaping (String?) -> Void) -> Void) {
+        kind = .handoff(name)
+        onValue = verify
+    }
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var camera = WalletCamera()
-    @State private var invalid = false
+    @State private var readingImage: Task<Void, Never>?
+    @State private var cameraEnabled = false
+    @State private var importing = false
+    @State private var finished = false
+    @State private var feedback: String?
+    @State private var failedVerification = false
     var body: some View {
         NavigationStack {
             VStack(spacing: 18) {
-                WalletCameraPreview(session: camera.session).frame(minHeight: 260, idealHeight: 360).clipShape(RoundedRectangle(cornerRadius: 20))
-                if let error = camera.error { Text(error).foregroundStyle(MarketTheme.muted) }
-                else { Text(invalid ? "That QR is not a supported \(kind == .token ? "Cashu token" : "Lightning invoice")." : "Place the QR code inside the camera view.").foregroundStyle(MarketTheme.muted) }
-            }.padding(24).navigationTitle(kind == .token ? "Scan token" : "Scan invoice").marketInlineTitle()
+                if cameraEnabled {
+                    WalletCameraPreview(session: camera.session).frame(minHeight: 220, idealHeight: 320).clipShape(RoundedRectangle(cornerRadius: 20))
+                    if let error = camera.error { Text(error).foregroundStyle(MarketTheme.muted) }
+                    else { Text("Place the QR code inside the camera view.").foregroundStyle(MarketTheme.muted) }
+                } else {
+                    Button("Use camera") { cameraEnabled = true; camera.start() }.buttonStyle(PrimaryButton())
+                }
+                if kind.isHandoff {
+                    Button("Choose QR image") { camera.stop(); feedback = nil; importing = true }
+                    if readingImage != nil { ProgressView("Reading QR image…") }
+                } else if camera.error != nil {
+                    Text("You can paste the " + kind.name + " instead.").foregroundStyle(MarketTheme.muted)
+                }
+                if let feedback { Text(feedback).foregroundStyle(MarketTheme.muted) }
+            }.padding(24).navigationTitle("Scan " + kind.name).marketInlineTitle()
                 .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
         }
-        .onAppear {
-            camera.onValue = { value in
-                let result = kind == .token ? WalletQRInput.token(value) : WalletQRInput.invoice(value)
-                guard let result else { invalid = true; return }
-                camera.stop(); onValue(result); dismiss()
+        .fileImporter(isPresented: $importing, allowedContentTypes: [.image]) { result in
+            switch result {
+            case .success(let url):
+                readingImage = Task {
+                    let decoded = await Task.detached { try? MarketQRImage.read(url) }.value
+                    guard !Task.isCancelled else { return }
+                    readingImage = nil
+                    if let decoded { accept(decoded) }
+                    else { feedback = "Choose an image with one clear QR code." }
+                    resumeCamera()
+                }
+            case .failure(let error):
+                if (error as NSError).code != NSUserCancelledError { feedback = "Could not open that image." }
+                resumeCamera()
             }
-            camera.start()
         }
-        .onDisappear { camera.stop(); camera.onValue = nil }
-        .onChange(of: scenePhase) { phase in if phase == .active { camera.start() } else { camera.stop() } }
+        .alert("Could not verify this code", isPresented: $failedVerification) {
+            Button("Try again") { feedback = nil; finished = false; resumeCamera() }
+            Button("Cancel", role: .cancel) { dismiss() }
+        } message: { Text(feedback ?? "Ask for a new code for this handoff.") }
+        .onAppear {
+            camera.onValue = accept
+            #if os(macOS)
+            cameraEnabled = !kind.isHandoff
+            #else
+            cameraEnabled = true
+            #endif
+            resumeCamera()
+        }
+        .onDisappear { finished = true; readingImage?.cancel(); camera.stop(); camera.onValue = nil }
+        .onChange(of: scenePhase) { phase in if phase == .active { resumeCamera() } else { camera.stop() } }
+        .onChange(of: importing) { open in if !open { resumeCamera() } }
         .marketSheetFrame()
+    }
+    private func resumeCamera() {
+        if cameraEnabled && scenePhase == .active && !finished && !importing && readingImage == nil { camera.start() }
+    }
+    private func accept(_ value: String) {
+        guard !finished else { return }
+        guard let valid = kind.input(value) else { feedback = "That QR code is not a supported " + kind.name + "."; return }
+        finished = true; camera.stop()
+        onValue(valid) { error in
+            if let error { feedback = error; failedVerification = true }
+            else { dismiss() }
+        }
     }
 }
 #if os(macOS)

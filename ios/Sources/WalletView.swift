@@ -1,5 +1,4 @@
 import SwiftUI
-import CoreImage.CIFilterBuiltins
 
 struct WalletView: View {
     @EnvironmentObject private var store: MarketStore
@@ -99,8 +98,8 @@ struct WalletView: View {
             .onChange(of: amount) { _ in wallet.sendReview = nil; sendRequestID = UUID().uuidString }
             .onChange(of: mint) { _ in wallet.sendReview = nil; wallet.lightningReview = nil; sendRequestID = UUID().uuidString }
             .onChange(of: lightningRequest) { _ in wallet.lightningReview = nil }
-            .sheet(isPresented: $scanInvoice) { WalletQRScanner(kind: .invoice) { lightningRequest = $0 }.marketSheetScope() }
-            .sheet(isPresented: $scanToken) { WalletQRScanner(kind: .token) { incoming = $0 }.marketSheetScope() }
+            .sheet(isPresented: $scanInvoice) { MarketQRScanner(kind: .invoice) { lightningRequest = $0 }.marketSheetScope() }
+            .sheet(isPresented: $scanToken) { MarketQRScanner(kind: .token) { incoming = $0 }.marketSheetScope() }
             .onAppear { if let incomingToken { incoming = incomingToken } }
             .onDisappear { incoming = ""; reviewedToken = ""; backupPassword = ""; backupRepeat = ""; restorePassword = ""; restoreEnvelope = ""; wallet.clear() }
             .onChange(of: scenePhase) { phase in if phase != .active { wallet.token = nil; incoming = ""; reviewedToken = "" } }
@@ -242,7 +241,7 @@ struct WalletView: View {
             Text(displayAmount(invoice.amount, mint: invoice.mint, testOnly: invoice.isTest)).font(.headline)
             satsDetail(invoice.amount, mint: invoice.mint, testOnly: invoice.isTest)
             if invoice.isTest { Text("Test money · no bitcoin value. Do not pay this invoice with a real Lightning wallet.").font(.caption) }
-            if !invoice.isTest { WalletInvoiceQR(invoice: invoice.invoice).frame(maxWidth: .infinity) }
+            if !invoice.isTest { MarketQRCode(text: "lightning:" + invoice.invoice, label: "Lightning invoice QR code", size: 220).frame(maxWidth: .infinity) }
             Text(invoice.invoice).font(.caption.monospaced()).lineLimit(3).textSelection(.enabled)
             HStack {
                 Button(invoice.isTest ? "Copy test invoice" : "Copy invoice") { MarketPlatform.copyPaymentToClipboard(invoice.invoice) }
@@ -283,16 +282,4 @@ struct WalletView: View {
         }
     }
     private func open() { do { wallet.open(try store.walletCredentials()) } catch { wallet.error = error.localizedDescription } }
-}
-
-private struct WalletInvoiceQR: View {
-    let invoice: String
-    private var image: CGImage? {
-        let filter = CIFilter.qrCodeGenerator(); filter.message = Data(("lightning:" + invoice).utf8); filter.correctionLevel = "M"
-        guard let output = filter.outputImage else { return nil }
-        return CIContext().createCGImage(output.transformed(by: CGAffineTransform(scaleX: 6, y: 6)), from: output.extent.applying(CGAffineTransform(scaleX: 6, y: 6)))
-    }
-    var body: some View {
-        if let image { Image(decorative: image, scale: 1).interpolation(.none).resizable().scaledToFit().frame(width: 220, height: 220).padding(16).background(.white).clipShape(RoundedRectangle(cornerRadius: 12)).accessibilityLabel("Lightning invoice QR code") }
-    }
 }

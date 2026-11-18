@@ -19,6 +19,7 @@ struct MarketOrder: Decodable, Hashable, Identifiable {
     let escrowTradeId: String?
     let escrowProvider: String?
     let payment: MarketOrderPayment?
+    let handoffs: [MarketOrderHandoff]?
     let fulfillment: String?
     let deliveryRequest: MarketDeliveryRequest?
     let pickupAuthorization: MarketPickupAuthorization?
@@ -54,14 +55,15 @@ struct MarketOrder: Decodable, Hashable, Identifiable {
         if items.count == 1, let item = items.first { return item.quantity > 1 ? item.lineFormattedPrice : formattedPrice }
         return itemsTotal ?? (displayPrice == nil ? "See item prices" : formattedPrice)
     }
+    var isPickup: Bool { fulfillment == MarketFulfillment.pickup.rawValue }
     var terminal: Bool { status == "delivered" || status == "cancelled" }
     var title: String { items.map(\.title).filter { !$0.isEmpty }.joined(separator: ", ") }
     var statusLabel: String {
         switch status {
         case "requested": return "Requested"
         case "accepted": return "Accepted"
-        case "in-transit": return "On the way"
-        case "delivered": return "Delivered"
+        case "in-transit": return isPickup ? "Awaiting collection" : "On the way"
+        case "delivered": return isPickup ? "Collected" : "Delivered"
         case "cancelled": return "Cancelled"
         default: return "Updating"
         }
@@ -69,13 +71,41 @@ struct MarketOrder: Decodable, Hashable, Identifiable {
     func handlesDelivery(_ owner: String) -> Bool { (seller == owner && deliveryRequest != nil) || shipment.stops.contains { seller == owner || $0.courierPubkey == owner } }
 }
 
+struct MarketOrderHandoff: Decodable, Hashable, Identifiable {
+    let kind: String
+    let action: String
+    var id: String { kind }
+    var codeName: String { kind == "pickup" ? "collection code" : "receipt code" }
+    var buttonLabel: String? {
+        guard ["pickup", "dropoff"].contains(kind) else { return nil }
+        switch action {
+        case "show": return "Show " + codeName
+        case "scan": return "Scan " + codeName
+        case "checked": return kind == "pickup" ? "Collection checked" : "Receipt checked"
+        default: return nil
+        }
+    }
+    static func passInput(_ value: String) -> String? {
+        guard value.hasPrefix("iris-handoff:1:"), value.utf8.count <= 220, value.utf8.allSatisfy({ (33...126).contains($0) }) else { return nil }
+        return value
+    }
+}
+
 enum MarketFulfillment: String, CaseIterable {
     case merchantDelivery = "merchant-delivery", pickup, buyerCourier = "buyer-courier"
+    var checkoutLabel: String { self == .buyerCourier ? "I’ll arrange my own delivery" : label }
+    var checkoutNote: String? {
+        switch self {
+        case .merchantDelivery: return "Agree on the delivery address and cost privately with the seller."
+        case .buyerCourier: return "Booking here shares your destination with the delivery service. The seller receives the courier’s profile and a pickup reference."
+        case .pickup: return nil
+        }
+    }
     var label: String {
         switch self {
         case .merchantDelivery: return "Seller arranges delivery"
         case .pickup: return "Pickup"
-        case .buyerCourier: return "Buyer arranges courier"
+        case .buyerCourier: return "Buyer arranges delivery"
         }
     }
 }

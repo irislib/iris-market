@@ -239,10 +239,10 @@ private struct FulfillmentPicker: View {
     @Binding var selection: MarketFulfillment?
     var body: some View {
         Picker("Delivery or pickup", selection: $selection) {
-            ForEach(MarketFulfillment.allCases, id: \.self) { option in Text(option.label).tag(Optional(option)) }
+            ForEach(MarketFulfillment.allCases, id: \.self) { option in Text(option.checkoutLabel).tag(Optional(option)) }
             Text("Agree in chat").tag(nil as MarketFulfillment?)
         }.accessibilityIdentifier("orderFulfillment")
-        if selection == .merchantDelivery { Text("Agree on the delivery address and cost privately with the seller.").font(.caption).foregroundStyle(MarketTheme.muted) }
+        if let note = selection?.checkoutNote { Text(note).font(.caption).foregroundStyle(MarketTheme.muted) }
     }
 }
 
@@ -395,6 +395,9 @@ struct OrderDetailView: View {
             MarketInlineError()
             if let request = order.deliveryRequest { VStack(alignment: .leading, spacing: 8) { Text("Requested route").font(.headline); Text("Pickup · " + request.pickup.address); Text("Destination · " + request.destination.address); if let collection = request.collection { Text("Pickup reference · " + collection.reference).font(.caption).foregroundStyle(MarketTheme.muted) } } }
             if let authorization = order.pickupAuthorization { VStack(alignment: .leading, spacing: 8) { Text("Authorized collection").font(.headline); UserRow(person: store.snapshot.people[authorization.courierPubkey] ?? .unnamed(authorization.courierPubkey), subtitle: "Courier"); Text("Pickup reference · " + authorization.reference).font(.caption).foregroundStyle(MarketTheme.muted) } }
+            if !store.demo, let handoffs = order.handoffs, !handoffs.isEmpty {
+                OrderHandoffActions(orderID: order.id, handoffs: handoffs)
+            }
             if order.escrowTradeId != nil {
                 if participant, let provider = order.escrowProvider {
                     let card = store.snapshot.escrowCards.first { $0.matches(order) }
@@ -422,22 +425,22 @@ struct OrderDetailView: View {
             if let source = order.sourceOrderId { Button("Open product order") { relatedOrder = OrderSelection(id: source) } }
             if !order.terminal {
                 if seller && order.status == "requested" && order.escrowTradeId == nil { statusButton("Accept order", status: "accepted") }
-                if seller && order.status == "accepted" { statusButton("Mark on the way", status: "in-transit") }
-                if participant && ["accepted", "in-transit"].contains(order.status) { statusButton("Mark delivered", status: "delivered", primary: false) }
+                if seller && order.status == "accepted" && !order.isPickup { statusButton("Mark on the way", status: "in-transit") }
+                if participant && ["accepted", "in-transit"].contains(order.status) { statusButton(order.isPickup ? "Mark collected" : "Mark delivered", status: "delivered", primary: false) }
             }
             Divider().overlay(MarketTheme.line)
-            Text("Delivery").font(.system(size: 21, weight: .semibold))
+            Text(order.isPickup ? "Pickup details" : "Delivery").font(.system(size: 21, weight: .semibold))
             if participant, let value = order.fulfillment, let choice = MarketFulfillment(rawValue: value) {
                 Label(choice.label, systemImage: choice == .pickup ? "shippingbox.fill" : "truck.box.fill").font(.subheadline)
             }
             if order.canBookMerchantCourier(store.snapshot.publicKey) {
-                Button("Book a courier") { arrangingDelivery = true }.buttonStyle(PrimaryButton()).disabled(store.busy).accessibilityIdentifier("merchantBookCourier")
+                Button("Book delivery") { arrangingDelivery = true }.buttonStyle(PrimaryButton()).disabled(store.busy).accessibilityIdentifier("merchantBookCourier")
             } else if order.canBookBuyerCourier(store.snapshot.publicKey) {
-                Button("Book your own courier") { arrangingDelivery = true }.buttonStyle(.bordered).disabled(store.busy).accessibilityIdentifier("buyerBookCourier")
+                Button("Arrange delivery") { arrangingDelivery = true }.buttonStyle(.bordered).disabled(store.busy).accessibilityIdentifier("buyerBookCourier")
             }
             if seller && !order.terminal && order.status != "requested" {
-                let pickup = order.fulfillment == MarketFulfillment.pickup.rawValue || order.fulfillment == MarketFulfillment.buyerCourier.rawValue
-                Button(order.shipment.stops.isEmpty ? (pickup ? "Share pickup details" : "Add delivery details or tracking") : "Edit route") { editingRoute = true }
+                let pickup = order.isPickup || order.fulfillment == MarketFulfillment.buyerCourier.rawValue
+                Button(order.shipment.stops.isEmpty ? (pickup ? "Share pickup details" : "Add delivery details or tracking") : (order.isPickup ? "Edit pickup details" : "Edit route")) { editingRoute = true }
                     .accessibilityIdentifier("editOrderDelivery")
             }
             TimelineView(.periodic(from: .now, by: 15)) { context in
@@ -453,12 +456,15 @@ struct OrderDetailView: View {
                 ShipmentMapView(shipment: order.shipment).frame(height: 250).clipShape(RoundedRectangle(cornerRadius: 20))
                 Text("Stops joined directly; not driving directions.").font(.system(size: 11)).foregroundStyle(MarketTheme.muted)
             }
-            if order.shipment.stops.isEmpty { Text(seller ? "Add delivery details after accepting the order." : "Delivery details will appear here.").font(.system(size: 14)).foregroundStyle(MarketTheme.muted) }
+            if order.shipment.stops.isEmpty && !order.terminal {
+                Text(order.isPickup ? "Agree on a pickup time and place in your private order chat." : (seller ? "Add delivery details after accepting the order." : "Delivery details will appear here."))
+                    .font(.system(size: 14)).foregroundStyle(MarketTheme.muted)
+            }
             ForEach(Array(order.shipment.stops.enumerated()), id: \.element.id) { index, stop in
                 stopView(stop, number: index + 1, order: order, seller: seller)
             }
             if let tracking = order.shipment.trackingLink { Link(destination: tracking) { Label("Track delivery", systemImage: "arrow.up.right.square") }.font(.system(size: 14, weight: .medium)) }
-            if !order.terminal && order.status != "requested" && order.handlesDelivery(store.snapshot.publicKey) && store.snapshot.liveLocationSupported { OrderLocationSharing(order: order, active: !editingRoute && !arrangingDelivery && !paying && !requestingPayment && !confirmingPayment && !showingChat && profile == nil && relatedOrder == nil) }
+            if !order.isPickup && !order.terminal && order.status != "requested" && order.handlesDelivery(store.snapshot.publicKey) && store.snapshot.liveLocationSupported { OrderLocationSharing(order: order, active: !editingRoute && !arrangingDelivery && !paying && !requestingPayment && !confirmingPayment && !showingChat && profile == nil && relatedOrder == nil) }
             if !order.terminal && participant { Button("Cancel order", role: .destructive) { cancelling = true }.disabled(store.busy).font(.system(size: 13)) }
             if order.terminal { Button(order.archived ? "Restore order" : "Archive order") { store.archiveOrder(order) { if $0 { dismiss() } } }.buttonStyle(PrimaryButton(dark: false)).disabled(store.busy) }
         }.padding(24)
@@ -484,14 +490,16 @@ struct OrderDetailView: View {
                 VStack(alignment: .leading, spacing: 5) {
                     Text(stop.label.isEmpty ? "Stop \(number)" : stop.label).font(.system(size: 16, weight: .semibold))
                     if !stop.address.isEmpty { Text(stop.address).font(.system(size: 13)).foregroundStyle(MarketTheme.muted) }
-                    if !order.terminal { Text(stop.statusLabel).font(.system(size: 11)).foregroundStyle(MarketTheme.muted) }
+                    if !order.isPickup && !order.terminal { Text(stop.statusLabel).font(.system(size: 11)).foregroundStyle(MarketTheme.muted) }
                 }
                 Spacer(minLength: 0)
             }
             if let courier = stop.courierPubkey {
                 Button { profile = OrderSelection(id: courier) } label: { UserRow(person: store.snapshot.people[courier] ?? .unnamed(courier), subtitle: "Courier", size: 30) }.buttonStyle(.plain)
             }
-            if !order.terminal && order.status != "requested" && (seller || stop.courierPubkey == store.snapshot.publicKey) {
+            if order.isPickup && !order.terminal && order.buyer == store.snapshot.publicKey, let url = navigationURL(stop) {
+                Link(destination: url) { Label("Directions to pickup", systemImage: "arrow.triangle.turn.up.right.diamond.fill") }.font(.subheadline)
+            } else if !order.isPickup && !order.terminal && order.status != "requested" && (seller || stop.courierPubkey == store.snapshot.publicKey) {
                 if stop.status != "completed", let url = navigationURL(stop) { Link(destination: url) { Label("Navigate to stop", systemImage: "arrow.triangle.turn.up.right.diamond.fill") }.font(.system(size: 13, weight: .semibold)) }
                 HStack(spacing: 18) {
                     if stop.status == "pending" { Button("Mark arrived") { store.updateOrder(orderID, patch: ["stopId": stop.id, "status": "arrived"]) } }

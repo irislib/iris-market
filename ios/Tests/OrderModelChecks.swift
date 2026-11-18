@@ -50,6 +50,13 @@ import Foundation
             product.merge(extra) { _, updated in updated }
             return try decoder.decode(MarketOrder.self, from: JSONSerialization.data(withJSONObject: product))
         }
+        check(order.handoffs == nil, "Previous snapshots decode without a handoff")
+        for (kind, action, expected) in [("pickup", "show", "Show collection code"), ("pickup", "scan", "Scan collection code"), ("dropoff", "checked", "Receipt checked")] {
+            let handoff = try product(.pickup, extra: ["handoffs": [["kind": kind, "action": action]]])
+            check(handoff.handoffs?.first?.buttonLabel == expected, "A handoff exposes only the action projected by the core")
+        }
+        check(MarketOrderHandoff(kind: "pickup", action: "future").buttonLabel == nil && MarketOrderHandoff(kind: "unknown", action: "show").buttonLabel == nil, "Unknown handoffs expose no actions")
+        check(MarketOrderHandoff.passInput("lightning:invoice") == nil && MarketOrderHandoff.passInput("iris-handoff:1:private\nvalue") == nil && MarketOrderHandoff.passInput("iris-handoff:1:" + String(repeating: "a", count: 220)) == nil, "Reject unrelated, multiline and oversized QR input before verification")
         let merchantDelivery = try product(.merchantDelivery)
         check(merchantDelivery.canBookMerchantCourier("seller") && !merchantDelivery.canBookMerchantCourier("buyer"), "Only the merchant can book merchant delivery")
         check(!merchantDelivery.canBookBuyerCourier("buyer"), "Merchant delivery never prompts the buyer to book")
@@ -59,6 +66,12 @@ import Foundation
             check(!awaitingPickup.canBookBuyerCourier("buyer") && pickupShared.canBookBuyerCourier("buyer"), "Buyer or legacy courier needs the seller's pickup address")
             check(!pickupShared.canBookBuyerCourier("courier") && !pickupShared.canBookMerchantCourier("seller"), "Only the selected organizer books")
         }
+        check(MarketFulfillment.buyerCourier.rawValue == "buyer-courier" && MarketFulfillment.buyerCourier.checkoutLabel == "I’ll arrange my own delivery" && MarketFulfillment.buyerCourier.label == "Buyer arranges delivery", "Buyer choice and shared order use role-appropriate delivery terms")
+        let collected = try product(.pickup, status: "delivered")
+        let awaitingCollection = try product(.pickup, status: "in-transit")
+        let delivered = try product(nil, status: "delivered")
+        check(collected.isPickup && collected.statusLabel == "Collected" && awaitingCollection.statusLabel == "Awaiting collection", "Current and older pickup orders show collection progress")
+        check(!delivered.isPickup && delivered.statusLabel == "Delivered", "Legacy delivery completion stays delivered")
         let pickupOrder = try product(.pickup, address: "Synthetic meeting point")
         check(!pickupOrder.canBookBuyerCourier("buyer") && !pickupOrder.canBookMerchantCourier("seller"), "Pickup requires no courier")
         for status in ["requested", "cancelled", "delivered"] {

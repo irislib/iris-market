@@ -315,7 +315,14 @@ final class MarketStore: ObservableObject {
             }
         }
     }
+    private struct HandoffReply: Decodable { let handoffPass: String? }
     func command(_ value: [String: Any], expectedAIIntent: Int? = nil, urgentPreference: Bool = false, publishExpiry: NativeListingExpiry? = nil, completion: ((Bool) -> Void)? = nil) {
+        runCommand(value, expectedAIIntent: expectedAIIntent, urgentPreference: urgentPreference, publishExpiry: publishExpiry, completion: completion)
+    }
+    func showOrderHandoff(_ orderID: String, kind: String, onPass: @escaping (String) -> Void, completion: @escaping (Bool) -> Void) {
+        runCommand(["type": "show_order_handoff", "order_id": orderID, "kind": kind], onHandoffPass: onPass, completion: completion)
+    }
+    private func runCommand(_ value: [String: Any], expectedAIIntent: Int? = nil, urgentPreference: Bool = false, publishExpiry: NativeListingExpiry? = nil, onHandoffPass: ((String) -> Void)? = nil, completion: ((Bool) -> Void)?) {
         #if DEBUG
         if NativeMessageFixture.enabled && messageFixture.apply(value) {
             snapshot = messageFixture.project(snapshot); completion?(true); return
@@ -367,13 +374,21 @@ final class MarketStore: ObservableObject {
                         }
                         response = result
                     } else { response = try app.command(request: request) }
-                    let next = try MarketJSON.decoder().decode(MarketSnapshot.self, from: Data(response.utf8))
+                    let data = Data(response.utf8)
+                    let next = try MarketJSON.decoder().decode(MarketSnapshot.self, from: data)
+                    // A handoff pass belongs only to the open code screen, never the observable snapshot.
+                    let pass = try onHandoffPass == nil ? nil : MarketJSON.decoder().decode(HandoffReply.self, from: data).handoffPass
                     Task { @MainActor in
                         guard self?.accountGeneration == generation else { completion?(false); return }
                         self?.acceptSnapshot(next)
                         if showsBusy { self?.operationCount -= 1; self?.busy = (self?.operationCount ?? 0) > 0 }
                         if let error = next.error, !error.isEmpty { if !backgroundReview { self?.alert = error }; completion?(false) }
-                        else { completion?(true) }
+                        else if let onHandoffPass {
+                            guard let pass, let valid = MarketOrderHandoff.passInput(pass) else {
+                                self?.alert = "Could not prepare the handoff code."; completion?(false); return
+                            }
+                            onHandoffPass(valid); completion?(true)
+                        } else { completion?(true) }
                     }
                 } catch { Task { @MainActor in
                     guard let self, self.accountGeneration == generation else { completion?(false); return }

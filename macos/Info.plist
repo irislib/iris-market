@@ -17,5 +17,5 @@
 <key>NSHighResolutionCapable</key><true/>
 <key>NSLocalNetworkUsageDescription</key><string>Connect to an AI provider or message server on your local network when you choose one.</string>
 <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
-<key>NSCameraUsageDescription</key><string>Scan a Cashu token or Lightning invoice when you choose Scan.</string>
+<key>NSCameraUsageDescription</key><string>Scan an order handoff code, Cashu token or Lightning invoice when you choose the camera.</string>
 </dict></plist>

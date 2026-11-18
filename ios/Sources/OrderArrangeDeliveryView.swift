@@ -29,17 +29,17 @@ struct OrderArrangeDeliveryView: View {
                     Text("Choose a delivery service").font(.title3.weight(.semibold))
                     let options = services
                     let provider = options.first { $0.id == selected }
-                    if options.isEmpty { Text("No parcel services found.").foregroundStyle(MarketTheme.muted); Button("Refresh services") { store.command(["type": "refresh"]) } }
+                    if options.isEmpty { Text("No delivery services found.").foregroundStyle(MarketTheme.muted); Button("Refresh services") { store.command(["type": "refresh"]) } }
                     ForEach(options) { service in
                         Button { selected = service.id } label: {
                             HStack(spacing: 12) { VStack(alignment: .leading, spacing: 6) { Text(service.title).font(.headline); Text(service.formattedPrice).font(.subheadline) }; Spacer(); Image(systemName: selected == service.id ? "checkmark.circle.fill" : "circle") }
                                 .padding(16).frame(maxWidth: .infinity, alignment: .leading).background(MarketTheme.surface, in: RoundedRectangle(cornerRadius: 17))
                         }.buttonStyle(.plain).accessibilityAddTraits(selected == service.id ? .isSelected : [])
                     }
-                    Text(merchant ? "You pay the courier separately. Confirm the address with the buyer in your order chat." : "You pay the courier separately. The seller receives the courier’s identity and a pickup reference.").font(.caption).foregroundStyle(MarketTheme.muted)
+                    Text(merchant ? "You pay for delivery separately. Confirm the address with the buyer in your order chat." : "You pay for delivery separately. The seller receives the courier’s profile and a pickup reference.").font(.caption).foregroundStyle(MarketTheme.muted)
                     MarketInlineError()
                     if let error { Text(error).foregroundStyle(.red).font(.caption) }
-                    Button("Review courier request") {
+                    Button("Review delivery request") {
                         do {
                             if merchant { _ = try pickup.projection() }
                             _ = try destination.projection()
@@ -55,7 +55,7 @@ struct OrderArrangeDeliveryView: View {
                             }
                             Button("Cancel", role: .cancel) {}
                         } message: { service in
-                            Text("\(service.title) · \(service.formattedPrice)\nPickup: \(merchant ? pickup.address : order.shipment.stops.first?.address ?? "")\nDestination: \(destination.address)\nOnly this courier receives these addresses in the delivery request.")
+                            Text("\(service.title) · \(service.formattedPrice)\nPickup: \(merchant ? pickup.address : order.shipment.stops.first?.address ?? "")\nDestination: \(destination.address)\nSending this request shares both addresses privately with the selected delivery service.")
                         }
                 }.padding(24)
             }.background(MarketTheme.paper).foregroundStyle(MarketTheme.ink).navigationTitle("Arrange delivery").marketInlineTitle()

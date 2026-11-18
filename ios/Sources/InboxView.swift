@@ -1,5 +1,4 @@
 import SwiftUI
-import CoreImage.CIFilterBuiltins
 
 private struct InboxThread: Identifiable {
     let conversation: MarketConversation
@@ -116,7 +115,7 @@ struct InvitationView: View {
                         Text("Invite someone").font(.system(size: 17, weight: .semibold)).frame(maxWidth: .infinity, alignment: .leading)
                         Text("Let them scan this code, or send them the link. Your chat stays private.").font(.system(size: 14)).foregroundStyle(MarketTheme.muted).frame(maxWidth: .infinity, alignment: .leading)
                         if let invite = store.snapshot.invite, !invite.isEmpty {
-                            InvitationQR(text: invite)
+                            MarketQRCode(text: invite, label: "Invitation QR code")
                             HStack(spacing: 12) {
                                 ShareLink(item: invite) { Label("Share", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity) }.buttonStyle(PrimaryButton())
                                 Button { MarketPlatform.copyToClipboard(invite) } label: { Label("Copy link", systemImage: "doc.on.doc").frame(maxWidth: .infinity) }.buttonStyle(PrimaryButton(dark: false))
@@ -140,18 +139,6 @@ struct InvitationView: View {
                 // An invitation is local until shared; prepare one as soon as the screen opens.
                 .task { if !store.demo && (store.snapshot.invite ?? "").isEmpty { store.command(["type": "create_invite"]) } }
         }
-    }
-}
-
-private struct InvitationQR: View {
-    let text: String
-    private var image: CGImage? {
-        let filter = CIFilter.qrCodeGenerator(); filter.message = Data(text.utf8); filter.correctionLevel = "M"
-        guard let output = filter.outputImage else { return nil }
-        return CIContext().createCGImage(output.transformed(by: CGAffineTransform(scaleX: 8, y: 8)), from: output.extent.applying(CGAffineTransform(scaleX: 8, y: 8)))
-    }
-    var body: some View {
-        if let image { Image(decorative: image, scale: 1).interpolation(.none).resizable().scaledToFit().frame(width: 240, height: 240).padding(16).background(.white).clipShape(RoundedRectangle(cornerRadius: 16)).accessibilityLabel("Invitation QR code") }
     }
 }
 

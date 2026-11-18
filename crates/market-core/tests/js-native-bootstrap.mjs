@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import {createRequire} from 'node:module';
 import {spawn} from 'node:child_process';
+import {existsSync} from 'node:fs';
 import {mkdtemp,readFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -50,8 +51,8 @@ async function acceptOrders() {
     }
   } finally { routing=false; }
 }
-const waitFor=async predicate=>{
-  const end=Date.now()+10000;
+const waitFor=async (predicate,timeout=10000)=>{
+  const end=Date.now()+timeout;
   while(!predicate()) {assert(Date.now()<end,'Strict JS fixture failed to become ready');await new Promise(resolve=>setTimeout(resolve,20));}
 };
 try {
@@ -65,9 +66,8 @@ try {
   child=spawn('cargo',['test','--locked','-p','iris-market-core','--test','js_interop','fresh_native_profile_orders_with_strict_js_peer','--','--ignored','--exact'],{
     cwd:fileURLToPath(new URL('../../../',import.meta.url)),stdio:['ignore','inherit','inherit'],env:{...process.env,CARGO_BUILD_JOBS:'2',MARKET_NATIVE_RELAY:relay,MARKET_SYNTHETIC_PICKUP_PASS:passFile,MARKET_NATIVE_SELLER:seller.state().ownerPubkey,MARKET_NATIVE_SILENT_RELAY:`ws://127.0.0.1:${silentServer.address().port}`,...(legacy?{MARKET_TEST_OWNER_KEY_SESSION:'1'}:{})}
   });
-  const timer=setTimeout(()=>child.kill('SIGTERM'),90000);
-  const code=await new Promise((resolve,reject)=>{child.on('error',reject);child.on('exit',resolve);});clearTimeout(timer);
-  assert.equal(code,0,'Fresh native profile order exchange failed');
+  const finished=new Promise((resolve,reject)=>{child.once('error',reject);child.once('exit',resolve)});
+  await waitFor(()=>existsSync(passFile)||child.exitCode!==null,80000);
   assert.equal(accepted.size,1);
   const order=seller.state().orders.find(order=>accepted.has(order.id));
   assert.equal(order.fulfillment,'pickup');
@@ -77,10 +77,20 @@ try {
   await assert.rejects(seller.checkOrderHandoff(order.id,'pickup',pass));
   assert([...events.values()].every(event=>!JSON.stringify(event).includes(pass)));
 
+  // This path uses the encrypted acknowledgment, independently of the v1 scan.
+  const view=()=>seller.state().orders.find(value=>value.id===order.id);
+  await waitFor(()=>view().pickupReceipt?.state==='awaiting-confirmation');
+  await seller.confirmOrderPickup(order.id);
+  assert.equal(view().pickupReceipt.state,'confirmed');
+  assert.equal(view().status,'accepted');
+  const timer=setTimeout(()=>child.kill('SIGTERM'),45000);
+  try {assert.equal(await finished,0,'Native buyer did not receive the signed receipt')}
+  finally {clearTimeout(timer)}
+
   if(!legacy)assert([...events.values()].filter(event=>event.kind===37368).length>=2,'Native app did not publish its signed roster');
   if(legacy)assert.equal([...events.values()].filter(e=>e.kind===37368&&e.pubkey!==seller.state().ownerPubkey).length,0,'Buyer was silently enrolled');
   assert([...events.values()].filter(e=>e.kind===1060).every(e=>e.tags.every(t=>t[0]!=='p')),'A private message disclosed its recipient');
-  console.log(legacy?'PASS: seller replied to an authenticated native buyer without device enrollment':'PASS: fresh native app -> strict JS accepted order, localhost only, accepting and silent relays, no pre-seeded native authorization');
+  console.log(legacy?'PASS: existing native buyer and JS seller exchanged signed pickup receipts without device enrollment':'PASS: fresh native buyer and JS seller exchanged signed pickup receipts using the private order channel');
 } finally {
   if(child&&child.exitCode===null)child.kill('SIGTERM');
   await rm(passDirectory,{recursive:true,force:true});

@@ -16,11 +16,21 @@ struct Input {
     order_patch: Option<serde_json::Value>,
     pickup_pass: Option<String>,
     #[serde(default)]
+    confirm_pickup: bool,
+    additional_contact: Option<PrivateContact>,
+    #[serde(default)]
+    subscribed_only: bool,
+    #[serde(default)]
     mark_read: Vec<String>,
     #[serde(default)]
     toggle_reactions: Vec<ReactionCommand>,
     #[serde(default)]
     expected_controls: Vec<ExpectedControl>,
+}
+#[derive(Deserialize)]
+struct PrivateContact {
+    authorization: Event,
+    invite: Event,
 }
 #[derive(Deserialize)]
 struct ReactionCommand {
@@ -63,8 +73,21 @@ fn javascript_runtime_wire_roundtrip() {
             .accept_public_contact_event(&input.invite, &input.authorization.pubkey.to_hex())
             .unwrap();
     }
+    if let Some(contact) = input.additional_contact {
+        market.ingest_authorization(&contact.authorization).unwrap();
+        market
+            .accept_public_contact_event(&contact.invite, &contact.authorization.pubkey.to_hex())
+            .unwrap();
+    }
     for event in input.incoming {
-        market.receive(&event).unwrap();
+        if !input.subscribed_only
+            || market
+                .subscriptions()
+                .iter()
+                .any(|sub| sub.filter.match_event(&event, Default::default()))
+        {
+            market.receive(&event).unwrap();
+        }
     }
     let received = market
         .conversations()
@@ -92,6 +115,9 @@ fn javascript_runtime_wire_roundtrip() {
                     &pass,
                 )
                 .unwrap();
+        }
+        if input.confirm_pickup {
+            market.confirm_order_pickup(&expected).unwrap();
         }
     }
     if !input.mark_read.is_empty() {
@@ -218,6 +244,7 @@ fn fresh_native_profile_orders_with_strict_js_peer() {
         std::thread::sleep(Duration::from_millis(50));
     }
     if let Some(path) = env::var_os("MARKET_SYNTHETIC_PICKUP_PASS") {
+        let path = PathBuf::from(path);
         let order = snapshot()["orders"][0]["id"].clone();
         let reply: Value = serde_json::from_str(
             &market
@@ -228,8 +255,35 @@ fn fresh_native_profile_orders_with_strict_js_peer() {
                 .unwrap(),
         )
         .unwrap();
-        fs::write(path, reply["handoff_pass"].as_str().unwrap()).unwrap();
+        let temporary = path.with_extension("tmp");
+        fs::write(&temporary, reply["handoff_pass"].as_str().unwrap()).unwrap();
+        fs::rename(temporary, path).unwrap();
         assert!(snapshot().get("handoff_pass").is_none());
+        let ack: Value = serde_json::from_str(
+            &market
+                .command(&json!({"type":"acknowledge_order_pickup","order_id":order}).to_string())
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            ack["handoff_pass"]
+                .as_str()
+                .unwrap()
+                .starts_with("iris-handoff:2:pickup:")
+        );
+        let end = Instant::now() + Duration::from_secs(40);
+        loop {
+            let current = &snapshot()["orders"][0];
+            if current["pickupReceipt"]["state"] == "confirmed" {
+                assert_eq!(current["status"], "accepted");
+                break;
+            }
+            assert!(
+                Instant::now() < end,
+                "The buyer did not receive the signed receipt"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
     market.shutdown();
     if legacy {
@@ -237,6 +291,9 @@ fn fresh_native_profile_orders_with_strict_js_peer() {
         let state: Value = serde_json::from_str(&reopened.snapshot().unwrap()).unwrap();
         assert_eq!(state["needs_chat_device_approval"], true);
         assert_eq!(state["orders"][0]["status"], "accepted");
+        if env::var_os("MARKET_SYNTHETIC_PICKUP_PASS").is_some() {
+            assert_eq!(state["orders"][0]["pickupReceipt"]["state"], "confirmed");
+        }
         reopened.shutdown();
     }
 }

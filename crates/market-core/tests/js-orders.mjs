@@ -20,13 +20,24 @@ const factory=()=>{const own=new Set();return {
   async query(filters){return {events:[...events.values()].filter(e=>matchFilters(filters,e)),complete:true,sources:[]};},publish,
   close(){for(const sub of own)subscriptions.delete(sub);own.clear();}
 };};
-let row;
-const vault=createVault({backend:{read:async()=>structuredClone(row),write:async(value,expected)=>{if(expected!==undefined&&(row?.version??0)!==expected)throw Error('vault conflict');row=structuredClone(value);}}});
-const app=createMessaging({vault,getRelays:()=>['wss://test.invalid'],transportFactory:factory});
+function newPeer(){
+  let row;
+  const vault=createVault({backend:{read:async()=>structuredClone(row),write:async(value,expected)=>{
+    if(expected!==undefined&&(row?.version??0)!==expected)throw Error('vault conflict');
+    row=structuredClone(value);
+  }}});
+  return createMessaging({vault,getRelays:()=>['wss://test.invalid'],transportFactory:factory});
+}
+const app=newPeer();
+let carrier;
 const waitFor=async predicate=>{const end=Date.now()+10000;while(!predicate()){if(Date.now()>end)throw Error('Interop condition timed out');await new Promise(resolve=>setTimeout(resolve,10));}};
+function contact(peer){
+  const authorization=[...events.values()].filter(e=>e.kind===37368&&e.pubkey===peer.state().ownerPubkey).at(-1);
+  const invite=[...events.values()].filter(e=>e.kind===30078&&e.pubkey===peer.state().devicePubkey).at(-1);
+  return {authorization,invite};
+}
 async function native(extra={}) {
-  const authorization=[...events.values()].filter(e=>e.kind===37368&&e.pubkey===app.state().ownerPubkey).at(-1);
-  const invite=[...events.values()].filter(e=>e.kind===30078&&e.pubkey===app.state().devicePubkey).at(-1);
+  const {authorization,invite}=contact(app);
   assert(authorization&&invite);
   const input=join(dir,'input.json'),output=join(dir,'output.json');
   await writeFile(input,JSON.stringify({authorization,invite,...extra}));
@@ -73,10 +84,65 @@ try {
   assert.deepEqual(checked.handoffs,[{kind:'pickup',action:'checked'}]);
   assert.equal(checked.status,'accepted');
   assert.ok(!JSON.stringify(nativeCheck).includes(pass));
+  assert(!checked.pickupReceipt,'An authority check cannot issue a receipt');
+
+  // No messages are delivered to Rust between these calls. The merchant receives
+  // the collector signature by scan and reopens its own private storage to confirm.
+  const acknowledgment=await app.acknowledgeOrderPickup(linked.id);
+  const pending=await native({expected_order:linked.id,pickup_pass:acknowledgment});
+  assert.equal(pending.orders.find(o=>o.id===linked.id).pickupReceipt.state,'awaiting-confirmation');
+  assert.equal(app.state().orders.find(o=>o.id===linked.id).pickupReceipt.state,'acknowledged');
+  const merchant=await native({expected_order:linked.id,confirm_pickup:true});
+  const merchantView=merchant.orders.find(o=>o.id===linked.id);
+  assert.equal(merchantView.pickupReceipt.state,'confirmed');
+  await waitFor(()=>app.state().orders.find(o=>o.id===linked.id)?.pickupReceipt?.state==='confirmed');
+  const buyer=app.state().orders.find(o=>o.id===linked.id);
+  assert.equal(buyer.pickupReceipt.confirmedAt,merchantView.pickupReceipt.confirmedAt);
+  assert.equal(buyer.status,'accepted');
+  assert.equal(buyer.escrowTradeId,tradeId);
+  assert(!buyer.payment);
+  for(const data of [frames,app.state().conversations,merchant.conversations]){
+    assert(!JSON.stringify(data).includes(acknowledgment.split(':').at(-1)));
+  }
 
   assert.equal(received.fulfillment,'pickup');assert.equal(received.escrowProvider,provider);assert.equal(received.escrowTradeId,tradeId);
   await waitFor(()=>app.state().orders.find(o=>o.id===linked.id)?.status==='accepted');
   assert(frames.slice(start).every(e=>!JSON.stringify(e).includes(provider)&&!JSON.stringify(e).includes(tradeId)));
   console.log('PASS: direct and escrow JS requests → Rust accept → JS projection; authenticated NDR, no public provider or trade ID');
 
-} finally { await app.destroy();await rm(dir,{recursive:true,force:true}); }
+  // Three distinct accounts. The delivery customer appoints a courier; the
+  // merchant can return the signed receipt without joining their delivery job.
+  carrier=newPeer();await carrier.createAccount();
+  await waitFor(()=>contact(carrier).invite&&contact(carrier).authorization);
+  await native({additional_contact:contact(carrier)});
+  const packetsFrom=start=>frames.slice(start).filter(e=>[1059,1060].includes(e.kind));
+  const beforeGoods=frames.length;
+  const goods=await app.requestOrder({...listing,escrow:undefined,title:'Private parcel'},{fulfillment:'buyer-courier'});
+  await waitFor(()=>app.state().orders.find(o=>o.id===goods.id)?.sync==='sent');
+  await native({incoming:packetsFrom(beforeGoods),subscribed_only:true,expected_order:goods.id,order_patch:{status:'accepted'}});
+  await waitFor(()=>app.state().orders.find(o=>o.id===goods.id)?.status==='accepted');
+  await native({expected_order:goods.id,order_patch:{shipment:{stops:[{id:'shop',label:'Collection',address:'Synthetic shop'}]}}});
+  await waitFor(()=>app.state().orders.find(o=>o.id===goods.id)?.shipment.stops.length===1);
+  const beforeBooking=frames.length;
+  const courierKey=carrier.state().ownerPubkey;
+  const job=await app.requestDelivery(goods.id,{id:`${courierKey}:parcel`,author:courierKey,side:'offer',tags:['parcel'],title:'Parcel delivery',price:'1',currency:'EUR'},
+    {label:'Door',address:'Synthetic buyer destination'});
+  const carrierView=()=>carrier.state().orders.find(o=>o.id===job.id);
+  await waitFor(()=>carrierView()&&app.state().orders.find(o=>o.id===goods.id)?.sync==='sent');
+  await carrier.updateOrder(job.id,{status:'accepted'});
+  const booked=await native({subscribed_only:true,incoming:packetsFrom(beforeBooking),expected_order:goods.id});
+  assert.equal(booked.orders.find(o=>o.id===goods.id).pickupAuthorization.courierPubkey,courierKey);
+  assert(!JSON.stringify(booked).includes('Synthetic buyer destination'));
+  const collectorPass=await carrier.acknowledgeOrderPickup(job.id);
+  // Scan once. Both remote recipients get their own independently verified copies.
+  const complete=await native({expected_order:goods.id,pickup_pass:collectorPass,confirm_pickup:true});
+  const merchantReceipt=complete.orders.find(o=>o.id===goods.id).pickupReceipt;
+  assert.equal(merchantReceipt.state,'confirmed');
+  await waitFor(()=>[carrierView(),app.state().orders.find(o=>o.id===goods.id)].every(o=>o?.pickupReceipt?.state==='confirmed'));
+  assert.equal(carrierView().pickupReceipt.confirmedAt,merchantReceipt.confirmedAt);
+  assert.equal(carrierView().status,'accepted');
+  assert(!JSON.stringify(carrier.state().orders).includes(goods.id));
+  assert(!JSON.stringify(carrier.state().conversations).includes('Private parcel'));
+  assert(!JSON.stringify(frames).includes(collectorPass.split(':').at(-1)));
+  console.log('PASS: JS buyer-authorized courier → Rust merchant → private receipts on both distinct JS orders');
+} finally { await carrier?.destroy();await app.destroy();await rm(dir,{recursive:true,force:true}); }

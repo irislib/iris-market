@@ -12,7 +12,7 @@ pub struct RecipientHandoff {
     pub key: String,
 }
 
-fn reference(value: &str) -> Option<Uuid> {
+pub(super) fn reference(value: &str) -> Option<Uuid> {
     Uuid::parse_str(value).ok().filter(|id| {
         id.get_version_num() == 4
             && id.get_variant() == uuid::Variant::RFC4122
@@ -38,7 +38,7 @@ impl RecipientHandoff {
     }
 }
 
-fn recipient_keys(device: &Keys, id: &str) -> Result<Keys> {
+pub(super) fn recipient_keys(device: &Keys, id: &str) -> Result<Keys> {
     let salt = reference(id).ok_or("Invalid handoff reference")?;
     let mut secret = [0u8; 32];
     Hkdf::<Sha256>::new(Some(salt.as_bytes()), device.secret_key().as_secret_bytes())

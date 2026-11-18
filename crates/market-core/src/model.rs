@@ -587,6 +587,21 @@ pub enum Command {
         order_id: String,
         kind: crate::orders::HandoffKind,
     },
+    AcknowledgeOrderPickup {
+        order_id: String,
+    },
+    ConfirmOrderPickup {
+        order_id: String,
+    },
+    ShowPickupReceipt {
+        order_id: String,
+        #[serde(default)]
+        reference: Option<String>,
+    },
+    VerifyPickupReceipt {
+        order_id: String,
+        receipt: String,
+    },
     VerifyOrderHandoff {
         order_id: String,
         kind: crate::orders::HandoffKind,

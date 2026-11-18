@@ -6,6 +6,7 @@
 //! listings or for receiving. Only acknowledge an outbound event after a relay OK.
 
 mod controls;
+mod pickup_receipt;
 mod retention;
 pub use retention::Retention;
 mod escrow;
@@ -851,12 +852,7 @@ impl Messaging {
             return result;
         }
         if event.kind.as_u16() as u32 == APP_KEYS_EVENT_KIND {
-            if event.pubkey != self.owner
-                && !self
-                    .state
-                    .conversations
-                    .contains_key(&event.pubkey.to_hex())
-            {
+            if event.pubkey != self.owner && !self.wants_private_peer(event.pubkey) {
                 return Err("Unrequested device authorization".into());
             }
             return self.ingest_authorization(event);
@@ -900,7 +896,7 @@ impl Messaging {
             }
             if owner != self.owner
                 && event.pubkey == owner
-                && self.state.conversations.contains_key(&owner.to_hex())
+                && self.wants_private_peer(owner)
                 && !self.state.authorization_heads.contains_key(&owner.to_hex())
                 && !self.contact_recipient_ready(owner)
             {
@@ -910,7 +906,7 @@ impl Messaging {
                     .accept_public_contact_event(event, &owner.to_hex())
                     .map(|_| ());
             }
-            if (owner != self.owner && !self.state.conversations.contains_key(&owner.to_hex()))
+            if (owner != self.owner && !self.wants_private_peer(owner))
                 || !self
                     .engine
                     .owner_device_binding_is_verified(owner, event.pubkey)
@@ -1212,6 +1208,14 @@ impl Messaging {
         kind: crate::orders::HandoffKind,
         pass: &str,
     ) -> MessagingResult<()> {
+        if kind == crate::orders::HandoffKind::Pickup && pass.starts_with("iris-handoff:2:") {
+            let proof = crate::orders::pickup_receipt::Statement::from_qr(pass, false)?;
+            return self.transaction(|this| {
+                this.state
+                    .orders
+                    .accept_pickup(Some(id), &this.owner.to_hex(), None, &proof, now())
+            });
+        }
         self.transaction(|this| {
             this.state
                 .orders
@@ -1441,6 +1445,9 @@ impl Messaging {
     }
 
     fn prepare_order_threads(&mut self) -> MessagingResult<()> {
+        self.state
+            .orders
+            .resolve_pending_pickups(&self.owner.to_hex(), now());
         self.state.orders.prune(now());
         let orders = &self.state.orders;
         self.engine
@@ -1611,10 +1618,16 @@ impl Messaging {
                     .limit(128),
             });
         }
+        let pickup_peers = self.pickup_discovery_peers();
         for owner in std::iter::once(self.owner).chain(
             self.state
                 .conversations
                 .keys()
+                .chain(
+                    pickup_peers
+                        .iter()
+                        .filter(|id| !self.state.conversations.contains_key(*id)),
+                )
                 .filter_map(|id| PublicKey::from_hex(id).ok()),
         ) {
             result.push(PrivateSubscription {
@@ -1947,10 +1960,12 @@ impl Messaging {
         let friend_request = friend_posts::is_request(&inner);
         let private_match = private_matches::is_match(&inner);
         let trade_step = trade_steps::is_trade(&inner);
+        let pickup = pickup_receipt::has_tag(&inner);
         let chat_setting = inner.kind.as_u16() as u32 == iris_chat_protocol::CHAT_SETTINGS_KIND;
         if friend_request
             || private_match
             || trade_step
+            || pickup
             || chat_setting
             || matches!(inner.kind.as_u16(), 7 | 15)
         {
@@ -1994,6 +2009,10 @@ impl Messaging {
                 if let Some(peer) = peer {
                     self.apply_timer(peer, &inner)?;
                 }
+                return Ok(());
+            }
+            if pickup {
+                self.receive_pickup_proof(message.sender, &inner);
                 return Ok(());
             }
             if private_match {

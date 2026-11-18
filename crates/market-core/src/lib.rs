@@ -907,7 +907,12 @@ impl Market {
         if request.len() > 32768 && !matches!(command, Command::SendTradeStep { .. }) {
             bail!("Request is too large");
         }
-        if let Command::ShowOrderHandoff { order_id, kind } = &command {
+        if matches!(
+            command,
+            Command::ShowOrderHandoff { .. }
+                | Command::AcknowledgeOrderPickup { .. }
+                | Command::ShowPickupReceipt { .. }
+        ) {
             let mut state = self.state.lock().unwrap();
             ensure!(
                 !self.stopped.load(Ordering::Acquire)
@@ -915,12 +920,27 @@ impl Market {
                     && !state.demo,
                 "Open your market profile first"
             );
-            let pass = state
+            let messages = state
                 .messaging
-                .as_ref()
-                .context("Private orders unavailable")?
-                .show_order_handoff(order_id, *kind)
-                .map_err(anyhow::Error::msg)?;
+                .as_mut()
+                .context("Private orders unavailable")?;
+            let pass = match &command {
+                Command::ShowOrderHandoff { order_id, kind } => {
+                    messages.show_order_handoff(order_id, *kind)
+                }
+                Command::ShowPickupReceipt {
+                    order_id,
+                    reference,
+                } => messages.show_recorded_pickup_receipt(order_id, reference.as_deref()),
+                Command::AcknowledgeOrderPickup { order_id } => {
+                    messages.acknowledge_order_pickup(order_id)
+                }
+                _ => unreachable!(),
+            }
+            .map_err(anyhow::Error::msg)?;
+            if matches!(command, Command::AcknowledgeOrderPickup { .. }) {
+                self.notify.notify_waiters();
+            }
             let mut view = state.snapshot()?;
             view.handoff_pass = Some(pass);
             return Ok(serde_json::to_string(&view)?);
@@ -1684,7 +1704,26 @@ impl Market {
                     .map_err(anyhow::Error::msg)?;
                 self.notify.notify_waiters();
             }
-            Command::ShowOrderHandoff { .. } => unreachable!("presentation is a direct response"),
+            Command::ShowOrderHandoff { .. }
+            | Command::AcknowledgeOrderPickup { .. }
+            | Command::ShowPickupReceipt { .. } => {
+                unreachable!("presentation is a direct response")
+            }
+            Command::ConfirmOrderPickup { order_id } => {
+                s.messaging
+                    .as_mut()
+                    .context("Private orders unavailable")?
+                    .confirm_order_pickup(&order_id)
+                    .map_err(anyhow::Error::msg)?;
+                self.notify.notify_waiters();
+            }
+            Command::VerifyPickupReceipt { order_id, receipt } => {
+                s.messaging
+                    .as_mut()
+                    .context("Private orders unavailable")?
+                    .verify_pickup_receipt(&order_id, &receipt)
+                    .map_err(anyhow::Error::msg)?;
+            }
             Command::VerifyOrderHandoff {
                 order_id,
                 kind,

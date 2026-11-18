@@ -3,7 +3,9 @@
 //! transaction. A relay acknowledgement is delivery to a relay, never payment.
 
 mod handoff;
+pub(crate) mod pickup_receipt;
 pub use handoff::{HandoffAction, HandoffKind, HandoffView, RecipientHandoff};
+pub use pickup_receipt::{PickupReceiptRole, PickupReceiptView, PreviousPickupReceipt};
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -231,6 +233,12 @@ impl Order {
 #[serde(rename_all = "camelCase")]
 pub struct OrderView {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub previous_pickup_receipts: Vec<PreviousPickupReceipt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pickup_receipt_role: Option<PickupReceiptRole>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pickup_receipt: Option<PickupReceiptView>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub handoffs: Vec<HandoffView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_order_id: Option<String>,
@@ -273,6 +281,12 @@ pub struct Envelope {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Record {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    closed_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    previous_pickups: Vec<pickup_receipt::Saved>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pickup_receipt: Option<pickup_receipt::Saved>,
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     checked_handoffs: BTreeSet<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -300,6 +314,8 @@ struct Pending {
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct OrderBook {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pending_pickups: Vec<pickup_receipt::PendingPickup>,
     #[serde(default)]
     ephemeral: Vec<Ephemeral>,
     #[serde(skip)]
@@ -722,6 +738,9 @@ fn apply_with_mint(
             return Err("Order not found".into());
         };
         Record {
+            closed_at: None,
+            previous_pickups: Vec::new(),
+            pickup_receipt: None,
             checked_handoffs: BTreeSet::new(),
             source_order_id: None,
             delivery_order_id: None,
@@ -962,6 +981,13 @@ fn apply_with_mint(
         role(order, owner).is_some(),
         "This order is no longer assigned to you",
     )?;
+    if order.status.terminal() && record.closed_at.is_none() {
+        record.closed_at = Some(
+            previous
+                .filter(|r| r.order.status.terminal())
+                .map_or(event.at, |r| r.order.updated_at),
+        );
+    }
     record.clocks.insert(clock, event.seq);
     order.updated_at = order.updated_at.max(event.at);
     Ok((record, true))
@@ -1113,7 +1139,11 @@ impl OrderBook {
                     if !fresh {
                         order.shipment.location = None;
                     }
+                    let (pickup_receipt_role, pickup_receipt) = r.pickup_view(owner);
                     OrderView {
+                        previous_pickup_receipts: r.previous_receipt_views(owner),
+                        pickup_receipt_role,
+                        pickup_receipt,
                         handoffs: r.handoff_views(owner),
                         source_order_id: r.source_order_id.clone(),
                         delivery_order_id: r.delivery_order_id.clone(),

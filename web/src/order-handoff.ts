@@ -57,8 +57,7 @@ const draft = ({kind,id,key}:Expected,seconds:number):UnsignedEvent => ({
   pubkey:key,kind:27835,created_at:seconds,content:'',tags:[['iris-market/handoff','1',kind,id]]
 });
 
-export async function signHandoff(expected:Expected,seconds:number,keys:HandoffKeys) {
-  const event=draft(expected,seconds);
+export async function signForHandoffKey(expected:HandoffKey & {account?:boolean},event:UnsignedEvent,keys:HandoffKeys) {
   let signed:Event;
   if(expected.account){
     const signer=keys?.accountSigner();
@@ -70,6 +69,10 @@ export async function signHandoff(expected:Expected,seconds:number,keys:HandoffK
       return finalizeEvent(event,secret);
     });
   }
+  return signed;
+}
+export async function signHandoff(expected:Expected,seconds:number,keys:HandoffKeys) {
+  const signed=await signForHandoffKey(expected,draft(expected,seconds),keys);
   return ['iris-handoff','1',expected.kind,expected.id,seconds,signed.sig].join(':');
 }
 

@@ -21,7 +21,7 @@ import { RemoteSigner } from './remote-signer.ts';
 import { authorizeSignerDevice, fetchSignerRoster, prepareSignerAuthorization, selectSignerRoster, validateSignerAuthorization } from './authorization.ts';
 import {createChatControls,applyChatControl,messageReactions,deliveryRank,type ReceiptPreferences,type ReactionSummary,type ChatControlMeta} from './chat-controls.ts';
 import { marketplaceToolEnabled } from '../marketplace-flags.ts';
-import { createOrderBook, isOrderMessage } from '../orders.ts';
+import { createOrderBook, isOrderMessage, isPickupMessage } from '../orders.ts';
 import type { Event, UnsignedEvent, VerifiedEvent } from 'nostr-tools';
 import type { NostrPublishContext, Rumor, OnEventMeta, UserRecord } from 'nostr-double-ratchet';
 import type { Vault } from './vault.ts';
@@ -453,6 +453,11 @@ export function createMessaging({ developerMint, getRelays=()=>[], getPublicRela
         }
         return;
       }
+      if(isPickupMessage(rumor)){
+        const owner=meta?.senderOwnerPubkey,device=meta?.senderDevicePubkey??meta?.fromDeviceId;
+        if(owner && device && (owner===device || runtime.getKnownAppKeysSnapshots().some(s=>s.ownerPubkey===owner&&s.appKeys.getDevice(device))))await orders?.receivePickup(rumor,owner);
+        return;
+      }
       const projection = messageProjection(rumor, from, meta, account.owner,isOrderMessage(rumor)?follow:retention);
       if (isOrderMessage(rumor)) {
         // A transport/device key or a claimed JSON field never grants order roles.
@@ -583,7 +588,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], getPublicRela
         await startRuntime({justAuthorized:true});
       } else await startRuntime();
       check(attempt);
-      for(const pubkey of conversations.keys())void runtime?.setupUser(pubkey).catch(report);
+      for(const pubkey of new Set([...conversations.keys(),...(orders?.pickupPeers()??[])]))void runtime?.setupUser(pubkey).catch(report);
       void syncOrders();void syncControls();void syncMatches();void syncTradeJobs();
     })().catch(()=>{if(attempt===generation&&status==='ready'){chatStatus='pending';notify();}}).finally(()=>{if(attempt===generation)activation=undefined;});
     return activation;
@@ -667,7 +672,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], getPublicRela
           // background discovery/encryption step. Retries reuse its ID and tags.
           await activeRuntime.sendEvent(job.recipient,job.rumor);check(attempt);
           await book.handed(job.id);
-          if(job.action!=='location')await saveMessage(job.recipient,{id:job.id,text:job.rumor.content,mine:true,createdAt:job.rumor.created_at,...(rumorMilliseconds(job.rumor)!==undefined?{createdAtMs:rumorMilliseconds(job.rumor)}:{}),delivery:book.jobs().some(item=>item.id===job.id)?'queued':'sent',orderId:job.orderId,context:orderContext(job.orderId),system:true});
+          if(job.action!=='location' && !isPickupMessage(job.rumor))await saveMessage(job.recipient,{id:job.id,text:job.rumor.content,mine:true,createdAt:job.rumor.created_at,...(rumorMilliseconds(job.rumor)!==undefined?{createdAtMs:rumorMilliseconds(job.rumor)}:{}),delivery:book.jobs().some(item=>item.id===job.id)?'queued':'sent',orderId:job.orderId,context:orderContext(job.orderId),system:true});
         }catch{check(attempt);report();}
       }
     })().catch(()=>{}).finally(()=>{if(attempt===generation){syncingOrders=undefined;if(book.jobs().some(job=>!job.handed&&!attempted.has(job.id)))queueMicrotask(()=>void syncOrders());}});
@@ -867,6 +872,10 @@ export function createMessaging({ developerMint, getRelays=()=>[], getPublicRela
       if((options?.escrowTradeId!=null || options?.escrowProvider!=null) && !marketplaceToolEnabled('escrow',account.owner))throw Error('Enable escrow in Settings to request an escrow order.');
       const order=await orders.request(listing,options);scheduleBackground();return order;
     },
+    async acknowledgeOrderPickup(id:string){requireReady();const code=await orders.acknowledgeOrderPickup(id);void syncOrders();return code;},
+    async confirmOrderPickup(id:string){requireReady();const order=await orders.confirmOrderPickup(id);void syncOrders();return order;},
+    async showPickupReceipt(id:string,reference?:string){requireReady();return orders.showPickupReceipt(id,reference);},
+    async verifyPickupReceipt(id:string,receipt:string){requireReady();return orders.verifyPickupReceipt(id,receipt);},
     async showOrderHandoff(id:string,kind:HandoffKind){requireReady();return orders.showHandoff(id,kind);},
     async checkOrderHandoff(id:string,kind:HandoffKind,qr:string){requireReady();return orders.checkHandoff(id,kind,qr);},
     async requestDelivery(sourceOrderId:string, serviceListing:OrderListing, destination:DeliveryPlace, pickup?:DeliveryPlace) { requireReady();const order=await orders.requestDelivery(sourceOrderId,serviceListing,destination,pickup);scheduleBackground();return order; },

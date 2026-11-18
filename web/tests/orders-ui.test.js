@@ -284,3 +284,15 @@ test('delivery choices and private collection show the matching manual pickup co
     assert(find(f.page,'Manual pickup code · ABCD1234 · show this to the merchant'));
   } finally {f.cleanup();}
 });
+
+test('pickup receipts distinguish the collector, the merchant, and earlier handovers in the order',()=>{
+  const f=fixture({buyerView:true});try{
+    f.job.pickupReceiptRole='collector';f.ui.open('job');assert(find(f.page,'Acknowledge pickup'));
+    f.job.pickupReceiptRole='merchant';f.job.pickupReceipt={state:'awaiting-confirmation',collectedAt:Math.floor(Date.now()/1000)};f.setState({});
+    assert(find(f.page,'Confirm handover'));assert.equal(find(f.page,'Pickup confirmed'),undefined);
+    f.job.pickupReceiptRole='observer';f.job.pickupReceipt={state:'confirmed',collectedAt:5,confirmedAt:20};f.setState({});
+    assert(find(f.page,'Pickup confirmed'));assert(find(f.page,'Show receipt QR'));assert.equal(find(f.page,'Confirm handover'),undefined);
+    f.job.previousPickupReceipts=[{reference:'original',collectedAt:5,confirmedAt:20}];delete f.job.pickupReceipt;f.setState({});
+    assert.equal(find(f.page,'Pickup confirmed'),undefined);assert(f.page.textContent.includes('Earlier pickup'));assert(find(f.page,'Receive receipt offline'));
+  }finally{f.cleanup();}
+});

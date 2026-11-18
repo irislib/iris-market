@@ -12,6 +12,7 @@
   import {dateTime, orderStatusLabel, terminal, trackingLink} from './format.ts'
   import Person from './Person.svelte'
   import Handoff from './Handoff.svelte'
+  import PickupReceipt from './PickupReceipt.svelte'
   import {isHandoffId} from '../order-handoff.ts'
   import {orderPrice} from './summary.ts'
   import type {OrdersState} from './state.svelte.ts'
@@ -137,10 +138,15 @@
       <p class="small muted" title={order.pickupAuthorization.reference}>{'Manual pickup code · ' + pickupCode(order.pickupAuthorization.reference)}</p>
     </section>
   {/if}
+  {#if order.pickupReceiptRole || order.previousPickupReceipts?.length}{#key order.id}<PickupReceipt orders={s} {order} />{/key}{/if}
   {#if order.handoffs?.length}
     <div class="order-actions">
       {#each order.handoffs as item (order.id + item.kind + item.action + (order.pickupAuthorization?.reference ?? '') + (order.pickupAuthorization?.courierPubkey ?? ''))}
-        <Handoff orders={s} orderId={order.id} {item} />
+        {#if item.kind==='pickup' && order.pickupReceiptRole && item.action!=='checked'}
+          <details><summary>Check pickup authorization only</summary><Handoff orders={s} orderId={order.id} {item} /></details>
+        {:else}
+          <Handoff orders={s} orderId={order.id} {item} />
+        {/if}
       {/each}
     </div>
   {/if}

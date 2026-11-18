@@ -3,6 +3,7 @@ import type { UnsignedEvent } from 'nostr-tools';
 import {courierListingType} from './transport-type.ts';
 import {localTestMint} from './wallet/mints.ts';
 import type { Vault } from './messaging/vault.ts';
+import {PICKUP_ACK,PICKUP_RECEIPT,parsePickupQR,pickupActive,pickupContext,pickupRole,pickupTag,readPickupTag,receiptQR,signCollection,signRelease,verifyPickup,type PickupContext,type PickupProof,type PickupView,type PickupRole} from './pickup-receipt.ts';
 import {checkId,createRecipientKey,expectedHandoffs,recipientKey,signHandoff,verifyHandoff,type HandoffAction,type HandoffKey,type HandoffKeys,type HandoffKind} from './order-handoff.ts';
 
 export type OrderStatus='requested'|'accepted'|'in-transit'|'delivered'|'cancelled';
@@ -26,7 +27,7 @@ export interface OrderRequestOptions extends OrderEscrow {quantity?:number;note?
   /** Further listings from the same seller, ordered together. */
   basket?:Array<{listing:OrderListing;quantity:number}>}
 export interface Order extends OrderEscrow {recipientHandoff?:HandoffKey;payment?:OrderPayment;deliveryRequest?:DeliveryRequest;fulfillment?:Fulfillment;pickupAuthorization?:PickupAuthorization;id:string;buyer:string;seller:string;items:OrderItem[];note:string;status:OrderStatus;createdAt:number;updatedAt:number;shipment:Shipment;routeId:string}
-export interface OrderView extends Order {handoffs:HandoffAction[];sourceOrderId?:string;deliveryOrderId?:string;archived:boolean;role:'buyer'|'seller'|'courier'|null;sync:'queued'|'sent';locationFresh:boolean}
+export interface OrderView extends Order {previousPickupReceipts?:{reference:string;collectedAt:number;confirmedAt:number}[];pickupReceiptRole?:PickupRole;pickupReceipt?:PickupView;handoffs:HandoffAction[];sourceOrderId?:string;deliveryOrderId?:string;archived:boolean;role:'buyer'|'seller'|'courier'|null;sync:'queued'|'sent';locationFresh:boolean}
 export interface OrderListing {id:string;category?:string;tags?:readonly string[];eventId?:string;imageUrl?:string;author:string;title:string;price:string|number;currency:string;side?:string;status?:string;expiration?:number;escrow?:{trade:string};externalOrder?:unknown}
 type CheckoutListing = Pick<OrderListing,'side'|'escrow'|'externalOrder'|'category'|'tags'|'expiration'|'status'>;
 export function goodsCheckout(listing:CheckoutListing) {
@@ -40,10 +41,13 @@ export function offersGoodsEscrow(listing:CheckoutListing) {
 export type OrderPatch={payment:OrderPayment}|{pickupAuthorization:PickupAuthorization|null}|{status:OrderStatus}|{shipment:Shipment}|{stopId:string;status:StopStatus}|{location:{coordinates:Coordinates;stopId:string}|null};
 type EnvelopeBase={v:1;id:string;opId:string;seq:number;at:number;routeId?:string;snapshot?:Order};
 export type OrderEnvelope=EnvelopeBase&({action:'request';payload:Order}|{action:'payment';payload:OrderPayment}|{action:'pickup';payload:PickupAuthorization|null}|{action:'status';payload:{status:OrderStatus}}|{action:'route';payload:Shipment}|{action:'stop';payload:{stopId:string;status:StopStatus}}|{action:'location';payload:{stopId:string;coordinates:Coordinates}|null});
-type OrderRecord={order:Order;checkedHandoffs?:string[];clocks:Record<string,number>;archived:boolean;sourceOrderId?:string;deliveryOrderId?:string};
+type SavedPickup={proof:PickupProof;key:string};
+type PickupMatch={record:OrderRecord;ctx:PickupContext};
+type OrderRecord={order:Order;terminalAt?:number;pickup?:SavedPickup;pickupHistory?:SavedPickup[];checkedHandoffs?:string[];clocks:Record<string,number>;archived:boolean;sourceOrderId?:string;deliveryOrderId?:string};
 type OrderRumor=UnsignedEvent&{id:string};
-interface OrderJob {id:string;orderId:string;recipient:string;rumor:OrderRumor;action:OrderEnvelope['action'];at:number;handed:boolean}
-interface OrderData {records:OrderRecord[];jobs:OrderJob[];ephemeral:{id:string;orderId:string;opId:string;expiresAt:number}[];blocked:string[];pending:{event:OrderEnvelope;sender:string;senderDevice:string}[]}
+interface OrderJob {id:string;orderId:string;recipient:string;rumor:OrderRumor;action:OrderEnvelope['action']|'pickup-ack'|'pickup-receipt';at:number;handed:boolean}
+interface PendingPickup {proof:PickupProof;sender:string;receivedAt:number}
+interface OrderData {pendingPickups?:PendingPickup[];records:OrderRecord[];jobs:OrderJob[];ephemeral:{id:string;orderId:string;opId:string;expiresAt:number}[];blocked:string[];pending:{event:OrderEnvelope;sender:string;senderDevice:string}[]}
 
 export const ORDER_TAG = 'iris-market-order';
 export const LOCATION_TTL = 120;
@@ -147,6 +151,7 @@ export function decodeOrder(rumor:Pick<OrderRumor,'kind'|'tags'>):OrderEnvelope|
   if(tags.length!==1||tags[0].length!==3||typeof tags[0][2]!=='string'||new TextEncoder().encode(tags[0][2]).length>24000)return null;
   try{const event=JSON.parse(tags[0][2]);if(event.v!==1||!UUID.test(event.opId)||!Number.isSafeInteger(event.seq)||event.seq<1||event.seq>1e9||!Number.isSafeInteger(event.at)||event.at<0||typeof event.id!=='string'||tags[0][1]!==wireVersion(event))return null;return event;}catch{return null;}
 }
+export const isPickupMessage=(rumor:Pick<OrderRumor,'tags'>)=>rumor?.tags?.some(t=>t[0]===PICKUP_ACK || t[0]===PICKUP_RECEIPT)===true;
 export const isOrderMessage = (rumor:Pick<OrderRumor,'tags'>) => rumor?.tags?.some(tag=>tag[0]===ORDER_TAG) === true;
 export const orderMessageText = (event:OrderEnvelope, order:Order) => {
   const title=order.items.length>1?`${order.items[0].title} and ${order.items.length-1} more`:order.items[0].title;
@@ -248,6 +253,7 @@ export function applyOrderEnvelope(previous:OrderRecord|undefined, event:OrderEn
   }else fail('Unknown order action.');
   if(!orderRole(order,owner))fail('This order is no longer assigned to you.');
   record.clocks[clockKey]=event.seq;order.updatedAt=Math.max(order.updatedAt,event.at);
+  if(terminal(order) && record.terminalAt==null)record.terminalAt=previous && terminal(previous.order)?previous.order.updatedAt:event.at;
   return {record,changed:true};
 }
 
@@ -287,11 +293,106 @@ export function createOrderBook({vault,owner,device,handoffKeys,notify=()=>{},no
     if(!expected)fail('This handoff is unavailable for this order.');
     return expected;
   };
-  const project=(record:OrderRecord):OrderView=>{const order=copy(record.order);return {...order,handoffs:handoffs(record),...(record.sourceOrderId?{sourceOrderId:record.sourceOrderId}:{}),...(record.deliveryOrderId?{deliveryOrderId:record.deliveryOrderId}:{}),archived:record.archived===true,role:orderRole(order,owner),sync:data.jobs.some(job=>job.orderId===order.id)?'queued':'sent',locationFresh:!!order.shipment.location&&now()-order.shipment.location.at>=0&&now()-order.shipment.location.at<LOCATION_TTL};};
+  function matchingPickups(next:OrderData,ref:string) {
+    const matches=next.records.flatMap(record=>{
+      const ctx=pickupContext(record.order,owner);
+      return ctx?.ref===ref?[{record,ctx}]:[];
+    });
+    if(matches.length<=1)return matches;
+    // The organizer owns a linked goods order and delivery job. An unrelated order
+    // reusing the same random reference cannot claim either receipt.
+    if(matches.length===2){
+      const [a,b]=matches;
+      if(a.ctx.merchant===b.ctx.merchant && a.ctx.collector===b.ctx.collector && a.ctx.key===b.ctx.key &&
+         ((a.record.sourceOrderId===b.record.order.id && b.record.deliveryOrderId===a.record.order.id) ||
+          (b.record.sourceOrderId===a.record.order.id && a.record.deliveryOrderId===b.record.order.id)))return matches;
+    }
+    return [];
+  }
+  function currentPickup(record:OrderRecord,ctx:PickupContext) {
+    const saved=record.pickup;
+    // Merchant and collector roles are fixed by the original order. Only the
+    // random reference and the collector's signing key can change on reassignment.
+    return saved?.proof.ref===ctx.ref && saved.key===ctx.key ? saved.proof : undefined;
+  }
+  function olderPickups(record:OrderRecord,ctx?:PickupContext) {
+    const history=record.pickupHistory??[];
+    const saved=record.pickup;
+    return saved?.proof.confirmedAt!=null && !(ctx && currentPickup(record,ctx)) ? [...history,saved] : history;
+  }
+  function receiptView(record:OrderRecord):Pick<OrderView,'previousPickupReceipts'|'pickupReceiptRole'|'pickupReceipt'> {
+    const ctx=pickupContext(record.order,owner);
+    const previous=olderPickups(record,ctx).map(({proof})=>({reference:proof.ref,collectedAt:proof.collectedAt,confirmedAt:proof.confirmedAt}));
+    const history=previous.length?{previousPickupReceipts:previous}:{};
+    if(!ctx || record.order.status==='requested')return history;
+    const proof=currentPickup(record,ctx),role=pickupRole(record.order,ctx,owner);
+    return {...history,pickupReceiptRole:role,...(proof?{pickupReceipt:{
+      state:proof.confirmedAt!=null?'confirmed':role==='merchant'?'awaiting-confirmation':'acknowledged',
+      collectedAt:proof.collectedAt,...(proof.confirmedAt!=null?{confirmedAt:proof.confirmedAt}:{})
+    }}:{})};
+  }
+  function receiptOrder(next:OrderData,id:string,role?:PickupRole,active=false) {
+    const record=next.records.find(r=>r.order.id===id);
+    const ctx=record && pickupContext(record.order,owner);
+    const matches=ctx?matchingPickups(next,ctx.ref):[];
+    if(!ctx || (role && pickupRole(record.order,ctx,owner)!==role) || (active && !pickupActive(record.order)) ||
+        !matches.some(match=>match.record===record))fail('Pickup receipt unavailable for this order.');
+    return {record,ctx,matches};
+  }
+  function savePickup(next:OrderData,proof:PickupProof,sender:string,selected?:OrderRecord) {
+    const matches=matchingPickups(next,proof.ref);
+    if(!matches.length)return 'unknown';
+    const ctx=matches[0].ctx,complete=proof.confirmedAt!=null;
+    if(sender!==(complete?ctx.merchant:ctx.collector))return 'invalid';
+    if(complete && matches.every(({record})=>record.order.status==='requested'))return 'waiting';
+    if(!matches.some(({record})=>{
+      if((selected && record!==selected) || proof.collectedAt<record.order.createdAt-15)return false;
+      const role=pickupRole(record.order,ctx,owner);
+      return complete ? pickupActive(record.order) || (terminal(record.order) && proof.confirmedAt<=(record.terminalAt??record.order.updatedAt)+15)
+        : pickupActive(record.order) && role==='merchant';
+    }))return 'invalid';
+    verifyPickup(ctx,proof,now());
+    return storePickup(matches,proof);
+  }
+  function storePickup(matches:PickupMatch[],proof:PickupProof) {
+    // Check both halves of a linked booking before changing either record.
+    for(const {record,ctx} of matches){
+      if(record.pickupHistory?.some(saved=>saved.proof.ref===proof.ref))fail('This pickup already has a receipt.');
+      if(record.pickup?.proof.confirmedAt!=null && !currentPickup(record,ctx)){
+        if(record.pickup.proof.ref===proof.ref)fail('This reference already belongs to a completed pickup.');
+        if((record.pickupHistory?.length??0)>=7)fail('This order already has eight pickup receipts.');
+      }
+    }
+    let changed=false;
+    for(const {record,ctx} of matches){
+      const prior=currentPickup(record,ctx);
+      if(prior?.confirmedAt!=null || (proof.confirmedAt==null && prior && prior.collectedAt>=proof.collectedAt))continue;
+      if(!prior && record.pickup?.proof.confirmedAt!=null)(record.pickupHistory??=[]).push(record.pickup);
+      record.pickup={proof,key:ctx.key};changed=true;
+    }
+    return changed?'saved':'duplicate';
+  }
+  function retryPickups(next:OrderData) {
+    if(!next.pendingPickups?.length)return;
+    next.pendingPickups=next.pendingPickups.filter(({proof,sender,receivedAt})=>{
+      if(receivedAt+30*86400<=now())return false;
+      try{const result=savePickup(next,proof,sender);return result==='unknown'||result==='waiting';}catch{return false;}
+    });
+  }
+  function enqueuePickup(next:OrderData,record:OrderRecord,proof:PickupProof,peers:string[]) {
+    const recipients=[...new Set(peers)].filter(key=>key!==owner),action=proof.confirmedAt==null?'pickup-ack':'pickup-receipt';
+    if(next.jobs.length+recipients.length>MAX_JOBS)fail('Too many order updates are waiting to sync.');
+    for(const recipient of recipients){
+      const unsigned:UnsignedEvent={kind:14,pubkey:device,created_at:proof.confirmedAt??proof.collectedAt,content:'',tags:[['p',recipient],pickupTag(proof),...(proof.confirmedAt==null?[['expiration',String(proof.collectedAt+121)]]:[])]};
+      const rumor={...unsigned,id:getEventHash(unsigned)};
+      if(!next.jobs.some(job=>job.id===rumor.id))next.jobs.push({id:rumor.id,orderId:record.order.id,recipient,rumor,action,at:unsigned.created_at,handed:false});
+    }
+  }
+  const project=(record:OrderRecord):OrderView=>{const order=copy(record.order);return {...order,...receiptView(record),handoffs:handoffs(record),...(record.sourceOrderId?{sourceOrderId:record.sourceOrderId}:{}),...(record.deliveryOrderId?{deliveryOrderId:record.deliveryOrderId}:{}),archived:record.archived===true,role:orderRole(order,owner),sync:data.jobs.some(job=>job.orderId===order.id)?'queued':'sent',locationFresh:!!order.shipment.location&&now()-order.shipment.location.at>=0&&now()-order.shipment.location.at<LOCATION_TTL};};
   const enqueue=(next:OrderData,record:OrderRecord,event:OrderEnvelope)=>{
     if(event.action==='location')next.jobs=next.jobs.filter(job=>job.orderId!==record.order.id||job.action!=='location');
     const peers=recipients(record.order).filter(peer=>peer!==owner);
-    const revoked=next.jobs.filter(job=>job.orderId===record.order.id&&!peers.includes(job.recipient));
+    const revoked=next.jobs.filter(job=>job.orderId===record.order.id&&job.action!=='pickup-receipt'&&job.action!=='pickup-ack'&&!peers.includes(job.recipient));
     next.blocked.push(...revoked.map(job=>job.id));
     next.jobs=next.jobs.filter(job=>!revoked.includes(job));
     if(next.blocked.length>4096)fail('The private delivery queue is full.');
@@ -336,9 +437,15 @@ export function createOrderBook({vault,owner,device,handoffKeys,notify=()=>{},no
     const {record}=applyOrderEnvelope(previous,event,owner,owner,now(),device,policy);
     if([record.order.buyer,record.order.seller].includes(owner)&&action!=='location')event.snapshot=snapshot(record.order);
     if(index===-1){if(next.records.length>=MAX_ORDERS)fail('The local order limit has been reached.');next.records.push(record);}else next.records[index]=record;
-    enqueue(next,record,event);await persist(next);return project(record);
+    enqueue(next,record,event);retryPickups(next);await persist(next);return project(record);
   });
   return {
+    pickupPeers:()=>new Set(data.records.flatMap(({order})=>{
+      if(!pickupActive(order))return [];
+      const ctx=pickupContext(order,owner);if(!ctx)return [];
+      const role=pickupRole(order,ctx,owner);
+      return role==='merchant'?[ctx.collector]:role==='collector'?[ctx.merchant]:[];
+    })),
     state:()=>data.records.map(project).sort((a,b)=>b.updatedAt-a.updatedAt||a.id.localeCompare(b.id)),
     async load(){
       const stored=await vault.get<OrderData>(KEY);check();if(!stored)return;
@@ -376,7 +483,64 @@ export function createOrderBook({vault,owner,device,handoffKeys,notify=()=>{},no
       updated.deliveryOrderId=id;delivery.sourceOrderId=sourceOrderId;
       next.records[next.records.indexOf(source)]=updated;next.records.push(delivery);
       authorization.snapshot=snapshot(updated.order);request.snapshot=snapshot(delivery.order);
-      enqueue(next,updated,authorization);enqueue(next,delivery,request);await persist(next);return project(delivery);
+      enqueue(next,updated,authorization);enqueue(next,delivery,request);retryPickups(next);await persist(next);return project(delivery);
+    });},
+    acknowledgeOrderPickup(id:string){return serial(async()=>{
+      const next=copy(data),{record,ctx,matches}=receiptOrder(next,id,'collector',true),prior=currentPickup(record,ctx);
+      if(prior?.confirmedAt!=null)fail('Pickup already confirmed.');
+      if(prior?.collectedAt>=now()-120)return receiptQR(prior);
+      const proof=await signCollection(ctx,now(),handoffKeys);
+      storePickup(matches,proof);enqueuePickup(next,record,proof,[ctx.merchant]);await persist(next);
+      return receiptQR(proof);
+    });},
+    confirmOrderPickup(id:string){return serial(async()=>{
+      const next=copy(data),{record,ctx,matches}=receiptOrder(next,id,'merchant',true),partial=currentPickup(record,ctx);
+      if(!partial)fail('Wait for the collector to acknowledge pickup.');
+      if(partial.confirmedAt!=null)return project(record);
+      const complete=await signRelease(ctx,partial,now(),handoffKeys);
+      storePickup(matches,complete);enqueuePickup(next,record,complete,[ctx.collector,record.order.buyer]);await persist(next);
+      return project(record);
+    });},
+    showPickupReceipt(id:string,reference?:string){
+      check();const record=data.records.find(row=>row.order.id===id);
+      if(!record)fail('Order not found.');
+      const ctx=pickupContext(record.order,owner),history=olderPickups(record,ctx);
+      let saved=ctx && currentPickup(record,ctx)?.confirmedAt!=null ? record.pickup : undefined;
+      if(reference && reference!==saved?.proof.ref)saved=history.find(row=>row.proof.ref===reference);
+      if(!reference && !ctx && history.length===1)saved=history[0];
+      if(!saved)fail('Pickup has not been confirmed.');
+      return receiptQR(saved.proof);
+    },
+    verifyPickupReceipt(id:string,qr:string){return serial(async()=>{
+      const next=copy(data),record=next.records.find(row=>row.order.id===id);
+      if(!record)fail('Order not found.');
+      const proof=parsePickupQR(qr,true);
+      if(olderPickups(record,pickupContext(record.order,owner)).some(saved=>receiptQR(saved.proof)===qr))return project(record);
+      const {ctx}=receiptOrder(next,id);
+      if(proof.ref!==ctx.ref || record.order.status==='requested' || pickupRole(record.order,ctx,owner)==='merchant')fail('This receipt does not match this order.');
+      const result=savePickup(next,proof,ctx.merchant,record);
+      if(result==='saved')await persist(next);
+      else if(result!=='duplicate')fail('This receipt does not match this order.');
+      return project(record);
+    });},
+    receivePickup(rumor:OrderRumor,sender:string){return serial(async()=>{
+      if(rumor?.kind!==14 || rumor.content!=='' || !HEX.test(sender||'') || !Array.isArray(rumor.tags))return;
+      const tags=rumor.tags.filter(t=>t[0]===PICKUP_ACK || t[0]===PICKUP_RECEIPT),peers=rumor.tags.filter(t=>t[0]==='p');
+      if(tags.length!==1 || peers.length!==1 || (peers[0][1]!==owner && sender!==owner))return;
+      let proof:PickupProof,outcome:string;
+      const next=copy(data);
+      try{proof=readPickupTag(tags[0]);outcome=savePickup(next,proof,sender);}catch{return;}
+      if(outcome==='saved'){await persist(next);return;}
+      if(proof.confirmedAt==null || proof.confirmedAt>now()+15 || proof.collectedAt<proof.confirmedAt-120 || proof.collectedAt>proof.confirmedAt+15)return;
+      const known=next.records.filter(({order})=>pickupContext(order,owner)?.ref===proof.ref);
+      if(known.length){
+        if(!known.some(({order})=>order.status==='requested' && pickupContext(order,owner).merchant===sender))return;
+        try{verifyPickup(pickupContext(known[0].order,owner),proof,now());}catch{return;}
+      }else if(!next.records.some(({order})=>order.seller===sender || order.deliveryRequest?.collection?.merchant===sender))return;
+      const pending=(next.pendingPickups??[]).filter(row=>row.receivedAt+30*86400>now());
+      if(pending.length>=64 || pending.filter(row=>row.sender===sender).length>=8 ||
+         pending.some(row=>row.sender===sender && row.proof.merchantSig===proof.merchantSig))return;
+      pending.push({sender,proof,receivedAt:now()});next.pendingPickups=pending;await persist(next);
     });},
     async showHandoff(id:string,kind:HandoffKind){
       check();
@@ -388,6 +552,15 @@ export function createOrderBook({vault,owner,device,handoffKeys,notify=()=>{},no
       return qr;
     },
     checkHandoff(id:string,kind:HandoffKind,qr:string){return serial(async()=>{
+      if(kind==='pickup' && typeof qr==='string' && qr.startsWith('iris-handoff:2:')){
+        const next=copy(data),{ctx,record}=receiptOrder(next,id,'merchant',true);
+        const proof=parsePickupQR(qr,false);
+        if(proof.ref!==ctx.ref)fail('This code does not match this pickup.');
+        const result=savePickup(next,proof,ctx.collector,record);
+        if(result==='saved')await persist(next);
+        else if(result!=='duplicate')fail('This code does not match this pickup.');
+        return;
+      }
       const expected=expect(id,kind,'scan'),token=checkId(expected);
       if(checked.has(token))fail('This handoff was already checked on this device.');
       verifyHandoff(expected,qr,now());
@@ -433,14 +606,18 @@ export function createOrderBook({vault,owner,device,handoffKeys,notify=()=>{},no
       next.pending=next.pending.filter(item=>item.event.id!==event.id);
       next.records[next.records.findIndex(record=>record.order.id===event.id)]=applied.record;
       if(terminal(applied.record.order))next.jobs=next.jobs.filter(job=>job.orderId!==event.id||job.action!=='location');
-      await persist(next);return {orderId:event.id,location:event.action==='location'};
+      retryPickups(next);await persist(next);return {orderId:event.id,location:event.action==='location'};
     });},
-    jobs:()=>copy(data.jobs.filter(job=>job.action!=='location'||canPublish(job.id))),
-    async prune(){return serial(async()=>{const next=copy(data);next.jobs=next.jobs.filter(job=>job.action!=='location'||canPublish(job.id));if(next.jobs.length!==data.jobs.length)await persist(next);});},
+    jobs:()=>copy(data.jobs.filter(publishableJob)),
+    async prune(){return serial(async()=>{const next=copy(data);next.jobs=next.jobs.filter(publishableJob);if(next.jobs.length!==data.jobs.length)await persist(next);});},
     handed(id){return serial(async()=>{const next=copy(data),job=next.jobs.find(job=>job.id===id);if(job){job.handed=true;await persist(next);}});},
     sent(id,recipient){return serial(async()=>{const job=data.jobs.find(job=>job.id===id);if(!job||job.recipient!==recipient)return;const next=copy(data);next.jobs=next.jobs.filter(job=>job.id!==id);await persist(next);});},
     canPublish,
   };
+  function publishableJob(job:OrderJob){
+    if(job.action==='pickup-ack')return job.at+121>now();
+    return job.action!=='location' || canPublish(job.id);
+  }
   function canPublish(id){
     if(data.blocked.includes(id))return false;
     const item=data.ephemeral.find(item=>item.id===id);if(!item)return true;

@@ -19,6 +19,7 @@ pub mod places;
 pub mod profile_listings;
 pub mod profiles;
 pub mod public_cache;
+mod public_graph_seed;
 mod public_reconcile;
 pub mod ranking;
 pub mod rates;
@@ -776,6 +777,11 @@ impl Market {
             .enable_all()
             .build()?;
         if !demo {
+            runtime.spawn(public_graph_seed::run(
+                state.clone(),
+                notify.clone(),
+                stopped.clone(),
+            ));
             runtime.spawn(rates::run(state.clone(), stopped.clone()));
             runtime.spawn(network::run(state.clone(), notify.clone(), stopped.clone()));
             runtime.spawn(public_reconcile::run(

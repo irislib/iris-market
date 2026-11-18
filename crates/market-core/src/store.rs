@@ -212,6 +212,22 @@ impl Store {
             verified_listings: RefCell::default(),
         })
     }
+    // Preserve existing records even if a future or malformed encoding cannot be read.
+    pub(crate) fn public_graph_seed(&self) -> Result<Option<Option<Vec<u8>>>> {
+        Ok(self.db.query_row(
+            "SELECT CASE WHEN typeof(value)='blob' AND length(value) BETWEEN 1 AND ?1 THEN value END
+             FROM preferences WHERE key='public-graph-v4'",
+            [nostr_social_graph::MOBILE_MAX_BYTES], |row| row.get(0),
+        ).optional()?)
+    }
+
+    pub(crate) fn store_new_public_graph_seed(&self, bytes: &[u8]) -> Result<bool> {
+        Ok(self.db.execute(
+            "INSERT OR IGNORE INTO preferences(key,value) VALUES ('public-graph-v4',?1)",
+            [bytes],
+        )? == 1)
+    }
+
     pub fn settings(&self) -> Result<Settings> {
         let raw: Option<String> = self
             .db

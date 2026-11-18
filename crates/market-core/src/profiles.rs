@@ -56,6 +56,7 @@ pub struct Profiles {
     events: BTreeMap<(String, u16), Event>,
     graph: SocialGraph,
     viewer: Option<String>,
+    public_seed: Option<std::sync::Arc<SocialGraph>>,
     home_graph: std::sync::OnceLock<std::sync::Arc<SocialGraph>>,
     bytes: usize,
     pub context_loaded: bool,
@@ -70,6 +71,7 @@ impl Default for Profiles {
             graph: SocialGraph::new(DEFAULT_ROOT),
             viewer: None,
             home_graph: Default::default(),
+            public_seed: None,
             bytes: 0,
             context_loaded: false,
             public_cache: None,
@@ -291,6 +293,20 @@ impl Profiles {
             }
         }
     }
+    pub(super) fn needs_public_seed(&self) -> bool {
+        self.public_seed.is_none()
+            && self.home_root() == DEFAULT_ROOT
+            && !self
+                .events
+                .values()
+                .any(|e| matches!(e.kind, Kind::ContactList | Kind::MuteList))
+    }
+
+    pub(super) fn accept_public_seed(&mut self, graph: SocialGraph) {
+        self.public_seed = Some(std::sync::Arc::new(graph));
+        self.home_graph.take();
+    }
+
     pub(super) fn discovery_graph(&self) -> &std::sync::Arc<SocialGraph> {
         self.home_graph.get_or_init(|| {
             let root = self.home_root();
@@ -307,14 +323,15 @@ impl Profiles {
                             .expect("pinned public graph"),
                         )
                     });
+                let base = self.public_seed.as_ref().unwrap_or_else(|| &*BASE);
                 if !self
                     .events
                     .values()
                     .any(|e| matches!(e.kind, Kind::ContactList | Kind::MuteList))
                 {
-                    return std::sync::Arc::clone(&BASE);
+                    return std::sync::Arc::clone(base);
                 }
-                BASE.as_ref().clone()
+                base.as_ref().clone()
             } else {
                 SocialGraph::new(root)
             };

@@ -3,6 +3,7 @@ import type { UnsignedEvent } from 'nostr-tools';
 import {courierListingType} from './transport-type.ts';
 import {localTestMint} from './wallet/mints.ts';
 import type { Vault } from './messaging/vault.ts';
+import {checkId,createRecipientKey,expectedHandoffs,recipientKey,signHandoff,verifyHandoff,type HandoffAction,type HandoffKey,type HandoffKeys,type HandoffKind} from './order-handoff.ts';
 
 export type OrderStatus='requested'|'accepted'|'in-transit'|'delivered'|'cancelled';
 export type StopStatus='pending'|'arrived'|'completed';
@@ -24,8 +25,8 @@ export interface OrderEscrow {escrowTradeId?:string;escrowProvider?:string}
 export interface OrderRequestOptions extends OrderEscrow {quantity?:number;note?:string;deliveryRequest?:DeliveryRequest;fulfillment?:Fulfillment;
   /** Further listings from the same seller, ordered together. */
   basket?:Array<{listing:OrderListing;quantity:number}>}
-export interface Order extends OrderEscrow {payment?:OrderPayment;deliveryRequest?:DeliveryRequest;fulfillment?:Fulfillment;pickupAuthorization?:PickupAuthorization;id:string;buyer:string;seller:string;items:OrderItem[];note:string;status:OrderStatus;createdAt:number;updatedAt:number;shipment:Shipment;routeId:string}
-export interface OrderView extends Order {sourceOrderId?:string;deliveryOrderId?:string;archived:boolean;role:'buyer'|'seller'|'courier'|null;sync:'queued'|'sent';locationFresh:boolean}
+export interface Order extends OrderEscrow {recipientHandoff?:HandoffKey;payment?:OrderPayment;deliveryRequest?:DeliveryRequest;fulfillment?:Fulfillment;pickupAuthorization?:PickupAuthorization;id:string;buyer:string;seller:string;items:OrderItem[];note:string;status:OrderStatus;createdAt:number;updatedAt:number;shipment:Shipment;routeId:string}
+export interface OrderView extends Order {handoffs:HandoffAction[];sourceOrderId?:string;deliveryOrderId?:string;archived:boolean;role:'buyer'|'seller'|'courier'|null;sync:'queued'|'sent';locationFresh:boolean}
 export interface OrderListing {id:string;category?:string;tags?:readonly string[];eventId?:string;imageUrl?:string;author:string;title:string;price:string|number;currency:string;side?:string;status?:string;expiration?:number;escrow?:{trade:string};externalOrder?:unknown}
 type CheckoutListing = Pick<OrderListing,'side'|'escrow'|'externalOrder'|'category'|'tags'|'expiration'|'status'>;
 export function goodsCheckout(listing:CheckoutListing) {
@@ -39,7 +40,7 @@ export function offersGoodsEscrow(listing:CheckoutListing) {
 export type OrderPatch={payment:OrderPayment}|{pickupAuthorization:PickupAuthorization|null}|{status:OrderStatus}|{shipment:Shipment}|{stopId:string;status:StopStatus}|{location:{coordinates:Coordinates;stopId:string}|null};
 type EnvelopeBase={v:1;id:string;opId:string;seq:number;at:number;routeId?:string;snapshot?:Order};
 export type OrderEnvelope=EnvelopeBase&({action:'request';payload:Order}|{action:'payment';payload:OrderPayment}|{action:'pickup';payload:PickupAuthorization|null}|{action:'status';payload:{status:OrderStatus}}|{action:'route';payload:Shipment}|{action:'stop';payload:{stopId:string;status:StopStatus}}|{action:'location';payload:{stopId:string;coordinates:Coordinates}|null});
-type OrderRecord={order:Order;clocks:Record<string,number>;archived:boolean;sourceOrderId?:string;deliveryOrderId?:string};
+type OrderRecord={order:Order;checkedHandoffs?:string[];clocks:Record<string,number>;archived:boolean;sourceOrderId?:string;deliveryOrderId?:string};
 type OrderRumor=UnsignedEvent&{id:string};
 interface OrderJob {id:string;orderId:string;recipient:string;rumor:OrderRumor;action:OrderEnvelope['action'];at:number;handed:boolean}
 interface OrderData {records:OrderRecord[];jobs:OrderJob[];ephemeral:{id:string;orderId:string;opId:string;expiresAt:number}[];blocked:string[];pending:{event:OrderEnvelope;sender:string;senderDevice:string}[]}
@@ -131,7 +132,8 @@ function validateSnapshot(raw:unknown,options:OrderValidationOptions={}):Order {
   });
   if(!statusValues.includes(value.status)||!Number.isSafeInteger(value.createdAt)||value.createdAt<0||!Number.isSafeInteger(value.updatedAt)||value.updatedAt<value.createdAt)fail('Invalid order state.');
   if(value.fulfillment!=null && (value.deliveryRequest || !['merchant-delivery','pickup','buyer-courier'].includes(value.fulfillment)))fail('Choose a valid order fulfillment method.');
-  return {...escrow,...(value.fulfillment?{fulfillment:value.fulfillment}:{}),...(value.payment!==undefined?{payment:validatePayment(value.payment,options)}:{}),...(value.deliveryRequest!==undefined?{deliveryRequest:deliveryRequest(value.deliveryRequest)}:{}),...(value.pickupAuthorization!==undefined?{pickupAuthorization:pickupAuthorization(value.pickupAuthorization)}:{}),id:value.id,buyer,seller,items,note:text(value.note??'',2000,'note',true),status:value.status,createdAt:value.createdAt,updatedAt:value.updatedAt,shipment:shipment(value.shipment),routeId:typeof value.routeId==='string'?text(value.routeId,36,'route ID',true):''};
+  if(value.recipientHandoff!==undefined && !value.fulfillment && !value.deliveryRequest?.collection)fail('Recipient handoff requires a goods order or a booked delivery.');
+  return {...escrow,...(value.recipientHandoff!==undefined?{recipientHandoff:recipientKey(value.recipientHandoff,buyer,seller)}:{}),...(value.fulfillment?{fulfillment:value.fulfillment}:{}),...(value.payment!==undefined?{payment:validatePayment(value.payment,options)}:{}),...(value.deliveryRequest!==undefined?{deliveryRequest:deliveryRequest(value.deliveryRequest)}:{}),...(value.pickupAuthorization!==undefined?{pickupAuthorization:pickupAuthorization(value.pickupAuthorization)}:{}),id:value.id,buyer,seller,items,note:text(value.note??'',2000,'note',true),status:value.status,createdAt:value.createdAt,updatedAt:value.updatedAt,shipment:shipment(value.shipment),routeId:typeof value.routeId==='string'?text(value.routeId,36,'route ID',true):''};
 }
 const immutable = (order:Order) => JSON.stringify([order.id,order.buyer,order.seller,order.items,order.note,order.createdAt,order.deliveryRequest,order.escrowTradeId,order.escrowProvider]);
 // Older clients must not silently interpret an escrow checkout as direct payment.
@@ -171,7 +173,7 @@ export function applyOrderEnvelope(previous:OrderRecord|undefined, event:OrderEn
       record={order,clocks:{},archived:false};
     }else if(event.action==='route'){
       const order=snapshot(event.snapshot);
-      if(order.id!==event.id||order.seller!==sender||[order.buyer,order.seller].includes(owner)||!order.shipment.stops.some(stop=>stop.courierPubkey===owner)||terminal(order)||order.status==='requested')fail('Only the seller can introduce a courier.');
+      if(order.id!==event.id||order.seller!==sender||order.recipientHandoff||[order.buyer,order.seller].includes(owner)||!order.shipment.stops.some(stop=>stop.courierPubkey===owner)||terminal(order)||order.status==='requested')fail('Only the seller can introduce a courier.');
       record={order,clocks:{},archived:false};
     }else fail('Order not found.');
   }
@@ -184,7 +186,7 @@ export function applyOrderEnvelope(previous:OrderRecord|undefined, event:OrderEn
   if(!role)fail('This person cannot update the order.');
   if(previous && ['seller','buyer'].includes(role) && event.snapshot){
     const current=snapshot(event.snapshot);
-    if((current.fulfillment && current.fulfillment!==order.fulfillment) || immutable(current)!==immutable(order))fail('Delivery update changed the order.');
+    if((current.recipientHandoff && (current.recipientHandoff.id!==order.recipientHandoff?.id || current.recipientHandoff.key!==order.recipientHandoff?.key)) || (current.fulfillment && current.fulfillment!==order.fulfillment) || immutable(current)!==immutable(order))fail('Delivery update changed the order.');
     // A later message advances this device's clock past earlier messages. Recover
     // each party's owned fields from its snapshot, never from the other party.
     if(role==='seller'){
@@ -250,13 +252,42 @@ export function applyOrderEnvelope(previous:OrderRecord|undefined, event:OrderEn
 }
 
 /** Orders and exact outgoing rumors share one atomic encrypted-vault mutation. */
-export function createOrderBook({vault,owner,device,notify=()=>{},now=time,check=()=>{},developerMint}:{developerMint?:string;vault:Vault;owner:string;device:string;notify?:()=>void;now?:()=>number;check?:()=>void}) {
+export function createOrderBook({vault,owner,device,handoffKeys,notify=()=>{},now=time,check=()=>{},developerMint}:{handoffKeys?:HandoffKeys;developerMint?:string;vault:Vault;owner:string;device:string;notify?:()=>void;now?:()=>number;check?:()=>void}) {
   const policy={developerMint:developerMint===undefined?undefined:localTestMint(developerMint)};
   const snapshot=(raw:unknown)=>validateSnapshot(raw,policy),payment=(raw:unknown)=>validatePayment(raw,policy);
   let data:OrderData={records:[],jobs:[],ephemeral:[],blocked:[],pending:[]}, writes=Promise.resolve();
   const serial=<T>(operation:()=>Promise<T>):Promise<T>=>{const result=writes.then(()=>{check();return operation();});writes=result.then(()=>{},()=>{});return result;};
-  const persist=async (next:OrderData)=>{check();await vault.put(KEY,next);check();data=next;notify();};
-  const project=(record:OrderRecord):OrderView=>{const order=copy(record.order);return {...order,...(record.sourceOrderId?{sourceOrderId:record.sourceOrderId}:{}),...(record.deliveryOrderId?{deliveryOrderId:record.deliveryOrderId}:{}),archived:record.archived===true,role:orderRole(order,owner),sync:data.jobs.some(job=>job.orderId===order.id)?'queued':'sent',locationFresh:!!order.shipment.location&&now()-order.shipment.location.at>=0&&now()-order.shipment.location.at<LOCATION_TTL};};
+  const ownRecipientKeys=new Map<string,string>();
+  const checked=new Set<string>();
+  const hasDisplayKey=(pass:HandoffKey)=>{
+    if(!handoffKeys)return false;
+    if(!ownRecipientKeys.has(pass.id))ownRecipientKeys.set(pass.id,createRecipientKey(handoffKeys,pass.id).key);
+    return ownRecipientKeys.get(pass.id)===pass.key;
+  };
+  const persist=async (next:OrderData,receipt?:string)=>{
+    check();await vault.put(KEY,next);check();data=next;
+    if(receipt)checked.add(receipt);
+    notify();
+  };
+  const available=(record:OrderRecord)=>expectedHandoffs(record.order,owner,!!record.deliveryOrderId);
+  const handoffs=(record:OrderRecord):HandoffAction[]=>{
+    if(terminal(record.order))return (['pickup','dropoff'] as const)
+      .filter(kind=>record.checkedHandoffs?.some(token=>token.startsWith(kind+':')))
+      .map(kind=>({kind,action:'checked'}));
+    return available(record).flatMap<HandoffAction>(expected=>{
+      const {kind,action}=expected,id=checkId(expected);
+      if(action==='show' && !(expected.account ? handoffKeys?.accountSigner() : hasDisplayKey(expected)))return [];
+      if(action==='scan' && checked.has(id))return record.checkedHandoffs?.includes(id)?[{kind,action:'checked'}]:[];
+      return [{kind,action}];
+    });
+  };
+  const expect=(id:string,kind:HandoffKind,action:'show'|'scan')=>{
+    const record=data.records.find(row=>row.order.id===id);
+    const expected=record&&available(record).find(item=>item.kind===kind && item.action===action);
+    if(!expected)fail('This handoff is unavailable for this order.');
+    return expected;
+  };
+  const project=(record:OrderRecord):OrderView=>{const order=copy(record.order);return {...order,handoffs:handoffs(record),...(record.sourceOrderId?{sourceOrderId:record.sourceOrderId}:{}),...(record.deliveryOrderId?{deliveryOrderId:record.deliveryOrderId}:{}),archived:record.archived===true,role:orderRole(order,owner),sync:data.jobs.some(job=>job.orderId===order.id)?'queued':'sent',locationFresh:!!order.shipment.location&&now()-order.shipment.location.at>=0&&now()-order.shipment.location.at<LOCATION_TTL};};
   const enqueue=(next:OrderData,record:OrderRecord,event:OrderEnvelope)=>{
     if(event.action==='location')next.jobs=next.jobs.filter(job=>job.orderId!==record.order.id||job.action!=='location');
     const peers=recipients(record.order).filter(peer=>peer!==owner);
@@ -271,6 +302,7 @@ export function createOrderBook({vault,owner,device,notify=()=>{},now=time,check
       if(shared.snapshot && ![record.order.buyer,record.order.seller].includes(peer)){
         delete shared.snapshot.escrowTradeId;
         delete shared.snapshot.escrowProvider;
+        delete shared.snapshot.recipientHandoff;
       }
       const tags=[['p',peer],[ORDER_TAG,wireVersion(shared),JSON.stringify(shared)],['ms',String(event.at*1000)]];
       if(event.action==='location'&&event.payload!==null)tags.push(['expiration',String(event.at+LOCATION_TTL)]);
@@ -308,7 +340,13 @@ export function createOrderBook({vault,owner,device,notify=()=>{},now=time,check
   });
   return {
     state:()=>data.records.map(project).sort((a,b)=>b.updatedAt-a.updatedAt||a.id.localeCompare(b.id)),
-    async load(){const stored=await vault.get<OrderData>(KEY);check();if(stored){if(!Array.isArray(stored.records)||stored.records.length>MAX_ORDERS||!Array.isArray(stored.jobs)||stored.jobs.length>MAX_JOBS||!Array.isArray(stored.ephemeral))fail('Invalid private order storage.');data={...stored,blocked:stored.blocked??[],pending:stored.pending??[]};}},
+    async load(){
+      const stored=await vault.get<OrderData>(KEY);check();if(!stored)return;
+      if(!Array.isArray(stored.records)||stored.records.length>MAX_ORDERS||!Array.isArray(stored.jobs)||stored.jobs.length>MAX_JOBS||!Array.isArray(stored.ephemeral))fail('Invalid private order storage.');
+      data={...stored,blocked:stored.blocked??[],pending:stored.pending??[]};
+      checked.clear();
+      for(const record of data.records)for(const id of record.checkedHandoffs??[])checked.add(id);
+    },
     flush:()=>writes,
     request(listing:OrderListing,{quantity=1,note='',deliveryRequest:delivery,fulfillment,basket,...selected}:OrderRequestOptions={}){
       if(!listing||listing.side==='request'||listing.status==='sold'||listing.expiration&&listing.expiration<=now())fail('Choose an available selling listing.');
@@ -317,7 +355,7 @@ export function createOrderBook({vault,owner,device,notify=()=>{},now=time,check
       if(escrow.escrowTradeId && (listing.externalOrder || listing.escrow?.trade!=='goods'))fail('This listing does not offer escrow for orders.');
       const item=(value:OrderListing,count:number)=>({id:value.id,title:value.title,price:value.price,currency:value.currency,quantity:count,...(/^[a-f0-9]{64}$/.test(value.eventId??'')?{eventId:value.eventId}:{}),...(orderImage(value.imageUrl)?{image:value.imageUrl}:{})});
       for(const extra of basket??[])if(!extra?.listing||extra.listing.author!==listing.author||extra.listing.side==='request'||extra.listing.status==='sold'||extra.listing.expiration&&extra.listing.expiration<=now())fail('A basket item is no longer available from this seller.');
-      const order=snapshot({...escrow,fulfillment,id:`${owner}:${crypto.randomUUID()}`,buyer:owner,seller:listing.author,items:[item(listing,quantity),...(basket??[]).map(extra=>item(extra.listing,extra.quantity))],...(delivery?{deliveryRequest:delivery}:{}),note,status:'requested',createdAt:now(),updatedAt:now(),shipment:{stops:[]},routeId:''});
+      const order=snapshot({...escrow,fulfillment,...(fulfillment?{recipientHandoff:createRecipientKey(handoffKeys)}:{}),id:`${owner}:${crypto.randomUUID()}`,buyer:owner,seller:listing.author,items:[item(listing,quantity),...(basket??[]).map(extra=>item(extra.listing,extra.quantity))],...(delivery?{deliveryRequest:delivery}:{}),note,status:'requested',createdAt:now(),updatedAt:now(),shipment:{stops:[]},routeId:''});
       return local(order.id,'request',order,true);
     },
     requestDelivery(sourceOrderId:string,serviceListing:OrderListing,destination:DeliveryPlace,merchantPickup?:DeliveryPlace){return serial(async()=>{
@@ -330,7 +368,7 @@ export function createOrderBook({vault,owner,device,notify=()=>{},now=time,check
       const listing=serviceListing;if(!listing||listing.side!=='offer'||listing.status==='sold'||listing.expiration&&listing.expiration<=now()||[source.order.seller,source.order.buyer].includes(listing.author)||!['parcel','both'].includes(courierListingType(listing)??''))fail('Choose an available separate parcel delivery service.');
       if(next.records.length>=MAX_ORDERS)fail('The local order limit has been reached.');
       const at=now(),reference=crypto.randomUUID(),id=`${owner}:${crypto.randomUUID()}`;
-      const order=snapshot({id,buyer:owner,seller:listing.author,items:[{id:listing.id,title:listing.title,price:listing.price,currency:listing.currency,quantity:1,...(/^[a-f0-9]{64}$/.test(listing.eventId??'')?{eventId:listing.eventId}:{}),...(orderImage(listing.imageUrl)?{image:listing.imageUrl}:{})}],note:'',status:'requested',createdAt:at,updatedAt:at,shipment:{stops:[]},routeId:'',deliveryRequest:{pickup:deliveryPlace(pickup),destination:deliveryPlace(destination),collection:{merchant:source.order.seller,reference}}});
+      const order=snapshot({id,...(source.order.recipientHandoff?{recipientHandoff:source.order.recipientHandoff}:{}),buyer:owner,seller:listing.author,items:[{id:listing.id,title:listing.title,price:listing.price,currency:listing.currency,quantity:1,...(/^[a-f0-9]{64}$/.test(listing.eventId??'')?{eventId:listing.eventId}:{}),...(orderImage(listing.imageUrl)?{image:listing.imageUrl}:{})}],note:'',status:'requested',createdAt:at,updatedAt:at,shipment:{stops:[]},routeId:'',deliveryRequest:{pickup:deliveryPlace(pickup),destination:deliveryPlace(destination),collection:{merchant:source.order.seller,reference}}});
       const request:OrderEnvelope={v:1,id,opId:crypto.randomUUID(),seq:1,at,action:'request',payload:order};
       const delivery=applyOrderEnvelope(undefined,request,owner,owner,at,device,policy).record;
       const authorization:OrderEnvelope={v:1,id:sourceOrderId,opId:crypto.randomUUID(),seq:(source.clocks[`${owner}:${device}`]??0)+1,at,action:'pickup',payload:{courierPubkey:listing.author,reference}};
@@ -339,6 +377,24 @@ export function createOrderBook({vault,owner,device,notify=()=>{},now=time,check
       next.records[next.records.indexOf(source)]=updated;next.records.push(delivery);
       authorization.snapshot=snapshot(updated.order);request.snapshot=snapshot(delivery.order);
       enqueue(next,updated,authorization);enqueue(next,delivery,request);await persist(next);return project(delivery);
+    });},
+    async showHandoff(id:string,kind:HandoffKind){
+      check();
+      const expected=expect(id,kind,'show');
+      const qr=await signHandoff(expected,now(),handoffKeys);
+      check();
+      if(checkId(expect(id,kind,'show'))!==checkId(expected))fail('The handoff has changed.');
+      verifyHandoff(expected,qr,now());
+      return qr;
+    },
+    checkHandoff(id:string,kind:HandoffKind,qr:string){return serial(async()=>{
+      const expected=expect(id,kind,'scan'),token=checkId(expected);
+      if(checked.has(token))fail('This handoff was already checked on this device.');
+      verifyHandoff(expected,qr,now());
+      const next=copy(data),record=next.records.find(row=>row.order.id===id);
+      if((record.checkedHandoffs?.length??0)>=32)fail('The handoff check limit for this order has been reached.');
+      (record.checkedHandoffs??=[]).push(token);
+      await persist(next,token);
     });},
     update(id:string,patch:OrderPatch){
       if(!patch||typeof patch!=='object')fail('Choose an order update.');

@@ -99,7 +99,7 @@ export async function startDemoActors({relay,publicRelays,origin,durationMs=1200
         if(order.status==='requested'){
           if(seller.kind==='product' && order.fulfillment==='merchant-delivery'){
             await seller.client.updateOrder(order.id,{status:'cancelled'});
-            await speak(seller.client,order.buyer,'This demo shop offers pickup. To try the simulated delivery, request the parcel again and choose “I’ll book my own courier” at checkout.',order.id);
+            await speak(seller.client,order.buyer,'This demo shop offers pickup. To try the simulated delivery, request the parcel again and choose “I’ll arrange my own delivery” at checkout.',order.id);
             continue;
           }
           if(seller.kind==='delivery'&&!order.deliveryRequest){await seller.client.updateOrder(order.id,{status:'cancelled'});await speak(seller.client,order.buyer,'Choose pickup and destination when requesting this courier.',order.id);continue;}
@@ -117,7 +117,7 @@ export async function startDemoActors({relay,publicRelays,origin,durationMs=1200
           await seller.client.updateOrder(order.id,{status:'accepted'});
         }
         if(seller.kind==='product'){
-          if(!order.shipment.stops.length){const pickup=DEMO_SCENARIOS.delivery.pickup;await seller.client.updateOrder(order.id,{shipment:{stops:[{id:pickup.id,label:'Collect imaginary parcel',address:pickup.name,coordinates:pickup.coordinates,status:'pending'}]}});await speak(seller.client,order.buyer,'Test payment received. Your imaginary parcel is ready for collection.'+(order.fulfillment==='pickup'?'':' Choose Arrange delivery to hire a courier separately.'),order.id);}continue;
+          if(!order.shipment.stops.length){const pickup=DEMO_SCENARIOS.delivery.pickup;await seller.client.updateOrder(order.id,{shipment:{stops:[{id:pickup.id,label:'Collect imaginary parcel',address:pickup.name,coordinates:pickup.coordinates,status:'pending'}]}});await speak(seller.client,order.buyer,'Test payment received. Your imaginary parcel is ready for collection.'+(order.fulfillment==='pickup'?'':' Choose Arrange delivery to select a delivery service.'),order.id);}continue;
         }
         if(order.payment?.status!=='received')continue;
         let journey=journeys.get(order.id);
@@ -215,7 +215,7 @@ export async function startDemoActors({relay,publicRelays,origin,durationMs=1200
     try {while(replies.length&&!closing) {
       const item=replies[0]!;
       const replyStarted=Date.now();
-      const result=await demoReply({model:modelReady()?model:'',prompt:`You are the ${item.role}. Answer this visitor's message about the simulated journey: ${item.text}`,fallback:'This is a simulation. Buy the imaginary parcel, then arrange a separate courier, or request a demo ride. Payments use test Cashu sats with no monetary value.',signal:abort.signal});
+      const result=await demoReply({model:modelReady()?model:'',prompt:`You are the ${item.role}. Answer this visitor's message about the simulated journey: ${item.text}`,fallback:'This is a simulation. Buy the imaginary parcel, then arrange delivery, or request a demo ride. Payments use test Cashu sats with no monetary value.',signal:abort.signal});
       replyStatistics[result.source]++;replyStatistics.lastSource=result.source;replyStatistics.lastLatencyMs=Date.now()-replyStarted;
       if(!closing){await item.client.send(item.peer,result.text,item.context);replies.shift();await persist();}
     }}catch(error){if(!closing){errors.push(error instanceof Error?error.message:String(error));if(errors.length>10)errors.shift();}}finally{replyBusy=false;}

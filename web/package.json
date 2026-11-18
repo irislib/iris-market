@@ -28,6 +28,7 @@
     "@hashtree/worker": "https://github.com/mmalmi/hashtree/releases/download/hashtree-ts-runtime-v0.5.41/hashtree-worker-0.4.25.tgz",
     "@huggingface/transformers": "4.3.2",
     "@noble/hashes": "2.0.1",
+    "jsqr": "1.4.0",
     "maplibre-gl": "6.15.0",
     "marked": "15.0.12",
     "minidenticons": "4.2.1",

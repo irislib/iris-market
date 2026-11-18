@@ -229,7 +229,7 @@ test('merchant booking starts without a route, asks for both places and filters 
   try {
     f.job.fulfillment='merchant-delivery';f.job.shipment.stops=[];f.setState({ownerPubkey:buyer});f.ui.open('job');
     assert(!find(f.page,'Arrange delivery'));f.setState({ownerPubkey:seller});f.ui.open('job');
-    find(f.page,'Book a courier').click();assert(!find(f.page,'Buyer service'));assert.equal(f.deliveries.length,0);
+    find(f.page,'Arrange delivery').click();assert(!find(f.page,'Buyer service'));assert.equal(f.deliveries.length,0);
     const input=label=>f.page.querySelector('[aria-label="'+label+' address or meeting point"]');
     input('Pickup').value='Shop door';input('Destination').value='Agreed meeting point';f.ui.refreshCourier();
     f.page.querySelector('.order-service-option').click();assert(find(f.page,'This courier will receive the pickup and destination. Your buyer receives the courier’s identity and pickup code.'));
@@ -244,7 +244,7 @@ test('empty courier discovery reports its real state and merchants can save just
   const f=fixture({buyerView:true,pagination:()=>({loading}),loadMore:()=>new Promise(done=>{moreDone=done})});
   try {
     f.job.fulfillment='merchant-delivery';f.job.shipment.stops=[];f.setState({ownerPubkey:seller});f.ui.open('job');
-    find(f.page,'Book a courier').click();assert(find(f.page,'No parcel delivery services found yet.'));
+    find(f.page,'Arrange delivery').click();assert(find(f.page,'No parcel delivery services found yet.'));
     find(f.page,'More services').click();await settle();assert(find(f.page,'Looking for delivery services…'));
     moreDone();await settle();assert(find(f.page,'No parcel delivery services found yet.'));
     loading=true;f.ui.refreshCourier();assert(find(f.page,'Looking for delivery services…'));loading=false;f.ui.refreshCourier();
@@ -253,10 +253,34 @@ test('empty courier discovery reports its real state and merchants can save just
     form.querySelector('input[type=url]').value='https://carrier.example/track/123';submit(form);await settle();
     assert.deepEqual(f.updates,[{id:'job',patch:{shipment:{stops:[],trackingUrl:'https://carrier.example/track/123'}}}]);
     f.job.shipment=f.updates[0].patch.shipment;f.setState({});f.ui.open('job');
-    assert(find(f.page,'Track with carrier'));assert(!find(f.page,'Book a courier'));assert(!find(f.page,'Delivery or collection details are not set yet.'));
+    assert(find(f.page,'Track with carrier'));assert(!find(f.page,'Arrange delivery'));assert(!find(f.page,'Delivery or collection details are not set yet.'));
     find(f.page,'Edit delivery').click();assert.equal(f.page.querySelectorAll('.order-route-stop').length,0);
   } finally {f.cleanup();}
   const b=fixture({buyerView:true});try {
     b.ui.open('job');find(b.page,'Arrange delivery').click();assert(find(b.page,'No parcel delivery services found yet.'));assert(!find(b.page,'Use my own carrier'));
   }finally{b.cleanup();}
+});
+
+test('delivery choices and private collection show the matching manual pickup code',async()=>{
+  let draft;
+  const f=fixture({buyerView:true,requestOrder:async(_listing,options)=>{draft=options;return f.job}});
+  try {
+    f.ui.buy({id:seller+':mug',author:seller,title:'Mug',price:'8',currency:'EUR',side:'offer',category:'home'});
+    const form=f.page.querySelector('.order-review'),choice=form.querySelector('select');
+    const privacy='Share the destination only with your delivery provider.';
+    assert.deepEqual(Array.from(choice.options,option=>option.textContent),['Seller arranges delivery','I’ll pick it up','I’ll arrange my own delivery']);
+    assert.equal(choice.value,'merchant-delivery');assert(!find(form,privacy));
+    assert(!form.querySelector('.delivery-place-input'));
+    submit(form);await settle();assert.equal(draft.fulfillment,'merchant-delivery');assert.equal(draft.deliveryRequest,undefined);
+
+    const reference='abcd1234-0056';
+    f.job.fulfillment='buyer-courier';f.job.pickupAuthorization={courierPubkey:courier,reference};
+    f.setState({ownerPubkey:seller});f.ui.open('job');
+    assert(find(f.page,'Buyer arranges delivery'));assert(find(f.page,'Authorized courier'));assert(find(f.page,'Manual pickup code · ABCD1234'));
+    assert(!find(f.page,'Arrange delivery'));
+    f.job.seller=courier;delete f.job.fulfillment;delete f.job.pickupAuthorization;
+    f.job.deliveryRequest={pickup:{label:'Shop',address:'Shop counter'},destination:{label:'Destination',address:'Agreed place'},collection:{merchant:seller,reference}};
+    f.setState({ownerPubkey:courier});f.ui.open('job');
+    assert(find(f.page,'Manual pickup code · ABCD1234 · show this to the merchant'));
+  } finally {f.cleanup();}
 });

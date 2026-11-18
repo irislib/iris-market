@@ -86,8 +86,8 @@ function assetHeaders(downloads: boolean, routeScript?: string, dev = false) {
   return {
     'X-Content-Type-Options': 'nosniff',
     'Referrer-Policy': 'no-referrer',
-    'Permissions-Policy': `camera=(), microphone=(), geolocation=${downloads ? '()' : '(self)'}`,
-    'Content-Security-Policy': `default-src 'self'; script-src 'self' 'wasm-unsafe-eval'${routeHash}; worker-src 'self' blob:; style-src 'self'${dev ? " 'unsafe-inline'" : ''}; img-src 'self' data: blob: https:; connect-src 'self' wss: ${relayOrigins.join(' ')} https://mint.coinos.io https://testnut.cashu.space https://upload.iris.to https://api.coinbase.com https://cdn.iris.to https://huggingface.co https://*.huggingface.co https://*.hf.co https://*.xethub.hf.co; object-src 'none'; base-uri ${downloads ? "'none'" : "'self'"}; frame-ancestors 'none'; form-action 'self'`,
+    'Permissions-Policy': `camera=${downloads ? '()' : '(self)'}, microphone=(), geolocation=${downloads ? '()' : '(self)'}`,
+    'Content-Security-Policy': `default-src 'self'; script-src 'self' 'wasm-unsafe-eval'${routeHash}; worker-src 'self' blob:;${downloads ? '' : " media-src 'self' blob:;"} style-src 'self'${dev ? " 'unsafe-inline'" : ''}; img-src 'self' data: blob: https:; connect-src 'self' wss: ${relayOrigins.join(' ')} https://mint.coinos.io https://testnut.cashu.space https://upload.iris.to https://api.coinbase.com https://cdn.iris.to https://huggingface.co https://*.huggingface.co https://*.hf.co https://*.xethub.hf.co; object-src 'none'; base-uri ${downloads ? "'none'" : "'self'"}; frame-ancestors 'none'; form-action 'self'`,
   };
 }
 

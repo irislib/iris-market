@@ -9,8 +9,10 @@
   import {orderArrival} from '../order-arrival.ts'
   import {insert} from './actions.ts'
   import {createStaticImage} from '../media.ts'
-  import {dateTime, statuses, terminal, trackingLink} from './format.ts'
+  import {dateTime, orderStatusLabel, terminal, trackingLink} from './format.ts'
   import Person from './Person.svelte'
+  import Handoff from './Handoff.svelte'
+  import {isHandoffId} from '../order-handoff.ts'
   import {orderPrice} from './summary.ts'
   import type {OrdersState} from './state.svelte.ts'
 
@@ -34,13 +36,13 @@
     const stop = s.ownStop(order)
     const actions: Action[] = []
     const add = (label: string, run: () => void, primary = false) => actions.push({label, run, primary})
-    if (deliveryOrganizer(order) === owner && ['accepted', 'in-transit'].includes(order.status) && !order.deliveryRequest && !order.deliveryOrderId && !order.pickupAuthorization && !order.shipment.trackingUrl && (role === 'seller' || stops.length) && !stops.some(stop => stop.courierPubkey) && courier) add(role === 'seller' ? 'Book a courier' : 'Arrange delivery', () => { s.changeView('delivery'); s.render() }, true)
+    if (deliveryOrganizer(order) === owner && ['accepted', 'in-transit'].includes(order.status) && !order.deliveryRequest && !order.deliveryOrderId && !order.pickupAuthorization && !order.shipment.trackingUrl && (role === 'seller' || stops.length) && !stops.some(stop => stop.courierPubkey) && courier) add('Arrange delivery', () => { s.changeView('delivery'); s.render() }, true)
     for (const [id, label] of [[order.deliveryOrderId, 'View delivery'], [order.sourceOrderId, 'View product order']]) { const related = id && s.orders().find(value => value.id === id); if (related) add(label, () => s.showDetail(related)) }
     if (!order.escrowTradeId && role === 'seller' && !done && !order.payment) add('Request payment', () => { s.changeView('payment'); s.render() })
     if (!order.escrowTradeId && role === 'seller' && order.payment?.status === 'requested') add('Confirm payment received', () => s.update(order, {payment: {...order.payment, status: 'received'}}, 'Payment confirmed'))
     if (!order.escrowTradeId && order.status === 'requested' && role === 'seller') add('Accept order', () => s.update(order, {status: 'accepted'}, 'Order accepted'), true)
-    if (order.status === 'accepted' && role === 'seller') add('Mark on the way', () => s.update(order, {status: 'in-transit'}, 'Delivery started'), true)
-    if (['accepted', 'in-transit'].includes(order.status) && ['seller', 'buyer'].includes(role)) add(role === 'buyer' ? 'Mark received' : 'Mark delivered', () => s.update(order, {status: 'delivered'}, 'Order delivered'), role === 'buyer' && order.status === 'in-transit')
+    if (order.status === 'accepted' && role === 'seller' && order.fulfillment !== 'pickup') add('Mark on the way', () => s.update(order, {status: 'in-transit'}, 'Delivery started'), true)
+    if (['accepted', 'in-transit'].includes(order.status) && ['seller', 'buyer'].includes(role)) add(order.fulfillment === 'pickup' ? 'Mark collected' : role === 'buyer' ? 'Mark received' : 'Mark delivered', () => s.update(order, {status: 'delivered'}, order.fulfillment === 'pickup' ? 'Order collected' : 'Order delivered'), role === 'buyer' && order.status === 'in-transit')
     if (['buyer', 'seller'].includes(role)) add(order.fulfillment === 'merchant-delivery' && !done ? (role === 'buyer' ? 'Message seller about delivery' : 'Message buyer about delivery') : 'Message', () => { s.dialog.hide(); void account.openChat(role === 'buyer' ? order.seller : order.buyer, {context: orderContext(order.id)}) })
     if (!done && ['buyer', 'seller'].includes(role) && !escrow?.locked?.(order)) add(order.status === 'requested' && role === 'seller' ? 'Decline request' : 'Cancel order', () => s.update(order, {status: 'cancelled'}, 'Order cancelled'))
     if (done) add(order.archived ? 'Restore order' : 'Archive order', () => { void s.perform(async () => { await account.messaging.archiveOrder(order.id, !order.archived); s.announce(order.archived ? 'Order restored' : 'Order archived') }) })
@@ -78,7 +80,7 @@
 {#if d}
   {@const order = d.order}
   <div class="order-detail-heading">
-    <span class="order-status order-status-{order.status}">{statuses[order.status] || order.status}</span>
+    <span class="order-status order-status-{order.status}">{orderStatusLabel(order)}</span>
     <span class="small muted">{dateTime(order.createdAt)}</span>
   </div>
   {#if d.next}
@@ -118,22 +120,36 @@
     <Person orders={s} pubkey={order.buyer} label="Buyer" />
     <Person orders={s} pubkey={order.seller} label="Seller" />
   </div>
-  {#if order.fulfillment}<p class="order-fulfillment">{order.fulfillment === 'merchant-delivery' ? 'Seller arranges delivery' : order.fulfillment === 'buyer-courier' ? 'Buyer arranges a courier' : 'Buyer picks up'}</p>{/if}
+  {#if order.fulfillment}<p class="order-fulfillment">{order.fulfillment === 'merchant-delivery' ? 'Seller arranges delivery' : order.fulfillment === 'buyer-courier' ? 'Buyer arranges delivery' : 'Buyer picks up'}</p>{/if}
   {#if order.note}<p class="order-note">{order.note}</p>{/if}
   {#if order.deliveryRequest}
     <section class="order-request-route">
       <h3>Requested route</h3>
       <p>{'Pickup · ' + order.deliveryRequest.pickup.address}</p>
       <p>{'Destination · ' + order.deliveryRequest.destination.address}</p>
-      {#if order.deliveryRequest.collection}<p class="small muted" title={order.deliveryRequest.collection.reference}>{'Pickup code · ' + pickupCode(order.deliveryRequest.collection.reference)} · show this to the merchant</p>{/if}
+      {#if order.deliveryRequest.collection}<p class="small muted" title={order.deliveryRequest.collection.reference}>{'Manual pickup code · ' + pickupCode(order.deliveryRequest.collection.reference)}{d.role === 'seller' ? ' · show this to the merchant' : ''}</p>{/if}
     </section>
   {/if}
   {#if order.pickupAuthorization}
     <section class="order-pickup-authorization">
       <h3>Collection</h3>
       <Person orders={s} pubkey={order.pickupAuthorization.courierPubkey} label="Authorized courier" />
-      <p class="small muted" title={order.pickupAuthorization.reference}>{'Pickup code · ' + pickupCode(order.pickupAuthorization.reference)}</p>
+      <p class="small muted" title={order.pickupAuthorization.reference}>{'Manual pickup code · ' + pickupCode(order.pickupAuthorization.reference)}</p>
     </section>
+  {/if}
+  {#if order.handoffs?.length}
+    <div class="order-actions">
+      {#each order.handoffs as item (order.id + item.kind + item.action + (order.pickupAuthorization?.reference ?? '') + (order.pickupAuthorization?.courierPubkey ?? ''))}
+        <Handoff orders={s} orderId={order.id} {item} />
+      {/each}
+    </div>
+  {/if}
+  {#if ['accepted','in-transit'].includes(order.status)}
+    {#if d.role === 'buyer' && order.fulfillment && order.recipientHandoff && !order.handoffs?.some(item => item.action === 'show')}
+      <p class="small muted">Show your handoff code on the device used at checkout.</p>
+    {:else if d.role === 'seller' && isHandoffId(order.deliveryRequest?.collection?.reference) && !order.handoffs?.some(item => item.kind === 'pickup' && item.action === 'show')}
+      <p class="small muted">Connect your courier account signer to show the pickup code.</p>
+    {/if}
   {/if}
   {#if order.escrowTradeId}
     {#key s.renders}<span hidden use:insert={() => escrow?.linked(d.source)}></span>{/key}

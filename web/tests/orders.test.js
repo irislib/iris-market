@@ -9,7 +9,7 @@ import { applyOrderEnvelope, createOrderBook, decodeOrder, LOCATION_TTL, ORDER_T
 const buyer='1'.repeat(64),seller='2'.repeat(64),courier='3'.repeat(64),outsider='4'.repeat(64),device='5'.repeat(64);
 const listing={id:`${seller}:bicycle`,author:seller,title:'Bicycle',price:'125',currency:'EUR',side:'offer',status:'active'};
 function backend(){let row;return {read:async()=>structuredClone(row),write:async(value,expected)=>{if((row?.version??0)!==expected)throw Error('conflict');row=structuredClone(value);}};}
-async function book(owner,{now=()=>1800000000,store,deviceKey=device,developerMint}={}){const memory=store??backend(),vault=createVault({backend:memory});if(!(await vault.status()).exists)await vault.create();else await vault.unlock();const result=createOrderBook({vault,owner,device:deviceKey,now,developerMint});await result.load();const receive=result.receive;result.receive=(rumor,sender,fromDevice=device)=>receive(rumor,sender,fromDevice);return {book:result,vault,backend:memory};}
+async function book(owner,{now=()=>1800000000,store,deviceKey=device,developerMint,handoffKeys={deviceSecret:()=>new Uint8Array(32).fill(7),accountSigner:()=>undefined}}={}){const memory=store??backend(),vault=createVault({backend:memory});if(!(await vault.status()).exists)await vault.create();else await vault.unlock();const result=createOrderBook({vault,owner,device:deviceKey,now,developerMint,handoffKeys});await result.load();const receive=result.receive;result.receive=(rumor,sender,fromDevice=device)=>receive(rumor,sender,fromDevice);return {book:result,vault,backend:memory};}
 const eventFor=(book,action)=>decodeOrder(book.jobs().findLast(job=>job.action===action).rumor);
 const rumorFor=(book,action,peer)=>book.jobs().findLast(job=>job.action===action&&(!peer||job.recipient===peer)).rumor;
 async function participants(){const a=await book(buyer),b=await book(seller),c=await book(courier);const order=await a.book.request(listing);await b.book.receive(rumorFor(a.book,'request'),buyer);await b.book.update(order.id,{status:'accepted'});await a.book.receive(rumorFor(b.book,'status'),seller);await b.book.update(order.id,{shipment:{stops:[{id:'pickup',label:'Pickup',address:'Private pickup',courierPubkey:courier,coordinates:[24.94,60.17]},{id:'drop',label:'Delivery',address:'Private destination',courierPubkey:courier}],eta:1800003600}});await a.book.receive(rumorFor(b.book,'route',buyer),seller);await c.book.receive(rumorFor(b.book,'route',courier),seller);return {a,b,c,id:order.id};}
@@ -395,7 +395,7 @@ test('merchant arranges a separate, private delivery only for a buyer who chose 
   assert.equal(c.book.state()[0].buyer,seller);assert.equal(a.book.state()[0].deliveryOrderId,undefined);
   await assert.rejects(b.book.requestDelivery(source.id,transport,destination,pickup),/already/);
   await assert.rejects(a.book.update(source.id,{pickupAuthorization:null}),/designated/);
-  const legacy=eventFor(b.book,'status');delete legacy.snapshot.fulfillment;
+  const legacy=eventFor(b.book,'status');delete legacy.snapshot.fulfillment;delete legacy.snapshot.recipientHandoff;
   const original={order:source,clocks:{},archived:false};
   assert.equal(applyOrderEnvelope(original,legacy,seller,buyer,1800000000).record.order.fulfillment,'merchant-delivery');
   const alreadyAuthorized={order:a.book.state()[0],clocks:{},archived:false};

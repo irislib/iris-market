@@ -81,9 +81,10 @@
     {/if}
     {#if physical}
       <label class="order-field"><span>How would you like to receive your order?</span>
-        <select bind:value={fulfillment}><option value="merchant-delivery">Seller arranges delivery</option><option value="pickup">I’ll pick it up</option><option value="buyer-courier">I’ll book my own courier</option></select>
+        <select bind:value={fulfillment}><option value="merchant-delivery">Seller arranges delivery</option><option value="pickup">I’ll pick it up</option><option value="buyer-courier">I’ll arrange my own delivery</option></select>
       </label>
-      {#if fulfillment === 'merchant-delivery'}<p class="small muted">Agree on the address and delivery cost privately with the seller.</p>{/if}
+      {#if fulfillment === 'merchant-delivery'}<p class="small muted">Agree on the address and delivery cost privately with the seller.</p>
+      {:else if fulfillment === 'buyer-courier'}<p class="small muted">Share the destination only with your delivery provider.</p>{/if}
     {/if}
     <label class="order-field"><span>Message to the seller</span><textarea bind:this={note} value="" maxlength="2000" placeholder="Optional" rows="3"></textarea></label>
     {#if escrowable}

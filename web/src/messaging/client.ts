@@ -26,6 +26,7 @@ import type { Event, UnsignedEvent, VerifiedEvent } from 'nostr-tools';
 import type { NostrPublishContext, Rumor, OnEventMeta, UserRecord } from 'nostr-double-ratchet';
 import type { Vault } from './vault.ts';
 import type { PrivateTransport } from './transport.ts';
+import type { HandoffKind } from '../order-handoff.ts';
 import type { DeliveryPlace, OrderListing, OrderPatch, OrderRequestOptions, OrderView } from '../orders.ts';
 type AccountMode='local'|'extension'|'linked';
 interface AccountRecord {owner:string;mode:AccountMode;deviceSecret:number[];ownerSecret?:number[];proof?:VerifiedEvent;installed?:boolean;freshOwner?:boolean;displayName?:string;profileEvent?:VerifiedEvent}
@@ -698,7 +699,7 @@ export function createMessaging({ developerMint, getRelays=()=>[], getPublicRela
     const deviceSecret=[...account.deviceSecret];
     matches=createMatchBook(vault,account.owner,getPublicKey(Uint8Array.from(deviceSecret)),notify,()=>check(attempt),undefined,()=>Uint8Array.from(deviceSecret));
     await matches.load();check(attempt);
-    orders=createOrderBook({vault,developerMint,owner:account.owner,device:getPublicKey(Uint8Array.from(account.deviceSecret)),notify,check:()=>check(attempt)});
+    orders=createOrderBook({vault,developerMint,handoffKeys:{deviceSecret:()=>Uint8Array.from(account.deviceSecret),accountSigner:()=>signer && signing},owner:account.owner,device:getPublicKey(Uint8Array.from(account.deviceSecret)),notify,check:()=>check(attempt)});
     await orders.load();check(attempt);
     for(const [peer,messages] of conversations)for(const message of messages)if(controls.pendingFor(peer,message.id).length)await saveMessage(peer,message);
     publicQueue=new Map();
@@ -866,6 +867,8 @@ export function createMessaging({ developerMint, getRelays=()=>[], getPublicRela
       if((options?.escrowTradeId!=null || options?.escrowProvider!=null) && !marketplaceToolEnabled('escrow',account.owner))throw Error('Enable escrow in Settings to request an escrow order.');
       const order=await orders.request(listing,options);scheduleBackground();return order;
     },
+    async showOrderHandoff(id:string,kind:HandoffKind){requireReady();return orders.showHandoff(id,kind);},
+    async checkOrderHandoff(id:string,kind:HandoffKind,qr:string){requireReady();return orders.checkHandoff(id,kind,qr);},
     async requestDelivery(sourceOrderId:string, serviceListing:OrderListing, destination:DeliveryPlace, pickup?:DeliveryPlace) { requireReady();const order=await orders.requestDelivery(sourceOrderId,serviceListing,destination,pickup);scheduleBackground();return order; },
     async updateOrder(id:string, patch:OrderPatch) { requireReady();const order=await orders.update(id,patch);await pruneOrderQueues();scheduleBackground();return order; },
     async archiveOrder(id, archived=true) { requireReady();return orders.archive(id,archived); },

@@ -3,6 +3,7 @@ import { normalizePublicKey } from '../social.ts';
 
 export const terminal = order => ['delivered', 'cancelled'].includes(order.status);
 export const statuses = { requested: 'Requested', accepted: 'Accepted', 'in-transit': 'On the way', delivered: 'Delivered', cancelled: 'Cancelled' };
+export const orderStatusLabel = order => order.fulfillment === 'pickup' && order.status === 'delivered' ? 'Collected' : statuses[order.status] || order.status;
 export const date = value => Number.isFinite(value) ? new Date(value * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '';
 export const dateTime = value => Number.isFinite(value) ? new Date(value * 1000).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
 export const localDateTime = value => { if (!Number.isFinite(value)) return ''; const at = new Date(value * 1000); return new Date(at.getTime() - at.getTimezoneOffset() * 60000).toISOString().slice(0, 16); };

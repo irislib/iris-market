@@ -22,6 +22,8 @@ export function createOfflineShell({scope,revision,assets,caches,fetch}:ShellOpt
   function navigation(url:URL) {
     if(url.origin!==base.origin||!url.pathname.startsWith(base.pathname))return false
     const path=url.pathname.slice(base.pathname.length)
+    // An order address in the normal detail URL contains an encoded colon.
+    if(/^orders\/[0-9a-f]{64}(?:%3[Aa]|:)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(path))return true
     return /^(?:|index\.html|saved|post|courier|settings(?:\/profile)?|wallet|orders(?:\/[A-Za-z0-9_-]+)?|messages(?:\/npub1[ac-hj-np-z02-9]{58})?|npub1[ac-hj-np-z02-9]{58}(?:\/[^/]+)?|naddr1[ac-hj-np-z02-9]+)$/.test(path)
   }
   function handles(request:Request) {

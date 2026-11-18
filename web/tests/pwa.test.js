@@ -25,7 +25,7 @@ test('installs a verified release and serves routed pages and chunks completely 
   const caches=memoryCaches();let online=true,calls=0
   const shell=createOfflineShell({scope,revision,assets,caches,fetch:async request=>{calls++;if(!online)throw new Error('offline');assert.equal(request.credentials,'omit');return fetchAsset(request)}})
   await shell.install();online=false
-  for(const path of ['', 'saved','post','courier','settings/profile','orders/order123','messages','wallet']){
+  for(const path of ['', 'saved','post','courier','settings/profile','orders/order123','orders/'+'a'.repeat(64)+'%3A4c926c9c-5445-4eb3-b390-8acefa21182e','messages','wallet']){
     const request=navigation(path);assert(shell.handles(request));assert.equal(await(await shell.respond(request)).text(),bodies['index.html'])
   }
   const chunk=new Request(new URL('chunks/map-A.js',scope));assert(shell.handles(chunk));assert.equal(await(await shell.respond(chunk)).text(),bodies['chunks/map-A.js'])

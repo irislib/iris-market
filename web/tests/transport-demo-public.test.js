@@ -48,6 +48,7 @@ test('public demo listings validate as signed test-money simulations, expire and
     assert.deepEqual(local.tags.filter(t=>t[0]==='k'),[['k','sell']]);
     assert(!local.tags.some(tag=>['expiration','image'].includes(tag[0])));
     assert.match(local.content,/local preview is only available here/);
+    if(kind==='product')for(const description of [local.content,listing.description])assert.match(description,/I’ll arrange my own delivery/);
   }
 });
 

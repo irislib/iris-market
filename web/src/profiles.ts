@@ -24,7 +24,7 @@ import { SocialGraph } from 'nostr-social-graph'
 import {createProfileHeadCache} from './profile-cache.ts'
 import type { Filter } from 'nostr-tools'
 import { getPublicRuntime, type PublicEventRuntime } from './nostr-runtime.ts'
-import { loadGraphBootstrap } from './graph-bootstrap.ts'
+import { loadGraphBootstrap, readSignedDiscovery } from './graph-bootstrap.ts'
 import { DEFAULT_RELAYS, validateRelays } from './market.ts'
 import { usesDefaultPublicRelays } from './public-relays.ts'
 import { normalizePublicKey } from './social.ts'
@@ -32,7 +32,7 @@ import { normalizePublicKey } from './social.ts'
 export interface ProfileFilter extends Filter { kinds?: number[]; authors?: string[]; '#p'?: string[]; limit?: number }
 export interface ProfileQueryOptions { relays?: readonly string[]; signal?: AbortSignal; WebSocketImpl?: typeof WebSocket; runtime?: PublicEventRuntime; now?: () => number; timeoutMs?: number }
 export interface ProfileQueryResult { events: NostrEvent[]; completed: number; limited: boolean; partial: boolean }
-export interface CurationOptions extends ProfileQueryOptions { contextPubkey?: string; targetAuthors?: string[]; bootstrapLoader?: typeof loadGraphBootstrap }
+export interface CurationOptions extends ProfileQueryOptions { contextPubkey?: string; targetAuthors?: string[]; bootstrapLoader?: typeof loadGraphBootstrap; signedLoader?: typeof readSignedDiscovery }
 export interface PublicProfile { pubkey: string; eventId?: string; createdAt?: number; name: string; about: string; pictureUrl: string | null; website: string | null; nip05: string; metadataFound: boolean }
 interface ProfileConnection { id: string; socket: WebSocket | null; settled: boolean; frames: number }
 interface FollowRecord { event: NostrEvent; follows: string[] | null }
@@ -47,6 +47,7 @@ export interface CurationContext {
 interface ProfileStore {
   onFollows: Set<(record?: FollowRecord, evicted?: string) => void>
   rankingBootstrap?: Awaited<ReturnType<typeof loadGraphBootstrap>>
+  publicBootstrap?: { signal?: AbortSignal; result: Promise<Awaited<ReturnType<typeof readSignedDiscovery>>> }
   graphSyncAt?: number
   graphSync?: Promise<unknown>
   profiles: Map<string, ProfileRecord>
@@ -365,7 +366,7 @@ export function discoverySyncRelays(relays: readonly string[]): string[] {
   return ['wss://graph-relay.iris.to', 'wss://relay.ditto.pub', ...relays.filter(url => new URL(url).href !== 'wss://relay.ditto.pub/')]
 }
 
-export async function loadCurationContext({ relays = DEFAULT_RELAYS, contextPubkey = DEFAULT_SOCIAL_GRAPH_ROOT, signal, WebSocketImpl, runtime, now = seconds, timeoutMs, targetAuthors = [], bootstrapLoader = loadGraphBootstrap }: CurationOptions = {}): Promise<CurationContext> {
+export async function loadCurationContext({ relays = DEFAULT_RELAYS, contextPubkey = DEFAULT_SOCIAL_GRAPH_ROOT, signal, WebSocketImpl, runtime, now = seconds, timeoutMs, targetAuthors = [], bootstrapLoader = loadGraphBootstrap, signedLoader = readSignedDiscovery }: CurationOptions = {}): Promise<CurationContext> {
   const root = normalizePublicKey(contextPubkey), store = storeFor(relays)
   const targets = [...new Set((Array.isArray(targetAuthors) ? targetAuthors : []).filter(isKey))].sort().slice(0, 128)
   const cacheKey = JSON.stringify([root, targets]), cached = store.contexts.get(cacheKey)
@@ -375,17 +376,28 @@ export async function loadCurationContext({ relays = DEFAULT_RELAYS, contextPubk
   const warnings: string[] = [], selected = new Map<string, FollowRecord>()
   async function seedDiscovery() {
     if (root !== DEFAULT_SOCIAL_GRAPH_ROOT) return null
+    const install = (seed: Awaited<ReturnType<typeof loadGraphBootstrap>>) => {
+      if (signal?.aborted || seed.graph.getRoot() !== root) throw abortError()
+      if (store.rankingBootstrap === seed) return seed
+      if (store.rankingBootstrap && seed.provenance.source !== 'signed-snapshot') return store.rankingBootstrap
+      for (const record of store.follows.values()) overlayFollowList(seed.graph, record)
+      store.rankingBootstrap = seed
+      store.contexts.clear()
+      for (const update of store.onFollows) update()
+      return seed
+    }
+    const eligible = usesDefaultPublicRelays(relays) && !WebSocketImpl && !runtime && typeof window !== 'undefined'
+    if (eligible && store.rankingBootstrap?.provenance.source !== 'signed-snapshot' &&
+        (!store.publicBootstrap || store.publicBootstrap.signal?.aborted)) {
+      const result = signedLoader(root, signal).then(seed => { install(seed); return seed })
+      // A retained embedded seed can return before the network finishes.
+      void result.catch(() => {})
+      store.publicBootstrap = {signal, result}
+    }
     if (store.rankingBootstrap) return store.rankingBootstrap
     try {
-      const fresh = usesDefaultPublicRelays(relays) && !WebSocketImpl && !runtime && typeof window !== 'undefined'
-      const bootstrap = await bootstrapLoader({root, signal, fresh})
-      if (signal?.aborted || bootstrap?.graph?.getRoot() !== root) return null
-      if (!store.rankingBootstrap) {
-        for (const record of store.follows.values()) overlayFollowList(bootstrap.graph, record)
-        store.rankingBootstrap = bootstrap
-        for (const update of store.onFollows) update()
-      }
-      return store.rankingBootstrap
+      const embedded = bootstrapLoader({root, signal}).then(install)
+      return store.publicBootstrap ? await Promise.any([embedded, store.publicBootstrap.result]) : await embedded
     } catch {
       warnings.push('Saved network unavailable; using signed live lists.')
       return null
@@ -425,8 +437,10 @@ export async function loadCurationContext({ relays = DEFAULT_RELAYS, contextPubk
       typeof window !== 'undefined' && !store.graphSync &&
       Date.now() - (store.graphSyncAt ?? 0) > 15 * 60 * 1000) {
     store.graphSyncAt = Date.now()
-    store.graphSync = import('nostr-social-graph/publicGraphSync').then(({ syncGraphLists }) =>
-      syncGraphLists({ graph: rankingGraph, relays: discoverySyncRelays(relays), signal,
+    // Reconcile the chosen graph once the bounded upgrade settles. Public event
+    // subscriptions continue overlaying verified lists during both seed reads.
+    store.graphSync = Promise.all([import('nostr-social-graph/publicGraphSync'), store.publicBootstrap?.result.catch(() => {})])
+      .then(([{ syncGraphLists }]) => syncGraphLists({ graph: store.rankingBootstrap?.graph ?? rankingGraph, relays: discoverySyncRelays(relays), signal,
         maxAuthors: 500, maxBytes: 2 * 1024 * 1024,
         onEvent: event => { if (event.kind === 3) ingest(store, [event], now()) } }))
       .catch(() => {}).finally(() => { store.graphSync = undefined })
@@ -438,8 +452,9 @@ export async function loadCurationContext({ relays = DEFAULT_RELAYS, contextPubk
     rankRelationFor: pubkey => {
       const verified = relationFor(pubkey)
       if (verified.distance !== null || !rankingGraph) return { distance: verified.distance, knownFollowerCount: verified.knownFollowerCount, source: 'signed-observation', partial: true }
-      const discovery = socialConnection(rankingGraph, root, pubkey)
-      return { distance: discovery.distance, knownFollowerCount: discovery.knownFollowerCount, source: 'bundled-snapshot', stale: true, partial: true }
+      const current = store.rankingBootstrap
+      const discovery = socialConnection(current?.graph ?? rankingGraph, root, pubkey)
+      return { distance: discovery.distance, knownFollowerCount: discovery.knownFollowerCount, source: current?.provenance.source ?? 'bundled-snapshot', stale: true, partial: true }
     },
     coverage, graph, lists: selected }
   if (store.contexts.size >= 4) store.contexts.delete(store.contexts.keys().next().value)

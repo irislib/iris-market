@@ -4,7 +4,6 @@ import { assetUrl } from './asset-url.ts';
 import { createPublicIndex } from './public-index.ts';
 import { BITCOIN_KIND, readEscrowOffer } from './escrow-offer.ts';
 import { GRAPH_BOOTSTRAP } from './graph-bootstrap.ts';
-import { usesDefaultPublicRelays } from './public-relays.ts';
 
 /** This runtime contains PUBLIC market data only. NDR uses its own private transport. */
 const PUBLIC_KINDS = new Set([0, 3, 5, 7368, 30402, 38383, 30405, 30406, 31555, 30064, 30078]);
@@ -33,10 +32,10 @@ interface RuntimeOptions {
 }
 const cancelled = () => new DOMException('Public request cancelled', 'AbortError');
 
-/** Shared worker initializes a graph even for anonymous reads; its root must be a public key. */
+/** The event worker needs a public root. Market's ranking store owns the mobile snapshot. */
 export function publicWorkerConfig(relays:readonly string[],storeName='iris-market-public-events-v1') {
   return {relays:[...relays],blossomServers:[],pubkey:GRAPH_BOOTSTRAP.root,storeName,
-    graphBootstrap:usesDefaultPublicRelays(relays),reconciliation:{lookbackSeconds:7*86400}};
+    graphBootstrap:false,reconciliation:{lookbackSeconds:7*86400}};
 }
 
 function publicFilters(filters: Filter[]): Filter[] {

@@ -19,8 +19,8 @@ const graph = new SocialGraph(root);
 graph.addFollower(root, author);
 const bytes = await graph.toBinary();
 
-async function namedSnapshot(t) {
-  const fixture = await createNamedGraphFixture(root, bytes);
+async function namedSnapshot(t, contents = bytes) {
+  const fixture = await createNamedGraphFixture(root, contents);
   const relay = new WebSocketServer({host: '127.0.0.1', port: 0});
   await once(relay, 'listening');
   t.after(async () => {
@@ -51,6 +51,19 @@ async function namedSnapshot(t) {
   return {snapshot: {publisher: fixture.publisher, relays: ['ws://127.0.0.1:' + relay.address().port],
     blossomServers: ['https://fixture.invalid']}, blockReads, names: () => names};
 }
+
+test('the production reader rejects an authenticated 1,000-user public projection', async t => {
+  const small = new SocialGraph(root);
+  for (let i = 0; i < 999; i++) small.addFollower(root, i.toString(16).padStart(64, '0'));
+  const fixture = await namedSnapshot(t, await small.toBinary());
+  // The fixture signs with a test key, so apply the production coverage floor explicitly.
+  await assert.rejects(loadGraphBootstrap({root, snapshot: fixture.snapshot, minUsers: 10_000}), /coverage/);
+});
+
+test('the production reader rejects trailing bytes under an otherwise valid directory signature', async t => {
+  const fixture = await namedSnapshot(t, Uint8Array.from([...bytes, 0]));
+  await assert.rejects(loadGraphBootstrap({root, snapshot: fixture.snapshot}), /trailing/i);
+});
 
 test('the production chunk reads the signed mobile graph from immutable blocks', async t => {
   const fixture = await namedSnapshot(t);

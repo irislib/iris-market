@@ -71,18 +71,21 @@ async function responseBytes(response: Response, signal?: AbortSignal) {
   return bytes
 }
 
-/** Optional bounded fresh discovery seed, with a pinned same-origin offline fallback. */
+export async function readSignedDiscovery(root: string, signal?: AbortSignal) {
+  const { loadGraphBootstrap: loadFreshGraph } = await import('nostr-social-graph/publicGraphSync')
+  const graph = await loadFreshGraph({ root, signal })
+  active(signal)
+  let newestFollowAt = 0
+  for (const timestamp of graph.getInternalData().followListCreatedAt.values()) newestFollowAt = Math.max(newestFollowAt, timestamp)
+  return { graph, provenance: Object.freeze({ source: 'signed-snapshot', package: 'nostr-social-graph', root,
+    sha256: null, bytes: null, verifiedEvents: false, stale: true, newestFollowAt }) }
+}
+
+/** A bounded live read or a pinned same-origin fallback for standalone callers. */
 export async function loadGraphBootstrap({ root = GRAPH_BOOTSTRAP.root, signal, fresh = false, fetchImpl = globalThis.fetch, timeoutMs = 8000, baseURI }: GraphBootstrapLoadOptions = {}) {
   checkRoot(root); active(signal)
   if (fresh) {
-    try {
-      const { loadGraphBootstrap: loadFreshGraph } = await import('nostr-social-graph/publicGraphSync')
-      const graph = await loadFreshGraph({ root, signal })
-      let newestFollowAt = 0
-      for (const timestamp of graph.getInternalData().followListCreatedAt.values()) newestFollowAt = Math.max(newestFollowAt, timestamp)
-      return { graph, provenance: Object.freeze({ source: 'signed-snapshot', package: 'nostr-social-graph', root,
-        sha256: null, bytes: null, verifiedEvents: false, stale: true, newestFollowAt }) }
-    } catch { active(signal) /* Keep the pinned seed available when the fresh service is unreachable. */ }
+    try { return await readSignedDiscovery(root, signal) } catch { active(signal) }
   }
   if (typeof fetchImpl !== 'function') throw new Error('Saved network loading is unavailable.')
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30_000) throw new Error('Invalid saved network timeout.')

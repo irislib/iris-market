@@ -35,10 +35,10 @@ test('anonymous worker configuration satisfies the shared graph initialization w
   assert.deepEqual(config.reconciliation,{lookbackSeconds:7*86400});
 });
 
-test('fixed graph bootstrap is explicit and restricted to the shipped relay set',()=>{
+test('the public event worker leaves snapshot loading to the discovery store',()=>{
   for(const relays of [DEFAULT_RELAYS,validateRelays(DEFAULT_RELAYS).reverse()]) {
     const config=publicWorkerConfig(relays);
-    assert.equal(config.graphBootstrap,true);
+    assert.equal(config.graphBootstrap,false);
     assert.deepEqual(config.relays,relays);
   }
   for(const relays of [[],['wss://custom.example'],DEFAULT_RELAYS.slice(1),[...DEFAULT_RELAYS,'wss://custom.example']]) {
@@ -62,7 +62,7 @@ test('changing relay settings terminates initializing workers and creates a fres
   closePublicRuntimes();
   const first=getPublicRuntime(DEFAULT_RELAYS);
   await until(()=>workers[0]?.messages.some(message=>message.type==='init'));
-  assert.equal(workers[0].messages[0].config.graphBootstrap,true);
+  assert.equal(workers[0].messages[0].config.graphBootstrap,false);
   closePublicRuntimes();
   assert.equal(workers[0].terminated,true);
   await assert.rejects(first.query([{kinds:[3]}]),{name:'AbortError'});

@@ -44,7 +44,9 @@ use iris_chat_protocol::{
 use nostr::{
     Alphabet, Event, Filter, JsonUtil, Keys, Kind, PublicKey, SingleLetterTag, UnsignedEvent,
 };
-use nostr_double_ratchet::{DeviceMembership, ProtocolContext, VerifiedAppKeysIndex};
+use nostr_double_ratchet::{
+    DeviceMembership, ProtocolContext, SessionManagerSnapshot, VerifiedAppKeysIndex,
+};
 use rand::{RngCore, rngs::OsRng};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -973,10 +975,17 @@ impl Messaging {
 
     /// Call on reconnect or a paced retry tick; it never performs network I/O.
     pub fn retry(&mut self) -> MessagingResult<()> {
+        let orders = self.ready_order_jobs()?;
         if !self
             .engine
             .has_due_pending_retry_work(iris_chat_protocol::NdrUnixSeconds(now()))
-            && !self.state.orders.jobs.iter().any(|job| !job.handed)
+            && orders.is_empty()
+            && !self
+                .state
+                .orders
+                .jobs
+                .iter()
+                .any(|job| job.action == "location" && !self.state.orders.can_publish(&job.id))
             && self.state.pending_invites.is_empty()
             && !self.state.matches.expired(now())
             && !self.history_due(now())
@@ -996,7 +1005,7 @@ impl Messaging {
             this.retry_invitations()?;
             this.send_pending_contacts()?;
             this.prepare_order_threads()?;
-            this.send_order_jobs()?;
+            this.send_order_jobs(orders)?;
             let batch = this
                 .engine
                 .retry_pending_protocol(iris_chat_protocol::NdrUnixSeconds(now()))
@@ -1009,7 +1018,14 @@ impl Messaging {
     }
 
     fn contact_recipient_ready(&self, peer: PublicKey) -> bool {
-        let snapshot = self.engine.session_manager_snapshot();
+        self.contact_ready_with_snapshot(peer, &self.engine.session_manager_snapshot())
+    }
+
+    fn contact_ready_with_snapshot(
+        &self,
+        peer: PublicKey,
+        snapshot: &SessionManagerSnapshot,
+    ) -> bool {
         let Some(user) = snapshot
             .users
             .iter()
@@ -1020,7 +1036,9 @@ impl Messaging {
         let Some(roster) = &user.roster else {
             return false;
         };
-        let verified_devices = self.engine.known_device_identity_pubkeys_for_owner(peer);
+        let verified_devices = self
+            .engine
+            .known_device_identity_pubkeys_for_owner_with_snapshot(snapshot, peer);
         let mut signed = VerifiedAppKeysIndex::default();
         let has_signed_heads =
             if let Some(heads) = self.state.authorization_heads.get(&peer.to_hex()) {
@@ -1049,9 +1067,20 @@ impl Messaging {
                         key == peer || verified_devices.contains(&key)
                     }
                 })
-                && (device.public_invite.is_some()
-                    || device.active_session.is_some()
-                    || !device.inactive_sessions.is_empty())
+                && (device.public_invite.as_ref().is_some_and(|invite| {
+                    invite.max_uses.is_none_or(|max| invite.used_by.len() < max)
+                        || invite.used_by.contains(&snapshot.local_device_pubkey)
+                }) || device
+                    .active_session
+                    .iter()
+                    .chain(&device.inactive_sessions)
+                    .any(|session| {
+                        // Match NDR Session::can_send without cloning ratchet keys.
+                        session.metadata_privacy_version
+                            == nostr_double_ratchet::METADATA_PRIVACY_VERSION
+                            && session.their_next_nostr_public_key.is_some()
+                            && session.our_current_nostr_key.is_some()
+                    }))
         })
     }
 
@@ -1459,44 +1488,51 @@ impl Messaging {
         Ok(())
     }
 
-    fn send_order_jobs(&mut self) -> MessagingResult<()> {
-        if !self.can_send() {
-            return Ok(());
+    fn ready_order_jobs(&self) -> MessagingResult<Vec<(crate::orders::Job, PublicKey, usize)>> {
+        let mut ready = Vec::new();
+        let mut pending = self
+            .state
+            .orders
+            .jobs
+            .iter()
+            .filter(|job| !job.handed)
+            .peekable();
+        if pending.peek().is_none()
+            || !self.can_send()
+            || self.state.outbox.len() >= MAX_OUTBOX.saturating_sub(16)
+        {
+            return Ok(ready);
         }
-        for job in self.state.orders.jobs.clone() {
-            if job.handed || !self.state.orders.can_publish(&job.id) {
-                continue;
+        let snapshot = self.engine.session_manager_snapshot();
+        let mut recipients = BTreeMap::new();
+        for job in pending.filter(|job| self.state.orders.can_publish(&job.id)) {
+            let peer = PublicKey::from_hex(&job.recipient).map_err(protocol_error)?;
+            let location = job.action == "location";
+            let targets = *recipients.entry((peer, location)).or_insert_with(|| {
+                if location {
+                    all_location_targets(&snapshot, peer)
+                } else {
+                    usize::from(self.contact_ready_with_snapshot(peer, &snapshot))
+                }
+            });
+            if targets != 0 {
+                ready.push((job.clone(), peer, targets));
             }
+        }
+        Ok(ready)
+    }
+
+    fn send_order_jobs(
+        &mut self,
+        jobs: Vec<(crate::orders::Job, PublicKey, usize)>,
+    ) -> MessagingResult<()> {
+        for (job, peer, targets) in jobs {
             if self.state.outbox.len() >= MAX_OUTBOX.saturating_sub(16) {
                 break;
             }
-            let peer = PublicKey::from_hex(&job.recipient).map_err(protocol_error)?;
             if job.action == "location" {
-                // Never leave superseded coordinates in the engine's unsent remote plaintext queue.
-                let snapshot = self.engine.session_manager_snapshot();
-                let Some(user) = snapshot
-                    .users
-                    .iter()
-                    .find(|user| user.owner_pubkey.to_bytes() == peer.to_bytes())
-                else {
-                    continue;
-                };
-                let Some(roster) = user.roster.as_ref() else {
-                    continue;
-                };
-                let targets = roster.devices();
-                if targets.is_empty()
-                    || !targets.iter().all(|target| {
-                        user.devices.iter().any(|device| {
-                            device.device_pubkey == target.device_pubkey
-                                && device.authorized
-                                && !device.is_stale
-                                && device.active_session.as_ref().is_some_and(|session| {
-                                    session.their_current_nostr_public_key.is_some()
-                                })
-                        })
-                    })
-                {
+                let at = UnixSeconds(now());
+                if !self.state.orders.can_publish(&job.id) {
                     continue;
                 }
                 let result = self
@@ -1505,10 +1541,10 @@ impl Messaging {
                         peer,
                         &job.recipient,
                         job.rumor.clone(),
-                        UnixSeconds(now()),
+                        at,
                     )
                     .map_err(protocol_error)?;
-                if result.event_ids.len() != targets.len() {
+                if result.event_ids.len() != targets {
                     return Err(
                         "Location sharing waits for every authorized recipient ratchet".into(),
                     );
@@ -2153,6 +2189,34 @@ fn now() -> u64 {
         .unwrap_or_default()
         .as_secs()
 }
+// Never put superseded coordinates in the engine's deferred remote plaintext queue.
+fn all_location_targets(snapshot: &SessionManagerSnapshot, peer: PublicKey) -> usize {
+    let Some(user) = snapshot
+        .users
+        .iter()
+        .find(|user| user.owner_pubkey.to_bytes() == peer.to_bytes())
+    else {
+        return 0;
+    };
+    let Some(roster) = &user.roster else { return 0 };
+    let targets = roster.devices();
+    if targets.iter().all(|target| {
+        user.devices.iter().any(|device| {
+            device.device_pubkey == target.device_pubkey
+                && device.authorized
+                && !device.is_stale
+                && device
+                    .active_session
+                    .as_ref()
+                    .is_some_and(|session| session.their_current_nostr_public_key.is_some())
+        })
+    }) {
+        targets.len()
+    } else {
+        0
+    }
+}
+
 fn protocol_error(error: impl std::fmt::Display) -> String {
     format!("Private messaging: {error}")
 }

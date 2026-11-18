@@ -32,6 +32,117 @@ fn exchange(a: &mut Messaging, b: &mut Messaging) {
 }
 
 #[test]
+fn unreachable_seller_does_not_block_another_order_after_restart() {
+    let buyer_dir = TempDir::new().unwrap();
+    let offline_dir = TempDir::new().unwrap();
+    let ready_dir = TempDir::new().unwrap();
+    let buyer_key = Keys::generate();
+    let offline_key = Keys::generate();
+    let ready_key = Keys::generate();
+    let mut buyer = Messaging::open(buyer_dir.path(), buyer_key.clone()).unwrap();
+    let mut ready = Messaging::open(ready_dir.path(), ready_key.clone()).unwrap();
+    buyer.accept_invite(&ready.invite().unwrap()).unwrap();
+    exchange(&mut buyer, &mut ready);
+
+    let first = buyer
+        .request_order(&listing(&offline_key), 1, "First")
+        .unwrap();
+    drop(buyer);
+    let mut buyer = Messaging::open(buyer_dir.path(), buyer_key).unwrap();
+    let second = buyer
+        .request_order(&listing(&ready_key), 1, "Second")
+        .unwrap();
+    exchange(&mut buyer, &mut ready);
+    assert_eq!(ready.orders().len(), 1);
+    assert_eq!(ready.orders()[0].order.id, second);
+    assert!(
+        buyer
+            .orders()
+            .iter()
+            .any(|view| view.order.id == first && view.sync == "queued")
+    );
+
+    let mut offline = Messaging::open(offline_dir.path(), offline_key).unwrap();
+    buyer.accept_invite(&offline.invite().unwrap()).unwrap();
+    exchange(&mut buyer, &mut offline);
+    assert_eq!(offline.orders().len(), 1);
+    assert_eq!(offline.orders()[0].order.id, first);
+    assert!(buyer.orders().iter().all(|view| view.sync == "sent"));
+    buyer.retry().unwrap();
+    assert!(buyer.pending_outbound().is_empty());
+}
+
+#[test]
+fn unreachable_order_retries_leave_the_database_idle() {
+    let dir = TempDir::new().unwrap();
+    let mut buyer = Messaging::open(dir.path(), Keys::generate()).unwrap();
+    buyer
+        .request_order(&listing(&Keys::generate()), 1, "Offline")
+        .unwrap();
+    let db =
+        rusqlite::Connection::open(dir.path().join("private-messages/messages.sqlite3")).unwrap();
+    let version = || {
+        db.query_row("PRAGMA data_version", [], |row| row.get::<_, u64>(0))
+            .unwrap()
+    };
+    let before = version();
+    for _ in 0..3 {
+        buyer.retry().unwrap();
+        assert_eq!(version(), before);
+    }
+    assert_eq!(buyer.orders()[0].sync, "queued");
+    assert!(buyer.pending_outbound().is_empty());
+}
+
+#[test]
+fn order_retries_each_previously_authorized_seller_device_when_ready() {
+    use iris_chat_protocol::{AppKeys, DeviceEntry};
+    let buyer_dir = TempDir::new().unwrap();
+    let primary_dir = TempDir::new().unwrap();
+    let linked_dir = TempDir::new().unwrap();
+    let seller = Keys::generate();
+    let linked = Keys::generate();
+    let at = nostr::Timestamp::now().as_secs();
+    let roster = AppKeys::new(vec![
+        DeviceEntry::new(seller.public_key(), at),
+        DeviceEntry::new(linked.public_key(), at),
+    ])
+    .get_event_at(seller.public_key(), at)
+    .sign_with_keys(&seller)
+    .unwrap();
+    let mut primary = Messaging::open(primary_dir.path(), seller.clone()).unwrap();
+    primary.ingest_authorization(&roster).unwrap();
+    let mut buyer = Messaging::open(buyer_dir.path(), Keys::generate()).unwrap();
+    buyer.ingest_authorization(&roster).unwrap();
+    let id = buyer
+        .request_order(&listing(&seller), 1, "Two devices")
+        .unwrap();
+    buyer.retry().unwrap();
+    assert!(buyer.pending_outbound().is_empty());
+    buyer
+        .receive(&primary.public_contact_event().unwrap())
+        .unwrap();
+    exchange(&mut buyer, &mut primary);
+    assert_eq!(primary.orders()[0].order.id, id);
+
+    let mut later = Messaging::open_identity(
+        linked_dir.path(),
+        seller.public_key(),
+        None,
+        linked,
+        Some(&roster),
+    )
+    .unwrap();
+    buyer
+        .receive(&later.public_contact_event().unwrap())
+        .unwrap();
+    exchange(&mut buyer, &mut later);
+    assert_eq!(later.orders()[0].order.id, id);
+    buyer.retry().unwrap();
+    assert!(buyer.pending_outbound().is_empty());
+}
+
+#[test]
 fn durable_local_order_actual_ndr_seller_accept_and_courier_route() {
     let bd = TempDir::new().unwrap();
     let sd = TempDir::new().unwrap();

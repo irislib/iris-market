@@ -76,12 +76,12 @@ test('the separate profile bootstrap uses the same default-only HTTP policy', as
   t.after(()=>{closePublicRuntimes();clearProfileCache();if(previous)Object.defineProperty(globalThis,'window',previous);else delete globalThis.window})
   for(const [relays,fresh] of [[validateRelays(DEFAULT_RELAYS),true],[['wss://custom.example'],false]]) {
     clearProfileCache()
-    let requested
-    await loadCurationContext({relays,timeoutMs:1,bootstrapLoader:async options=>{
-      requested=options.fresh
-      return {graph:new SocialGraph(DEFAULT_SOCIAL_GRAPH_ROOT),provenance:{source:'test-fixture'}}
-    }})
-    assert.equal(requested,fresh)
+    let signedReads = 0
+    await loadCurationContext({relays, timeoutMs: 1,
+      bootstrapLoader: discoveryBootstrap([[DEFAULT_SOCIAL_GRAPH_ROOT, keys[0]]]),
+      signedLoader: async () => { signedReads++; throw new Error('Signed snapshot unavailable') },
+    })
+    assert.equal(signedReads, Number(fresh))
     closePublicRuntimes()
   }
 })
@@ -459,4 +459,42 @@ test('discovery catch-up keeps the retained graph across profile queries', async
   assert.equal(loads, 1)
   assert.equal(next.rankRelationFor(keys[2]).distance, 1)
   assert.equal(next.relationFor(keys[2]).distance, null)
+})
+
+test('public discovery uses its embedded graph while a signed read is pending, then upgrades existing rankings', async t => {
+  clearProfileCache()
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  Object.defineProperty(globalThis, 'window', {configurable: true, value: {}})
+  t.after(async () => {
+    if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow)
+    else delete globalThis.window
+    const { closePublicRuntimes } = await import('../src/nostr-runtime.ts')
+    await closePublicRuntimes()
+    clearProfileCache()
+  })
+  const root = DEFAULT_SOCIAL_GRAPH_ROOT
+  let release
+  const held = new Promise(resolve => { release = resolve })
+  const bootstrap = discoveryBootstrap([[root, keys[0]]])
+  let reads = 0
+  const signedLoader = async () => {
+    reads++
+    await held
+    const next = await discoveryBootstrap([[root, keys[1]]])({root})
+    next.provenance.source = 'signed-snapshot'
+    return next
+  }
+  const ctx = await loadCurationContext({ bootstrapLoader: bootstrap, signedLoader, timeoutMs: 100 })
+  assert.equal(reads, 1)
+  assert.equal(ctx.rankRelationFor(keys[0]).distance, 1)
+  assert.equal(ctx.rankRelationFor(keys[1]).distance, null)
+  release()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(ctx.rankRelationFor(keys[1]).distance, 1)
+  assert.equal(ctx.rankRelationFor(keys[1]).source, 'signed-snapshot')
+  assert.equal(ctx.relationFor(keys[1]).badge, null)
+  const custom = await loadCurationContext({...options(scriptedSocket(() => [])), contextPubkey:root,
+    bootstrapLoader:bootstrap, signedLoader})
+  assert.equal(reads, 1)
+  assert.equal(custom.rankRelationFor(keys[0]).source, 'bundled-snapshot')
 })

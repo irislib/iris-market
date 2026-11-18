@@ -25,6 +25,10 @@ targets:
   IrisMarketMac:
     type: application
     platform: macOS
+    entitlements:
+      path: .build/Market.entitlements
+      properties:
+        com.apple.security.device.camera: true
     sources:
       - path: ../shared/escrow
         type: folder

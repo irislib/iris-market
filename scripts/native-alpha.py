@@ -257,6 +257,9 @@ def build_macos(args, stage, cache, environment):
     run(['xcodebuild', '-project', stage/'IrisMarketMac.xcodeproj', '-scheme', 'IrisMarketMac', '-configuration', 'Release', '-sdk', 'macosx', '-destination', 'generic/platform=macOS', '-archivePath', archive, '-derivedDataPath', derived, '-jobs', '2', 'ARCHS=arm64', 'ONLY_ACTIVE_ARCH=YES', 'CODE_SIGN_STYLE=Manual', 'CODE_SIGN_IDENTITY='+environment['MARKET_MACOS_SIGNING_IDENTITY'], 'DEVELOPMENT_TEAM='+environment['MARKET_APPLE_TEAM_ID'], 'ENABLE_HARDENED_RUNTIME=YES', 'MARKET_MACOS_STATIC_LIB='+str(cache/'aarch64-apple-darwin/release/libiris_market_app.a'), 'MARKET_RELEASE_VERSION='+args.tag[1:], 'MARKETING_VERSION='+args.tag[1:].split('-')[0], 'CURRENT_PROJECT_VERSION='+str(args.build_number), 'archive'], environment)
     app = archive/'Products/Applications/IrisMarket.app'
     run(['codesign', '--verify', '--deep', '--strict', app], environment)
+    entitlements = subprocess.check_output(['codesign', '--display', '--entitlements', '-', '--xml', app], env=environment, stderr=subprocess.DEVNULL)
+    release.require(plistlib.loads(entitlements).get('com.apple.security.device.camera') is True,
+                    'The signed Mac app must allow camera access for QR scanning')
     # Notarization/stapling and exact-archive runtime acceptance remain promotion gates.
     run(['ditto', '-c', '-k', '--sequesterRsrc', '--keepParent', app, args.output/release.asset_name(args.tag, args.platform)], environment)
 

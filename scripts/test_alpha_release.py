@@ -317,7 +317,13 @@ class AlphaContract(unittest.TestCase):
         stage=self.root/'stage'; cache=self.root/'cache'
         args=SimpleNamespace(platform='macos-arm64',tag=TAG,build_number=1,output=self.root)
         environment={'MARKET_MACOS_SIGNING_IDENTITY':'synthetic identity','MARKET_APPLE_TEAM_ID':'synthetic team'}
-        with patch.object(native.sys,'platform','darwin'), patch.object(native,'bindings'), patch.object(native,'rust'), patch.object(native,'apple_project'), patch.object(native,'run') as run:
+        with patch.object(native.sys,'platform','darwin'), patch.object(native,'bindings'), patch.object(native,'rust'), patch.object(native,'apple_project'), patch.object(native,'run') as run, patch.object(native.subprocess,'check_output') as signature:
+            signature.return_value = plistlib.dumps({})
+            with self.assertRaisesRegex(ValueError, 'camera access'):
+                native.build_macos(args,stage,cache,environment)
+            self.assertNotIn('ditto', [call.args[0][0] for call in run.call_args_list])
+            run.reset_mock()
+            signature.return_value = plistlib.dumps({'com.apple.security.device.camera': True})
             native.build_macos(args,stage,cache,environment)
         commands=[call.args[0] for call in run.call_args_list]
         archive=stage/'IrisMarket.xcarchive'

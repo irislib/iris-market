@@ -1,29 +1,42 @@
-name: Release contract
-
-on:
-  pull_request:
-  push:
-    branches: [main]
-  workflow_dispatch:
-
+name: Verify the Market core with the public graph crate
+on: workflow_dispatch
 permissions:
   contents: read
-
 jobs:
-  source-checks:
+  market-core:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 30
+    env:
+      CARGO_BUILD_JOBS: '3'
+      SOURCE_COMMIT: e61e01b30cb02956300b7d568b29b060a689c1ea
+      GRAPH_SHA256: e1580ee763ace197fa721c2815657c683fb7578f311bb8787f4efacb157fd5f8
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: e61e01b30cb02956300b7d568b29b060a689c1ea
           persist-credentials: false
-      - name: Check pinned inputs and artifact acceptance contract
-        env:
-          PYTHONDONTWRITEBYTECODE: '1'
+      - name: Check source and toolchain pins
         run: |
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
           python3 scripts/release-build-inputs.py --check
+          python3 scripts/release-build-inputs.py --install --work "$RUNNER_TEMP/market-rust" --target x86_64-unknown-linux-gnu
+      - name: Check the release contract and resolve the registry graph
+        run: |
           python3 scripts/android-release-inputs.py --check
           python3 scripts/test_alpha_release.py -v
-          python3 scripts/native-alpha.py --help
-          node --test scripts/publish-alpha.test.mjs
-      # Native builds, signing and publication are separately owned release gates.
+          cargo metadata --locked --format-version=1 > "$RUNNER_TEMP/metadata.json"
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib
+          d=json.loads((pathlib.Path(os.environ['RUNNER_TEMP'])/'metadata.json').read_bytes())
+          (graph,)=[p for p in d['packages'] if p['name']=='nostr-social-graph']
+          assert graph['version']=='0.2.3' and graph['source']=='registry+https://github.com/rust-lang/crates.io-index',graph['id']
+          (node,)=[n for n in d['resolve']['nodes'] if n['id']==graph['id']]
+          assert 'public-snapshot' in node['features']
+          source=pathlib.Path(graph['manifest_path']).parent
+          crate=source.parents[2]/'cache'/source.parent.name/(source.name+'.crate')
+          assert hashlib.sha256(crate.read_bytes()).hexdigest()==os.environ['GRAPH_SHA256']
+          print('Verified registry archive, exact version and enabled public-snapshot feature.')
+          PY
+      - name: Run the Market core library suite
+        run: |
+          cargo test --locked -p iris-market-core --lib

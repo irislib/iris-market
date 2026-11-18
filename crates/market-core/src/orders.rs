@@ -2,6 +2,9 @@
 //! The caller commits this book and the ratchet checkpoint in one encrypted
 //! transaction. A relay acknowledgement is delivery to a relay, never payment.
 
+mod handoff;
+pub use handoff::{HandoffAction, HandoffKind, HandoffView, RecipientHandoff};
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use nostr::{JsonUtil, PublicKey, UnsignedEvent};
@@ -190,6 +193,8 @@ pub enum Fulfillment {
 #[serde(rename_all = "camelCase")]
 pub struct Order {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipient_handoff: Option<RecipientHandoff>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fulfillment: Option<Fulfillment>,
     #[serde(flatten)]
     pub escrow: OrderEscrow,
@@ -225,6 +230,8 @@ impl Order {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OrderView {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub handoffs: Vec<HandoffView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_order_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -266,6 +273,8 @@ pub struct Envelope {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Record {
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    checked_handoffs: BTreeSet<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     source_order_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -516,6 +525,19 @@ fn order_item(listing: &crate::model::Listing, quantity: u16, now: u64) -> Resul
 }
 fn snapshot_with_mint(mut value: Order, developer_mint: Option<&str>) -> Result<Order> {
     value.escrow.validate(&value.buyer, &value.seller)?;
+    if let Some(handoff) = &value.recipient_handoff {
+        handoff.validate()?;
+        require(
+            (value.fulfillment.is_some()
+                || value
+                    .delivery_request
+                    .as_ref()
+                    .is_some_and(|r| r.collection.is_some()))
+                && handoff.key != value.buyer
+                && handoff.key != value.seller,
+            "Invalid private recipient handoff",
+        )?;
+    }
     require(
         value.escrow.escrow_trade_id.is_none() || value.payment.is_none(),
         "Use the escrow agreement for this payment",
@@ -613,6 +635,7 @@ fn immutable(a: &Order, b: &Order) -> bool {
         && a.note == b.note
         && a.created_at == b.created_at
         && a.delivery_request == b.delivery_request
+        && (b.recipient_handoff.is_none() || a.recipient_handoff == b.recipient_handoff)
         // An older client can omit this field from its echo of the initial request.
         && (b.fulfillment.is_none() || a.fulfillment == b.fulfillment)
 }
@@ -699,6 +722,7 @@ fn apply_with_mint(
             return Err("Order not found".into());
         };
         Record {
+            checked_handoffs: BTreeSet::new(),
             source_order_id: None,
             delivery_order_id: None,
             order,
@@ -1090,6 +1114,7 @@ impl OrderBook {
                         order.shipment.location = None;
                     }
                     OrderView {
+                        handoffs: r.handoff_views(owner),
                         source_order_id: r.source_order_id.clone(),
                         delivery_order_id: r.delivery_order_id.clone(),
                         display_price: None,
@@ -1146,6 +1171,7 @@ impl OrderBook {
             delivery,
             OrderEscrow::default(),
             None,
+            None,
             owner,
             device,
             now,
@@ -1160,6 +1186,7 @@ impl OrderBook {
         delivery: Option<DeliveryRequest>,
         escrow: OrderEscrow,
         fulfillment: Option<Fulfillment>,
+        recipient_handoff: Option<RecipientHandoff>,
         owner: &str,
         device: &str,
         now: u64,
@@ -1195,6 +1222,7 @@ impl OrderBook {
         let item = order_item(listing, quantity, now)?;
         let order = snapshot_with_mint(
             Order {
+                recipient_handoff,
                 fulfillment,
                 escrow,
                 payment: None,
@@ -1224,6 +1252,7 @@ impl OrderBook {
         lines: &[(crate::model::Listing, u16)],
         note: &str,
         fulfillment: Option<Fulfillment>,
+        recipient_handoff: Option<RecipientHandoff>,
         owner: &str,
         device: &str,
         now: u64,
@@ -1245,6 +1274,7 @@ impl OrderBook {
             .collect::<Result<Vec<_>>>()?;
         let order = snapshot_with_mint(
             Order {
+                recipient_handoff,
                 fulfillment,
                 escrow: OrderEscrow::default(),
                 payment: None,
@@ -1353,7 +1383,18 @@ impl OrderBook {
         };
         delivery_request(&delivery)?;
         let mut next = self.clone();
-        let id = next.request_with_delivery(listing, 1, "", Some(delivery), owner, device, now)?;
+        let id = next.request_with_escrow(
+            listing,
+            1,
+            "",
+            Some(delivery),
+            OrderEscrow::default(),
+            None,
+            source.order.recipient_handoff.clone(),
+            owner,
+            device,
+            now,
+        )?;
         next.local(
             source_id,
             "pickup",
@@ -1515,6 +1556,7 @@ impl OrderBook {
                 && let Some(snapshot) = &mut shared.snapshot
             {
                 snapshot.escrow = OrderEscrow::default();
+                snapshot.recipient_handoff = None;
             }
             let wire = serde_json::to_string(&shared).map_err(|_| "Invalid order update")?;
             require(wire.len() <= 24_000, "Order details are too large")?;
@@ -1732,6 +1774,254 @@ mod tests {
         book.receive(event, sender, sender, owner, 1000).is_some()
     }
     #[test]
+    fn recipient_scans_work_offline_are_local_and_cannot_be_reused() {
+        use nostr::{Keys, SecretKey};
+        let vector: Value =
+            serde_json::from_str(include_str!("../../../shared/handoff-vector.json")).unwrap();
+        let device = Keys::new(SecretKey::from_slice(&[7; 32]).unwrap());
+        let buyer = device.public_key().to_hex();
+        let seller = Keys::generate().public_key().to_hex();
+        let wrong_device = Keys::generate();
+        let handoff = RecipientHandoff {
+            id: vector["id"].as_str().unwrap().into(),
+            key: vector["key"].as_str().unwrap().into(),
+        };
+        let pass = vector["pass"].as_str().unwrap();
+        let at = vector["createdAt"].as_u64().unwrap();
+        let mut shopper = OrderBook::default();
+        let mut merchant = OrderBook::default();
+        let mut place = |handoff| {
+            let id = shopper
+                .request_basket(
+                    &[(listing(&seller), 1)],
+                    "",
+                    Some(Fulfillment::Pickup),
+                    Some(handoff),
+                    &buyer,
+                    &buyer,
+                    1000,
+                )
+                .unwrap();
+            assert!(receive(
+                &mut merchant,
+                &take(&shopper, "request", &seller),
+                &buyer,
+                &seller
+            ));
+            assert!(
+                merchant
+                    .verify_handoff(&id, &seller, HandoffKind::Pickup, pass, at)
+                    .is_err()
+            );
+            merchant
+                .update(&id, json!({"status":"accepted"}), &seller, &seller, 1000)
+                .unwrap();
+            assert!(receive(
+                &mut shopper,
+                &take(&merchant, "status", &buyer),
+                &seller,
+                &buyer
+            ));
+            id
+        };
+        let first = place(handoff.clone());
+        let replay = place(handoff.clone()); // Another request deliberately reuses the verification scope.
+        let unrelated = place(RecipientHandoff::create(&device).unwrap());
+        let kind = HandoffKind::Pickup;
+        let fresh = shopper
+            .show_handoff(&first, &buyer, kind, &device, None, at)
+            .unwrap();
+        assert!(
+            !fresh.contains(&buyer) && !fresh.contains(&seller) && !fresh.contains(&handoff.key)
+        );
+        assert!(
+            shopper
+                .show_handoff(&first, &buyer, kind, &wrong_device, None, at)
+                .is_err()
+        );
+        assert!(
+            merchant
+                .verify_handoff(&first, &buyer, kind, pass, at)
+                .is_err()
+        );
+        assert!(
+            merchant
+                .verify_handoff(&first, &seller, HandoffKind::Dropoff, pass, at)
+                .is_err()
+        );
+        assert!(
+            merchant
+                .verify_handoff(&unrelated, &seller, kind, pass, at)
+                .is_err()
+        );
+        assert!(
+            merchant
+                .verify_handoff(&first, &seller, kind, pass, at + 121)
+                .is_err()
+        );
+        assert!(
+            merchant
+                .verify_handoff(&first, &seller, kind, pass, at - 16)
+                .is_err()
+        );
+        assert!(
+            merchant
+                .verify_handoff(
+                    &first,
+                    &seller,
+                    kind,
+                    &pass.replace("ca4d7bb2", "ca4d7bb3"),
+                    at
+                )
+                .is_err()
+        );
+        assert!(
+            merchant
+                .verify_handoff(
+                    &first,
+                    &seller,
+                    kind,
+                    &pass.replace(":1700000000:", ":1700000000:extra:"),
+                    at
+                )
+                .is_err()
+        );
+        let jobs = merchant.jobs.len();
+        merchant
+            .verify_handoff(&first, &seller, kind, pass, at)
+            .unwrap();
+        assert_eq!(merchant.jobs.len(), jobs);
+        let persisted = serde_json::to_string(&merchant).unwrap();
+        assert!(!persisted.contains(pass));
+        let mut reopened: OrderBook = serde_json::from_str(&persisted).unwrap();
+        assert!(
+            reopened
+                .verify_handoff(&first, &seller, kind, &fresh, at)
+                .is_err()
+        );
+        assert!(
+            reopened
+                .verify_handoff(&replay, &seller, kind, &fresh, at)
+                .is_err()
+        );
+        assert_eq!(
+            reopened.records[&first].handoff_views(&seller)[0].action,
+            HandoffAction::Checked
+        );
+        assert_eq!(reopened.records[&first].order.status, OrderStatus::Accepted);
+        assert!(reopened.records[&first].order.payment.is_none());
+        reopened
+            .update(&first, json!({"status":"delivered"}), &seller, &seller, at)
+            .unwrap();
+        assert_eq!(
+            reopened.records[&first].handoff_views(&seller)[0].action,
+            HandoffAction::Checked
+        );
+        assert!(
+            reopened
+                .verify_handoff(&first, &seller, kind, pass, at)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn merchant_booked_courier_scans_anonymous_recipient_and_shows_separate_pickup_pass() {
+        use nostr::Keys;
+        let customer = Keys::generate();
+        let provider = Keys::generate();
+        let buyer = customer.public_key().to_hex();
+        let seller = Keys::generate().public_key().to_hex();
+        let courier = provider.public_key().to_hex();
+        let mut shopper = OrderBook::default();
+        let mut merchant = OrderBook::default();
+        let mut driver = OrderBook::default();
+        let recipient = RecipientHandoff::create(&customer).unwrap();
+        let id = shopper
+            .request_basket(
+                &[(listing(&seller), 2)],
+                "private item details",
+                Some(Fulfillment::MerchantDelivery),
+                Some(recipient.clone()),
+                &buyer,
+                &buyer,
+                1000,
+            )
+            .unwrap();
+        assert!(receive(
+            &mut merchant,
+            &take(&shopper, "request", &seller),
+            &buyer,
+            &seller
+        ));
+        merchant
+            .update(&id, json!({"status":"accepted"}), &seller, &seller, 1000)
+            .unwrap();
+        assert!(receive(
+            &mut shopper,
+            &take(&merchant, "status", &buyer),
+            &seller,
+            &buyer
+        ));
+        let mut service = listing(&courier);
+        service.tags = vec!["parcel".into()];
+        let place = DeliveryPlace {
+            label: "counter".into(),
+            address: "test place".into(),
+            coordinates: None,
+        };
+        let job = merchant
+            .book_delivery(
+                &id,
+                &service,
+                place.clone(),
+                Some(place),
+                &seller,
+                &seller,
+                1000,
+            )
+            .unwrap();
+        let request = take(&merchant, "request", &courier);
+        assert!(
+            !request.as_json().contains(&buyer)
+                && !request.as_json().contains(&id)
+                && !request.as_json().contains("private item details")
+        );
+        assert!(receive(&mut driver, &request, &seller, &courier));
+        driver
+            .update(&job, json!({"status":"accepted"}), &courier, &courier, 1000)
+            .unwrap();
+        let pickup = driver
+            .show_handoff(
+                &job,
+                &courier,
+                HandoffKind::Pickup,
+                &provider,
+                Some(&provider),
+                1000,
+            )
+            .unwrap();
+        let dropoff = shopper
+            .show_handoff(&id, &buyer, HandoffKind::Dropoff, &customer, None, 1000)
+            .unwrap();
+        assert!(
+            driver
+                .verify_handoff(&job, &courier, HandoffKind::Dropoff, &pickup, 1000)
+                .is_err()
+        );
+        assert!(
+            merchant
+                .verify_handoff(&id, &seller, HandoffKind::Dropoff, &dropoff, 1000)
+                .is_err()
+        );
+        merchant
+            .verify_handoff(&id, &seller, HandoffKind::Pickup, &pickup, 1000)
+            .unwrap();
+        driver
+            .verify_handoff(&job, &courier, HandoffKind::Dropoff, &dropoff, 1000)
+            .unwrap();
+    }
+
+    #[test]
     fn escrow_checkout_is_idempotent_private_and_cannot_request_direct_payment() {
         let buyer = "a".repeat(64);
         let seller = "b".repeat(64);
@@ -1752,6 +2042,7 @@ mod tests {
                 "Ring twice",
                 None,
                 link,
+                None,
                 None,
                 &buyer,
                 &buyer,
@@ -2040,6 +2331,7 @@ mod tests {
                     &[(listing(&seller), 2)],
                     "private product note",
                     Some(method),
+                    None,
                     &buyer,
                     &buyer,
                     1000,

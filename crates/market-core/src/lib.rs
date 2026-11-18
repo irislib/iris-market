@@ -460,6 +460,7 @@ impl State {
             orders,
             invite: self.invite.clone(),
             invite_qr: self.invite.as_deref().and_then(qr_modules),
+            handoff_pass: None,
             profile,
             profile_listings: self
                 .profile_listings
@@ -905,6 +906,24 @@ impl Market {
         let command: Command = serde_json::from_str(request).context("Invalid request")?;
         if request.len() > 32768 && !matches!(command, Command::SendTradeStep { .. }) {
             bail!("Request is too large");
+        }
+        if let Command::ShowOrderHandoff { order_id, kind } = &command {
+            let mut state = self.state.lock().unwrap();
+            ensure!(
+                !self.stopped.load(Ordering::Acquire)
+                    && !state.profile_name_required
+                    && !state.demo,
+                "Open your market profile first"
+            );
+            let pass = state
+                .messaging
+                .as_ref()
+                .context("Private orders unavailable")?
+                .show_order_handoff(order_id, *kind)
+                .map_err(anyhow::Error::msg)?;
+            let mut view = state.snapshot()?;
+            view.handoff_pass = Some(pass);
+            return Ok(serde_json::to_string(&view)?);
         }
         // Stale asynchronous results still fail their caller's generation check,
         // but must not become an error on the replacement screen.
@@ -1664,6 +1683,18 @@ impl Market {
                     .book_delivery(&source_order_id, &listing, destination, pickup)
                     .map_err(anyhow::Error::msg)?;
                 self.notify.notify_waiters();
+            }
+            Command::ShowOrderHandoff { .. } => unreachable!("presentation is a direct response"),
+            Command::VerifyOrderHandoff {
+                order_id,
+                kind,
+                pass,
+            } => {
+                s.messaging
+                    .as_mut()
+                    .context("Private orders unavailable")?
+                    .verify_order_handoff(&order_id, kind, &pass)
+                    .map_err(anyhow::Error::msg)?;
             }
             Command::SendOrderPaymentToken { order_id, token } => {
                 s.messaging

@@ -312,6 +312,9 @@ pub struct Conversation {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Snapshot {
+    /// Populated only in the response to an explicit request to show a handoff.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub handoff_pass: Option<String>,
     pub chat_retention: crate::messaging::Retention,
     pub private_matching: Option<serde_json::Value>,
     pub search_discovery: crate::search_discovery::Status,
@@ -579,6 +582,15 @@ pub enum Command {
         escrow_trade_id: Option<String>,
         #[serde(default)]
         escrow_provider: Option<String>,
+    },
+    ShowOrderHandoff {
+        order_id: String,
+        kind: crate::orders::HandoffKind,
+    },
+    VerifyOrderHandoff {
+        order_id: String,
+        kind: crate::orders::HandoffKind,
+        pass: String,
     },
     RequestDelivery {
         #[serde(default)]

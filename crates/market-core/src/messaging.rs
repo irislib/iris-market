@@ -1162,6 +1162,34 @@ impl Messaging {
         self.state.orders.views(&self.owner.to_hex(), now())
     }
 
+    pub(crate) fn show_order_handoff(
+        &self,
+        id: &str,
+        kind: crate::orders::HandoffKind,
+    ) -> MessagingResult<String> {
+        self.state.orders.show_handoff(
+            id,
+            &self.owner.to_hex(),
+            kind,
+            &self.keys,
+            self.owner_keys.as_ref(),
+            now(),
+        )
+    }
+
+    pub(crate) fn verify_order_handoff(
+        &mut self,
+        id: &str,
+        kind: crate::orders::HandoffKind,
+        pass: &str,
+    ) -> MessagingResult<()> {
+        self.transaction(|this| {
+            this.state
+                .orders
+                .verify_handoff(id, &this.owner.to_hex(), kind, pass, now())
+        })
+    }
+
     pub fn request_order(
         &mut self,
         listing: &crate::model::Listing,
@@ -1199,6 +1227,9 @@ impl Messaging {
         consume_basket: bool,
     ) -> MessagingResult<String> {
         self.transaction(|this| {
+            let handoff = fulfillment
+                .map(|_| crate::orders::RecipientHandoff::create(&this.keys))
+                .transpose()?;
             let id = this.state.orders.request_with_escrow(
                 listing,
                 quantity,
@@ -1206,6 +1237,7 @@ impl Messaging {
                 delivery,
                 escrow,
                 fulfillment,
+                handoff,
                 &this.owner.to_hex(),
                 &this.keys.public_key().to_hex(),
                 now(),
@@ -1252,10 +1284,14 @@ impl Messaging {
         fulfillment: Option<crate::orders::Fulfillment>,
     ) -> MessagingResult<String> {
         self.transaction(|this| {
+            let handoff = fulfillment
+                .map(|_| crate::orders::RecipientHandoff::create(&this.keys))
+                .transpose()?;
             let id = this.state.orders.request_basket(
                 lines,
                 note,
                 fulfillment,
+                handoff,
                 &this.owner.to_hex(),
                 &this.keys.public_key().to_hex(),
                 now(),

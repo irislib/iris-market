@@ -392,8 +392,18 @@ private data class BasketEscrowReview(val line: BasketLine, val note: String, va
             Text("Arrange delivery")
         }
 
-        if (order.handoffs.isNotEmpty()) key(state.publicKey, order.id) {
-            OrderHandoffActions(order.handoffs, busy,
+        key(state.publicKey, order.id) {
+            val receiptRole = order.pickupReceiptRole in setOf("collector", "merchant", "observer")
+            if (receiptRole || order.pickupReceipt != null) {
+                PickupReceiptSection(order, busy) { request -> model.orderHandoffCommand(state.publicKey, order.id, request) }
+            }
+            if (order.previousPickupReceipts.isNotEmpty()) {
+                PreviousPickupReceipts(order.previousPickupReceipts, busy) { reference ->
+                    requireNotNull(model.orderHandoffCommand(state.publicKey, order.id, JSONObject().put("type", "show_pickup_receipt").put("reference", reference)))
+                }
+            }
+            val handoffs = if (receiptRole) order.handoffs.filter { it.kind != "pickup" } else order.handoffs
+            if (handoffs.isNotEmpty()) OrderHandoffActions(handoffs, busy,
                 show = { kind -> requireNotNull(model.orderHandoff(state.publicKey, order.id, kind)) },
                 verify = { kind, pass -> model.orderHandoff(state.publicKey, order.id, kind, pass) })
         }

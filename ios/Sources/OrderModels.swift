@@ -20,6 +20,9 @@ struct MarketOrder: Decodable, Hashable, Identifiable {
     let escrowProvider: String?
     let payment: MarketOrderPayment?
     let handoffs: [MarketOrderHandoff]?
+    let pickupReceiptRole: String?
+    let pickupReceipt: MarketPickupReceipt?
+    let previousPickupReceipts: [MarketPreviousPickupReceipt]?
     let fulfillment: String?
     let deliveryRequest: MarketDeliveryRequest?
     let pickupAuthorization: MarketPickupAuthorization?
@@ -71,6 +74,18 @@ struct MarketOrder: Decodable, Hashable, Identifiable {
     func handlesDelivery(_ owner: String) -> Bool { (seller == owner && deliveryRequest != nil) || shipment.stops.contains { seller == owner || $0.courierPubkey == owner } }
 }
 
+struct MarketPreviousPickupReceipt: Decodable, Hashable {
+    let reference: String
+    let collectedAt: Int64
+    let confirmedAt: Int64
+}
+
+struct MarketPickupReceipt: Decodable, Hashable {
+    let state: String
+    let collectedAt: Int64
+    let confirmedAt: Int64?
+}
+
 struct MarketOrderHandoff: Decodable, Hashable, Identifiable {
     let kind: String
     let action: String
@@ -86,8 +101,15 @@ struct MarketOrderHandoff: Decodable, Hashable, Identifiable {
         }
     }
     static func passInput(_ value: String) -> String? {
-        guard value.hasPrefix("iris-handoff:1:"), value.utf8.count <= 220, value.utf8.allSatisfy({ (33...126).contains($0) }) else { return nil }
-        return value
+        guard value.hasPrefix("iris-handoff:1:") || value.hasPrefix("iris-handoff:2:pickup:") else { return nil }
+        return boundedInput(value, limit: 220)
+    }
+    static func receiptInput(_ value: String) -> String? {
+        guard value.hasPrefix("iris-pickup-receipt:1:") else { return nil }
+        return boundedInput(value, limit: 384)
+    }
+    private static func boundedInput(_ value: String, limit: Int) -> String? {
+        value.utf8.count <= limit && value.utf8.allSatisfy { (33...126).contains($0) } ? value : nil
     }
 }
 

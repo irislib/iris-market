@@ -50,6 +50,23 @@ enum class OrderFulfillment(val wire: String, val statusLabel: String, val check
     PICKUP("pickup", "Pickup"),
     BUYER_COURIER("buyer-courier", "Buyer arranges delivery", "I’ll arrange my own delivery");
 }
+data class PickupReceipt(val state: String, val collectedAt: Long, val confirmedAt: Long?) {
+    companion object {
+        fun parse(value: JSONObject) = PickupReceipt(value.getString("state"), value.getLong("collectedAt"), value.optLong("confirmedAt").takeIf { it > 0 })
+    }
+}
+
+data class PreviousPickupReceipt(val reference: String, val collectedAt: Long, val confirmedAt: Long) {
+    companion object {
+        fun parse(rows: JSONArray?): List<PreviousPickupReceipt> = buildList {
+            for (i in 0 until (rows?.length() ?: 0)) {
+                val row = rows?.optJSONObject(i) ?: continue
+                add(PreviousPickupReceipt(row.getString("reference"), row.getLong("collectedAt"), row.getLong("confirmedAt")))
+            }
+        }
+    }
+}
+
 data class OrderHandoff(val kind: String, val action: String) {
     val label: String get() = if (kind == "pickup") "pickup" else "recipient"
 
@@ -74,7 +91,9 @@ data class MarketOrder(
     val displayPrice:PriceDisplay?=null,val payment:OrderPayment?=null,val deliveryRequest:OrderDeliveryRequest?=null,val pickupAuthorization:PickupAuthorization?=null,val sourceOrderId:String?=null,val deliveryOrderId:String?=null,
     val escrowTradeId:String?=null,val escrowProvider:String?=null,
     /** A proxied thumbnail of the ordered item from the core. */
-    val displayImage:String?=null, val fulfillment:String?=null, val handoffs: List<OrderHandoff> = emptyList()
+    val displayImage:String?=null, val fulfillment:String?=null, val handoffs: List<OrderHandoff> = emptyList(),
+    val pickupReceiptRole: String? = null, val pickupReceipt: PickupReceipt? = null,
+    val previousPickupReceipts: List<PreviousPickupReceipt> = emptyList()
 ) {
     val formattedPrice: String get() {
         val display = displayPrice
@@ -122,7 +141,8 @@ data class MarketOrder(
                 value.optJSONObject("deliveryRequest")?.let {OrderDeliveryRequest.parse(it)},
                 value.optJSONObject("pickupAuthorization")?.let {PickupAuthorization(it.getString("courierPubkey"),it.getString("reference"))},value.textOrNull("sourceOrderId"),value.textOrNull("deliveryOrderId"),
                 value.textOrNull("escrowTradeId"), value.textOrNull("escrowProvider"), value.textOrNull("display_image"), value.textOrNull("fulfillment"),
-                OrderHandoff.parse(value.optJSONArray("handoffs")))
+                OrderHandoff.parse(value.optJSONArray("handoffs")), value.textOrNull("pickupReceiptRole"),
+                value.optJSONObject("pickupReceipt")?.let { PickupReceipt.parse(it) }, PreviousPickupReceipt.parse(value.optJSONArray("previousPickupReceipts")))
         }
         private fun coordinates(value: JSONArray?): List<Double>? = value?.takeIf { it.length() == 2 }?.let { listOf(it.optDouble(0), it.optDouble(1)) }?.takeIf { it.all(Double::isFinite) && kotlin.math.abs(it[0]) <= 180 && kotlin.math.abs(it[1]) <= 90 }
     }

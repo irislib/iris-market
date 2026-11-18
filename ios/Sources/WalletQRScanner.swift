@@ -66,16 +66,16 @@ private final class WalletCamera: NSObject, ObservableObject, AVCaptureMetadataO
 
 struct MarketQRScanner: View {
     enum Kind {
-        case token, invoice, handoff(String)
+        case token, invoice, handoff(String, receipt: Bool)
         var name: String {
-            switch self { case .token: return "token"; case .invoice: return "invoice"; case .handoff(let name): return name }
+            switch self { case .token: return "token"; case .invoice: return "invoice"; case .handoff(let name, _): return name }
         }
         var isHandoff: Bool { if case .handoff = self { return true }; return false }
         func input(_ value: String) -> String? {
             switch self {
             case .token: return WalletQRInput.token(value)
             case .invoice: return WalletQRInput.invoice(value)
-            case .handoff: return MarketOrderHandoff.passInput(value)
+            case .handoff(_, let receipt): return receipt ? MarketOrderHandoff.receiptInput(value) : MarketOrderHandoff.passInput(value)
             }
         }
     }
@@ -85,8 +85,8 @@ struct MarketQRScanner: View {
         self.kind = kind
         self.onValue = { value, done in onValue(value); done(nil) }
     }
-    init(handoff name: String, verify: @escaping (String, @escaping (String?) -> Void) -> Void) {
-        kind = .handoff(name)
+    init(handoff name: String, receipt: Bool = false, verify: @escaping (String, @escaping (String?) -> Void) -> Void) {
+        kind = .handoff(name, receipt: receipt)
         onValue = verify
     }
     @Environment(\.dismiss) private var dismiss

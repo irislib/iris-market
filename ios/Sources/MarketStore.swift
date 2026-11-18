@@ -319,8 +319,8 @@ final class MarketStore: ObservableObject {
     func command(_ value: [String: Any], expectedAIIntent: Int? = nil, urgentPreference: Bool = false, publishExpiry: NativeListingExpiry? = nil, completion: ((Bool) -> Void)? = nil) {
         runCommand(value, expectedAIIntent: expectedAIIntent, urgentPreference: urgentPreference, publishExpiry: publishExpiry, completion: completion)
     }
-    func showOrderHandoff(_ orderID: String, kind: String, onPass: @escaping (String) -> Void, completion: @escaping (Bool) -> Void) {
-        runCommand(["type": "show_order_handoff", "order_id": orderID, "kind": kind], onHandoffPass: onPass, completion: completion)
+    func showOrderHandoff(_ request: [String: Any], onPass: @escaping (String) -> Void, completion: @escaping (Bool) -> Void) {
+        runCommand(request, onHandoffPass: onPass, completion: completion)
     }
     private func runCommand(_ value: [String: Any], expectedAIIntent: Int? = nil, urgentPreference: Bool = false, publishExpiry: NativeListingExpiry? = nil, onHandoffPass: ((String) -> Void)? = nil, completion: ((Bool) -> Void)?) {
         #if DEBUG
@@ -384,7 +384,8 @@ final class MarketStore: ObservableObject {
                         if showsBusy { self?.operationCount -= 1; self?.busy = (self?.operationCount ?? 0) > 0 }
                         if let error = next.error, !error.isEmpty { if !backgroundReview { self?.alert = error }; completion?(false) }
                         else if let onHandoffPass {
-                            guard let pass, let valid = MarketOrderHandoff.passInput(pass) else {
+                            let validate = (value["type"] as? String == "show_pickup_receipt") ? MarketOrderHandoff.receiptInput : MarketOrderHandoff.passInput
+                            guard let pass, let valid = validate(pass) else {
                                 self?.alert = "Could not prepare the handoff code."; completion?(false); return
                             }
                             onHandoffPass(valid); completion?(true)

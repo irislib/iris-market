@@ -57,6 +57,17 @@ import Foundation
         }
         check(MarketOrderHandoff(kind: "pickup", action: "future").buttonLabel == nil && MarketOrderHandoff(kind: "unknown", action: "show").buttonLabel == nil, "Unknown handoffs expose no actions")
         check(MarketOrderHandoff.passInput("lightning:invoice") == nil && MarketOrderHandoff.passInput("iris-handoff:1:private\nvalue") == nil && MarketOrderHandoff.passInput("iris-handoff:1:" + String(repeating: "a", count: 220)) == nil, "Reject unrelated, multiline and oversized QR input before verification")
+        check(order.pickupReceiptRole == nil && order.pickupReceipt == nil && order.previousPickupReceipts == nil, "Existing orders decode without pickup receipts")
+        let awaiting = try product(.pickup, extra: ["pickupReceiptRole":"merchant", "pickupReceipt":["state":"awaiting-confirmation", "collectedAt":1200]])
+        check(awaiting.pickupReceiptRole == "merchant" && awaiting.pickupReceipt?.collectedAt == 1200 && awaiting.pickupReceipt?.confirmedAt == nil && awaiting.status == "accepted", "Collector acknowledgment leaves the merchant decision open")
+        let receipt = try product(.pickup, status: "delivered", extra: ["pickupReceiptRole":"collector", "pickupReceipt":["state":"confirmed", "collectedAt":1200, "confirmedAt":1205]])
+        check(receipt.terminal && receipt.pickupReceipt?.confirmedAt == 1205 && receipt.pickupReceipt?.state == "confirmed", "Completed receipts remain available on a closed order")
+        let reassigned = try product(.pickup, extra: ["pickupReceiptRole":"observer", "previousPickupReceipts":[["reference":"previous", "collectedAt":1200, "confirmedAt":1205]]])
+        check(reassigned.pickupReceipt == nil && reassigned.previousPickupReceipts?.first?.confirmedAt == 1205, "An earlier completed pickup is separate from the active assignment")
+        let ack = "iris-handoff:2:pickup:fixture"
+        let complete = "iris-pickup-receipt:1:fixture"
+        check(MarketOrderHandoff.passInput(ack) == ack && MarketOrderHandoff.receiptInput(ack) == nil, "Only handoff scanning accepts acknowledgments")
+        check(MarketOrderHandoff.receiptInput(complete) == complete && MarketOrderHandoff.passInput(complete) == nil && MarketOrderHandoff.receiptInput(complete + String(repeating: "x", count:384)) == nil, "Only receipt scanning accepts a bounded completed receipt")
         let merchantDelivery = try product(.merchantDelivery)
         check(merchantDelivery.canBookMerchantCourier("seller") && !merchantDelivery.canBookMerchantCourier("buyer"), "Only the merchant can book merchant delivery")
         check(!merchantDelivery.canBookBuyerCourier("buyer"), "Merchant delivery never prompts the buyer to book")

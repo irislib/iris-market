@@ -395,8 +395,8 @@ struct OrderDetailView: View {
             MarketInlineError()
             if let request = order.deliveryRequest { VStack(alignment: .leading, spacing: 8) { Text("Requested route").font(.headline); Text("Pickup · " + request.pickup.address); Text("Destination · " + request.destination.address); if let collection = request.collection { Text("Pickup reference · " + collection.reference).font(.caption).foregroundStyle(MarketTheme.muted) } } }
             if let authorization = order.pickupAuthorization { VStack(alignment: .leading, spacing: 8) { Text("Authorized collection").font(.headline); UserRow(person: store.snapshot.people[authorization.courierPubkey] ?? .unnamed(authorization.courierPubkey), subtitle: "Courier"); Text("Pickup reference · " + authorization.reference).font(.caption).foregroundStyle(MarketTheme.muted) } }
-            if !store.demo, let handoffs = order.handoffs, !handoffs.isEmpty {
-                OrderHandoffActions(orderID: order.id, handoffs: handoffs)
+            if !store.demo, order.handoffs?.isEmpty == false || order.pickupReceiptRole != nil || order.pickupReceipt != nil || order.previousPickupReceipts?.isEmpty == false {
+                OrderHandoffActions(order: order).id(order.id)
             }
             if order.escrowTradeId != nil {
                 if participant, let provider = order.escrowProvider {

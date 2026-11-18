@@ -11,6 +11,21 @@ class OrderProjectionTest {
       "shipment":{"stops":[{"id":"pickup","label":"Pickup","address":"Shop","coordinates":[24.94,60.17],"courierPubkey":"courier","status":"pending"}],"eta":1700003600},
       "archived":false,"sync":"queued","role":"courier","locationFresh":false
     }""")
+    @Test fun distinguishesCurrentAndEarlierPickupReceipts() {
+        val base = order()
+        val previous = JSONObject().put("reference", "previous").put("collectedAt", 1000).put("confirmedAt", 1005)
+        val pending = JSONObject().put("state", "awaiting-confirmation").put("collectedAt", 1100)
+        val value = MarketOrder.parse(base.put("pickupReceiptRole", "merchant").put("pickupReceipt", pending)
+            .put("previousPickupReceipts", org.json.JSONArray().put(previous)))
+        assertEquals("merchant", value.pickupReceiptRole)
+        assertEquals(PickupReceipt("awaiting-confirmation", 1100, null), value.pickupReceipt)
+        assertEquals(listOf(PreviousPickupReceipt("previous", 1000, 1005)), value.previousPickupReceipts)
+        val finished = MarketOrder.parse(base.put("status", "delivered")
+            .put("pickupReceipt", pending.put("state", "confirmed").put("confirmedAt", 1110)))
+        assertEquals(1110L, finished.pickupReceipt?.confirmedAt)
+        assertNull(MarketOrder.parse(order()).pickupReceipt)
+    }
+
     @Test fun parsesSharedCamelCaseOrderWithoutExposingParticipantsToMap() {
         val value = MarketOrder.parse(order())
         assertTrue(value.handoffs.isEmpty())

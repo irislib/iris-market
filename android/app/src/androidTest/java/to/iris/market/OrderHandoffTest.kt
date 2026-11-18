@@ -7,6 +7,11 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.inspector.WindowInspector
 import androidx.activity.ComponentActivity
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -41,11 +46,18 @@ class OrderHandoffTest {
             val y = i / side / 4 - 4
             if (x in modules.indices && y in modules.indices && modules[y][x]) 0 else -1
         }
-        return requireNotNull(CameraQRDecoder().decode(pixels, side, side)?.let(::handoffQRValue))
+        return requireNotNull(CameraQRDecoder().decode(pixels, side, side))
     }
 
     @Test fun longCodeRoundTripsThroughLocalQR() {
-        assertEquals(fixture, scanQR(fixture))
+        assertEquals(fixture, handoffQRValue(scanQR(fixture)))
+        val ack = "iris-handoff:2:pickup:" + "a".repeat(185)
+        val receipt = "iris-pickup-receipt:1:" + "c".repeat(340)
+        assertEquals(ack, handoffQRValue(scanQR(ack)))
+        assertEquals(receipt, receiptQRValue(scanQR(receipt)))
+        assertNull(handoffQRValue(receipt))
+        assertNull(receiptQRValue(ack))
+        assertNull(receiptQRValue(receipt + "c".repeat(24)))
         assertNull(handoffQRValue("cashuBexample"))
         assertNull(handoffQRValue(fixture + "123456"))
         assertNull(handoffQRValue(fixture + "\n"))
@@ -107,10 +119,13 @@ class OrderHandoffTest {
             }
             compose.setContent {
                 val snapshot by seller.state.collectAsState()
-                MarketTheme(false) { OrderDetail(snapshot.orders.single(), snapshot, seller, false, {}) {} }
+                MarketTheme(false) {
+                    Box(Modifier.fillMaxSize().systemBarsPadding()) { OrderDetail(snapshot.orders.single(), snapshot, seller, false, {}) {} }
+                }
             }
             fun capture(name: String) {
-                val image = checkNotNull(instrumentation.uiAutomation.takeScreenshot())
+                val image = if (name == "scanner") checkNotNull(instrumentation.uiAutomation.takeScreenshot())
+                    else compose.onRoot().captureToImage().asAndroidBitmap()
                 try {
                     File(app.cacheDir, "handoff-$name.png").outputStream().use { check(image.compress(Bitmap.CompressFormat.PNG, 100, it)) }
                 } finally { image.recycle() }
@@ -139,13 +154,82 @@ class OrderHandoffTest {
             assertTrue(checked.handoffs.contains(OrderHandoff("pickup", "checked")))
             assertEquals("accepted", checked.status)
             assertNull(checked.payment)
-            compose.onNodeWithText("Pickup code checked on this device.").performScrollTo().assertIsDisplayed()
-            compose.onNodeWithText("Scan pickup code").assertDoesNotExist()
+            assertNull(checked.pickupReceipt)
+            compose.onNodeWithText("Pickup authorization checked on this device.").performScrollTo().assertIsDisplayed()
+            compose.onNodeWithText("Scan pickup code").assertIsEnabled()
+            compose.onNodeWithText("Confirm handover").assertDoesNotExist()
             capture("checked")
+            fun pickup(model: MarketModel, request: JSONObject) = runBlocking {
+                model.orderHandoffCommand(model.state.value.publicKey, orderId, request)
+            }
+            val acknowledgment = requireNotNull(pickup(buyer, command("acknowledge_order_pickup")))
+            assertEquals("acknowledged", buyer.state.value.orders.single().pickupReceipt?.state)
+            pickup(seller, command("verify_order_handoff").put("kind", "pickup").put("pass", handoffQRValue(scanQR(acknowledgment))))
+            assertEquals("awaiting-confirmation", seller.state.value.orders.single().pickupReceipt?.state)
+            assertNull(seller.state.value.orders.single().pickupReceipt?.confirmedAt)
+            compose.onNodeWithText("Confirm handover").performScrollTo().assertIsDisplayed()
+            capture("awaiting-confirmation")
+            compose.onNodeWithText("Confirm handover").performClick()
+            compose.onNodeWithText("Cancel").performClick()
+            assertNull(seller.state.value.orders.single().pickupReceipt?.confirmedAt)
+            compose.onNodeWithText("Confirm handover").performScrollTo().performClick()
+            compose.onNodeWithText("I handed it over").performClick()
+            compose.onNodeWithText("Show receipt QR").performScrollTo().assertIsDisplayed()
+            capture("confirmed")
+            val completed = requireNotNull(pickup(seller, command("show_pickup_receipt")))
+            val scanReceipt = command("verify_pickup_receipt").put("receipt", receiptQRValue(scanQR(completed)))
+            repeat(2) { pickup(buyer, scanReceipt) }
+            val agreed = buyer.state.value.orders.single().pickupReceipt
+            assertEquals("confirmed", agreed?.state)
+            assertEquals(agreed, seller.state.value.orders.single().pickupReceipt)
+            for (model in listOf(buyer, seller)) {
+                val unchanged = model.state.value.orders.single()
+                assertEquals("accepted", unchanged.status)
+                assertNull(unchanged.payment)
+            }
         } finally {
             stores.forEach(ViewModelStore::clear)
             root.deleteRecursively()
         }
+    }
+
+    @Test fun collectorCanCancelBeforeAcknowledgingAndReadTheReceiptAfterClosure() {
+        val fixtureOrder = JSONObject("""{"id":"item","buyer":"buyer","seller":"merchant","items":[],
+            "status":"accepted","createdAt":100,"updatedAt":100,"pickupReceiptRole":"collector",
+            "shipment":{"stops":[]},"handoffs":[{"kind":"pickup","action":"show"}]}""")
+        val original = MarketOrder.parse(fixtureOrder)
+        val order = mutableStateOf(original)
+        val count = AtomicInteger()
+        compose.setContent {
+            MarketTheme(false) {
+                PickupReceiptSection(order.value, false) { request ->
+                    check(request.getString("type") == "acknowledge_order_pickup")
+                    count.incrementAndGet()
+                    order.value = original.copy(pickupReceipt = PickupReceipt("acknowledged", System.currentTimeMillis() / 1000, null))
+                    null
+                }
+            }
+        }
+        compose.onNodeWithText("Acknowledge collection").performClick()
+        compose.onNodeWithText("Cancel").performClick()
+        assertEquals(0, count.get())
+        compose.onNodeWithText("Offline pickup options").performClick()
+        compose.onNodeWithText("Show authorization code").assertIsEnabled()
+        compose.onNodeWithText("Acknowledge collection").performClick()
+        compose.onNodeWithText("I collected the item").performClick()
+        compose.onNodeWithText("Waiting for merchant confirmation.").assertIsDisplayed()
+        compose.onNodeWithText("Scan returned receipt").assertIsEnabled()
+        assertEquals(1, count.get())
+        compose.runOnIdle { order.value = original.copy(status = "delivered", pickupReceipt = PickupReceipt("confirmed", 101, 105)) }
+        compose.onNodeWithText("Merchant confirmed", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("Acknowledge collection").assertDoesNotExist()
+        compose.onNodeWithText("Scan returned receipt").assertDoesNotExist()
+        compose.runOnIdle { order.value = original.copy(pickupReceiptRole = "observer") }
+        compose.onNodeWithText("The signed receipt will appear here after pickup.").assertIsDisplayed()
+        compose.onNodeWithText("Receive receipt offline").performClick()
+        compose.onNodeWithText("Scan returned receipt").assertIsEnabled()
+        compose.onNodeWithText("Acknowledge collection").assertDoesNotExist()
+        compose.onNodeWithText("Confirm handover").assertDoesNotExist()
     }
 
     @Test fun codeIsRequestedOnTapAndCanBeRenewed() {

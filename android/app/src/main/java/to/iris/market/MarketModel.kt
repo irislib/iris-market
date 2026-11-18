@@ -156,8 +156,9 @@ data class MarketSnapshot(
     val revision: Long = 0, val aiMessage: String? = null, val aiTestResult: NativeAITestResult? = null, val savedListings: List<Listing>? = null, val basket: List<BasketGroup> = emptyList(), val escrowInvites: List<EscrowInboxCard> = emptyList(), val escrowRevision: Int = 0, val aiConfigured: Boolean = true, val profileNameRequired: Boolean = false
 ) {
     companion object {
-        fun parse(raw: String): MarketSnapshot {
-            val o = JSONObject(raw)
+        fun parse(raw: String): MarketSnapshot = parse(JSONObject(raw))
+
+        fun parse(o: JSONObject): MarketSnapshot {
             val ls = o.optJSONArray("listings") ?: JSONArray()
             val cs = o.optJSONArray("conversations") ?: JSONArray()
             return MarketSnapshot(
@@ -679,24 +680,26 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
             submit(request,{if(c.isActive)c.resumeWith(Result.success(Unit))},{error->if(c.isActive)c.resumeWith(Result.failure(IllegalStateException(error)))})
         }
     }
-    /** A shown pass is returned only to its open dialog. Only successful checks enter the order snapshot. */
     internal suspend fun orderHandoff(owner: String, orderId: String, kind: String, scanned: String? = null): String? {
+        val request = JSONObject().put("kind", kind)
+        if (scanned == null) request.put("type", "show_order_handoff")
+        else request.put("type", "verify_order_handoff").put("pass", scanned)
+        return orderHandoffCommand(owner, orderId, request)
+    }
+
+    /** The returned code is transient. Only the projection of the receipt enters observable state. */
+    internal suspend fun orderHandoffCommand(owner: String, orderId: String, request: JSONObject): String? {
         val generation = accountGeneration
         return withContext(Dispatchers.IO) {
             mutex.withLock {
                 check(!preview && generation == accountGeneration && state.value.publicKey == owner)
-                val request = JSONObject().put("order_id", orderId).put("kind", kind)
-                if (scanned == null) request.put("type", "show_order_handoff")
-                else request.put("type", "verify_order_handoff").put("pass", scanned)
-                val raw = (core ?: error("Profile unavailable")).command(request.toString())
+                val raw = (core ?: error("Profile unavailable")).command(request.put("order_id", orderId).toString())
                 if (generation != accountGeneration || state.value.publicKey != owner) throw CancellationException("Profile changed")
-                if (scanned == null) JSONObject(raw).getString("handoff_pass")
-                else {
-                    val next = MarketSnapshot.parse(raw)
-                    check(next.orders.any { it.id == orderId && OrderHandoff(kind, "checked") in it.handoffs })
-                    publishSnapshot(next)
-                    null
-                }
+                val reply = JSONObject(raw)
+                val next = MarketSnapshot.parse(reply)
+                next.error?.takeIf { it.isNotBlank() }?.let { error(it) }
+                publishSnapshot(next)
+                reply.optString("handoff_pass").takeIf { it.isNotBlank() }
             }
         }
     }

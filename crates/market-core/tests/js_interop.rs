@@ -14,6 +14,7 @@ struct Input {
     send_text: Option<String>,
     expected_order: Option<String>,
     order_patch: Option<serde_json::Value>,
+    pickup_pass: Option<String>,
     #[serde(default)]
     mark_read: Vec<String>,
     #[serde(default)]
@@ -82,6 +83,15 @@ fn javascript_runtime_wire_roundtrip() {
         );
         if let Some(patch) = input.order_patch {
             market.update_order(&expected, patch).unwrap();
+        }
+        if let Some(pass) = input.pickup_pass {
+            market
+                .verify_order_handoff(
+                    &expected,
+                    iris_market_core::orders::HandoffKind::Pickup,
+                    &pass,
+                )
+                .unwrap();
         }
     }
     if !input.mark_read.is_empty() {
@@ -206,6 +216,20 @@ fn fresh_native_profile_orders_with_strict_js_peer() {
             "Strict JS peer did not accept fresh native order"
         );
         std::thread::sleep(Duration::from_millis(50));
+    }
+    if let Some(path) = env::var_os("MARKET_SYNTHETIC_PICKUP_PASS") {
+        let order = snapshot()["orders"][0]["id"].clone();
+        let reply: Value = serde_json::from_str(
+            &market
+                .command(
+                    &json!({"type":"show_order_handoff","order_id":order,"kind":"pickup"})
+                        .to_string(),
+                )
+                .unwrap(),
+        )
+        .unwrap();
+        fs::write(path, reply["handoff_pass"].as_str().unwrap()).unwrap();
+        assert!(snapshot().get("handoff_pass").is_none());
     }
     market.shutdown();
     if legacy {

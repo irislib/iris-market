@@ -66,6 +66,14 @@ try {
   await waitFor(()=>app.state().orders.find(o=>o.id===linked.id)?.sync==='sent');
   const next=await native({incoming:frames.slice(start).filter(e=>[1059,1060].includes(e.kind)),expected_order:linked.id,order_patch:{status:'accepted'}});
   const received=next.orders.find(o=>o.id===linked.id);
+  await waitFor(()=>app.state().orders.find(o=>o.id===linked.id)?.status==='accepted');
+  const pass=await app.showOrderHandoff(linked.id,'pickup');
+  const nativeCheck=await native({expected_order:linked.id,pickup_pass:pass});
+  const checked=nativeCheck.orders.find(o=>o.id===linked.id);
+  assert.deepEqual(checked.handoffs,[{kind:'pickup',action:'checked'}]);
+  assert.equal(checked.status,'accepted');
+  assert.ok(!JSON.stringify(nativeCheck).includes(pass));
+
   assert.equal(received.fulfillment,'pickup');assert.equal(received.escrowProvider,provider);assert.equal(received.escrowTradeId,tradeId);
   await waitFor(()=>app.state().orders.find(o=>o.id===linked.id)?.status==='accepted');
   assert(frames.slice(start).every(e=>!JSON.stringify(e).includes(provider)&&!JSON.stringify(e).includes(tradeId)));

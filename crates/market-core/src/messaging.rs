@@ -1177,7 +1177,7 @@ impl Messaging {
         )
     }
 
-    pub(crate) fn verify_order_handoff(
+    pub fn verify_order_handoff(
         &mut self,
         id: &str,
         kind: crate::orders::HandoffKind,

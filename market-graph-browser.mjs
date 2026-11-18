@@ -24,6 +24,14 @@ const base='http://127.0.0.1:'+server.address().port;
 const chunks=await readdir(resolve(dist,'chunks'));
 const graphChunk=chunks.filter(x=>/^publicGraphSync-.*\.js$/.test(x));assert.equal(graphChunk.length,1);
 const original=await readFile(resolve(dist,'chunks',graphChunk[0]),'utf8');assert.equal(original.split(pub).length,2);
+const embedded=await SocialGraph.fromBinary(root,new Uint8Array(await readFile(resolve(dist,'social-graph.bin'))));
+const embeddedFriend=[...embedded.getFollowedByUser(root)][0]; assert(embeddedFriend);
+const app=await readFile(resolve(dist,'app.js'),'utf8');
+const distance=[...app.matchAll(/const [\w$]+=([\w$]+)\.distance\([\w$]+\);return [\w$]+==="following"/g)];
+assert.equal(distance.length,1);
+const pending=[...app.matchAll(/([\w$]+\.publicBootstrap=)(\{signal:[\w$]+,result:[\w$]+\})/g)];
+assert.equal(pending.length,1);
+const observedApp=app.replace(pending[0][0],pending[0][1]+'window.__publicSelection='+pending[0][2])+'\nwindow.__listingDistance=key=>'+distance[0][1]+'.distance(key);';
 const browser=await chromium.launch();
 try{
  for(const mode of ['healthy','undersized','malformed','saved-empty']){
@@ -50,7 +58,7 @@ try{
     }catch(e){errors.push(String(e))}
    });});
    await ctx.route('**/*',async route=>{const u=new URL(route.request().url());
-    if(u.origin===base){loaded.push(u.pathname);if(u.pathname==='/chunks/'+graphChunk[0])return route.fulfill({contentType:'text/javascript',body:original.replace(pub,f.publisher)});return route.continue()}
+    if(u.origin===base){loaded.push(u.pathname);if(u.pathname==='/app.js')return route.fulfill({contentType:'text/javascript',body:observedApp});if(u.pathname==='/chunks/'+graphChunk[0])return route.fulfill({contentType:'text/javascript',body:original.replace(pub,f.publisher)});return route.continue()}
     if(u.origin==='https://cdn.iris.to'&&/^\/[0-9a-f]{64}\.bin$/.test(u.pathname)){
      const hash=u.pathname.slice(1,-4),block=await f.readBlock(hash);
      if(block){blocks.push(hash);return route.fulfill({body:Buffer.from(block),contentType:'application/octet-stream',headers:{'access-control-allow-origin':'*'}})}
@@ -60,9 +68,9 @@ try{
    const page=await ctx.newPage();page.on('pageerror',e=>errors.push(e.message));
    await page.goto(base,{waitUntil:'domcontentloaded'});
    await waitFor(()=>loaded.includes('/social-graph.bin'));
-   await page.waitForFunction(()=>/follows/.test(document.querySelector('#curation-status')?.textContent??''),{},{timeout:24000});
+   await page.waitForFunction(key=>window.__listingDistance?.(key)===1,embeddedFriend,{timeout:24000});
+   assert.equal(await page.evaluate(key=>window.__listingDistance(key),friend),null);
    embeddedReadyMs=Date.now()-start;
-   const firstStatus=await page.locator('#curation-status').textContent();assert(!/^1 follows/.test(firstStatus),firstStatus);
    assert.equal(blocks.length,0);
    release();
    if(mode!=='saved-empty'){
@@ -72,8 +80,19 @@ try{
    }else{await waitFor(()=>loaded.includes('/social-graph.bin'));assert.deepEqual(names,[]);assert.deepEqual(blocks,[]);}
    await page.waitForFunction(()=>document.querySelector('#curation-status')?.textContent!=='Loading public connections…',{},{timeout:22000});
    assert.equal(await page.evaluate(()=>localStorage.getItem('market-relays')),mode==='saved-empty'?'[]':null);
-   if(mode==='healthy'){await page.waitForFunction(()=>/^1 follows/.test(document.querySelector('#curation-status')?.textContent??''),{},{timeout:12000});await page.screenshot({path:'/out/signed-market.png',animations:'disabled'});}
-   if(mode==='undersized'||mode==='malformed'){assert.equal(await page.locator('#curation-status').textContent(),firstStatus);}
+   if(mode!=='saved-empty'){
+    const outcome=await page.evaluate(()=>window.__publicSelection.result.then(()=> 'accepted', error=>String(error)));
+    if(mode==='healthy'){
+     assert.equal(outcome,'accepted');
+     assert.equal(await page.evaluate(key=>window.__listingDistance(key),friend),1);
+     assert.equal(await page.evaluate(key=>window.__listingDistance(key),embeddedFriend),null);
+     await page.screenshot({path:'/out/signed-market.png',animations:'disabled'});
+    }else{
+     assert.match(outcome, mode==='undersized'?/coverage|small|minimum/i:/trailing/i);
+     assert.equal(await page.evaluate(key=>window.__listingDistance(key),embeddedFriend),1);
+     assert.equal(await page.evaluate(key=>window.__listingDistance(key),friend),null);
+    }
+   }
    assert.deepEqual(posts,[]);assert.deepEqual(errors,[]);
    result.checks.push({mode,embeddedReadyMs,signedNameReads:names.length,verifiedBlockRequests:blocks.length,usedBundledSeed:loaded.includes('/social-graph.bin'),publicPosts:posts.length,errors,status:await page.locator('#curation-status').textContent()});
   }finally{release();await ctx.close();}

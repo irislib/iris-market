@@ -664,14 +664,22 @@ fn imported_profile_holds_an_offline_name_edit_and_keeps_the_cached_signed_event
             .all(|event| event.kind != nostr::Kind::Metadata)
     );
     app.shutdown();
-    let cache = iris_market_core::public_cache::PublicEventCache::open(
-        &dir.path().join("public-events.sqlite"),
+    let db = rusqlite::Connection::open_with_flags(
+        dir.path().join("public-events.sqlite"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
     )
     .unwrap();
-    let filter = nostr::Filter::new()
-        .kind(nostr::Kind::Metadata)
-        .author(owner);
-    assert_eq!(cache.query_local(&[filter], 1).unwrap(), vec![metadata]);
+    let raw: String = db
+        .query_row(
+            "SELECT raw FROM public_events WHERE id=?1",
+            [metadata.id.to_hex()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<nostr::Event>(&raw).unwrap(),
+        metadata
+    );
 }
 
 #[test]

@@ -101,6 +101,22 @@ async fn relay_head(url: String, owner: PublicKey) -> Result<Option<Event>> {
     bail!("Too many messages while checking the profile")
 }
 
+async fn latest_relay_head(owner: PublicKey, relays: &[String]) -> Result<Option<Event>> {
+    ensure!(!relays.is_empty(), "Select a relay to publish your profile");
+    let mut queries = tokio::task::JoinSet::new();
+    for url in relays {
+        queries.spawn(relay_head(url.clone(), owner));
+    }
+    tokio::time::timeout(Duration::from_secs(8), async {
+        let mut events = Vec::new();
+        while let Some(result) = queries.join_next().await {
+            events.extend(result??);
+        }
+        Ok(latest(events))
+    })
+    .await?
+}
+
 async fn save_pending(
     state: &Mutex<State>,
     stopped: &AtomicBool,
@@ -108,19 +124,7 @@ async fn save_pending(
     name: &str,
     relays: &[String],
 ) -> Result<()> {
-    ensure!(!relays.is_empty(), "Select a relay to publish your profile");
-    let mut queries = tokio::task::JoinSet::new();
-    for url in relays {
-        queries.spawn(relay_head(url.clone(), owner));
-    }
-    let mut events = Vec::new();
-    tokio::time::timeout(Duration::from_secs(8), async {
-        while let Some(result) = queries.join_next().await {
-            events.extend(result??);
-        }
-        Ok::<_, anyhow::Error>(())
-    })
-    .await??;
+    let relay_head = latest_relay_head(owner, relays).await?;
     let (previous, signer, remote) = {
         let s = state.lock().unwrap();
         ensure!(
@@ -129,19 +133,22 @@ async fn save_pending(
                 && s.pending_profile_name.as_deref() == Some(name),
             "Profile changed"
         );
-        events.extend(s.profiles.metadata_event(&owner.to_hex()).cloned());
         (
-            latest(events),
+            latest(
+                relay_head
+                    .into_iter()
+                    .chain(s.profiles.metadata_event(&owner.to_hex()).cloned()),
+            ),
             s.owner_keys.clone(),
             s.remote_signer.clone(),
         )
     };
     let unsigned = draft(owner, name, previous.as_ref())?;
-    let signed = if let Some(keys) = signer {
-        unsigned.sign_with_keys(&keys)?
+    let (signed, after_signing) = if let Some(keys) = signer {
+        (unsigned.sign_with_keys(&keys)?, None)
     } else {
         let (signer, approval) = remote.context("Connect your profile signer")?;
-        match signer.sign(unsigned, &approval).await {
+        let signed = match signer.sign(unsigned, &approval).await {
             Ok(event) => event,
             Err(error) => {
                 let mut s = state.lock().unwrap();
@@ -152,20 +159,26 @@ async fn save_pending(
                 }
                 return Err(error);
             }
-        }
+        };
+        (signed, latest_relay_head(owner, relays).await?)
     };
     let mut s = state.lock().unwrap();
     let current = s.profiles.metadata_event(&owner.to_hex()).cloned();
     ensure!(
         !stopped.load(Ordering::Acquire)
             && s.settings.relays == relays
-            && s.pending_profile_name.as_deref() == Some(name)
-            && latest(current.into_iter().chain(previous.clone()))
-                .as_ref()
-                .map(|e| e.id)
-                == previous.as_ref().map(|e| e.id),
+            && s.pending_profile_name.as_deref() == Some(name),
         "Profile changed while signing"
     );
+    let base_id = previous.as_ref().map(|event| event.id);
+    if let Some(head) = latest(current.into_iter().chain(after_signing).chain(previous))
+        && Some(head.id) != base_id
+    {
+        // Keep the name pending. The worker will request a signature for the newer profile.
+        s.profiles.ingest_public(head)?;
+        s.revision += 1;
+        return Ok(());
+    }
     s.store.queue_profile_metadata(&signed)?;
     s.pending_profile_name = None;
     s.profiles.ingest_public(signed)?;

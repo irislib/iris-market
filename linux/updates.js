@@ -14,9 +14,15 @@
   if (document.querySelector('#desktop-updates')) return;
   const section = document.createElement('section');
   section.id = 'desktop-updates'; section.className = 'settings-section';
-  section.innerHTML = '<h3>App updates</h3><p data-version class="small muted"></p><label class="checkbox-label"><input type="checkbox" data-auto>Check automatically</label><p data-status role="status" aria-live="polite"></p><progress data-progress hidden></progress><p data-error class="error" role="alert"></p><div class="detail-actions"><button type="button" class="button primary" data-install hidden>Install update</button><button type="button" class="button primary" data-retry hidden>Retry</button><button type="button" class="button secondary" data-open hidden>Open installer</button><button type="button" class="button secondary" data-check>Check for updates</button></div>';
+  section.innerHTML = '<h3>App updates</h3><p data-version class="small muted"></p><label class="checkbox-label"><input type="checkbox" data-auto>Check automatically</label><p data-status role="status" aria-live="polite"></p><progress data-progress aria-label="Update progress" hidden></progress><p data-error class="error" role="alert"></p><div class="detail-actions"><button type="button" class="button primary" data-install hidden>Install update</button><button type="button" class="button primary" data-retry hidden>Retry</button><button type="button" class="button secondary" data-open hidden>Open installer</button><button type="button" class="button secondary" data-check>Check for updates</button></div>';
   const style = document.createElement('style');
-  style.textContent = '#desktop-updates progress{display:block;width:100%;height:6px;margin:-4px 0 12px;appearance:none;border:0;border-radius:8px;overflow:hidden;accent-color:var(--accent)}#desktop-updates progress::-webkit-progress-bar{background:var(--soft);border-radius:8px}#desktop-updates progress::-webkit-progress-value{background:var(--accent);border-radius:8px}#desktop-updates progress[hidden]{display:none}#desktop-updates [data-error]:empty{display:none}';
+  style.textContent = `
+    #desktop-updates progress{display:block;width:100%;height:6px;margin:-4px 0 12px;appearance:none;border:0;border-radius:8px;overflow:hidden;accent-color:var(--accent)}
+    #desktop-updates progress::-webkit-progress-bar{background:var(--soft);border-radius:8px}
+    #desktop-updates progress::-webkit-progress-value{background:var(--accent);border-radius:8px}
+    #desktop-updates progress[hidden],#desktop-updates [data-error]:empty{display:none}
+    #desktop-updates [data-error]{color:var(--ink);color:color-mix(in srgb,var(--ink) 30%,#c95348)}
+  `;
   section.append(style);
   parent.append(section);
   const select = key => section.querySelector(`[data-${key}]`);

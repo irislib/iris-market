@@ -45,12 +45,35 @@ class UpdatesTest(unittest.TestCase):
             self.assertEqual(launch.call_count, 1)
         self.assertEqual(process.stdin.getvalue(), 'check\ndownload\n')
 
-    def test_refuses_unchecked_downloads_and_unverified_results(self):
-        with self.assertRaises(ValueError): self.client.request('download')
+    def test_refuses_unverified_results(self):
         process = Mock(stdin=io.StringIO(), stdout=io.StringIO('{"ok":true,"result":{"verified":false}}\n'))
         with patch.object(APP.subprocess, 'Popen', return_value=process), self.assertRaises(ValueError):
             self.client.request('check')
         self.assertIsNone(self.client.result)
+        process.terminate.assert_called_once()
+
+    def test_download_reports_progress_lines_then_the_result(self):
+        lines = [{'progress': {'stage': 'fetching', 'downloaded': 0, 'total': None}},
+                 {'progress': {'stage': 'downloading', 'downloaded': 5, 'total': 10}},
+                 {'ok': True, 'result': {'available': True, 'verified': True, 'path': 'x'}}]
+        process = Mock(stdin=io.StringIO(), stdout=io.StringIO(''.join(json.dumps(line) + '\n' for line in lines)))
+        seen = []
+        with patch.object(APP.subprocess, 'Popen', return_value=process):
+            result = self.client.request('download', on_progress=seen.append)
+        self.assertEqual([value['stage'] for value in seen], ['fetching', 'downloading'])
+        self.assertEqual(result['path'], 'x')
+        self.assertEqual(process.stdin.getvalue(), 'download\n')
+
+    def test_a_silent_helper_is_stopped_with_a_plain_error(self):
+        import os
+        read, write = os.pipe()
+        process = Mock(stdin=io.StringIO(), stdout=os.fdopen(read))
+        process.kill.side_effect = lambda: os.close(write)
+        self.client.silence_limit = 0.2
+        with patch.object(APP.subprocess, 'Popen', return_value=process), self.assertRaises(ValueError) as failure:
+            self.client.request('check')
+        self.assertIn('stopped responding', str(failure.exception))
+        process.kill.assert_called_once()
         process.terminate.assert_called_once()
 
     def test_handoff_cannot_open_arbitrary_files(self):
@@ -61,6 +84,111 @@ class UpdatesTest(unittest.TestCase):
         artifact.write_bytes(b'package')
         self.client.result = {'path': str(artifact)}
         self.assertEqual(self.client.download_uri(), artifact.resolve().as_uri())
+
+
+
+class FakeClient:
+    def __init__(self, responses, version='0.1.4-alpha.5'):
+        self.responses = list(responses)
+        self.version = version
+        self.preferences = {'automatic': True, 'lastAttempt': 0}
+        self.saved = 0
+        self.has_download = False
+
+    def request(self, operation, on_progress=None):
+        expected, progress, outcome = self.responses.pop(0)
+        assert operation == expected, (operation, expected)
+        for value in progress:
+            on_progress(value)
+        if isinstance(outcome, Exception):
+            raise outcome
+        self.has_download = bool(outcome.get('path'))
+        return outcome
+
+    def downloaded(self):
+        return self.has_download
+
+    def save(self):
+        self.saved += 1
+
+
+class UpdateFlowTest(unittest.TestCase):
+    def flow(self, client, installer=lambda: 'Software'):
+        steps = []
+        flow = APP.UpdateFlow(client, lambda: steps.append(dict(flow.state)), lambda work, done: done(work()),
+                              lambda fn: fn(), installer)
+        return flow, steps
+
+    def test_install_shows_each_step_until_the_installer_takes_over(self):
+        available = {'available': True, 'verified': True, 'latest_version': '0.1.4-alpha.6'}
+        client = FakeClient([('check', [], available),
+                             ('download', [{'stage': 'fetching', 'downloaded': 0, 'total': None},
+                                           {'stage': 'downloading', 'downloaded': 4, 'total': 8},
+                                           {'stage': 'verifying', 'downloaded': 8, 'total': 8}],
+                              {**available, 'path': '/downloads/update.deb'})])
+        flow, steps = self.flow(client)
+        flow.act('check')
+        self.assertEqual(flow.state['step'], 'available')
+        flow.act('install')
+        self.assertEqual([step['step'] for step in steps],
+                         ['checking', 'available', 'fetching', 'fetching', 'downloading', 'verifying', 'opening', 'handed'])
+        self.assertEqual(steps[4]['progress'], {'stage': 'downloading', 'downloaded': 4, 'total': 8})
+        self.assertEqual(flow.state['installer'], 'Software')
+        self.assertEqual(client.preferences['pendingVersion'], '0.1.4-alpha.6')
+        self.assertFalse(flow.busy)
+
+    def test_failures_say_what_happened_and_retry_the_same_step(self):
+        stalled = ValueError('The download stopped. Check your connection, then retry.')
+        client = FakeClient([('check', [], ValueError('Couldn’t check for updates. Check your connection, then retry.')),
+                             ('check', [], {'available': True, 'verified': True, 'latest_version': '2'}),
+                             ('download', [{'stage': 'downloading', 'downloaded': 1, 'total': 8}], stalled),
+                             ('download', [], {'available': True, 'verified': True, 'latest_version': '2', 'path': 'p'})])
+        flow, _ = self.flow(client)
+        flow.act('check')
+        self.assertEqual((flow.state['step'], flow.state['retry']), ('failed', 'check'))
+        self.assertIn('Couldn’t check', flow.state['error'])
+        flow.act('retry')
+        self.assertEqual(flow.state['step'], 'available')
+        flow.act('install')
+        self.assertEqual((flow.state['step'], flow.state['retry'], flow.state['error']), ('failed', 'install', str(stalled)))
+        self.assertIsNone(flow.state['progress'])
+        flow.act('retry')
+        self.assertEqual(flow.state['step'], 'handed')
+        self.assertEqual(client.responses, [])
+
+    def test_installer_failure_offers_retry_without_downloading_again(self):
+        attempts = []
+        def installer():
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise OSError('no handler')
+            return None
+        client = FakeClient([('download', [], {'available': True, 'verified': True, 'latest_version': '2', 'path': 'p'})])
+        flow, _ = self.flow(client, installer)
+        flow.act('install')
+        self.assertEqual((flow.state['step'], flow.state['retry']), ('failed', 'open'))
+        self.assertIn('Downloads → Iris Market Updates', flow.state['error'])
+        flow.act('retry')
+        self.assertEqual((flow.state['step'], flow.state['installer']), ('handed', None))
+        self.assertEqual(len(attempts), 2)
+
+    def test_presses_while_busy_are_ignored(self):
+        client = FakeClient([])
+        flow, steps = self.flow(client)
+        flow.state['step'] = 'downloading'
+        for action in ('check', 'install', 'retry', 'open'):
+            flow.act(action)
+        self.assertEqual(steps, [])
+
+    def test_reopening_the_new_version_says_it_updated(self):
+        client = FakeClient([], version='2')
+        client.preferences['pendingVersion'] = '2'
+        flow, _ = self.flow(client)
+        self.assertEqual(flow.state['step'], 'updated')
+        self.assertNotIn('pendingVersion', client.preferences)
+        older = FakeClient([], version='1')
+        older.preferences['pendingVersion'] = '2'
+        self.assertEqual(self.flow(older)[0].state['step'], 'idle')
 
 
 class DesktopTest(unittest.TestCase):

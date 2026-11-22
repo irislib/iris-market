@@ -21,6 +21,14 @@ schemes:
         IrisMarketMac: all
     run:
       config: Debug
+  IrisMarketMacChecks:
+    build:
+      targets:
+        IrisMarketMacChecks: [test]
+    test:
+      config: Debug
+      targets:
+        - IrisMarketMacChecks
 targets:
   IrisMarketMac:
     type: application
@@ -48,4 +56,17 @@ targets:
         SWIFT_INCLUDE_PATHS: '$(inherited) "$(PROJECT_DIR)/.build/headers"'
         OTHER_LDFLAGS: '$(inherited) "$(MARKET_MACOS_STATIC_LIB)" -framework Security -framework SystemConfiguration -lresolv'
         DEBUG_INFORMATION_FORMAT: dwarf
+        COMPILER_INDEX_STORE_ENABLE: NO
+  # Update flow and installer only: no host app, Rust core or profile.
+  IrisMarketMacChecks:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: ../ios/Sources/MarketUpdateFlow.swift
+      - path: ../ios/Sources/MarketAppInstaller.swift
+      - path: Tests
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: to.iris.market.checks
+        GENERATE_INFOPLIST_FILE: YES
         COMPILER_INDEX_STORE_ENABLE: NO

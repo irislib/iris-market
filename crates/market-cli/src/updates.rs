@@ -1,9 +1,14 @@
 use anyhow::{Result, bail, ensure};
-use iris_market_core::updater::{CURRENT_VERSION, Updater};
+use iris_market_core::updater::{CURRENT_VERSION, Progress, Updater};
 use serde_json::json;
 use std::{
     io::{self, BufRead, Write},
     path::PathBuf,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
 };
 
 #[derive(Debug, PartialEq)]
@@ -67,8 +72,9 @@ pub fn run(command: Command) -> Result<()> {
     }
     // Fixed local operations, no credentials or marketplace state. Keeping this
     // process alive retains exactly the release shown before download is chosen.
+    // A download also writes `{"progress":…}` lines before its response.
     let mut input = io::stdin().lock();
-    let mut output = io::stdout().lock();
+    let output = Mutex::new(io::stdout());
     loop {
         let mut bytes = Vec::new();
         use std::io::Read;
@@ -82,17 +88,53 @@ pub fn run(command: Command) -> Result<()> {
         );
         let result = match bytes.as_slice() {
             b"check\n" => updater.check(),
-            b"download\n" => updater.download(command.output.as_deref().unwrap()),
+            b"download\n" => {
+                let directory = command.output.clone().unwrap();
+                report_progress(&output, updater.progress(), || updater.download(&directory))
+            }
             _ => bail!("Unknown update operation"),
         };
         let response = match result {
             Ok(info) => json!({"ok":true,"result":info}),
-            Err(error) => json!({"ok":false,"error":format!("{error:#}")}),
+            // `error` is one plain sentence for people; `detail` keeps causes.
+            Err(error) => {
+                json!({"ok":false,"error":error.to_string(),"detail":format!("{error:#}")})
+            }
         };
+        let mut output = output
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Output closed"))?;
         writeln!(output, "{response}")?;
         output.flush()?;
     }
     Ok(())
+}
+
+fn report_progress<T>(
+    output: &Mutex<impl Write + Send>,
+    progress: Arc<Progress>,
+    work: impl FnOnce() -> T,
+) -> T {
+    let done = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let mut last = None;
+            while !done.load(Ordering::Acquire) {
+                let now = progress.snapshot();
+                if last.as_ref() != Some(&now) {
+                    if let Ok(mut output) = output.lock() {
+                        let _ = writeln!(output, "{}", json!({ "progress": now }));
+                        let _ = output.flush();
+                    }
+                    last = Some(now);
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        });
+        let result = work();
+        done.store(true, Ordering::Release);
+        result
+    })
 }
 
 #[cfg(test)]
@@ -115,5 +157,26 @@ mod tests {
         assert_eq!(command.version, "0.1.4-alpha.5");
         assert!(parse(&args(&["download", "/cache/updates"])).is_err());
         assert!(parse(&args(&["check", "/cache/updates", "--unknown"])).is_err());
+    }
+
+    #[test]
+    fn downloads_report_each_stage_before_the_response() {
+        use iris_market_core::updater::Stage;
+        let output = Mutex::new(Vec::new());
+        let progress = Arc::new(Progress::default());
+        let result = report_progress(&output, progress.clone(), || {
+            std::thread::sleep(Duration::from_millis(300));
+            progress.start(Stage::Fetching);
+            std::thread::sleep(Duration::from_millis(300));
+            42
+        });
+        assert_eq!(result, 42);
+        let lines = String::from_utf8(output.into_inner().unwrap()).unwrap();
+        let stages: Vec<String> = lines
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .map(|line| line["progress"]["stage"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(stages, ["idle", "fetching"]);
     }
 }

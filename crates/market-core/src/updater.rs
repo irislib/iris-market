@@ -1,21 +1,26 @@
 //! Public, account-independent updates. Never shares a profile's keys or inbox.
 use std::{
-    fs,
+    fmt, fs,
+    future::Future,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU8, AtomicU64, Ordering},
+    },
     time::Duration,
 };
 
 use anyhow::{Context, Result, ensure};
 use hashtree_updater::{
-    DownloadOptions, SecurePubsubBlossomConfig, UpdateCheck, UpdateCheckOptions, UpdateEventCache,
-    UpdateManifest, UpdateRef, UpdateTarget, build_secure_pubsub_blossom_updater,
-    current_archive_target, write_downloaded_asset,
+    DownloadCallback, DownloadEvent, DownloadOptions, SecurePubsubBlossomConfig, UpdateCheck,
+    UpdateCheckOptions, UpdateEventCache, UpdateManifest, UpdateRef, UpdateTarget,
+    build_secure_pubsub_blossom_updater, current_archive_target, write_downloaded_asset,
 };
 use nostr::JsonUtil;
 use nostr_pubsub::InMemoryEventBus;
 use nostr_pubsub_relay::RelayEventBus;
 use serde::Serialize;
+use tokio::time::Instant;
 
 pub const UPDATE_REF: &str = "htree://npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/releases%2Firis-market/latest";
 pub const CURRENT_VERSION: &str = match option_env!("MARKET_RELEASE_VERSION") {
@@ -24,6 +29,135 @@ pub const CURRENT_VERSION: &str = match option_env!("MARKET_RELEASE_VERSION") {
 };
 const WINDOW: Duration = Duration::from_secs(8);
 const MAX_DOWNLOAD: u64 = 512 * 1024 * 1024;
+
+// Shown to people as is. Technical causes stay underneath for the CLI.
+pub const CHECK_FAILED: &str = "Couldn't check for updates. Check your connection, then retry.";
+pub const CHECK_BUSY: &str = "Another update check is running. Retry in a moment.";
+pub const DOWNLOAD_FAILED: &str =
+    "Couldn't download the update. Check your connection, then retry.";
+pub const DOWNLOAD_STALLED: &str = "The download stopped. Check your connection, then retry.";
+pub const SAVE_FAILED: &str = "Couldn't save the update. Free up disk space, then retry.";
+pub const UP_TO_DATE: &str = "Iris Market is already up to date.";
+
+/// How long a download may go without new bytes before it counts as stuck.
+#[derive(Clone, Copy, Debug)]
+pub struct Limits {
+    /// Finding the file in the release, before the first byte.
+    pub start: Duration,
+    /// No new bytes while the size is known.
+    pub stall: Duration,
+    /// Whole download, including sources that report no size.
+    pub total: Duration,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            start: Duration::from_secs(60),
+            stall: Duration::from_secs(45),
+            total: Duration::from_secs(30 * 60),
+        }
+    }
+}
+
+/// A sentence safe to show people; generic step messages never replace it.
+#[derive(Debug)]
+struct Plain(&'static str);
+
+impl fmt::Display for Plain {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl std::error::Error for Plain {}
+
+/// Put a plain sentence on top; the original error stays as its cause.
+fn plain(error: anyhow::Error, fallback: &'static str) -> anyhow::Error {
+    let message = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<Plain>())
+        .map_or(fallback, |plain| plain.0);
+    if error.to_string() == message {
+        return error;
+    }
+    error.context(message)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Stage {
+    Idle,
+    Checking,
+    /// Finding the release and its file before bytes arrive.
+    Fetching,
+    Downloading,
+    Verifying,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ProgressInfo {
+    pub stage: Stage,
+    pub downloaded: u64,
+    pub total: Option<u64>,
+}
+
+/// Readable while a check or download holds the updater.
+#[derive(Debug, Default)]
+pub struct Progress {
+    stage: AtomicU8,
+    downloaded: AtomicU64,
+    // Zero means unknown; empty downloads finish without reporting a size.
+    total: AtomicU64,
+}
+
+impl Progress {
+    const STAGES: [Stage; 5] = [
+        Stage::Idle,
+        Stage::Checking,
+        Stage::Fetching,
+        Stage::Downloading,
+        Stage::Verifying,
+    ];
+
+    pub fn snapshot(&self) -> ProgressInfo {
+        let stage = Self::STAGES[usize::from(self.stage.load(Ordering::Acquire))];
+        let total = self.total.load(Ordering::Acquire);
+        ProgressInfo {
+            stage,
+            downloaded: self.downloaded.load(Ordering::Acquire),
+            total: (total > 0).then_some(total),
+        }
+    }
+
+    fn set(&self, stage: Stage) {
+        let index = Self::STAGES.iter().position(|s| *s == stage).unwrap_or(0);
+        self.stage.store(index as u8, Ordering::Release);
+    }
+
+    pub fn start(&self, stage: Stage) {
+        self.downloaded.store(0, Ordering::Release);
+        self.total.store(0, Ordering::Release);
+        self.set(stage);
+    }
+
+    pub fn record(&self, event: &DownloadEvent) {
+        match event {
+            DownloadEvent::Started { content_length } => {
+                self.total
+                    .store(content_length.unwrap_or(0), Ordering::Release);
+                self.set(Stage::Downloading);
+            }
+            DownloadEvent::Progress { downloaded, .. } => {
+                self.downloaded.store(*downloaded, Ordering::Release);
+            }
+            DownloadEvent::Finished { total } => {
+                self.downloaded.store(*total, Ordering::Release);
+                self.set(Stage::Verifying);
+            }
+        }
+    }
+}
 
 #[derive(Clone, Debug, Serialize)]
 pub struct UpdateInfo {
@@ -41,6 +175,8 @@ pub struct Updater {
     current_version: String,
     app: bool,
     selected: Option<UpdateCheck>,
+    progress: Arc<Progress>,
+    limits: Limits,
 }
 
 impl Updater {
@@ -50,44 +186,78 @@ impl Updater {
             current_version,
             app,
             selected: None,
+            progress: Arc::default(),
+            limits: Limits::default(),
         }
+    }
+
+    /// Shared progress for the UI; reading it never waits for the updater.
+    pub fn progress(&self) -> Arc<Progress> {
+        self.progress.clone()
     }
 
     /// Call off the UI thread. A failed refresh invalidates the old offer.
     pub fn check(&mut self) -> Result<UpdateInfo> {
+        self.progress.start(Stage::Checking);
+        let result = self.refresh();
+        self.progress.set(Stage::Idle);
+        result
+    }
+
+    fn refresh(&mut self) -> Result<UpdateInfo> {
         self.selected = None;
-        let checked = on_worker(|| self.check_async())?;
+        let checked = on_worker(|| self.check_async()).map_err(|e| plain(e, CHECK_FAILED))?;
         let info = self.info(&checked, None);
         self.selected = Some(checked);
         Ok(info)
     }
 
-    pub fn download(&self, directory: &Path) -> Result<UpdateInfo> {
+    /// Downloads the release offered by the last check, checking first when
+    /// none is held (for example after the helper restarted).
+    pub fn download(&mut self, directory: &Path) -> Result<UpdateInfo> {
+        self.progress.start(Stage::Fetching);
+        let result = self.fetch(directory);
+        self.progress.set(Stage::Idle);
+        result
+    }
+
+    fn fetch(&mut self, directory: &Path) -> Result<UpdateInfo> {
+        if self.selected.is_none() {
+            self.refresh()?;
+            self.progress.set(Stage::Fetching);
+        }
         let check = self
             .selected
             .as_ref()
             .context("Check for updates before downloading")?;
-        ensure!(check.update_available, "Iris Market is already up to date");
+        if !check.update_available {
+            return Err(Plain(UP_TO_DATE).into());
+        }
+        let progress = self.progress.clone();
+        let limits = self.limits;
         // Download the immutable release offered by check(), without rediscovery.
         let downloaded = on_worker(|| async {
             let updater =
                 build_secure_pubsub_blossom_updater(Arc::new(InMemoryEventBus::new()), config())
                     .await?;
-            tokio::time::timeout(
-                Duration::from_secs(180),
+            let observer = progress.clone();
+            let callback: DownloadCallback = Arc::new(move |event| observer.record(&event));
+            watch(
                 updater.download(
                     check,
                     DownloadOptions {
                         max_size: Some(MAX_DOWNLOAD),
                         ..Default::default()
                     },
-                    None,
+                    Some(callback),
                 ),
+                &progress,
+                limits,
             )
             .await
-            .context("Update download timed out")?
-            .map_err(Into::into)
-        })?;
+        })
+        .map_err(|e| plain(e, DOWNLOAD_FAILED))?;
+        self.progress.set(Stage::Verifying);
         let asset = check.asset.as_ref().context("No update selected")?;
         // Exact canonical filenames are selected below; never accept a remote path.
         ensure!(
@@ -95,9 +265,11 @@ impl Updater {
                 == Some(asset.name.as_str()),
             "Invalid update filename"
         );
-        fs::create_dir_all(directory)?;
         let destination = directory.join(&asset.name);
-        save_download(&destination, &downloaded.bytes)?;
+        fs::create_dir_all(directory)
+            .map_err(anyhow::Error::from)
+            .and_then(|()| save_download(&destination, &downloaded.bytes))
+            .map_err(|e| e.context(SAVE_FAILED))?;
         Ok(self.info(check, Some(destination)))
     }
 
@@ -127,8 +299,11 @@ impl Updater {
             .truncate(false)
             .write(true)
             .open(self.directory.join("check.lock"))?;
-        fs2::FileExt::try_lock_exclusive(&lock).context("Another update check is running")?;
-        let cache = load_cache(&cache_path, &reference)?;
+        fs2::FileExt::try_lock_exclusive(&lock).map_err(|_| Plain(CHECK_BUSY))?;
+        // A damaged file proves nothing, so it cannot hold back newer roots;
+        // start as a fresh install would. The next check replaces it.
+        let cache =
+            load_cache(&cache_path, &reference).or_else(|_| UpdateEventCache::new(&reference))?;
         let bus = RelayEventBus::new(
             [
                 "wss://temp.iris.to",
@@ -169,6 +344,41 @@ impl Updater {
         .await;
         bus.client().shutdown().await;
         result
+    }
+}
+
+/// Fails with a plain message when bytes stop arriving. Time counts from the
+/// last change, so slow but steady downloads finish.
+async fn watch<T, E: Into<anyhow::Error>>(
+    work: impl Future<Output = Result<T, E>>,
+    progress: &Progress,
+    limits: Limits,
+) -> Result<T> {
+    tokio::pin!(work);
+    let started = Instant::now();
+    let mut last = (progress.snapshot(), started);
+    let mut tick =
+        tokio::time::interval((limits.start.min(limits.stall) / 4).min(Duration::from_millis(500)));
+    loop {
+        tokio::select! {
+            result = &mut work => return result.map_err(Into::into),
+            _ = tick.tick() => {
+                let now = progress.snapshot();
+                if now != last.0 {
+                    last = (now, Instant::now());
+                }
+                let quiet = last.1.elapsed();
+                let stuck = match (last.0.stage, last.0.total) {
+                    (Stage::Downloading, Some(_)) => quiet > limits.stall,
+                    // Sources without a size report bytes only at the end.
+                    (Stage::Downloading, None) | (Stage::Verifying, _) => false,
+                    _ => quiet > limits.start,
+                };
+                if stuck || started.elapsed() > limits.total {
+                    return Err(Plain(DOWNLOAD_STALLED).into());
+                }
+            }
+        }
     }
 }
 
@@ -372,12 +582,163 @@ mod tests {
         assert!(select_asset(&m, "aarch64-apple-darwin", true).is_err());
     }
 
+    fn checked(available: bool) -> UpdateCheck {
+        let cid = hashtree_core::Cid {
+            hash: [7; 32],
+            key: None,
+        };
+        UpdateCheck {
+            root_cid: cid.clone(),
+            release_cid: cid,
+            manifest_path: "release.json".into(),
+            manifest: manifest(),
+            asset: None,
+            update_available: available,
+        }
+    }
+
     #[test]
-    fn download_requires_a_successful_check() {
+    fn download_of_a_current_release_says_so_plainly_and_writes_nothing() {
         let dir = tempfile::tempdir().unwrap();
-        let updater = Updater::new(dir.path().into(), "0.1.4-alpha.5".into(), true);
-        assert!(updater.download(dir.path()).is_err());
-        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+        let mut updater = Updater::new(dir.path().into(), "0.1.4-alpha.6".into(), true);
+        updater.selected = Some(checked(false));
+        let error = updater.download(&dir.path().join("out")).unwrap_err();
+        assert_eq!(error.to_string(), UP_TO_DATE);
+        assert!(!dir.path().join("out").exists());
+        assert_eq!(updater.progress().snapshot().stage, Stage::Idle);
+    }
+
+    #[test]
+    fn people_see_one_plain_sentence_while_causes_stay_for_the_cli() {
+        let failed = plain(anyhow::anyhow!("relay closed: code 1006"), CHECK_FAILED);
+        assert_eq!(failed.to_string(), CHECK_FAILED);
+        assert!(format!("{failed:#}").contains("code 1006"));
+        let busy = plain(
+            anyhow::Error::new(Plain(CHECK_BUSY)).context("while locking"),
+            CHECK_FAILED,
+        );
+        assert_eq!(busy.to_string(), CHECK_BUSY);
+        let stalled = plain(Plain(DOWNLOAD_STALLED).into(), DOWNLOAD_FAILED);
+        assert_eq!(stalled.to_string(), DOWNLOAD_STALLED);
+        assert_eq!(format!("{stalled:#}"), DOWNLOAD_STALLED);
+    }
+
+    #[test]
+    fn progress_moves_from_fetching_to_downloading_to_verifying() {
+        let progress = Progress::default();
+        progress.start(Stage::Fetching);
+        assert_eq!(
+            progress.snapshot(),
+            ProgressInfo {
+                stage: Stage::Fetching,
+                downloaded: 0,
+                total: None
+            }
+        );
+        progress.record(&DownloadEvent::Started {
+            content_length: Some(4096),
+        });
+        progress.record(&DownloadEvent::Progress {
+            chunk_len: 1024,
+            downloaded: 1024,
+        });
+        assert_eq!(
+            progress.snapshot(),
+            ProgressInfo {
+                stage: Stage::Downloading,
+                downloaded: 1024,
+                total: Some(4096)
+            }
+        );
+        progress.record(&DownloadEvent::Finished { total: 4096 });
+        assert_eq!(progress.snapshot().stage, Stage::Verifying);
+        assert_eq!(progress.snapshot().downloaded, 4096);
+        progress.start(Stage::Checking);
+        assert_eq!(progress.snapshot().total, None);
+    }
+
+    fn quick() -> Limits {
+        Limits {
+            start: Duration::from_millis(150),
+            stall: Duration::from_millis(150),
+            total: Duration::from_secs(10),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_download_that_never_starts_times_out_plainly() {
+        let progress = Progress::default();
+        progress.start(Stage::Fetching);
+        let error = watch(std::future::pending::<Result<()>>(), &progress, quick())
+            .await
+            .unwrap_err();
+        assert_eq!(error.to_string(), DOWNLOAD_STALLED);
+    }
+
+    #[tokio::test]
+    async fn a_download_that_stops_midway_times_out_plainly() {
+        let progress = Progress::default();
+        progress.start(Stage::Fetching);
+        progress.record(&DownloadEvent::Started {
+            content_length: Some(10),
+        });
+        progress.record(&DownloadEvent::Progress {
+            chunk_len: 4,
+            downloaded: 4,
+        });
+        let started = Instant::now();
+        let error = watch(std::future::pending::<Result<()>>(), &progress, quick())
+            .await
+            .unwrap_err();
+        assert_eq!(error.to_string(), DOWNLOAD_STALLED);
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[tokio::test]
+    async fn slow_but_steady_downloads_are_not_cut_off() {
+        let progress = Progress::default();
+        progress.start(Stage::Fetching);
+        let steady = async {
+            progress.record(&DownloadEvent::Started {
+                content_length: Some(8),
+            });
+            // Eight steps of 100 ms: longer than the stall limit in total.
+            for downloaded in 1..=8 {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                progress.record(&DownloadEvent::Progress {
+                    chunk_len: 1,
+                    downloaded,
+                });
+            }
+            Ok::<_, anyhow::Error>(downloaded_bytes())
+        };
+        assert_eq!(watch(steady, &progress, quick()).await.unwrap(), b"bytes");
+    }
+
+    fn downloaded_bytes() -> &'static [u8] {
+        b"bytes"
+    }
+
+    #[tokio::test]
+    async fn sources_without_a_size_get_the_whole_download_limit() {
+        let progress = Progress::default();
+        progress.start(Stage::Fetching);
+        progress.record(&DownloadEvent::Started {
+            content_length: None,
+        });
+        let limits = Limits {
+            total: Duration::from_millis(600),
+            ..quick()
+        };
+        let slow = async {
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            Ok::<_, anyhow::Error>(())
+        };
+        watch(slow, &progress, limits).await.unwrap();
+        let error = watch(std::future::pending::<Result<()>>(), &progress, limits)
+            .await
+            .unwrap_err();
+        assert_eq!(error.to_string(), DOWNLOAD_STALLED);
     }
 
     #[test]
@@ -482,8 +843,31 @@ mod tests {
             assert!(check.update_available);
             check.asset = Some(select_asset(&check.manifest, target, app.app)?);
             assert_eq!(Cid::parse(&app.info(&check, None).release_cid)?, release);
-            let downloaded = updater.download_asset(&check, Some(MAX_DOWNLOAD)).await?;
+            let progress = Arc::new(Progress::default());
+            progress.start(Stage::Fetching);
+            let observer = progress.clone();
+            let downloaded = watch(
+                updater.download(
+                    &check,
+                    DownloadOptions {
+                        max_size: Some(MAX_DOWNLOAD),
+                        progress_chunk: Some(4),
+                    },
+                    Some(Arc::new(move |event| observer.record(&event))),
+                ),
+                &progress,
+                Limits::default(),
+            )
+            .await?;
             assert_eq!(downloaded.bytes, payload);
+            assert_eq!(
+                progress.snapshot(),
+                ProgressInfo {
+                    stage: Stage::Verifying,
+                    downloaded: payload.len() as u64,
+                    total: Some(payload.len() as u64)
+                }
+            );
         }
         Ok(())
     }

@@ -18,12 +18,17 @@ ORIGIN = f'http://127.0.0.1:{PORT}'
 ROUTES = re.compile(r'^/(?:invite|npub1[a-z0-9]+(?:/[^/]+)?|naddr1[a-z0-9]+|post|saved|search|messages(?:/[^/]+)?|orders(?:/[^/]+)?|wallet|courier|settings(?:/profile)?)?/?$')
 
 
+UPDATE_STOPPED = 'The update stopped unexpectedly. Please retry.'
+BUSY_STEPS = ('checking', 'fetching', 'downloading', 'verifying', 'opening')
+
+
 class UpdateClient:
     """Own one Rust session so download uses the release the user checked."""
     def __init__(self, root, data, downloads):
         self.root, self.data, self.downloads = Path(root), Path(data), Path(downloads)
         self.process = None
         self.result = None
+        self.silence_limit = 150
         self.preferences = {'automatic': True, 'lastAttempt': 0}
         try:
             self.preferences.update(json.loads((self.data / 'preferences.json').read_text()))
@@ -40,15 +45,15 @@ class UpdateClient:
     def due(self, now=None):
         return self.preferences['automatic'] and (time.time() if now is None else now) - self.preferences['lastAttempt'] >= 86400
 
-    def request(self, operation):
+    def request(self, operation, on_progress=None):
+        """Run one helper operation. Downloads report {stage, downloaded, total}."""
         if operation not in ('check', 'download'):
             raise ValueError('Unknown update operation')
         if operation == 'check':
             self.result = None
             self.preferences['lastAttempt'] = time.time()
             self.save()
-        elif not self.result or not self.result.get('available'):
-            raise ValueError('Check for updates before downloading')
+        # Without a held check, the helper checks again before downloading.
         if self.process is None:
             self.process = subprocess.Popen([str(self.root / 'iris-market-updater'), 'update', 'serve', str(self.data),
                 '--app', '--current-version', self.version, '--output', str(self.downloads)],
@@ -56,20 +61,48 @@ class UpdateClient:
         try:
             self.process.stdin.write(operation + '\n')
             self.process.stdin.flush()
-            line = self.process.stdout.readline(16385)
-            if not line.endswith('\n') or len(line) > 16384:
-                raise ValueError('Update helper stopped unexpectedly. Check again.')
-            response = json.loads(line)
+            while True:
+                response = self.read_response()
+                if 'progress' not in response:
+                    break
+                if on_progress is not None:
+                    on_progress(response['progress'])
             if response.get('ok') is not True:
-                raise ValueError(response.get('error', 'Update failed. Try again.'))
+                raise ValueError(response.get('error', UPDATE_STOPPED))
             result = response['result']
             if result.get('verified') is not True:
-                raise ValueError('The update could not be verified')
+                raise ValueError('The update could not be verified. It was not installed.')
             self.result = result
             return result
-        except (OSError, ValueError):
+        except (OSError, ValueError, KeyError):
             self.close()
             raise
+
+    def read_response(self):
+        # The helper bounds checks and stalled downloads itself; this only
+        # catches a helper that stops answering altogether.
+        stopped = threading.Event()
+        def expire():
+            stopped.set()
+            self.process.kill()
+        timer = threading.Timer(self.silence_limit, expire)
+        timer.start()
+        try:
+            line = self.process.stdout.readline(16385)
+        finally:
+            timer.cancel()
+        if stopped.is_set():
+            raise ValueError('The update stopped responding. Check your connection, then retry.')
+        if not line.endswith('\n') or len(line) > 16384:
+            raise ValueError(UPDATE_STOPPED)
+        return json.loads(line)
+
+    def downloaded(self):
+        try:
+            self.download_uri()
+            return True
+        except ValueError:
+            return False
 
     def download_uri(self):
         if not self.result or not self.result.get('path'):
@@ -97,6 +130,86 @@ class UpdateClient:
                 self.process.wait()
             self.process = None
         self.result = None
+
+
+class UpdateFlow:
+    """What Settings → App updates shows after each press. The desktop glue
+    supplies threads and the installer; tests run everything inline."""
+    def __init__(self, client, emit, run, on_main, open_installer):
+        self.client, self.emit, self.run, self.on_main, self.open_installer = client, emit, run, on_main, open_installer
+        self.state = {'step': 'idle', 'error': None, 'retry': None, 'result': None, 'progress': None, 'installer': None}
+        pending = client.preferences.get('pendingVersion')
+        if pending and pending == client.version:
+            self.state['step'] = 'updated'
+            client.preferences.pop('pendingVersion')
+            try:
+                client.save()
+            except OSError:
+                pass
+
+    @property
+    def busy(self):
+        return self.state['step'] in BUSY_STEPS
+
+    def act(self, action):
+        if action == 'retry':
+            action = self.state['retry'] or 'check'
+        if self.busy:
+            return
+        if action == 'check':
+            self.start('checking', 'check')
+        elif action == 'install':
+            if self.client.downloaded():
+                self.hand_off()
+            else:
+                self.start('fetching', 'download')
+        elif action == 'open':
+            self.hand_off()
+
+    def update(self, **changes):
+        self.state.update(changes)
+        self.emit()
+
+    def start(self, step, operation):
+        self.update(step=step, error=None, retry=None, progress=None, installer=None,
+                    **({'result': None} if operation == 'check' else {}))
+        def progress(value):
+            stage = value.get('stage')
+            if stage in ('fetching', 'downloading', 'verifying'):
+                self.on_main(lambda: self.update(step=stage, progress=value))
+        def work():
+            try:
+                return self.client.request(operation, on_progress=progress), None
+            except (OSError, ValueError, KeyError) as failure:
+                return None, str(failure) or UPDATE_STOPPED
+        def done(outcome):
+            result, error = outcome
+            if error is not None:
+                retry = 'check' if operation == 'check' else 'install'
+                self.update(step='failed', error=error, retry=retry, progress=None)
+            elif operation == 'check':
+                self.update(step='available' if result.get('available') else 'current', result=result)
+            else:
+                self.state['result'] = result
+                self.hand_off()
+        self.run(work, done)
+
+    def hand_off(self):
+        self.update(step='opening', error=None, retry=None, progress=None)
+        try:
+            installer = self.open_installer()
+        except Exception:  # GLib and launcher errors carry no useful detail for people.
+            self.update(step='failed', retry='open',
+                        error='Couldn’t open the installer. The update is in Downloads → Iris Market Updates.')
+            return
+        version = (self.state['result'] or {}).get('latest_version')
+        if version:
+            self.client.preferences['pendingVersion'] = version
+            try:
+                self.client.save()
+            except OSError:
+                pass
+        self.update(step='handed', installer=installer)
 
 
 def configure_webkit_environment(environ=None):
@@ -246,28 +359,41 @@ def main():
     window.add(view)
     window.connect('destroy', Gtk.main_quit)
 
-    update_state = {'busy': False, 'error': None, 'result': None}
-    updates = None
+    updates = flow = None
     try:
         updates = UpdateClient(Path(__file__).resolve().parent, data / 'updates', Path(GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_DOWNLOAD) or str(Path.home() / 'Downloads')) / 'Iris Market Updates')
     except (OSError, ValueError, KeyError):
         pass  # Source-only launches may lack a packaged updater and version.
 
     def update_emit():
-        if updates is not None:
-            state = {**update_state, 'version': updates.version, 'automatic': updates.preferences['automatic'],
-                     'hasInstaller': deb_handler() is not None}
+        if flow is not None:
+            state = {**flow.state, 'busy': flow.busy, 'version': updates.version,
+                     'automatic': updates.preferences['automatic'], 'hasInstaller': deb_handler() is not None}
             view.run_javascript('window.dispatchEvent(new CustomEvent("market-update", {detail:' + json.dumps(state) + '}));', None, None, None)
         return False
 
     def deb_handler():
         return Gio.AppInfo.get_default_for_type('application/vnd.debian.binary-package', False)
 
+    def open_installer():
+        handler = deb_handler()
+        updates.open_download(handler, window.get_display().get_app_launch_context())
+        return handler.get_display_name() if handler is not None else None
+
+    def run_update(work, done):
+        def worker():
+            outcome = work()
+            GLib.idle_add(lambda: done(outcome) and False)
+        threading.Thread(target=worker, daemon=True).start()
+
+    if updates is not None:
+        flow = UpdateFlow(updates, update_emit, run_update, lambda fn: GLib.idle_add(lambda: fn() and False), open_installer)
+
     def update_action(_manager, message):
         start_update(message.get_js_value().to_string())
 
     def start_update(action):
-        if updates is None or not (view.get_uri() or '').startswith(ORIGIN + '/'):
+        if flow is None or not (view.get_uri() or '').startswith(ORIGIN + '/'):
             return
         if action == 'state':
             update_emit()
@@ -279,37 +405,10 @@ def main():
             try:
                 updates.save()
             except OSError:
-                update_state['error'] = 'Could not save update preferences.'
+                flow.update(step='failed', retry=None, error='Couldn’t save update preferences.')
             update_emit()
             return
-        if update_state['busy']:
-            return
-        if action == 'open':
-            try:
-                updates.open_download(deb_handler(), window.get_display().get_app_launch_context())
-                update_state['error'] = None
-            except (OSError, ValueError, GLib.Error):
-                update_state['error'] = 'Could not open the download. Find the package in Downloads → Iris Market Updates.'
-            update_emit()
-            return
-        if action not in ('check', 'download'):
-            return
-        update_state.update(busy=True, downloading=action == 'download', error=None)
-        if action == 'check':
-            update_state['result'] = None
-        update_emit()
-
-        def work():
-            try:
-                result, error = updates.request(action), None
-            except (OSError, ValueError, KeyError) as failure:
-                result, error = None, str(failure)
-            def complete():
-                update_state.update(busy=False, result=result, error=error)
-                update_emit()
-                return False
-            GLib.idle_add(complete)
-        threading.Thread(target=work, daemon=True).start()
+        flow.act(action)
 
     def updates_loaded(_view, event):
         if updates is None or event != WebKit2.LoadEvent.FINISHED:
@@ -318,7 +417,7 @@ def main():
             return
         script = (Path(__file__).resolve().parent / 'updates.js').read_text()
         view.run_javascript(script, None, None, None)
-        if updates.due() and 'preview=1' not in (view.get_uri() or ''):
+        if updates.due() and not flow.busy and 'preview=1' not in (view.get_uri() or ''):
             start_update('check')
 
     if updates is not None:
@@ -327,7 +426,7 @@ def main():
         content.connect('script-message-received::marketUpdates', update_action)
         view.connect('load-changed', updates_loaded)
         def update_focus(_window, _event):
-            if updates.due(): start_update('check')
+            if updates.due() and not flow.busy: start_update('check')
             return False
         window.connect('focus-in-event', update_focus)
 

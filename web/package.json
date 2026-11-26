@@ -33,7 +33,7 @@
     "marked": "15.0.12",
     "minidenticons": "4.2.1",
     "nostr-double-ratchet": "0.0.187",
-    "nostr-pubsub": "https://github.com/mmalmi/nostr-pubsub/releases/download/nostr-pubsub-ts-v0.5.41/nostr-pubsub-0.5.41.tgz",
+    "nostr-pubsub": "https://github.com/mmalmi/nostr-pubsub/releases/download/nostr-pubsub-ts-v0.5.42/nostr-pubsub-0.5.42.tgz",
     "nostr-social-graph": "https://github.com/mmalmi/nostr-social-graph/releases/download/v4.2.1/nostr-social-graph-4.2.1.tgz",
     "nostr-tools": "2.25.2",
     "onnxruntime-web": "1.31.0-dev.20260914-8d85527a0",

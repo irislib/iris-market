@@ -292,6 +292,8 @@ final class MarketStore: ObservableObject {
                     Task { @MainActor in
                         self?.snapshotRefreshInFlight = false
                         if let self, self.accountGeneration == generation, self.timer != nil {
+                            // OS model readiness can change without a Rust snapshot change.
+                            self.refreshAIAvailability()
                             self.continueLocalSearch()
                         }
                     }

@@ -142,15 +142,22 @@ impl Profiles {
         self.next_expiration = self.events.values().filter_map(expiration).min();
     }
     fn sync_public_cache(&mut self, prev_revision: u64, has_deletion: bool) {
+        // A cache writer may finish outside the State mutex while this batch
+        // is being projected. Only acknowledge a revision after reading all
+        // its records, including deletions from other discovery requests.
+        let revision = self
+            .public_cache
+            .as_ref()
+            .map(PublicEventCache::revision)
+            .unwrap_or(0);
         if !has_deletion
+            && revision == prev_revision
             && self.public_cache_revision == prev_revision
             && self
                 .next_expiration
                 .is_none_or(|at| at > crate::listing::now())
         {
-            if let Some(cache) = &self.public_cache {
-                self.public_cache_revision = cache.revision();
-            }
+            self.public_cache_revision = revision;
             self.context_loaded = self
                 .events
                 .get(&(DEFAULT_ROOT.into(), 3))
@@ -1130,5 +1137,49 @@ mod tests {
         let mut tampered = meta_a;
         tampered.content = r#"{"name":"Eve"}"#.into();
         assert!(batch.ingest(tampered).is_err());
+    }
+
+    #[test]
+    fn concurrent_public_deletion_is_not_acknowledged_without_projection() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = PublicEventCache::open(&dir.path().join("public.sqlite")).unwrap();
+        let mut profiles = Profiles::from_public_cache(Some(cache.clone()));
+        let alice = Keys::generate();
+        let bob = Keys::generate();
+        let now = crate::listing::now();
+        let metadata = |keys: &Keys, name: &str| {
+            EventBuilder::new(Kind::Metadata, format!(r#"{{"name":"{name}"}}"#))
+                .custom_created_at(Timestamp::from(now - 5))
+                .sign_with_keys(keys)
+                .unwrap()
+        };
+        profiles.ingest_public(metadata(&alice, "Alice")).unwrap();
+
+        // Pause one ingest_public call between persistence and projection.
+        let before_write = cache.revision();
+        let bob_metadata = metadata(&bob, "Bob");
+        cache.ingest(&bob_metadata).unwrap();
+        // An independent public query persists Alice's signed deletion while
+        // the first call still owns the application state lock.
+        let deletion = EventBuilder::new(Kind::EventDeletion, "")
+            .custom_created_at(Timestamp::from(now - 1))
+            .tags([Tag::parse(["a", &format!("0:{}:", alice.public_key().to_hex())]).unwrap()])
+            .sign_with_keys(&alice)
+            .unwrap();
+        cache.ingest(&deletion).unwrap();
+        profiles.ingest(bob_metadata).unwrap();
+        profiles.sync_public_cache(before_write, false);
+        profiles.refresh_public_cache();
+
+        assert!(
+            profiles
+                .metadata_event(&alice.public_key().to_hex())
+                .is_none()
+        );
+        assert!(
+            profiles
+                .metadata_event(&bob.public_key().to_hex())
+                .is_some()
+        );
     }
 }

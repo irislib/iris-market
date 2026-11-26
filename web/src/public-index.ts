@@ -2,10 +2,11 @@ import { HashtreeNostrEventReader } from '@hashtree/nostr-pubsub'
 import { parseHashtreeRootEvent } from '@hashtree/nostr'
 import type { CID, Store } from '@hashtree/core'
 import { decode } from 'nostr-tools/nip19'
-import { verifyEvent, type Event, type Filter } from 'nostr-tools'
+import type { Event, Filter } from 'nostr-tools'
 import type { RuntimeSource, RuntimeQueryOptions } from 'nostr-pubsub'
 import { MapBlockCache } from './map/cache.ts'
 import { CACHE_OPTIONS, DEFAULT_CACHE_MIB } from './map/config.ts'
+import { verifyCleanEvent } from './verified-event.ts'
 
 // Existing public archive supplies profiles/follows. Verified additional Market
 // roots can be added here after their separate production publication gate.
@@ -45,8 +46,8 @@ export function createPublicIndex({queryRoots,store,refs=DEFAULT_PUBLIC_INDEX_RE
   const pending=new Map<string,Promise<void>>(),refreshed=new Map<string,number>()
   function admit(ref:ReturnType<typeof reference>,events:Event[]) {
     for(const input of events.slice(0,32))try {
-      const event={id:input.id,pubkey:input.pubkey,created_at:input.created_at,kind:input.kind,content:input.content,tags:input.tags.map(tag=>[...tag]),sig:input.sig}
-      if(!ROOT_KINDS.includes(event.kind)||event.pubkey!==ref.author||!Number.isSafeInteger(event.created_at)||event.created_at>now()+300||JSON.stringify(event).length>16384||!verifyEvent(event))continue
+      const event=verifyCleanEvent(input,16384)
+      if(!event||!ROOT_KINDS.includes(event.kind)||event.pubkey!==ref.author||event.created_at>now()+300)continue
       const parsed=parseHashtreeRootEvent(event)
       if(parsed?.visibility==='public'&&parsed.treeName===ref.name&&event.tags.filter(tag=>tag[0]==='d').length===1&&event.tags.filter(tag=>tag[0]==='hash').length===1&&newer(event,roots.get(ref.ref)?.event))roots.set(ref.ref,{event,cid:parsed.rootCid})
     }catch{/* A malformed pointer cannot replace a verified root. */}

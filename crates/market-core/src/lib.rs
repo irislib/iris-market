@@ -44,6 +44,13 @@ use std::{
 };
 use tokio::{runtime::Runtime, sync::Notify};
 
+struct CachedSnapshot {
+    revision: u64,
+    public_cache_revision: u64,
+    valid_until: u64,
+    json: String,
+}
+
 pub(crate) struct State {
     store: store::Store,
     owner: nostr::PublicKey,
@@ -66,6 +73,7 @@ pub(crate) struct State {
     ai_test_token: Option<String>,
     ai_check: u64,
     revision: u64,
+    cached_snapshot: Option<CachedSnapshot>,
     messaging: Option<messaging::Messaging>,
     invite: Option<String>,
     profiles: profiles::Profiles,
@@ -127,7 +135,41 @@ impl State {
         self.home_curation()
             .then(|| self.settings.ai.home_feed_prompt())
     }
+    pub(crate) fn set_status(&mut self, status: &str) {
+        if self.status != status {
+            self.status.clear();
+            self.status.push_str(status);
+            self.revision += 1;
+        }
+    }
+    fn snapshot_json(&mut self) -> Result<String> {
+        let now = listing::now();
+        let cache_rev = self
+            .public_cache
+            .as_ref()
+            .map(public_cache::PublicEventCache::revision)
+            .unwrap_or(0);
+        if let Some(cached) = &self.cached_snapshot
+            && cached.revision == self.revision
+            && cached.public_cache_revision == cache_rev
+            && now < cached.valid_until
+        {
+            return Ok(cached.json.clone());
+        }
+        let (view, valid_until) = self.build_snapshot(now)?;
+        let json = serde_json::to_string(&view)?;
+        self.cached_snapshot = Some(CachedSnapshot {
+            revision: self.revision,
+            public_cache_revision: cache_rev,
+            valid_until,
+            json: json.clone(),
+        });
+        Ok(json)
+    }
     fn snapshot(&mut self) -> Result<Snapshot> {
+        Ok(self.build_snapshot(listing::now())?.0)
+    }
+    fn build_snapshot(&mut self, now: u64) -> Result<(Snapshot, u64)> {
         // Guest profiles do not run the NDR retry loop, but their local inbox
         // must still erase expired notice history when it is opened.
         if self.profile_name_required
@@ -146,7 +188,9 @@ impl State {
             refreshed.followers_error = profile.followers_error.clone();
             *profile = refreshed;
         }
-        let mut listings = self.store.listings(&self.owner.to_hex(), listing::now())?;
+        let owner_hex = self.owner.to_hex();
+        let (mut listings, next_listing_expiry) =
+            self.store.listings_with_expiry(&owner_hex, now)?;
         let mut saved_listings: Vec<_> = listings.iter().filter(|l| l.saved).cloned().collect();
         let saved_count = saved_listings.len();
         // Basket lines whose listing is no longer available stay hidden.
@@ -203,64 +247,64 @@ impl State {
                 &mut listings,
                 &self.profiles,
                 &self.query,
-                listing::now(),
+                now,
                 self.ai_search || self.home_curation(),
             );
         }
-        let mut people: std::collections::BTreeMap<_, _> = listings
+        let raw_conversations = self
+            .messaging
+            .as_ref()
+            .map(messaging::Messaging::conversations)
+            .unwrap_or_default();
+        let mut orders = self
+            .messaging
+            .as_ref()
+            .map(messaging::Messaging::orders)
+            .unwrap_or_default();
+        let mut people = std::collections::BTreeMap::new();
+        let mut add_person = |key: &str| {
+            if !people.contains_key(key) {
+                people.insert(key.to_owned(), self.profiles.person(key));
+            }
+        };
+        add_person(&owner_hex);
+        for l in listings
             .iter()
             .chain(saved_listings.iter())
             .chain(basket_lines.iter().map(|(l, _)| l))
-            .map(|l| (l.author.clone(), self.profiles.person(&l.author)))
-            .collect();
-        people.insert(
-            self.owner.to_hex(),
-            self.profiles.person(&self.owner.to_hex()),
-        );
+        {
+            add_person(&l.author);
+        }
+        for c in &raw_conversations {
+            if !messaging::is_match_chat(&c.id) {
+                add_person(&c.id);
+            }
+        }
         if let Some(messaging) = &self.messaging {
-            for conversation in messaging.conversations() {
-                if messaging::is_match_chat(&conversation.id) {
-                    continue;
-                }
-                people.insert(
-                    conversation.id.clone(),
-                    self.profiles.person(&conversation.id),
-                );
-            }
             for key in messaging.revealed_profiles() {
-                people
-                    .entry(key.to_hex())
-                    .or_insert_with(|| self.profiles.person(&key.to_hex()));
+                add_person(&key.to_hex());
             }
-            for view in messaging.orders() {
-                let order = view.order;
-                for person in [order.buyer, order.seller].into_iter().chain(
-                    order
-                        .shipment
-                        .stops
-                        .into_iter()
-                        .filter_map(|stop| stop.courier_pubkey),
-                ) {
-                    people
-                        .entry(person.clone())
-                        .or_insert_with(|| self.profiles.person(&person));
+        }
+        for view in &orders {
+            add_person(&view.order.buyer);
+            add_person(&view.order.seller);
+            for stop in &view.order.shipment.stops {
+                if let Some(courier) = &stop.courier_pubkey {
+                    add_person(courier);
                 }
             }
         }
+        let signer = image_proxy::ProxySigner::new(&self.settings.image_proxy);
         for listing in listings
             .iter_mut()
             .chain(saved_listings.iter_mut())
             .chain(basket_lines.iter_mut().map(|(l, _)| l))
         {
-            rates::project(
-                listing,
-                &self.rates,
-                &self.settings.currency,
-                listing::now(),
-            );
-            listing.image_url = listing.image_url.as_deref().and_then(|url| {
-                image_proxy::image_url(url, &self.settings.image_proxy, 800, 800, false)
-            });
+            rates::project(listing, &self.rates, &self.settings.currency, now);
+            listing.image_url = listing
+                .image_url
+                .as_deref()
+                .and_then(|url| signer.url(url, 800, 800, false));
         }
         let mut basket: Vec<BasketGroup> = Vec::new();
         for (item, quantity) in basket_lines {
@@ -268,7 +312,7 @@ impl State {
                 [(item.price.as_str(), item.currency.as_str(), quantity)],
                 &self.rates,
                 &self.settings.currency,
-                listing::now(),
+                now,
             );
             let line = BasketLine {
                 listing: item,
@@ -298,30 +342,52 @@ impl State {
                 }),
                 &self.rates,
                 &self.settings.currency,
-                listing::now(),
+                now,
             );
         }
         for person in people.values_mut() {
-            image_proxy::person(person, &self.settings.image_proxy);
+            signer.person(person);
         }
         let mut profile = self.profile.clone();
         if let Some(profile) = &mut profile {
-            image_proxy::profile(profile, &self.settings.image_proxy);
+            signer.profile(profile);
         }
-        // Keep all results in the snapshot: UI can offer a curated view without making hidden items inaccessible.
-        let mut orders = self
-            .messaging
+        let profile_listings = self
+            .profile_listings
             .as_ref()
-            .map(|messaging| messaging.orders())
-            .unwrap_or_default();
+            .map(|feed| {
+                feed.snapshot(
+                    &self.store,
+                    &owner_hex,
+                    &signer,
+                    &self.rates,
+                    &self.settings.currency,
+                    now,
+                )
+            })
+            .transpose()?;
+        // Keep all results in the snapshot: UI can offer a curated view without making hidden items inaccessible.
+        let valid_until = [
+            Some(now.saturating_add(60)),
+            next_listing_expiry,
+            self.profiles.next_expiration().filter(|&t| t > now),
+            self.rates.next_change_at(now),
+            self.messaging.as_ref().and_then(|m| m.next_expiry(now)),
+            profile_listings
+                .as_ref()
+                .filter(|p| !p.collections.is_empty())
+                .map(|_| now.saturating_add(1)),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+        .unwrap_or(now);
         for view in &mut orders {
             // Older orders have no stored photo: borrow the listing's, which is already proxied.
             view.display_image = view.order.items.first().and_then(|item| {
                 item.image
                     .as_deref()
-                    .and_then(|url| {
-                        image_proxy::image_url(url, &self.settings.image_proxy, 160, 160, true)
-                    })
+                    .and_then(|url| signer.url(url, 160, 160, true))
                     .or_else(|| {
                         listings
                             .iter()
@@ -339,144 +405,127 @@ impl State {
                         .map(|item| (item.price.as_str(), item.currency.as_str(), item.quantity)),
                     &self.rates,
                     &self.settings.currency,
-                    listing::now(),
+                    now,
                 );
             } else if let Some(item) = view.order.items.first() {
-                view.display_price = self.rates.convert(
-                    &item.price,
-                    &item.currency,
-                    &self.settings.currency,
-                    listing::now(),
-                );
+                view.display_price =
+                    self.rates
+                        .convert(&item.price, &item.currency, &self.settings.currency, now);
             }
         }
+        let conversations = raw_conversations
+            .into_iter()
+            .map(|c| Conversation {
+                timer_seconds: self.messaging.as_ref().and_then(|m| m.chat_timer(&c.id)),
+                // An alias chat keeps its match label; it has no profile.
+                name: if messaging::is_match_chat(&c.id) {
+                    c.name
+                } else {
+                    people
+                        .get(&c.id)
+                        .map(|p| p.name.clone())
+                        .unwrap_or_else(|| self.profiles.person(&c.id).name)
+                },
+                id: c.id,
+                messages: c
+                    .messages
+                    .into_iter()
+                    .map(|m| Message {
+                        context: m.context,
+                        id: m.id,
+                        text: m.text,
+                        mine: m.mine,
+                        created_at: m.created_at,
+                        created_at_ms: m.created_at_ms,
+                        delivery: m.delivery,
+                        reactions: m.reactions,
+                        order_id: m.order_id,
+                        escrow: m.escrow,
+                        cashu: m.cashu,
+                    })
+                    .collect(),
+            })
+            .collect();
         let plan_pending = self.ai_search && !self.search_plan_applied && !self.search_plan_locked;
-        Ok(Snapshot {
-            chat_retention: self
-                .messaging
-                .as_ref()
-                .map(|m| m.retention())
-                .unwrap_or_default(),
-            private_matching: self.messaging.as_ref().and_then(|m| m.matching_view()),
-            search_discovery: self.search_discovery.status(),
-            search_generation: self.search_request,
-            search_plan_tags: if plan_pending && listings.len() > 24 {
-                search_plan::catalog(&listings)
-            } else {
-                Vec::new()
-            },
-            search_plan_pending: plan_pending,
-            related_search_terms: search_plan::related_terms(&self.query, &self.search_terms),
-            show_all_results: self.show_all_results,
-            network_only: self.network_only,
-            exchange_rates: self.rates.snapshot(listing::now()),
-            sats_display_price: self.rates.convert(
-                "1",
-                "SATS",
-                &self.settings.currency,
-                listing::now(),
-            ),
-            supported_currencies: rates::CURRENCIES
-                .iter()
-                .map(|code| (*code).to_owned())
-                .collect(),
-            local_curation: self
-                .local_curation
-                .as_ref()
-                .map(|pending| pending.batch.clone()),
-            public_key: self.owner.to_hex(),
-            can_sign: self.owner_keys.is_some() || self.remote_signer.is_some(),
-            ai_configured: self.ai_configured,
-            profile_name_required: self.profile_name_required,
-            messaging_ready: self
-                .messaging
-                .as_ref()
-                .is_some_and(|messaging| messaging.can_send()),
-            needs_chat_device_approval: self.owner_keys.is_some()
-                && !self.profile_name_required
-                && self
+        Ok((
+            Snapshot {
+                chat_retention: self
                     .messaging
                     .as_ref()
-                    .is_some_and(|m| m.needs_legacy_device_approval()),
-            approving_chat_device: self.approving_chat_device,
-            live_location_supported: true,
-            demo: self.demo,
-            status: self.status.clone(),
-            error: self.error.clone(),
-            ai_message: self.ai_message.clone(),
-            ai_test_result: self.ai_test_result.clone(),
-            query: self.query.clone(),
-            side: self.side.clone(),
-            ai_search: self.ai_search,
-            sort: self.sort.clone(),
-            people,
-            revision: self.revision,
-            listings,
-            saved_count,
-            saved_listings,
-            basket,
-            trade_steps: self
-                .messaging
-                .as_ref()
-                .map(|m| m.trade_steps(false))
-                .unwrap_or_default(),
-            settings: self.settings.clone(),
-            conversations: self
-                .messaging
-                .as_ref()
-                .map(|m| {
-                    m.conversations()
-                        .into_iter()
-                        .map(|c| Conversation {
-                            timer_seconds: m.chat_timer(&c.id),
-                            // An alias chat keeps its match label; it has no profile.
-                            name: if messaging::is_match_chat(&c.id) {
-                                c.name.clone()
-                            } else {
-                                self.profiles.person(&c.id).name
-                            },
-                            id: c.id,
-                            messages: c
-                                .messages
-                                .into_iter()
-                                .map(|m| Message {
-                                    context: m.context,
-                                    id: m.id,
-                                    text: m.text,
-                                    mine: m.mine,
-                                    created_at: m.created_at,
-                                    created_at_ms: m.created_at_ms,
-                                    delivery: m.delivery,
-                                    reactions: m.reactions,
-                                    order_id: m.order_id,
-                                    escrow: m.escrow,
-                                    cashu: m.cashu,
-                                })
-                                .collect(),
-                        })
-                        .collect()
-                })
-                .unwrap_or_default(),
-            orders,
-            invite: self.invite.clone(),
-            invite_qr: self.invite.as_deref().and_then(qr_modules),
-            handoff_pass: None,
-            profile,
-            profile_listings: self
-                .profile_listings
-                .as_ref()
-                .map(|feed| {
-                    feed.snapshot(
-                        &self.store,
-                        &self.owner.to_hex(),
-                        &self.settings.image_proxy,
-                        &self.rates,
-                        &self.settings.currency,
-                    )
-                })
-                .transpose()?,
-            graph_context_loaded: self.profiles.context_loaded,
-        })
+                    .map(|m| m.retention())
+                    .unwrap_or_default(),
+                private_matching: self.messaging.as_ref().and_then(|m| m.matching_view()),
+                search_discovery: self.search_discovery.status(),
+                search_generation: self.search_request,
+                search_plan_tags: if plan_pending && listings.len() > 24 {
+                    search_plan::catalog(&listings)
+                } else {
+                    Vec::new()
+                },
+                search_plan_pending: plan_pending,
+                related_search_terms: search_plan::related_terms(&self.query, &self.search_terms),
+                show_all_results: self.show_all_results,
+                network_only: self.network_only,
+                exchange_rates: self.rates.snapshot(now),
+                sats_display_price: self
+                    .rates
+                    .convert("1", "SATS", &self.settings.currency, now),
+                supported_currencies: rates::CURRENCIES
+                    .iter()
+                    .map(|code| (*code).to_owned())
+                    .collect(),
+                local_curation: self
+                    .local_curation
+                    .as_ref()
+                    .map(|pending| pending.batch.clone()),
+                public_key: owner_hex.clone(),
+                can_sign: self.owner_keys.is_some() || self.remote_signer.is_some(),
+                ai_configured: self.ai_configured,
+                profile_name_required: self.profile_name_required,
+                messaging_ready: self
+                    .messaging
+                    .as_ref()
+                    .is_some_and(|messaging| messaging.can_send()),
+                needs_chat_device_approval: self.owner_keys.is_some()
+                    && !self.profile_name_required
+                    && self
+                        .messaging
+                        .as_ref()
+                        .is_some_and(|m| m.needs_legacy_device_approval()),
+                approving_chat_device: self.approving_chat_device,
+                live_location_supported: true,
+                demo: self.demo,
+                status: self.status.clone(),
+                error: self.error.clone(),
+                ai_message: self.ai_message.clone(),
+                ai_test_result: self.ai_test_result.clone(),
+                query: self.query.clone(),
+                side: self.side.clone(),
+                ai_search: self.ai_search,
+                sort: self.sort.clone(),
+                people,
+                revision: self.revision,
+                listings,
+                saved_count,
+                saved_listings,
+                basket,
+                trade_steps: self
+                    .messaging
+                    .as_ref()
+                    .map(|m| m.trade_steps(false))
+                    .unwrap_or_default(),
+                settings: self.settings.clone(),
+                conversations,
+                orders,
+                invite: self.invite.clone(),
+                invite_qr: self.invite.as_deref().and_then(qr_modules),
+                handoff_pass: None,
+                profile,
+                profile_listings,
+                graph_context_loaded: self.profiles.context_loaded,
+            },
+            valid_until,
+        ))
     }
 }
 
@@ -745,6 +794,7 @@ impl Market {
             ai_test_token: None,
             ai_check: 0,
             revision: 0,
+            cached_snapshot: None,
             messaging,
             invite: None,
             profiles,
@@ -895,9 +945,7 @@ impl Market {
     }
 
     pub fn snapshot(&self) -> Result<String> {
-        Ok(serde_json::to_string(
-            &self.state.lock().unwrap().snapshot()?,
-        )?)
+        self.state.lock().unwrap().snapshot_json()
     }
     pub fn command(&self, request: &str) -> Result<String> {
         if request.len() > 128 * 1024 {
@@ -939,6 +987,7 @@ impl Market {
             }
             .map_err(anyhow::Error::msg)?;
             if matches!(command, Command::AcknowledgeOrderPickup { .. }) {
+                state.revision += 1;
                 self.notify.notify_waiters();
             }
             let mut view = state.snapshot()?;

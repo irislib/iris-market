@@ -199,6 +199,7 @@ impl Store {
         let db = Connection::open(path)?;
         db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
             CREATE TABLE IF NOT EXISTS events (coordinate TEXT PRIMARY KEY, event_id TEXT NOT NULL, created_at INTEGER NOT NULL, raw TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS events_created_at ON events(created_at DESC, event_id);
             CREATE TABLE IF NOT EXISTS saved (coordinate TEXT PRIMARY KEY);
             CREATE TABLE IF NOT EXISTS outbox (event_id TEXT PRIMARY KEY, raw TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -441,7 +442,22 @@ impl Store {
         )?)
     }
     pub fn listings(&self, owner: &str, at: u64) -> Result<Vec<Listing>> {
+        Ok(self.listings_for_scope(owner, at, None)?.0)
+    }
+    pub(crate) fn listings_with_expiry(
+        &self,
+        owner: &str,
+        at: u64,
+    ) -> Result<(Vec<Listing>, Option<u64>)> {
         self.listings_for_scope(owner, at, None)
+    }
+    /// Distinct hex authors of stored public listings without cloning full payloads.
+    pub(crate) fn listing_authors(&self) -> Result<Vec<String>> {
+        let mut stmt = self.db.prepare(
+            "SELECT DISTINCT CASE WHEN coordinate LIKE '38383:%' THEN substr(coordinate, 7, 64) ELSE substr(coordinate, 1, 64) END FROM events LIMIT 5000",
+        )?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
     /// Only already-verified projections can add spellings. Read the winning IDs,
     /// so stale revisions cannot teach the next search tags that sellers removed.
@@ -483,14 +499,14 @@ impl Store {
     }
     pub fn listings_for_author(&self, owner: &str, author: &str, at: u64) -> Result<Vec<Listing>> {
         let author = nostr::PublicKey::from_hex(author)?.to_hex();
-        self.listings_for_scope(owner, at, Some(&author))
+        Ok(self.listings_for_scope(owner, at, Some(&author))?.0)
     }
     fn listings_for_scope(
         &self,
         owner: &str,
         at: u64,
         author: Option<&str>,
-    ) -> Result<Vec<Listing>> {
+    ) -> Result<(Vec<Listing>, Option<u64>)> {
         let lower = author.map(|author| format!("{author}:"));
         let upper = author.map(|author| format!("{author};"));
         let mut stmt = self.db.prepare("SELECT e.raw, s.coordinate IS NOT NULL, EXISTS(SELECT 1 FROM outbox o WHERE o.event_id=e.event_id), r.value FROM events e LEFT JOIN saved s ON s.coordinate=e.coordinate LEFT JOIN relevance r ON r.coordinate=e.coordinate AND r.event_id=e.event_id WHERE (?1 IS NULL OR (e.coordinate >= ?1 AND e.coordinate < ?2)) ORDER BY e.created_at DESC,e.event_id LIMIT 5000")?;
@@ -503,6 +519,7 @@ impl Store {
             ))
         })?;
         let mut listings = Vec::new();
+        let mut next_expiration: Option<u64> = None;
         for row in rows {
             let (raw, saved, queued, relevance) = row?;
             let mut l = self
@@ -514,6 +531,9 @@ impl Store {
             if l.status != "active" || l.expires_at.is_some_and(|x| x <= at) {
                 continue;
             }
+            if let Some(exp) = l.expires_at {
+                next_expiration = Some(next_expiration.map_or(exp, |cur| cur.min(exp)));
+            }
             l.saved = saved;
             l.mine = l.author == owner;
             if queued {
@@ -522,7 +542,7 @@ impl Store {
             l.relevance = relevance.map(|r| serde_json::from_str(&r)).transpose()?;
             listings.push(l);
         }
-        Ok(listings)
+        Ok((listings, next_expiration))
     }
     /// Raw local winning public events, including sold and expired authority.
     /// No outbox, keys, messages or derived visible-feed projection enters sync.

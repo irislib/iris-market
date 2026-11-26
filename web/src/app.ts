@@ -2,7 +2,7 @@ import { SvelteSet } from 'svelte/reactivity';
 import { setLoadingStatus } from './loading-status.ts';
 import {quoteAmount} from './bitcoin-orders.ts';
 import {createBitcoinOrderFeed} from './bitcoin-order-feed.ts';
-import {planTopicFilters} from './semantic-discovery.ts';
+import {planTopicFilters,prioritizeSemanticCandidates} from './semantic-discovery.ts';
 import {fiatMethodLabel,fiatQuoteLabel} from './escrow-offer.ts';
 import {marketplaceToolEnabled} from './marketplace-tools.ts';
 import {setupEscrowTrade} from './escrow-trade-ui.ts';
@@ -492,7 +492,7 @@ window.addEventListener('popstate',()=>{
   window.scrollTo(0,history.state?.marketScroll||0);
 });
 userLocation=setupUserLocation({onChange:render,isPreview:preview});$('your-location-filters').append(userLocation.createControl());$('your-location-settings').append(userLocation.createControl());
-window.addEventListener('pagehide',()=>{bitcoinOrders.stop();userLocation?.dispose();searchDiscovery.dispose();closeDetailReviews();closeDetailAreas();client?.close();detailClient?.close();courierClient?.close();profiles?.close({notify:false});graphAbort?.abort();rateService?.close();gridUI.dispose()});aiFilter=setupAI({getOrderCount:()=>structuredOrderCount,homeFeed:loadHomeFeed(localStorage),isHomeVisible:()=>currentRoute.type==='home'&&!mapVisible&&!document.hidden,onSubmit:query=>{savedOnly=false;navigate(searchURL(query,location.href),{activate:false});},autoPrepare:!preview,getCandidates:()=>aiCandidates,onChange:render,onTextSearch:query=>{submittedTextQuery=query;},fetchMoreCandidates:async()=>{
+window.addEventListener('pagehide',()=>{bitcoinOrders.stop();userLocation?.dispose();searchDiscovery.dispose();closeDetailReviews();closeDetailAreas();client?.close();detailClient?.close();courierClient?.close();profiles?.close({notify:false});graphAbort?.abort();rateService?.close();gridUI.dispose()});aiFilter=setupAI({getOrderCount:()=>structuredOrderCount,homeFeed:loadHomeFeed(localStorage),isHomeVisible:()=>currentRoute.type==='home'&&!mapVisible&&!document.hidden,onSubmit:query=>{savedOnly=false;navigate(searchURL(query,location.href),{activate:false});},autoPrepare:!preview,getCandidates:()=>aiCandidates,prioritizeCandidates:prioritizeSemanticCandidates,onChange:render,onTextSearch:query=>{submittedTextQuery=query;},fetchMoreCandidates:async()=>{
   if(preview||savedOnly||!client)return false;
   const active=client;active.openSearchPage();
   const queryPage=active.queryPagination();

@@ -1,12 +1,12 @@
 import type {Event as NostrEvent} from 'nostr-tools/pure';
+import {utf8Bytes,verifyCleanEvent} from './verified-event.ts';
 
 const KEY='iris-market-profile-heads-v1';
 export const PROFILE_CACHE_LIMITS=Object.freeze({records:512,bytes:2*1024*1024,eventBytes:65536});
 type StorageLike=Pick<Storage,'getItem'|'setItem'>;
 type Validate=(input:NostrEvent)=>NostrEvent;
 const newer=(a:NostrEvent,b?:NostrEvent)=>!b||a.created_at>b.created_at||a.created_at===b.created_at&&a.id<b.id;
-const bytes=(value:string)=>new TextEncoder().encode(value).length;
-const wire=(e:NostrEvent):NostrEvent=>({id:e.id,pubkey:e.pubkey,kind:e.kind,created_at:e.created_at,tags:e.tags.map(tag=>[...tag]),content:e.content,sig:e.sig});
+const bytes=utf8Bytes;
 
 /** Small signed-head mirror for first paint. The worker remains the durable
  * event store. No unsigned name/avatar projection is accepted from storage. */
@@ -25,14 +25,15 @@ export function createProfileHeadCache({storage,validate}:{storage:StorageLike;v
     }catch{/* Inaccessible or malformed storage cannot prevent live metadata. */}
   }
   function checked(input:NostrEvent){
-    const event=wire(input);if(event.kind!==0||bytes(JSON.stringify(event))>PROFILE_CACHE_LIMITS.eventBytes)throw Error('Invalid cached profile');
+    const event=verifyCleanEvent(input,PROFILE_CACHE_LIMITS.eventBytes,10000);
+    if(!event||event.kind!==0)throw Error('Invalid cached profile');
     return validate(event);
   }
   function read(pubkey:string):NostrEvent|null {
-    initialize();const event=records.get(pubkey);if(!event)return null;
+    initialize();let event=records.get(pubkey);if(!event)return null;
     try{
-      if(!verified.has(event)){checked(event);verified.add(event);}
-      records.delete(pubkey);records.set(pubkey,event);return wire(event);
+      if(!verified.has(event)){event=checked(event);records.set(pubkey,event);verified.add(event);}
+      records.delete(pubkey);records.set(pubkey,event);return event;
     }catch{discard(pubkey);dirty=true;return null;}
   }
   function observe(input:NostrEvent){

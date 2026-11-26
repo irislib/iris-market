@@ -10,7 +10,7 @@ use nostr_pubsub::{
 };
 use rusqlite::{Connection, params};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     fs::{File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
     path::Path,
@@ -45,8 +45,67 @@ struct Cache {
     db: Connection,
     guard: File,
     events: BTreeMap<String, Event>,
+    by_coordinate: HashMap<String, String>,
+    deletions_by_author: HashMap<nostr::PublicKey, Vec<Event>>,
+    sizes: HashMap<String, usize>,
+    total_bytes: usize,
+    ordinary_count: usize,
+    deletion_count: usize,
     disabled: bool,
     revision: u64,
+}
+impl Cache {
+    fn index_insert(&mut self, id: String, key: Option<String>, size: usize, event: Event) {
+        if let Some(coord) = key {
+            self.by_coordinate.insert(coord, id.clone());
+            self.ordinary_count += 1;
+        } else {
+            self.deletions_by_author
+                .entry(event.pubkey)
+                .or_default()
+                .push(event.clone());
+            self.deletion_count += 1;
+        }
+        self.total_bytes += size;
+        self.sizes.insert(id.clone(), size);
+        self.events.insert(id, event);
+    }
+    fn index_remove(&mut self, id: &str) {
+        if let Some(old) = self.events.remove(id) {
+            if let Some(size) = self.sizes.remove(id) {
+                self.total_bytes = self.total_bytes.saturating_sub(size);
+            }
+            if let Some(coord) = coordinate(&old) {
+                if self.by_coordinate.get(&coord).map(String::as_str) == Some(id) {
+                    self.by_coordinate.remove(&coord);
+                }
+                self.ordinary_count = self.ordinary_count.saturating_sub(1);
+            } else {
+                if let Some(list) = self.deletions_by_author.get_mut(&old.pubkey) {
+                    list.retain(|e| e.id != old.id);
+                    if list.is_empty() {
+                        self.deletions_by_author.remove(&old.pubkey);
+                    }
+                }
+                self.deletion_count = self.deletion_count.saturating_sub(1);
+            }
+        }
+    }
+    fn allows(&self, event: &Event, now: u64) -> bool {
+        if !current(event, now) {
+            return false;
+        }
+        if let Some(key) = coordinate(event)
+            && let Some(existing_id) = self.by_coordinate.get(&key)
+            && let Some(old) = self.events.get(existing_id)
+            && supersedes(old, event)
+        {
+            return false;
+        }
+        self.deletions_by_author
+            .get(&event.pubkey)
+            .is_none_or(|list| !list.iter().any(|del| deletes(del, event)))
+    }
 }
 
 fn coordinate(event: &Event) -> Option<String> {
@@ -56,15 +115,16 @@ fn coordinate(event: &Event) -> Option<String> {
 fn supersedes(a: &Event, b: &Event) -> bool {
     a.created_at > b.created_at || a.created_at == b.created_at && a.id < b.id
 }
-fn validate(event: &Event) -> Result<()> {
+fn validate(event: &Event) -> Result<String> {
+    let raw = event.as_json();
     if !matches!(event.kind.as_u16(), 0 | 3 | 5 | 10000)
-        || event.as_json().len() > MAX_EVENT_BYTES
+        || raw.len() > MAX_EVENT_BYTES
         || event.created_at.as_secs() > crate::listing::now().saturating_add(300)
     {
         bail!("Record is outside public profile storage");
     }
     event.verify()?;
-    Ok(())
+    Ok(raw)
 }
 pub(crate) fn current(event: &Event, now: u64) -> bool {
     let expirations: Vec<_> = event
@@ -97,15 +157,6 @@ fn deletes(deletion: &Event, event: &Event) -> bool {
             && ((values[0] == "e" && values[1] == id)
                 || (values[0] == "a" && key.as_deref() == Some(values[1].as_str())))
     })
-}
-fn allows(events: &BTreeMap<String, Event>, event: &Event, now: u64) -> bool {
-    current(event, now)
-        && !events.values().any(|old| {
-            deletes(old, event)
-                || coordinate(event).is_some_and(|key| {
-                    coordinate(old).as_ref() == Some(&key) && supersedes(old, event)
-                })
-        })
 }
 fn mark(guard: &mut File, pending: bool) -> Result<()> {
     guard.seek(SeekFrom::Start(0))?;
@@ -159,11 +210,23 @@ impl PublicEventCache {
             db,
             guard,
             events: BTreeMap::new(),
+            by_coordinate: HashMap::new(),
+            deletions_by_author: HashMap::new(),
+            sizes: HashMap::new(),
+            total_bytes: 0,
+            ordinary_count: 0,
+            deletion_count: 0,
             disabled: byte[0] != b'0',
             revision: 1,
         };
         if !cache.disabled {
-            let loaded = (|| -> Result<BTreeMap<String, Event>> {
+            struct LoadedRow {
+                id: String,
+                key: Option<String>,
+                size: usize,
+                event: Event,
+            }
+            let loaded = (|| -> Result<Vec<LoadedRow>> {
                 let mut statement = cache
                     .db
                     .prepare("SELECT id,coordinate,raw FROM public_events LIMIT 769")?;
@@ -174,14 +237,15 @@ impl PublicEventCache {
                         r.get::<_, String>(2)?,
                     ))
                 })?;
-                let mut events = BTreeMap::new();
+                let mut loaded = Vec::new();
                 let mut coordinates = 0;
                 let mut deletion_count = 0;
                 let mut bytes = 0;
                 for row in rows {
                     let (id, key, raw) = row?;
-                    bytes += raw.len();
-                    if raw.len() > MAX_EVENT_BYTES || bytes > MAX_PUBLIC_CACHE_BYTES {
+                    let size = raw.len();
+                    bytes += size;
+                    if size > MAX_EVENT_BYTES || bytes > MAX_PUBLIC_CACHE_BYTES {
                         bail!("Public cache exceeds its byte budget");
                     }
                     let event = Event::from_json(raw)?;
@@ -197,12 +261,21 @@ impl PublicEventCache {
                     if coordinates > MAX_COORDINATES || deletion_count > MAX_DELETIONS {
                         bail!("Public cache exceeds its record budget");
                     }
-                    events.insert(id, event);
+                    loaded.push(LoadedRow {
+                        id,
+                        key,
+                        size,
+                        event,
+                    });
                 }
-                Ok(events)
+                Ok(loaded)
             })();
             match loaded {
-                Ok(events) => cache.events = events,
+                Ok(items) => {
+                    for row in items {
+                        cache.index_insert(row.id, row.key, row.size, row.event);
+                    }
+                }
                 Err(_) => {
                     cache.disabled = true;
                     mark(&mut cache.guard, true)?;
@@ -244,7 +317,7 @@ impl PublicEventCache {
             .inner
             .lock()
             .map_err(|_| anyhow::anyhow!("Public cache is unavailable"))?;
-        Ok(!cache.disabled && allows(&cache.events, event, crate::listing::now()))
+        Ok(!cache.disabled && cache.allows(event, crate::listing::now()))
     }
     pub fn ingest(&self, event: &Event) -> Result<bool> {
         anyhow::ensure!(
@@ -253,9 +326,29 @@ impl PublicEventCache {
         );
         self.store_verified(event)
     }
+    /// Persist a batch of verified public events in a single atomic transaction.
+    pub fn ingest_batch(&self, events: &[Event]) -> Result<usize> {
+        let mut validated = Vec::with_capacity(events.len());
+        for event in events {
+            if event.kind == Kind::MuteList {
+                continue;
+            }
+            if let Ok(raw) = validate(event) {
+                validated.push((event.clone(), raw));
+            }
+        }
+        self.store_verified_batch(validated)
+    }
 
     fn store_verified(&self, event: &Event) -> Result<bool> {
-        validate(event)?;
+        let raw = validate(event)?;
+        Ok(self.store_verified_batch(vec![(event.clone(), raw)])? > 0)
+    }
+
+    fn store_verified_batch(&self, validated: Vec<(Event, String)>) -> Result<usize> {
+        if validated.is_empty() {
+            return Ok(0);
+        }
         let mut cache = self
             .inner
             .lock()
@@ -263,44 +356,97 @@ impl PublicEventCache {
         if cache.disabled {
             bail!("Public cache is unavailable");
         }
-        let id = event.id.to_hex();
-        if cache.events.contains_key(&id) {
-            return Ok(false);
+        // Collapse duplicates and same-coordinate revisions in arrival order first.
+        struct StagedRow {
+            id: String,
+            key: Option<String>,
+            previous_id: Option<String>,
+            event: Event,
+            raw: String,
         }
-        let key = coordinate(event);
-        let previous = key
-            .as_ref()
-            .and_then(|key| {
-                cache
-                    .events
-                    .values()
-                    .find(|old| coordinate(old).as_ref() == Some(key))
-            })
-            .cloned();
-        if previous.as_ref().is_some_and(|old| !supersedes(event, old)) {
-            return Ok(false);
-        }
-        let known = previous.is_some() || cache.events.values().any(|old| deletes(event, old));
-        let ordinary = cache
-            .events
-            .values()
-            .filter(|e| coordinate(e).is_some())
-            .count();
-        let deletion_count = cache.events.len() - ordinary;
-        let total: usize = cache.events.values().map(|e| e.as_json().len()).sum();
-        let fits = (key.is_none() || previous.is_some() || ordinary < MAX_COORDINATES)
-            && (key.is_some() || deletion_count < MAX_DELETIONS)
-            && total - previous.as_ref().map(|e| e.as_json().len()).unwrap_or(0)
-                + event.as_json().len()
-                <= MAX_PUBLIC_CACHE_BYTES;
-        if !fits {
-            if known {
-                cache.disabled = true;
-                cache.revision = cache.revision.saturating_add(1);
-                mark(&mut cache.guard, true)?;
-                bail!("Public cache is full; cached replay was paused");
+        let mut candidates: Vec<StagedRow> = Vec::new();
+        let mut by_coord: HashMap<String, usize> = HashMap::new();
+        let mut seen_ids = std::collections::HashSet::new();
+        for (event, raw) in validated {
+            let id = event.id.to_hex();
+            if cache.events.contains_key(&id) || !seen_ids.insert(id.clone()) {
+                continue;
             }
-            return Ok(false);
+            let key = coordinate(&event);
+            if let Some(coord) = &key
+                && let Some(&idx) = by_coord.get(coord)
+            {
+                if supersedes(&event, &candidates[idx].event) {
+                    candidates[idx] = StagedRow {
+                        id,
+                        key,
+                        previous_id: None,
+                        event,
+                        raw,
+                    };
+                }
+                continue;
+            }
+            if let Some(coord) = &key {
+                by_coord.insert(coord.clone(), candidates.len());
+            }
+            candidates.push(StagedRow {
+                id,
+                key,
+                previous_id: None,
+                event,
+                raw,
+            });
+        }
+
+        let mut staged: Vec<StagedRow> = Vec::new();
+        let (mut ordinary, mut deletions, mut bytes) = (
+            cache.ordinary_count,
+            cache.deletion_count,
+            cache.total_bytes,
+        );
+        for mut row in candidates {
+            let previous_id = row
+                .key
+                .as_ref()
+                .and_then(|k| cache.by_coordinate.get(k))
+                .cloned();
+            let previous = previous_id.as_deref().and_then(|id| cache.events.get(id));
+            if previous.is_some_and(|old| !supersedes(&row.event, old)) {
+                continue;
+            }
+            let old_len = previous_id
+                .as_deref()
+                .and_then(|id| cache.sizes.get(id))
+                .copied()
+                .unwrap_or(0);
+            let known = previous.is_some()
+                || (row.key.is_none()
+                    && (cache.events.values().any(|old| deletes(&row.event, old))
+                        || staged.iter().any(|s| deletes(&row.event, &s.event))));
+            let fits = (row.key.is_none() || previous.is_some() || ordinary < MAX_COORDINATES)
+                && (row.key.is_some() || deletions < MAX_DELETIONS)
+                && bytes - old_len + row.raw.len() <= MAX_PUBLIC_CACHE_BYTES;
+            if !fits {
+                if known {
+                    cache.disabled = true;
+                    cache.revision = cache.revision.saturating_add(1);
+                    mark(&mut cache.guard, true)?;
+                    bail!("Public cache is full; cached replay was paused");
+                }
+                continue;
+            }
+            if row.key.is_some() {
+                ordinary += usize::from(previous.is_none());
+            } else {
+                deletions += 1;
+            }
+            bytes = bytes - old_len + row.raw.len();
+            row.previous_id = previous_id;
+            staged.push(row);
+        }
+        if staged.is_empty() {
+            return Ok(0);
         }
         // A fixed, already allocated byte can be dirtied even when SQLite has
         // reached its page limit. It is cleared only after the durable commit.
@@ -308,21 +454,26 @@ impl PublicEventCache {
         cache.revision = cache.revision.saturating_add(1);
         mark(&mut cache.guard, true)?;
         let transaction = cache.db.transaction()?;
-        if let Some(old) = previous {
-            transaction.execute("DELETE FROM public_events WHERE id=?1", [old.id.to_hex()])?;
+        for row in &staged {
+            if let Some(old_id) = &row.previous_id {
+                transaction.execute("DELETE FROM public_events WHERE id=?1", [old_id])?;
+            }
+            transaction.execute(
+                "INSERT INTO public_events(id,coordinate,raw) VALUES (?1,?2,?3)",
+                params![row.id, row.key, row.raw],
+            )?;
         }
-        transaction.execute(
-            "INSERT INTO public_events(id,coordinate,raw) VALUES (?1,?2,?3)",
-            params![id, key, event.as_json()],
-        )?;
         transaction.commit()?;
         mark(&mut cache.guard, false)?;
-        cache
-            .events
-            .retain(|_, old| key.is_none() || coordinate(old) != key);
-        cache.events.insert(id, event.clone());
+        let count = staged.len();
+        for row in staged {
+            if let Some(old_id) = row.previous_id {
+                cache.index_remove(&old_id);
+            }
+            cache.index_insert(row.id, row.key, row.raw.len(), row.event);
+        }
         cache.disabled = false;
-        Ok(true)
+        Ok(count)
     }
     /// Signed public list bodies stay local. The ordinary event bus never replays mute lists.
     pub(super) fn store_graph_list(&self, event: &Event) -> Result<bool> {
@@ -353,13 +504,11 @@ impl PublicEventCache {
         if cache.disabled {
             return Ok(Vec::new());
         }
+        let now = crate::listing::now();
         let mut events: Vec<_> = cache
             .events
             .values()
-            .filter(|event| {
-                (graph || event.kind != Kind::MuteList)
-                    && allows(&cache.events, event, crate::listing::now())
-            })
+            .filter(|event| (graph || event.kind != Kind::MuteList) && cache.allows(event, now))
             .cloned()
             .collect();
         events.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(a.id.cmp(&b.id)));
@@ -676,5 +825,68 @@ mod tests {
                 .len()
                 <= MAX_PUBLIC_CACHE_FILE_BYTES
         );
+    }
+    #[test]
+    fn ingest_batch_collapses_revisions_enforces_budgets_and_fails_closed() {
+        let (dir, cache) = db();
+        let author = Keys::generate();
+        let other = Keys::generate();
+        let at = crate::listing::now() - 20;
+        let old = signed(&author, 0, at, r#"{"name":"Old"}"#, vec![]);
+        let mid = signed(&author, 0, at + 1, r#"{"name":"Mid"}"#, vec![]);
+        let newest = signed(&author, 0, at + 2, r#"{"name":"Newest"}"#, vec![]);
+        let other_ev = signed(&other, 0, at, r#"{"name":"Other"}"#, vec![]);
+        let del = signed(
+            &other,
+            5,
+            at + 1,
+            "",
+            vec![vec!["a".into(), coordinate(&other_ev).unwrap()]],
+        );
+        let rev_before = cache.revision();
+        let written = cache
+            .ingest_batch(&[
+                newest.clone(),
+                old.clone(),
+                newest.clone(),
+                mid,
+                other_ev.clone(),
+                del.clone(),
+            ])
+            .unwrap();
+        assert_eq!(written, 3);
+        assert_eq!(cache.revision(), rev_before + 1);
+        assert_eq!(
+            cache
+                .query_local(&[Filter::new().kind(Kind::Metadata)], 10)
+                .unwrap(),
+            vec![newest.clone()]
+        );
+        assert!(!cache.permits(&other_ev).unwrap());
+        drop(cache);
+        let reopened = PublicEventCache::open(&dir.path().join("public.sqlite")).unwrap();
+        assert_eq!(
+            reopened
+                .query_local(&[Filter::new().kind(Kind::Metadata)], 10)
+                .unwrap(),
+            vec![newest]
+        );
+        assert!(!reopened.permits(&other_ev).unwrap());
+
+        // Fill cache close to byte cap and verify a known coordinate exceeding it fails closed.
+        let mut fillers = Vec::new();
+        for _ in 0..8 {
+            fillers.push(signed(
+                &Keys::generate(),
+                0,
+                at,
+                &"x".repeat(1_000_000),
+                vec![],
+            ));
+        }
+        assert_eq!(reopened.ingest_batch(&fillers).unwrap(), 8);
+        let oversized_update = signed(&author, 0, at + 3, &"x".repeat(900_000), vec![]);
+        assert!(reopened.ingest_batch(&[oversized_update]).is_err());
+        assert!(reopened.disabled());
     }
 }

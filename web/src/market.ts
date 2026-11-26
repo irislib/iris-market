@@ -1,6 +1,7 @@
 import {BITCOIN_KIND,bitcoinFilter,readEscrowOffer} from './escrow-offer.ts';
 import {keywordSearches,matchesLiteralSearch,listingSearchText} from './lexical-search.ts'
-import { verifyEvent, type Event as NostrEvent } from 'nostr-tools/pure'
+import type { Event as NostrEvent } from 'nostr-tools/pure'
+import { sameWireEvent, utf8Bytes, verifyCleanEvent } from './verified-event.ts'
 import { decodeGeohash, locationFromTags, locationHash, locationLabel, MAX_GEOHASH_QUERY_VALUES, WEB_REGIONAL_QUERY_VALUES } from './map/geohash.ts'
 import { exactListingPoint } from './map/listing-pin.ts'
 import { getPublicRuntime, queryPublicIndex } from './nostr-runtime.ts'
@@ -25,10 +26,9 @@ const HISTORY_TIMEOUT = 12000
 const MAX_HISTORY_REQUESTS = 32
 const MAX_HISTORY_BYTES = 16 * 1024 * 1024
 const GEO_QUERY_LIMIT = 120
-const encoder = new TextEncoder()
 const seconds = () => Math.floor(Date.now() / 1000)
 const length = value => Array.from(value).length
-const bytes = value => encoder.encode(value).length
+const bytes = utf8Bytes
 const hex = (value, size) => typeof value === 'string' && new RegExp(`^[0-9a-f]{${size}}$`).test(value)
 const fail = (message: string): never => { throw new Error(message) }
 
@@ -51,17 +51,8 @@ export function parseEvent(input: NostrEvent, { now = seconds() } = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) fail('Invalid listing event')
   if (input.kind !== LISTING_KIND && input.kind !== BITCOIN_KIND) fail('Not a classified listing')
   if (!Number.isSafeInteger(input.created_at) || input.created_at < 0 || input.created_at > now + 300) fail('Invalid listing timestamp')
-  if (!hex(input.id, 64) || !hex(input.pubkey, 64) || !hex(input.sig, 128)) fail('Invalid listing signature fields')
-  if (typeof input.content !== 'string' || !Array.isArray(input.tags) || input.tags.length > 2048) fail('Invalid listing fields')
-  if (!input.tags.every(tag => Array.isArray(tag) && tag.length > 0 && tag.every(value => typeof value === 'string'))) fail('Invalid listing tags')
-  // Copy only wire fields: never trust nostr-tools' cached verification Symbol on
-  // a mutable object passed by another caller. No getters/symbols enter storage.
-  const event = {
-    id: input.id, pubkey: input.pubkey, created_at: input.created_at,
-    kind: input.kind, tags: input.tags.map(tag => [...tag]), content: input.content, sig: input.sig,
-  }
-  if (bytes(JSON.stringify(event)) > MAX_EVENT_BYTES) fail('Listing is too large')
-  if (!verifyEvent(event)) fail('Listing signature is invalid')
+  const event = verifyCleanEvent(input, MAX_EVENT_BYTES, 2048)
+  if (!event) fail('Listing signature is invalid')
 
   const quote=readEscrowOffer(event.kind,event.tags);
   const identifier = singleton(event, 'd')
@@ -99,15 +90,12 @@ export function parseEvent(input: NostrEvent, { now = seconds() } = {}) {
   if(quote.expiration!=null)expiration=Math.min(quote.expiration,expiration??Infinity);
   const status = quote.status ?? singleton(event, 'status') ?? 'active'
   if (status !== 'active' && status !== 'sold') fail('Invalid listing status')
-  const originalTags = Object.freeze(event.tags.map(tag => Object.freeze([...tag])))
-  // Preserve the verification brand on this defensive, immutable wire copy.
-  const rawEvent = Object.freeze({ ...event, tags: originalTags })
   return Object.freeze({
-    rawEvent, escrow:quote.escrow, id: (event.kind===BITCOIN_KIND?"38383:":"")+`${event.pubkey}:${identifier}`, eventId: event.id, author: event.pubkey,
+    rawEvent: event, escrow:quote.escrow, id: (event.kind===BITCOIN_KIND?"38383:":"")+`${event.pubkey}:${identifier}`, eventId: event.id, author: event.pubkey,
     identifier, title, description: event.content, price, currency, location,
     geohash: geo?.geohash ?? null, coordinates: exactPoint ? Object.freeze(exactPoint) : geo?.coordinates ?? null, locationBounds: geo?.bounds ?? null,
     serviceAreas: parseServiceAreas(event.tags),
-    category, tags: Object.freeze(tags), originalTags, imageUrl, side, createdAt: event.created_at, expiration, status,
+    category, tags: Object.freeze(tags), originalTags: event.tags, imageUrl, side, createdAt: event.created_at, expiration, status,
   })
 }
 
@@ -275,6 +263,8 @@ export class MarketRelayClient {
   expiryTimer: ReturnType<typeof setInterval> | null
   lastVisible: string | null
   lastStatus: string
+  private nextExpiration: number | null = null
+  private verifiedById = new Map<string, MarketListing>()
   geohashes: string[]
   geohashSet = new Set<string>()
   private observedCells: string[] = []
@@ -374,7 +364,7 @@ export class MarketRelayClient {
     this.emitStatus()
     this.emitChange()
     this.emitPagination()
-    if (this.hasQueries) this.expiryTimer = setInterval(() => this.emitChange(), 1000)
+    if (this.hasQueries) this.expiryTimer = setInterval(() => this.checkExpiry(), 1000)
     return this
   }
 
@@ -389,9 +379,15 @@ export class MarketRelayClient {
   }
 
   parseIncoming(event:NostrEvent):MarketListing {
-    const listing=parseEvent(event,{now:this.now()});this.tagCatalogue.observe(event,this.now())
-    this.offlineCache?.save(event)
-    this.recovery?.observe(event)
+    const now=this.now()
+    const known=typeof event?.id==='string'?this.verifiedById.get(event.id):undefined
+    if(known&&sameWireEvent(event,known.rawEvent)&&known.createdAt<=now+300)return known
+    const listing=parseEvent(event,{now})
+    this.verifiedById.set(listing.eventId,listing)
+    if(this.verifiedById.size>2000)this.verifiedById.delete(this.verifiedById.keys().next().value)
+    this.tagCatalogue.observe(listing.rawEvent,now)
+    this.offlineCache?.save(listing.rawEvent)
+    this.recovery?.observe(listing.rawEvent)
     if(this.running&&this.queryExpansion==='expanded'&&this.queryText&&this.queryTags.length<TAG_LIMITS.queryTags&&this.tagSelectionTimer===null)this.tagSelectionTimer=setTimeout(()=>{
       this.tagSelectionTimer=null;if(this.running)this.searchTags(this.queryText)
     },24)
@@ -720,6 +716,7 @@ export class MarketRelayClient {
     clearInterval(this.expiryTimer)
     clearTimeout(this.changeTimer)
     this.expiryTimer = this.changeTimer = null
+    this.verifiedById.clear()
     for (const connection of this.connections.values()) this.dispose(connection)
     this.connections.clear()
     this.emitStatus()
@@ -1049,8 +1046,17 @@ export class MarketRelayClient {
     this.changeTimer = setTimeout(() => { this.changeTimer = null; if (this.running) this.emitChange() }, 24)
   }
 
+  checkExpiry() {
+    if (this.nextExpiration !== null && this.now() >= this.nextExpiration) this.emitChange()
+  }
+
   emitChange() {
     const listings = this.listings()
+    let nextExpiration: number | null = null
+    for (const item of listings) {
+      if (item.expiration !== null && (nextExpiration === null || item.expiration < nextExpiration)) nextExpiration = item.expiration
+    }
+    this.nextExpiration = nextExpiration
     const fingerprint = listings.map(item => item.eventId).join(',')
     if (fingerprint === this.lastVisible) return
     this.lastVisible = fingerprint

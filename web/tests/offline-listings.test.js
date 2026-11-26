@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {finalizeEvent,generateSecretKey} from 'nostr-tools/pure'
 import {createPublicListingCache} from '../src/offline-listings.ts'
 import {parseEvent,visibleListings,MarketRelayClient} from '../src/market.ts'
+import {sameWireEvent,verifyCleanEvent} from '../src/verified-event.ts'
 
 const now=1800000000,key=generateSecretKey()
 const signed=({id='chair',at=now-20,status='active',extra=[],content='A useful chair',kind=30402}={})=>finalizeEvent({kind,created_at:at,tags:[['d',id],['title','Chair'],['status',status],...extra],content},key)
@@ -93,4 +94,50 @@ test('recovery loader keeps signed inactive authority for caller-specific admiss
   const sold=signed({status:'sold'}),expired=signed({id:'expired',extra:[['expiration',String(now-1)]]})
   const store=cache(memoryBackend([sold,expired]))
   assert.deepEqual(new Set((await store.loadForRecovery()).map(event=>event.id)),new Set([sold.id,expired.id]))
+})
+
+test('verifyCleanEvent freezes verified wire copies, enforces tighter bounds and rejects tampered symbols',()=>{
+  const raw=signed({id:'clean',content:'hello 🌍'})
+  const dirty={...raw,extra:'strip-me'}
+  const clean=verifyCleanEvent(dirty)
+  assert.ok(clean && Object.isFrozen(clean) && Object.isFrozen(clean.tags) && Object.isFrozen(clean.tags[0]))
+  assert.equal('extra' in clean,false)
+  assert.equal(verifyCleanEvent(clean),clean)
+  assert.equal(verifyCleanEvent(clean,32),null)
+  assert.equal(verifyCleanEvent(clean,1024*1024,1),null)
+  assert.equal(sameWireEvent({...raw,tags:raw.tags.map(t=>[...t])},clean),true)
+  assert.equal(sameWireEvent({...raw,content:'tampered'},clean),false)
+  assert.equal(sameWireEvent({...raw,tags:[...raw.tags,['t','extra']]},clean),false)
+  const forged=signed({id:'forged-sym'});forged.content='mutated after sign'
+  assert.equal(verifyCleanEvent(forged),null)
+})
+
+test('offline cache coalesces burst saves and relay client deduplicates exact frames and idle expiry ticks',async()=>{
+  let writes=0
+  const base=memoryBackend()
+  const backend={...base,async write(events,limit,check){writes++;return base.write(events,limit,check)}}
+  const store=createPublicListingCache({backend,validate})
+  for(let i=0;i<20;i++)store.save(signed({id:`burst-${i}`,at:now-20+i}))
+  await store.flush()
+  assert.equal(writes,1)
+  assert.equal(base.rows.size,20)
+
+  let clock=now,saves=0,changes=0
+  const client=new MarketRelayClient({
+    relays:[],indexQuery:null,now:()=>clock,
+    onChange:()=>{changes++},
+    offlineCache:{load:async()=>[],save:()=>{saves++},flush:async()=>{}},
+  })
+  const expiring=signed({id:'exp',at:now-5,extra:[['expiration',String(now+5)]]})
+  for(let i=0;i<3;i++)client.acceptListing(client.parseIncoming(copy(expiring)))
+  assert.equal(saves,1)
+  assert.equal(client.listings().length,1)
+  client.emitChange()
+  const beforeTicks=changes
+  clock=now+4;client.checkExpiry()
+  assert.equal(changes,beforeTicks)
+  clock=now+5;client.checkExpiry()
+  assert.equal(changes,beforeTicks+1)
+  assert.equal(client.listings().length,0)
+  client.close()
 })

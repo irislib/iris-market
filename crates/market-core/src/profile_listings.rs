@@ -82,29 +82,30 @@ impl Feed {
         &self,
         store: &Store,
         owner: &str,
-        proxy: &crate::model::ImageProxySettings,
+        signer: &image_proxy::ProxySigner,
         rates: &crate::rates::RateBook,
         currency: &str,
+        now: u64,
     ) -> Result<Page> {
-        let mut listings = store.listings_for_author(owner, &self.author, listing::now())?;
+        let mut listings = store.listings_for_author(owner, &self.author, now)?;
         let more_cached = listings.len() > self.limit;
         listings.truncate(self.limit);
         let mut collections = store.profile_collections(
             &self.author,
             owner,
             self.selected.as_ref().map(|(id, _)| id.as_str()),
-            listing::now(),
+            now,
         )?;
         for listing in listings.iter_mut().chain(
             collections
                 .iter_mut()
                 .flat_map(|c| c.members.iter_mut().filter_map(|m| m.listing.as_mut())),
         ) {
-            crate::rates::project(listing, rates, currency, listing::now());
+            crate::rates::project(listing, rates, currency, now);
             listing.image_url = listing
                 .image_url
                 .as_deref()
-                .and_then(|url| image_proxy::image_url(url, proxy, 800, 800, false));
+                .and_then(|url| signer.url(url, 800, 800, false));
         }
         Ok(Page {
             author: self.author.clone(),

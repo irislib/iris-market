@@ -17,7 +17,8 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-import { verifyEvent, type Event as NostrEvent } from 'nostr-tools/pure'
+import type { Event as NostrEvent } from 'nostr-tools/pure'
+import { verifyCleanEvent } from './verified-event.ts'
 import { fallbackIdentityName, getProfileName } from './shared/iris-kit/profile.ts'
 import { npubEncode } from 'nostr-tools/nip19'
 import { SocialGraph } from 'nostr-social-graph'
@@ -96,11 +97,10 @@ function safeUrl(value) {
 
 /** Copies wire fields before verification, ignoring mutable cached-verification symbols. */
 export function verifyProfileRecord(input: NostrEvent, { now = seconds() } = {}) {
-  if (!input || ![0, 3].includes(input.kind) || !isKey(input.id) || !isKey(input.pubkey) || typeof input.sig !== 'string' || !/^[0-9a-f]{128}$/.test(input.sig)) throw new Error('Invalid public profile record')
+  if (!input || ![0, 3].includes(input.kind)) throw new Error('Invalid public profile record')
   if (!Number.isSafeInteger(input.created_at) || input.created_at < 0 || input.created_at > now + 300 || typeof input.content !== 'string') throw new Error('Invalid public profile timestamp or content')
-  if (!Array.isArray(input.tags) || input.tags.length > 10000 || !input.tags.every(tag => Array.isArray(tag) && tag.length && tag.every(value => typeof value === 'string'))) throw new Error('Invalid public profile tags')
-  const event = { id: input.id, pubkey: input.pubkey, kind: input.kind, created_at: input.created_at, content: input.content, tags: input.tags.map(tag => [...tag]), sig: input.sig }
-  if (encoder.encode(JSON.stringify(event)).length > (event.kind === 0 ? 65536 : PROFILE_LIMITS.eventBytes) || !verifyEvent(event)) throw new Error('Invalid or oversized public profile record')
+  const event = verifyCleanEvent(input, input.kind === 0 ? 65536 : PROFILE_LIMITS.eventBytes, 10000)
+  if (!event) throw new Error('Invalid or oversized public profile record')
   return event
 }
 

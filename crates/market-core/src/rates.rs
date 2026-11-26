@@ -155,6 +155,13 @@ impl RateBook {
             status: status.into(),
         }
     }
+    pub(crate) fn next_change_at(&self, now: u64) -> Option<u64> {
+        self.rates
+            .values()
+            .filter(|rate| rate.fresh(now))
+            .map(|rate| rate.updated_at.saturating_add(FRESH_SECONDS + 1))
+            .min()
+    }
     fn ingest_snort(&mut self, event: &Event, now: u64) {
         if let Some((code, rate)) = parse_snort(event, now, SNORT_PUBLISHER) {
             let replace = self.rates.get(&code).is_none_or(|previous| {

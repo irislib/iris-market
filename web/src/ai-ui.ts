@@ -9,9 +9,9 @@ const $=byId;
 const keyFor = listing => listing.eventId || listing.id;
 export const AI_MODE_STORAGE_KEY='market-ai-mode-v1',AI_MODEL_STORAGE_KEY='market-ai-model-v1';
 interface SearchListing {id:string;author?:string;eventId?:string;title:string;description?:string;side?:string;category?:string;location?:string;tags?:string[];price?:string|number;currency?:string}
-interface AIOptions {getCandidates:()=>SearchListing[];getOrderCount?:()=>number;onChange:()=>void;onTextSearch?:(query:string)=>void;onSubmit?:(query:string)=>void;fetchMoreCandidates?:()=>Promise<boolean>;client?:Pick<FeedFilterClient,'info'|'load'|'classify'|'dispose'>&{pin?:()=>()=>void;selectSearchHead?:FeedFilterClient['selectSearchHead'];startSearchWorker?:FeedFilterClient['startSearchWorker']};browserClient?:BrowserFeedFilterClient;hasWebGPU?:()=>boolean;autoPrepare?:boolean;storage?:Pick<Storage,'getItem'|'setItem'>;saveData?:()=>boolean;homeFeed?:HomeFeedPreferences;isHomeVisible?:()=>boolean}
+interface AIOptions {getCandidates:()=>SearchListing[];getOrderCount?:()=>number;onChange:()=>void;onTextSearch?:(query:string)=>void;onSubmit?:(query:string)=>void;fetchMoreCandidates?:()=>Promise<boolean>;prioritizeCandidates?:(query:string,candidates:SearchListing[])=>SearchListing[];client?:Pick<FeedFilterClient,'info'|'load'|'classify'|'dispose'>&{pin?:()=>()=>void;selectSearchHead?:FeedFilterClient['selectSearchHead'];startSearchWorker?:FeedFilterClient['startSearchWorker'];startSearchWorkers?:FeedFilterClient['startSearchWorkers']};browserClient?:BrowserFeedFilterClient;hasWebGPU?:()=>boolean;autoPrepare?:boolean;storage?:Pick<Storage,'getItem'|'setItem'>;saveData?:()=>boolean;homeFeed?:HomeFeedPreferences;isHomeVisible?:()=>boolean}
 interface SourceRequest {epoch:number;done:boolean;more?:boolean;error?:unknown}
-export function setupAI({ getCandidates, getOrderCount=()=>0, onChange, onTextSearch, onSubmit, fetchMoreCandidates, client = new FeedFilterClient(), browserClient=new BrowserFeedFilterClient(),hasWebGPU=()=>!!globalThis.navigator&&'gpu' in globalThis.navigator,autoPrepare=true,storage:providedStorage,saveData=()=>!!(globalThis.navigator as Navigator&{connection?:{saveData?:boolean}})?.connection?.saveData,homeFeed,isHomeVisible=()=>true }:AIOptions) {
+export function setupAI({ getCandidates, getOrderCount=()=>0, onChange, onTextSearch, onSubmit, fetchMoreCandidates, prioritizeCandidates, client = new FeedFilterClient(), browserClient=new BrowserFeedFilterClient(),hasWebGPU=()=>!!globalThis.navigator&&'gpu' in globalThis.navigator,autoPrepare=true,storage:providedStorage,saveData=()=>!!(globalThis.navigator as Navigator&{connection?:{saveData?:boolean}})?.connection?.saveData,homeFeed,isHomeVisible=()=>true }:AIOptions) {
   let scores = new Map(), phase:'idle'|'loading'|'searching'='idle', generation = 0, submittedQuery='', paused=false, waitingCandidates=false;
   // Until a home run has a few picks, or has finished, the unfiltered listings stay on screen.
   let homeSettled=false;const homeRevealAt=6;
@@ -175,7 +175,7 @@ export function setupAI({ getCandidates, getOrderCount=()=>0, onChange, onTextSe
     $('ai-error').textContent='';
     phase=selected.info?'searching':'loading';onChange();
     if(selected.info&&!submittedQuery&&!homeRun){phase='idle';refresh();releaseModel();if(runController===controller)runController=null;return;}
-    let extraWorker:FeedFilterClient|null=null;
+    let extraWorkers:FeedFilterClient[]=[],failedOrCancelled=false;
     try {
       if (!selected.info) {
         phase='loading';progress.removeAttribute('value');$('ai-progress').textContent='Loading model…';refresh();
@@ -225,12 +225,30 @@ export function setupAI({ getCandidates, getOrderCount=()=>0, onChange, onTextSe
         }
         return {score,cached};
       };
-      let uncached=0,attemptedWorker=false;
+      type WorkerSlot={worker:Pick<FeedFilterClient,'classify'>|BrowserFeedFilterClient;main:boolean;busy:boolean};
+      let slots:WorkerSlot[]=[{worker:selected,main:true,busy:false}];
+      const inFlight=new Set<string>(),activeTasks=new Set<Promise<void>>();
+      let uncached=0,attemptedWorkers=false,fatalError:unknown=null,needsYield=false;
       let sourceRequests=0,unpainted=0,painted=false,lastPaint=performance.now();
       phase='searching';refresh();
       let reviewRows:SearchListing[]|undefined,rows:SearchListing[]=[],position=0,visibleMatches=0,lastThreshold=threshold();
       let recentReviews:SearchListing[]=[],homeReviewed=0;
       let reviewBoundary=scores.size+(preserve?250:1000),previousMatches=matchCount();
+      const nextCandidate=()=>{
+        while(position<rows.length&&(scores.has(keyFor(rows[position]))||inFlight.has(keyFor(rows[position]))))position++;
+        return rows[position];
+      };
+      const maybeStartWorkers=()=>{
+        if(attemptedWorkers||uncached<1||rows.length-position<8||saveData())return;
+        attemptedWorkers=true;
+        if('startSearchWorkers' in selected&&typeof selected.startSearchWorkers==='function'){
+          extraWorkers=selected.startSearchWorkers()??[];
+        }else if('startSearchWorker' in selected&&typeof selected.startSearchWorker==='function'){
+          const extra=selected.startSearchWorker();
+          if(extra)extraWorkers=[extra];
+        }
+        for(const worker of extraWorkers)slots.push({worker,main:false,busy:false});
+      };
       while(true) {
         if (current !== generation) return;
         if(homeRun&&!homeActive())break;
@@ -238,22 +256,85 @@ export function setupAI({ getCandidates, getOrderCount=()=>0, onChange, onTextSe
         if(inventory!==reviewRows||lastThreshold!==threshold()){
           reviewRows=inventory;position=0;visibleMatches=matchCount(inventory);lastThreshold=threshold();
           if(homeRun)homeReviewed=reviewedCount(inventory);
-          rows=homeRun&&$('sort').value==='suggested'
-            ? spaceSellers(inventory.filter(item=>!scores.has(keyFor(item))),recentReviews)
-            : inventory;
-        }
-        if(homeRun&&homeReviewed>=homeReviewLimit)break;
-        if(visibleMatches>=targetMatches)break;
-        while(position<rows.length&&scores.has(keyFor(rows[position])))position++;
-        const item=rows[position];
-        if(!homeRun&&scores.size>=reviewBoundary){
-          if(visibleMatches<=previousMatches){
-            paused=!!item||!!fetchMoreCandidates&&!sourceExhausted;
-            break;
+          if(homeRun&&$('sort').value==='suggested'){
+            rows=spaceSellers(inventory.filter(item=>!scores.has(keyFor(item))),recentReviews);
+          }else if(!homeRun&&prioritizeCandidates&&query){
+            rows=prioritizeCandidates(query,inventory.filter(item=>!scores.has(keyFor(item))));
+          }else{
+            rows=inventory;
           }
-          previousMatches=visibleMatches;reviewBoundary=scores.size+250;
         }
-        if(!item){
+        if(!activeTasks.size){
+          if(homeRun&&homeReviewed>=homeReviewLimit)break;
+          if(visibleMatches>=targetMatches)break;
+          if(!homeRun&&scores.size>=reviewBoundary){
+            if(visibleMatches<=previousMatches){
+              paused=!!nextCandidate()||!!fetchMoreCandidates&&!sourceExhausted;
+              break;
+            }
+            previousMatches=visibleMatches;reviewBoundary=scores.size+250;
+          }
+        }
+        maybeStartWorkers();
+        for(const slot of slots){
+          if(slot.busy||(!slot.main&&!(slot.worker as FeedFilterClient).info))continue;
+          if(homeRun&&homeReviewed+activeTasks.size>=homeReviewLimit)break;
+          if(visibleMatches+activeTasks.size>=targetMatches)break;
+          if(!homeRun&&scores.size+activeTasks.size>=reviewBoundary)break;
+          const item=nextCandidate();
+          if(!item)break;
+          if(waitingCandidates){waitingCandidates=false;refresh();}
+          $('ai-progress').textContent = homeRun?'Choosing listings…':'Searching…';
+          const key=keyFor(item);
+          inFlight.add(key);position++;slot.busy=true;
+          let task!:Promise<void>;
+          task=(async()=>{
+            let outcome:{score:number|{upperBound:number}|null;cached:boolean};
+            try{
+              outcome=await review(item,slot.worker);
+            }catch(error){
+              if(slot.main||current!==generation||controller.signal.aborted){fatalError=error;return;}
+              // Auxiliary failure must not lose a candidate. Drop the failed worker and retry on main.
+              slots=slots.filter(s=>s!==slot);
+              extraWorkers=extraWorkers.filter(w=>w!==slot.worker);
+              (slot.worker as FeedFilterClient).dispose('Auxiliary worker failed');
+              try{outcome=await review(item,selected);}
+              catch(retryError){fatalError=retryError;return;}
+            }finally{
+              slot.busy=false;inFlight.delete(key);activeTasks.delete(task);
+            }
+            if(current!==generation)return;
+            const {score,cached}=outcome;
+            if(score&&typeof score==='object'&&score.upperBound>=threshold()){
+              reviewRows=undefined;return;
+            }
+            const before=visibleMatches;
+            if(homeRun&&!scores.has(key))homeReviewed++;
+            scores.set(key,score);
+            if(!cached)uncached++;
+            if(typeof score==='number'&&score>=threshold()){visibleMatches++;sourceRequests=0;}
+            if(homeRun)recentReviews=recentReviews.concat(item).slice(-2);
+            unpainted++;
+            if(!painted||before===0&&visibleMatches>0||unpainted>=16||performance.now()-lastPaint>=100){
+              if(homeRun&&!homeSettled&&matchCount()>=homeRevealAt)homeSettled=true;
+              onChange();painted=true;unpainted=0;lastPaint=performance.now();
+              needsYield=true;
+            }
+          })();
+          activeTasks.add(task);
+        }
+        if(activeTasks.size){
+          await Promise.race(activeTasks);
+          if(fatalError){await Promise.allSettled(activeTasks);throw fatalError;}
+          if(needsYield){
+            needsYield=false;
+            // Cached decisions can otherwise keep resolving in one microtask
+            // chain, starving paint, input, Stop and a replacement query.
+            await new Promise<void>(resolve=>setTimeout(resolve,0));
+          }
+          continue;
+        }
+        if(!nextCandidate()){
           if(homeRun&&!continuation)break;
           if(sourceRequest?.done){
             const completed=sourceRequest;sourceRequest=null;
@@ -272,53 +353,17 @@ export function setupAI({ getCandidates, getOrderCount=()=>0, onChange, onTextSe
           waitingCandidates=true;$('ai-progress').textContent='Waiting for listings…';refresh();
           await waitForCandidates(current,sourceRequest);
           if(current!==generation)return;
-          continue;
-        }
-        if(waitingCandidates){waitingCandidates=false;refresh();}
-        $('ai-progress').textContent = homeRun?'Choosing listings…':'Searching…';
-        if(!attemptedWorker&&uncached>=4&&rows.length-position>=16){
-          attemptedWorker=true;
-          if(!saveData()&&'startSearchWorker' in selected)extraWorker=selected.startSearchWorker?.()??null;
-        }
-        const next=rows[position+1];
-        const pair=extraWorker?.info&&next&&keyFor(next)!==keyFor(item)&&!scores.has(keyFor(next))
-          &&visibleMatches+1<targetMatches&&(homeRun?homeReviewed+1<homeReviewLimit:scores.size+1<reviewBoundary);
-        const batch=pair?[item,next]:[item];
-        const results=await Promise.all(batch.map(async (listing,index)=>{
-          if(index===0)return review(listing,selected);
-          try{return await review(listing,extraWorker);}
-          catch(error){
-            // Auxiliary failure must not lose a candidate. Retry on the main worker.
-            if(current!==generation||controller.signal.aborted)throw error;
-            extraWorker.dispose();extraWorker=null;
-            return review(listing,selected);
-          }
-        }));
-        if(current!==generation)return;
-        const before=visibleMatches;
-        for(const [index,{score,cached}] of results.entries()){
-          if(score&&typeof score==='object'&&score.upperBound>=threshold()){
-            reviewRows=undefined;
-            continue;
-          }
-          if(homeRun&&!scores.has(keyFor(batch[index])))homeReviewed++;
-          scores.set(keyFor(batch[index]),score);
-          if(!cached)uncached++;
-          if(typeof score==='number'&&score>=threshold()){visibleMatches++;sourceRequests=0;}
-        }
-        if(homeRun)recentReviews=recentReviews.concat(batch).slice(-2);
-        position+=batch.length;unpainted+=batch.length;
-        if(!painted||before===0&&visibleMatches>0||unpainted>=16||performance.now()-lastPaint>=100){
-          if(homeRun&&!homeSettled&&matchCount()>=homeRevealAt)homeSettled=true;
-          onChange();painted=true;unpainted=0;lastPaint=performance.now();
-          // Cached decisions can otherwise keep resolving in one microtask
-          // chain, starving paint, input, Stop and a replacement query.
-          await new Promise<void>(resolve=>setTimeout(resolve,0));
         }
       }
     } catch (error) {
+      failedOrCancelled=true;
       if (current === generation) { paused=true;homeStopped=true;selected.dispose(); $('ai-error').textContent = `${error.message || 'Search failed'}. Choose All results to continue browsing.`; }
-    } finally { extraWorker?.dispose();releaseModel();if(runController===controller)runController=null;if (current === generation) { if(homeRun)homeSettled=true;phase='idle';waitingCandidates=false;$('ai-progress').textContent='';refresh();onChange(); } }
+    } finally {
+      const releaseMsg=failedOrCancelled||current!==generation||controller.signal.aborted?'Local filter stopped.':undefined;
+      for(const worker of extraWorkers)worker.dispose(releaseMsg);
+      releaseModel();if(runController===controller)runController=null;
+      if (current === generation) { if(homeRun)homeSettled=true;phase='idle';waitingCandidates=false;$('ai-progress').textContent='';refresh();onChange(); }
+    }
   }
   $('search-mode').onclick = () => {
     const active=!enabled();preference=active?'on':'off';writeSetting(AI_MODE_STORAGE_KEY,preference);setEnabled(active);

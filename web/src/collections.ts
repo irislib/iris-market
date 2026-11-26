@@ -1,6 +1,7 @@
 // Marketplace kind 30405. A collection names listings by stable address, including
 // products published by other sellers. A private bookmark is never an input here.
-import {verifyEvent, type Event, type EventTemplate, type Filter} from 'nostr-tools';
+import type {Event, EventTemplate, Filter} from 'nostr-tools';
+import {utf8Bytes as bytes, verifyCleanEvent} from './verified-event.ts';
 
 export const COLLECTION_KIND = 30405;
 export const COLLECTION_LIMITS = Object.freeze({members:64, title:160, eventBytes:32768, perProfile:32});
@@ -12,9 +13,8 @@ type Delivery = ProductCollection['delivery'];
 type CollectionQuery = (filters:Filter[], options:{signal?:AbortSignal;limit:number;deadline:number;cache:'cache-first'}) =>
   Promise<{events:Event[];complete?:boolean}>;
 type Head = {event:Event; addressDelete?:Event; eventDelete?:Event};
-const hex = /^[a-f0-9]{64}$/, encoder = new TextEncoder();
+const hex = /^[a-f0-9]{64}$/;
 const seconds = () => Math.floor(Date.now()/1000);
-const bytes = (value:string) => encoder.encode(value).length;
 const newer = (event:Event, previous?:Event) => !previous || event.created_at>previous.created_at ||
   event.created_at===previous.created_at && event.id<previous.id;
 function requireField(value:unknown, message:string):asserts value {if(!value)throw new Error(message);}
@@ -46,12 +46,10 @@ function validEnvelope(event:EventTemplate, now:number) {
   requireField(bytes(JSON.stringify(event))<=COLLECTION_LIMITS.eventBytes,'Collection is too large.');
 }
 function verified(input:Event, author:string, now:number) {
-  requireField(input && input.pubkey===author && hex.test(author) && hex.test(input.id) &&
-    /^[a-f0-9]{128}$/.test(input.sig) && (input.kind===COLLECTION_KIND || input.kind===5),'Invalid collection signature.');
+  requireField(input && input.pubkey===author && hex.test(author) && (input.kind===COLLECTION_KIND || input.kind===5),'Invalid collection signature.');
   validEnvelope(input,now);
-  // Discard any verification symbol cached on the caller's mutable event object.
-  const event={id:input.id,pubkey:input.pubkey,sig:input.sig,kind:input.kind,tags:input.tags.map(tag=>[...tag]),content:input.content,created_at:input.created_at};
-  requireField(verifyEvent(event),'Invalid collection signature.');
+  const event=verifyCleanEvent(input,COLLECTION_LIMITS.eventBytes,256);
+  requireField(event,'Invalid collection signature.');
   return event;
 }
 function fields(event:EventTemplate) {

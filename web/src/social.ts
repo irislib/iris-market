@@ -1,8 +1,9 @@
-import { verifyEvent, type Event as NostrEvent } from 'nostr-tools/pure'
+import type { Event as NostrEvent } from 'nostr-tools/pure'
 import { decode } from 'nostr-tools/nip19'
 import { SocialGraph } from 'nostr-social-graph'
 import { getPublicRuntime, type PublicEventRuntime } from './nostr-runtime.ts'
 import { DEFAULT_RELAYS, validateRelays } from './market.ts'
+import { utf8Bytes, verifyCleanEvent } from './verified-event.ts'
 
 export interface FollowLookupOptions { relays?: readonly string[]; signal?: AbortSignal; timeoutMs?: number; WebSocketImpl?: typeof WebSocket; runtime?: PublicEventRuntime; now?: () => number }
 export interface PublicFollows { pubkey: string; authors: readonly string[] }
@@ -14,7 +15,6 @@ const MAX_TAGS = 10000
 const MAX_AUTHORS = 256
 const MAX_FRAMES_PER_RELAY = 32
 const MAX_EVENTS_PER_RELAY = 8
-const encoder = new TextEncoder()
 const isKey = value => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value)
 const seconds = () => Math.floor(Date.now() / 1000)
 
@@ -39,18 +39,18 @@ export function normalizePublicKey(input: string): string {
 function contactList(input: NostrEvent, pubkey: string, now: number) {
   if (!input || typeof input !== 'object' || Array.isArray(input) || input.kind !== 3 || input.pubkey !== pubkey) return null
   if (!Number.isSafeInteger(input.created_at) || input.created_at < 0 || input.created_at > now + 300) return null
-  if (!isKey(input.id) || typeof input.sig !== 'string' || !/^[0-9a-f]{128}$/.test(input.sig)) return null
-  if (typeof input.content !== 'string' || !Array.isArray(input.tags)) return null
+  if (!Array.isArray(input.tags)) return null
   if (input.tags.length > MAX_TAGS) throw lookupError('limit', 'This public follow list exceeds the supported size.')
-  if (!input.tags.every(tag => Array.isArray(tag) && tag.length > 0 && tag.every(value => typeof value === 'string'))) return null
-  // Only wire fields enter verification; a caller's cached verification Symbol
-  // cannot authenticate mutated data. No relay hints or contact content is used.
-  const event = {
-    id: input.id, pubkey: input.pubkey, created_at: input.created_at, kind: input.kind,
-    tags: input.tags.map(tag => [...tag]), content: input.content, sig: input.sig,
+  const event = verifyCleanEvent(input, MAX_EVENT_BYTES, MAX_TAGS)
+  if (!event) {
+    if (
+      isKey(input.id) && typeof input.sig === 'string' && /^[0-9a-f]{128}$/.test(input.sig) &&
+      typeof input.content === 'string' &&
+      input.tags.every(tag => Array.isArray(tag) && tag.length > 0 && tag.every(v => typeof v === 'string')) &&
+      utf8Bytes(JSON.stringify({ id: input.id, pubkey: input.pubkey, created_at: input.created_at, kind: input.kind, tags: input.tags, content: input.content, sig: input.sig })) > MAX_EVENT_BYTES
+    ) throw lookupError('limit', 'This public follow list exceeds the supported size.')
+    return null
   }
-  if (encoder.encode(JSON.stringify(event)).length > MAX_EVENT_BYTES) throw lookupError('limit', 'This public follow list exceeds the supported size.')
-  if (!verifyEvent(event)) return null
   const graph = new SocialGraph(pubkey)
   if (!graph.handleEvent(event, true, Infinity)) return null
   const authors = [...graph.getFollowedByUser(pubkey)].sort()
@@ -147,7 +147,7 @@ export async function fetchFollows(publicKey: string, {
       socket.onmessage = ({ data }) => {
         if (!active()) return
         if (++connection.frames > MAX_FRAMES_PER_RELAY || typeof data !== 'string' ||
-            data.length > MAX_FRAME_BYTES || encoder.encode(data).length > MAX_FRAME_BYTES) {
+            data.length > MAX_FRAME_BYTES || utf8Bytes(data) > MAX_FRAME_BYTES) {
           finish(lookupError('limit', 'The public follow lookup exceeded its response limit.')); return
         }
         let frame

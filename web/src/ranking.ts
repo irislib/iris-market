@@ -34,17 +34,35 @@ function nearby(listing:RankableListing,location:readonly [number,number]|null|u
   // Missing or far-away coordinates are neutral, never a negative score.
   return 2*Math.max(0,1-km/100)*confidence
 }
+function stem(word:string){
+  if(word.length>4&&word.endsWith('ies'))return word.slice(0,-3)+'y'
+  if(word.length>4&&/(?:ch|sh|x|z|ss|o)es$/.test(word))return word.slice(0,-2)
+  if(word.length>3&&word.endsWith('s')&&!/(?:ss|us|is)$/.test(word))return word.slice(0,-1)
+  return word
+}
 function lexical(listing:RankableListing,terms:string[]){
   if(!terms.length)return 0
   const title=words(listing.title,300),tags=new Set(words([listing.category,...(listing.tags||[]).slice(0,16)].join(' '),1200)),body=new Set(words(listing.description)),titleSet=new Set(title)
-  const coverage=(values:Set<string>)=>terms.filter(term=>values.has(term)).length/terms.length
+  const withStems=(values:Set<string>)=>{const out=new Set(values);for(const w of values)out.add(stem(w));return out}
+  const titleStems=withStems(titleSet),tagStems=withStems(tags),bodyStems=withStems(body)
+  const coverage=(exact:Set<string>,stems:Set<string>)=>terms.reduce((sum,term)=>sum+(exact.has(term)?1:stems.has(stem(term))?.85:0),0)/terms.length
   const phrase=(` ${title.join(' ')} `).includes(` ${terms.join(' ')} `)?1:0
-  return Math.min(1,.65*coverage(titleSet)+.2*coverage(tags)+.1*coverage(body)+.25*phrase)
+  return Math.min(1,.65*coverage(titleSet,titleStems)+.2*coverage(tags,tagStems)+.1*coverage(body,bodyStems)+.25*phrase)
 }
 // Verified events and their tag arrays are immutable. Cache only their text
 // match for the active query; graph, freshness and AI scores can still change.
 let lexicalQuery = ''
 let lexicalScores = new WeakMap<RankableListing, number>()
+const normalizedTitles = new WeakMap<RankableListing, string>()
+function normalizedTitle(listing: RankableListing) {
+  if (!Object.isFrozen(listing)) return words(listing.title).join(' ')
+  let value = normalizedTitles.get(listing)
+  if (value === undefined) {
+    value = words(listing.title).join(' ')
+    normalizedTitles.set(listing, value)
+  }
+  return value
+}
 function lexicalScorer(terms:string[]) {
   const key = terms.join(' ')
   if (key !== lexicalQuery) {
@@ -90,7 +108,7 @@ export function rankListings<T extends RankableListing>(listings:T[],{relationFo
   if(home){
     const titles=new Set<string>()
     for(const row of rows.sort(byBase)){
-      const title=words(row.listing.title).join(' ')
+      const title=normalizedTitle(row.listing)
       if(title && titles.has(title))row.score-=homeFeed.ranking.repeatTitlePenalty
       titles.add(title)
     }

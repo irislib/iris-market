@@ -1700,3 +1700,38 @@ fn reopening_finishes_a_protected_basket_checkout_after_an_interrupted_write() {
     assert_eq!(retried["basket"][0]["items"][0]["quantity"], 1);
     app.shutdown();
 }
+
+#[test]
+fn snapshot_cache_reuses_unchanged_json_and_invalidates_on_mutations_and_expiry() {
+    let dir = tempfile::tempdir().unwrap();
+    offline(dir.path());
+    let seller = Keys::generate();
+    let app = open_following(dir.path(), &seller);
+    let now = listing::now();
+    let mut expiring = draft();
+    expiring.expires_at = Some(now + 2);
+    app.ingest_event(&listing::build(&seller, &expiring, "soon", now, false).unwrap())
+        .unwrap();
+    let first = app.snapshot().unwrap();
+    let second = app.snapshot().unwrap();
+    assert_eq!(first, second);
+    let parsed: Value = serde_json::from_str(&first).unwrap();
+    assert_eq!(parsed["listings"].as_array().unwrap().len(), 1);
+    let id = format!("{}:soon", seller.public_key().to_hex());
+    let saved = app
+        .command(&json!({"type":"save","id":id}).to_string())
+        .unwrap();
+    assert_ne!(saved, first);
+    assert_eq!(
+        serde_json::from_str::<Value>(&saved).unwrap()["saved_count"],
+        1
+    );
+    // Wait until the listing's expiration timestamp passes; cached snapshot must expire automatically.
+    while listing::now() < now + 2 {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let expired: Value = serde_json::from_str(&app.snapshot().unwrap()).unwrap();
+    assert!(expired["listings"].as_array().unwrap().is_empty());
+    assert_eq!(expired["saved_count"], 0);
+    app.shutdown();
+}

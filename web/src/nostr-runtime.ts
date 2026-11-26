@@ -1,10 +1,11 @@
-import { matchFilters, verifyEvent, type Event, type Filter, type VerifiedEvent } from 'nostr-tools';
+import { matchFilters, type Event, type Filter, type VerifiedEvent } from 'nostr-tools';
 import type { RuntimeCompletion, RuntimeEventInfo, RuntimePublishResult, RuntimeQueryOptions, RuntimeQueryResult, RuntimeSource, RuntimeSubscription, RuntimeSubscriptionHandlers } from 'nostr-pubsub';
 import { assetUrl } from './asset-url.ts';
 import { createPublicIndex } from './public-index.ts';
 import { BITCOIN_KIND, readEscrowOffer } from './escrow-offer.ts';
 import { GRAPH_BOOTSTRAP } from './graph-bootstrap.ts';
 import { usesDefaultPublicRelays } from './public-relays.ts';
+import { verifyCleanEvent } from './verified-event.ts';
 
 /** This runtime contains PUBLIC market data only. NDR uses its own private transport. */
 const PUBLIC_KINDS = new Set([0, 3, 5, 7368, 30402, 38383, 30405, 30406, 31555, 30064, 30078]);
@@ -51,15 +52,14 @@ function publicFilters(filters: Filter[]): Filter[] {
 function publicEvent(input: Event, allowExternalOrders=true): VerifiedEvent | null {
   if (!PUBLIC_KINDS.has(input?.kind)) return null;
   try {
-    const event = {id:input.id,pubkey:input.pubkey,created_at:input.created_at,kind:input.kind,
-      content:input.content,tags:input.tags.map(tag=>[...tag]),sig:input.sig};
-    if (JSON.stringify(event).length > 1024 * 1024) return null;
+    const event = verifyCleanEvent(input, 1024 * 1024);
+    if (!event) return null;
     if (event.kind===BITCOIN_KIND) {
       const external=allowExternalOrders && event.tags.some(([name,value])=>name==='z'&&value==='order') &&
         !event.tags.some(([name,value])=>name==='iris-escrow'||name==='y'&&value==='iris-market');
       if(!external)readEscrowOffer(event.kind,event.tags);
     }
-    return verifyEvent(event) ? event : null;
+    return event;
   } catch { return null; }
 }
 

@@ -1,6 +1,7 @@
-import { verifyEvent, type Event as NostrEvent } from 'nostr-tools/pure'
+import type { Event as NostrEvent } from 'nostr-tools/pure'
 import type { Filter } from 'nostr-tools/filter'
 import { createPrivateTransport } from './messaging/transport.ts'
+import { verifyCleanEvent } from './verified-event.ts'
 
 export interface ExchangeRate { value: number; source: string; updatedAt: number; eventId?: string }
 export interface RateSnapshot { rates: Readonly<Record<string, ExchangeRate>>; status?: string; error?: string | null }
@@ -33,7 +34,6 @@ export const SNORT_RATES = Object.freeze({ pubkey: '84de35e2584d2b144aae823c9ed0
 // https://docs.cdp.coinbase.com/coinbase-app/track-apis/exchange-rates
 export const COINBASE_RATES_URL = 'https://api.coinbase.com/v2/exchange-rates?currency=BTC'
 const SATS_PER_BTC = 100_000_000
-const encoder = new TextEncoder()
 const seconds = () => Math.floor(Date.now() / 1000)
 const decimal = /^[+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/
 const unitRates = Object.freeze({ BTC: 1, SATS: SATS_PER_BTC })
@@ -97,8 +97,8 @@ export function parseSnortRateEvent(raw: NostrEvent, { now = seconds(), expected
   try {
     if (raw?.kind !== SNORT_RATES.kind || raw.pubkey !== expectedPublisher || !Number.isSafeInteger(raw.created_at) || raw.created_at > now + 60 || now - raw.created_at > RATE_POLICY.maxAgeSeconds) return null
     if (typeof raw.content !== 'string' || raw.content.length > 8192 || !Array.isArray(raw.tags) || raw.tags.length > 64 || !raw.tags.every(tag => Array.isArray(tag) && tag.length <= 12 && tag.every(value => typeof value === 'string' && value.length <= 1024))) return null
-    const event = { id: raw.id, pubkey: raw.pubkey, sig: raw.sig, kind: raw.kind, created_at: raw.created_at, tags: raw.tags.map(tag => [...tag]), content: raw.content }
-    if (encoder.encode(JSON.stringify(event)).length > 16384 || !verifyEvent(event)) return null
+    const event = verifyCleanEvent(raw, 16384, 64)
+    if (!event) return null
     const tags = event.tags.filter(tag => tag[0] === 'd')
     if (tags.length !== 1 || tags[0].length < 6 || !/^BTC[A-Z]{3}$/.test(tags[0][1])) return null
     const [_, symbol, ask, bid, low, high] = tags[0], values = [ask, bid, low, high].map(positive)

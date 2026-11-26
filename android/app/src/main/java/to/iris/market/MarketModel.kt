@@ -280,6 +280,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
         approval.value = null
     }
     @Volatile private var active = true
+    @Volatile private var lastSnapshotRaw: String? = null
     private var operationCount = 0
     @Volatile private var accountGeneration = 0L
     private val linking = MutableStateFlow<String?>(null)
@@ -395,6 +396,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
         }
         mutablePushRoute.value=null;activePushPeerID=null;activePushThreadID=null
         accountGeneration += 1
+        lastSnapshotRaw = null
         aiIntentGate.advance()
         core?.shutdown();core?.close();core=null
         val application=getApplication<Application>()
@@ -587,23 +589,36 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
     }
     fun closeDeviceLink() {linkJob?.cancel();linkJob=null;linking.value=null}
     fun setActive(value: Boolean) { active = value; if (!value) { setActivePushContext(null,null);cancelLocalAI() } else { homeStartedContext=null;syncPush(); updates.checkIfDue() } }
-    private fun publishSnapshot(next: MarketSnapshot) {
-        mutable.update { previous -> if(previous.publicKey==next.publicKey&&next.revision<previous.revision) previous else next }
+    private fun publishSnapshot(next: MarketSnapshot, raw: String? = null) {
+        var accepted = false
+        mutable.update { previous ->
+            if (previous.publicKey == next.publicKey && next.revision < previous.revision) previous
+            else { accepted = true; next }
+        }
+        if (accepted) lastSnapshotRaw = raw
         if (!state.value.profileNameRequired || state.value.demo) dismissProfileSetup()
-        viewModelScope.launch { continueLocalSearch();syncPush() }
+        viewModelScope.launch { continueLocalSearch(); syncPush() }
     }
     private suspend fun pollSnapshot() {
         val lease = remoteSnapshotLease
         if (lease == null) { mutex.withLock { refreshSnapshot() }; return }
         // The command holds the lifecycle mutex; UniFFI also retains each concurrent call.
         // A completed/closed lease is harmless: discard its snapshot or closed-object error.
-        runCatching { MarketSnapshot.parse(lease.first.snapshot()) }.getOrNull()?.let { next ->
-            if (remoteSnapshotLease === lease && accountGeneration == lease.second && core === lease.first) publishSnapshot(next)
+        runCatching {
+            val raw = lease.first.snapshot()
+            if (raw == lastSnapshotRaw) return@runCatching null
+            raw to MarketSnapshot.parse(raw)
+        }.getOrNull()?.let { (raw, next) ->
+            if (remoteSnapshotLease === lease && accountGeneration == lease.second && core === lease.first) {
+                publishSnapshot(next, raw)
+            }
         }
     }
     private fun refreshSnapshot(reset: Boolean = false) { core?.let {
-        val next=MarketSnapshot.parse(it.snapshot())
-        if(reset) mutable.value=next else publishSnapshot(next)
+        val raw = it.snapshot()
+        if (!reset && raw == lastSnapshotRaw) return
+        val next = MarketSnapshot.parse(raw)
+        if (reset) { lastSnapshotRaw = raw; mutable.value = next } else publishSnapshot(next, raw)
     } }
     fun dismissNotice() { alert.value = null }
     internal suspend fun uploadMedia(file:PreparedListingFile,expectedOwner:String):ListingMediaUpload {
@@ -722,18 +737,20 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
                         if (generation != accountGeneration) throw CancellationException("Profile changed")
                         val app = core ?: error("Not ready")
                         if(preferenceEpoch!=null) {
-                            val next=aiIntentGate.perform(preferenceEpoch) {
+                            val (raw, next)=aiIntentGate.perform(preferenceEpoch) {
                                 val commit=JSONObject(request.toString())
                                 val fresh=JSONObject(MarketSnapshot.parse(app.snapshot()).settings)
                                 if(expectedAIIntent==null) commit.getJSONObject("settings").put("ai",fresh.getJSONObject("ai"))
                                 else commit.put("settings",JSONObject(NativeSettingsCommit.editorSave(fresh.fields(),commit.getJSONObject("settings").fields())))
-                                MarketSnapshot.parse(app.command(commit.toString()))
+                                val response = app.command(commit.toString())
+                                response to MarketSnapshot.parse(response)
                             } ?: throw CancellationException("Superseded AI preference")
-                            publishSnapshot(next)
+                            publishSnapshot(next, raw)
                         } else {
                             val commit=JSONObject(request.toString())
                             if(publishExpiry!=null && commit.optString("type")=="publish") commit.getJSONObject("draft").put("expires_at",publishExpiry.deadline(System.currentTimeMillis()/1000) ?: JSONObject.NULL)
-                            publishSnapshot(MarketSnapshot.parse(app.command(commit.toString())))
+                            val response = app.command(commit.toString())
+                            publishSnapshot(MarketSnapshot.parse(response), response)
                         }
                     }
                 }

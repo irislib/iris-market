@@ -219,3 +219,36 @@ test('the model chooses the marketplace head from the entire request, independen
   assert.equal(calls[0][0],calls[1][0]);
   client.dispose();
 });
+
+test('auxiliary CPU workers work without deviceMemory, reuse warm sessions across searches and dispose with owner', async () => {
+  const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', {
+    configurable: true,
+    value: { hardwareConcurrency: 8 },
+  });
+  const client = make();
+  try {
+    await load(client);
+    const leases = client.startSearchWorkers();
+    assert.equal(leases.length, 2);
+    await tick();
+    // Simulate both auxiliary workers completing load.
+    for (const worker of FakeWorker.instances.slice(1)) {
+      worker.respond({ device: 'wasm', loadMilliseconds: 5 });
+    }
+    await tick();
+    assert(leases.every(l => l.info?.model === 'deberta'));
+    for (const lease of leases) lease.dispose();
+    // Next search reuses warm workers without spawning new Worker instances.
+    const countBefore = FakeWorker.instances.length;
+    const reused = client.startSearchWorkers();
+    assert.equal(reused.length, 2);
+    assert.equal(FakeWorker.instances.length, countBefore);
+    for (const lease of reused) lease.dispose();
+    client.dispose();
+    assert(FakeWorker.instances.slice(1).every(w => w.terminated));
+  } finally {
+    client.dispose();
+    if (originalNavigator) Object.defineProperty(globalThis, 'navigator', originalNavigator);
+  }
+});

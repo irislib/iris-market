@@ -1,9 +1,11 @@
 import type {Event as NostrEvent} from 'nostr-tools/pure'
+import {sameWireEvent,verifyCleanEvent} from './verified-event.ts'
 
 const DATABASE='iris-market-public-listings-v1'
 const DISABLED_KEY=`${DATABASE}:unavailable`
 const MAX_RECORDS=1000
 const MAX_EVENT_BYTES=65536
+const FLUSH_DEBOUNCE_MS=40
 interface ListingKey {id:string;createdAt:number;eventId:string}
 type Validate=(event:NostrEvent)=>ListingKey
 export interface PublicListingCache {
@@ -17,26 +19,27 @@ export interface ListingCacheBackend {
   write(events:readonly NostrEvent[],limit:number,validate:Validate):Promise<void>;
 }
 interface CacheOptions {backend:ListingCacheBackend;validate:Validate;maxRecords?:number;storage?:Pick<Storage,'getItem'|'setItem'>;onUnavailable?:()=>void}
-const wire=(event:NostrEvent):NostrEvent=>({id:event.id,pubkey:event.pubkey,kind:event.kind,created_at:event.created_at,tags:event.tags.map(tag=>[...tag]),content:event.content,sig:event.sig})
+interface CacheEntry {event:NostrEvent;key:ListingKey}
 const newer=(next:ListingKey,old:ListingKey)=>next.createdAt>old.createdAt||(next.createdAt===old.createdAt&&next.eventId<old.eventId)
 
 /** Public signed records only. Winning sold/expired revisions occupy their slots
  * permanently; capacity never makes an older listing visible again. */
 export function createPublicListingCache({backend,validate,maxRecords=MAX_RECORDS,storage,onUnavailable=()=>{}}:CacheOptions):PublicListingCache {
   if(!Number.isSafeInteger(maxRecords)||maxRecords<1||maxRecords>MAX_RECORDS)throw new Error('Invalid offline listing capacity')
-  const records=new Map<string,{event:NostrEvent;key:ListingKey}>(),pending=new Map<string,NostrEvent>()
-  let unavailable=false,loaded=false,initial:Promise<void>|null=null,writing:Promise<void>|null=null
+  const records=new Map<string,CacheEntry>(),pending=new Map<string,CacheEntry>()
+  let unavailable=false,loaded=false,initial:Promise<void>|null=null,writing:Promise<void>|null=null,flushTimer:ReturnType<typeof setTimeout>|null=null
   function disable(){
     if(unavailable)return
     unavailable=true;records.clear();pending.clear()
+    if(flushTimer!==null){clearTimeout(flushTimer);flushTimer=null}
     // Fail closed after a quota/write failure: an old active revision must not
     // reappear offline if its newer sold/expired revision could not be saved.
     try{storage?.setItem(DISABLED_KEY,'1')}catch{/* Storage itself is unavailable. */}
     onUnavailable()
   }
-  function checked(input:NostrEvent){
-    const event=wire(input)
-    if(![30402,38383].includes(event.kind)||new TextEncoder().encode(JSON.stringify(event)).length>MAX_EVENT_BYTES)throw new Error('Invalid offline listing')
+  function checked(input:NostrEvent):CacheEntry{
+    const event=verifyCleanEvent(input,MAX_EVENT_BYTES,2048)
+    if(!event||![30402,38383].includes(event.kind))throw new Error('Invalid offline listing')
     return{event,key:validate(event)}
   }
   function initialize(){
@@ -60,9 +63,9 @@ export function createPublicListingCache({backend,validate,maxRecords=MAX_RECORD
     await initialize()
     while(!unavailable&&pending.size){
       const batch:NostrEvent[]=[]
-      for(const event of pending.values()){
-        const key=validate(event),old=records.get(key.id)
-        if((old||records.size<maxRecords)&&(!old||newer(key,old.key))){records.set(key.id,{event,key});batch.push(event)}
+      for(const item of pending.values()){
+        const old=records.get(item.key.id)
+        if((old||records.size<maxRecords)&&(!old||newer(item.key,old.key))){records.set(item.key.id,item);batch.push(item.event)}
       }
       pending.clear()
       try{
@@ -70,25 +73,31 @@ export function createPublicListingCache({backend,validate,maxRecords=MAX_RECORD
       }catch{disable()}
     }
   }
+  function scheduleFlush(){
+    if(writing||flushTimer!==null||unavailable)return
+    flushTimer=setTimeout(()=>{flushTimer=null;if(pending.size&&!unavailable)void flush()},FLUSH_DEBOUNCE_MS)
+    ;(flushTimer as {unref?:()=>void}).unref?.()
+  }
   function flush(){
-    if(!writing)writing=drain().finally(()=>{writing=null;if(pending.size&&!unavailable)void flush()})
+    if(flushTimer!==null){clearTimeout(flushTimer);flushTimer=null}
+    if(!writing)writing=drain().finally(()=>{writing=null;if(pending.size&&!unavailable)scheduleFlush()})
     return writing
   }
   return{
-    async load(){await initialize();return unavailable?[]:[...records.values()].map(item=>wire(item.event))},
+    async load(){await initialize();return unavailable?[]:[...records.values()].map(item=>item.event)},
     async loadForRecovery(){
       await initialize();await flush();
       if(unavailable)throw new Error('Offline listing authority is unavailable for recovery');
-      return [...records.values()].map(item=>wire(item.event));
+      return [...records.values()].map(item=>item.event);
     },
     save(input){
       if(unavailable)return
-      let item:ReturnType<typeof checked>;try{item=checked(input)}catch{return}
+      let item:CacheEntry;try{item=checked(input)}catch{return}
       const old=pending.get(item.key.id),known=records.get(item.key.id)
-      if(old&&!newer(item.key,validate(old))||!old&&known&&!newer(item.key,known.key))return
+      if(old&&!newer(item.key,old.key)||!old&&known&&!newer(item.key,known.key))return
       if(loaded&&!known&&records.size>=maxRecords)return
       if(!old&&pending.size>=maxRecords){disable();return}
-      pending.set(item.key.id,item.event);void flush()
+      pending.set(item.key.id,item);scheduleFlush()
     },
     async flush(){do{await flush()}while(writing||pending.size)},
   }
@@ -126,13 +135,16 @@ function indexedBackend(indexedDB:IDBFactory):ListingCacheBackend {
           // One transaction serializes competing tabs and rechecks the winning
           // revision inside storage, so neither tab can overwrite a tombstone.
           for(const event of events){
-            const key=validate(event),request=store.get(key.id)
+            const clean=verifyCleanEvent(event,MAX_EVENT_BYTES,2048);if(!clean){transaction.abort();return}
+            const key=validate(clean),request=store.get(key.id)
             request.onsuccess=()=>{
               try{
-                const old=request.result?.event,previous=old?validate(wire(old)):null
+                const old=request.result?.event
+                if(old&&sameWireEvent(old,clean))return
+                const previous=old?validate(verifyCleanEvent(old,MAX_EVENT_BYTES,2048)??old):null
                 if(previous&&!newer(key,previous)||!previous&&size>=limit)return
                 if(!previous)size++
-                store.put({coordinate:key.id,event:wire(event)})
+                store.put({coordinate:key.id,event:clean})
               }catch{transaction.abort()}
             }
           }

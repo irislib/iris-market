@@ -61,27 +61,14 @@ impl MarketApp {
         device_secret: String,
         authorization: Option<String>,
     ) -> Result<Arc<Self>, MarketError> {
-        let owner = PublicKey::parse(&owner_public_key).map_err(error)?;
-        let owner_keys = owner_secret
-            .map(|secret| Keys::parse(&secret))
-            .transpose()
-            .map_err(error)?;
-        let device_keys = Keys::parse(&device_secret).map_err(error)?;
-        let authorization = authorization
-            .map(nostr::Event::from_json)
-            .transpose()
-            .map_err(error)?;
-        Ok(Arc::new(Self {
-            inner: iris_market_core::Market::open_identity(
-                Path::new(&data_dir),
-                owner,
-                owner_keys,
-                device_keys,
-                authorization,
-                false,
-            )
-            .map_err(error)?,
-        }))
+        Self::with_shared_private_store(
+            data_dir.clone(),
+            data_dir,
+            owner_public_key,
+            owner_secret,
+            device_secret,
+            authorization,
+        )
     }
     pub fn private_match_candidates(&self, entry: String) -> Result<String, MarketError> {
         self.inner.private_match_candidates(&entry).map_err(error)

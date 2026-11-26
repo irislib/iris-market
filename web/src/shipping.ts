@@ -1,12 +1,13 @@
 // Read-only subset of the draft GammaMarkets/market-spec shipping references.
 // A location on a product is not a shipping origin. Country tags on pickup
 // options are also not a promise of delivery to those countries.
-import {verifyEvent, type Event, type Filter} from 'nostr-tools';
+import type {Event, Filter} from 'nostr-tools';
 import type {MarketListing} from './market.ts';
+import {utf8Bytes, verifyCleanEvent} from './verified-event.ts';
 
 export const SHIPPING_LIMITS=Object.freeze({listings:1000,references:64,perListing:12,records:1024,deletions:2048,events:1024,eventBytes:32768,queryBytes:2*1024*1024,queries:8,timeoutMs:6000});
 export const COUNTRY_CODES=Object.freeze('AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM BN BO BQ BR BS BT BV BW BY BZ CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV CW CX CY CZ DE DJ DK DM DO DZ EC EE EG EH ER ES ET FI FJ FK FM FO FR GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GS GT GU GW GY HK HM HN HR HT HU ID IE IL IM IN IO IQ IR IS IT JE JM JO JP KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK LR LS LT LU LV LY MA MC MD ME MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ NA NC NE NF NG NI NL NO NP NR NU NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA RE RO RS RU RW SA SB SC SD SE SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ TC TD TF TG TH TJ TK TL TM TN TO TR TT TV TW TZ UA UG UM US UY UZ VA VC VE VG VI VN VU WF WS YE YT ZA ZM ZW'.split(' '));
-const countries=new Set(COUNTRY_CODES),hex=/^[0-9a-f]{64}$/,encoder=new TextEncoder();
+const countries=new Set(COUNTRY_CODES);
 const seconds=()=>Math.floor(Date.now()/1000),cancelled=()=>new DOMException('Shipping lookup cancelled.','AbortError');
 export type ShippingQuery=(filters:Filter[],options?:{signal?:AbortSignal;deadline?:number;limit?:number;cache?:'cache-first'|'network-only'|'cache-only'})=>Promise<{events:Event[];complete?:boolean}>;
 export interface ShippingReference {address:string;kind:30405|30406;author:string;identifier:string}
@@ -25,9 +26,9 @@ const newer=(a:Event,b?:Event)=>!b||a.created_at>b.created_at||a.created_at===b.
 
 export function countryCode(value:string):string|null {const code=typeof value==='string'?value.trim().toUpperCase():'';return countries.has(code)?code:null;}
 export function parseShippingReference(value:string):ShippingReference|null {
-  if(typeof value!=='string'||encoder.encode(value).length>240)return null;
+  if(typeof value!=='string'||utf8Bytes(value)>240)return null;
   const match=/^(30405|30406):([a-f0-9]{64}):(.+)$/.exec(value);
-  if(!match||encoder.encode(match[3]).length>160||/[\u0000-\u001f\u007f]/.test(match[3]))return null;
+  if(!match||utf8Bytes(match[3])>160||/[\u0000-\u001f\u007f]/.test(match[3]))return null;
   return {address:value,kind:Number(match[1]) as 30405|30406,author:match[2],identifier:match[3]};
 }
 function references(tags:readonly (readonly string[])[],collection=false) {
@@ -40,13 +41,10 @@ function references(tags:readonly (readonly string[])[],collection=false) {
   return {references:[...unique.values()],truncated};
 }
 function verified(input:Event,now:number):Event {
-  assert(input&&[5,30405,30406].includes(input.kind)&&hex.test(input.id)&&hex.test(input.pubkey)&&/^[a-f0-9]{128}$/.test(input.sig));
-  assert(Number.isSafeInteger(input.created_at)&&input.created_at>=0&&input.created_at<=now+300);
-  assert(typeof input.content==='string'&&input.content.length<=SHIPPING_LIMITS.eventBytes&&Array.isArray(input.tags)&&input.tags.length<=128&&input.tags.every(tag=>Array.isArray(tag)&&tag.length>0&&tag.length<=256&&tag.every(value=>typeof value==='string'&&value.length<=2048)));
+  assert(input&&[5,30405,30406].includes(input.kind)&&Number.isSafeInteger(input.created_at)&&input.created_at<=now+300);
+  assert(typeof input.content==='string'&&input.content.length<=SHIPPING_LIMITS.eventBytes&&Array.isArray(input.tags)&&input.tags.length<=128&&input.tags.every(tag=>Array.isArray(tag)&&tag.length<=256&&tag.every(value=>typeof value==='string'&&value.length<=2048)));
   assert(input.tags.reduce((size,tag)=>size+tag.reduce((sum,value)=>sum+value.length,0),input.content.length)<=SHIPPING_LIMITS.eventBytes);
-  // Re-copy wire fields so nostr-tools' cached verification symbol is never trusted.
-  const event={id:input.id,pubkey:input.pubkey,created_at:input.created_at,kind:input.kind,content:input.content,tags:input.tags.map(tag=>[...tag]),sig:input.sig};
-  assert(encoder.encode(JSON.stringify(event)).length<=SHIPPING_LIMITS.eventBytes&&verifyEvent(event));return event;
+  const event=verifyCleanEvent(input,SHIPPING_LIMITS.eventBytes,128);assert(event);return event;
 }
 function parseRecord(event:Event):RecordValue {
   const d=single(event.tags,'d');assert(d?.length===2);
@@ -162,7 +160,7 @@ export function createShippingResolver({query,now=seconds}:{query:ShippingQuery;
         if(++events>SHIPPING_LIMITS.events){limited=true;break;}
         if(typeof event?.content!=='string'||event.content.length>SHIPPING_LIMITS.eventBytes||!Array.isArray(event.tags)||event.tags.length>128||!event.tags.every(tag=>Array.isArray(tag)&&tag.length<=256&&tag.every(value=>typeof value==='string'&&value.length<=2048))){limited=true;continue;}
         if(event.tags.reduce((size,tag)=>size+tag.reduce((sum,value)=>sum+value.length,0),event.content.length)>SHIPPING_LIMITS.eventBytes){limited=true;continue;}
-        let size:number;try{size=encoder.encode(JSON.stringify(event)).length;}catch{continue;}
+        let size:number;try{size=utf8Bytes(JSON.stringify(event));}catch{continue;}
         bytes+=size;if(bytes>SHIPPING_LIMITS.queryBytes){limited=true;break;}accepted.push(event);
       }
       // Apply revisions before ID deletions regardless of result arrival order.

@@ -289,3 +289,18 @@ test('a listing match is remembered per search and follows a changed search or a
  assert.equal(matchesLiteralSearch('The Book of Kells','the book'),true)
  assert.equal(matchesLiteralSearch('Motorbike','bike'),false)
 });
+
+test('plural topic queries fall back to singular stems and semantic prioritization surfaces non-literal matches first',()=>{
+ const vectors=readTopicVectors(readFileSync(new URL('../assets/topic-vectors.bin',import.meta.url)));
+ const bikePlan=vectors('bikes',['Bicycle','unrelated']);
+ assert(bikePlan.tags.includes('Bicycle'));assert(bikePlan.terms.includes('bike'));
+ assert(vectors('chairs',['Furniture','unrelated']).tags.includes('Furniture'));
+ const rows=[
+  ...Array.from({length:20},(_,i)=>({id:`d-${i}`,title:`Wooden desk ${i}`,description:'Office table'})),
+  {id:'salmon',title:'Salmon fillets',description:'Fresh catch'},
+  {id:'violin',title:'Student violin',description:'Full size with bow'},
+ ];
+ const prioritized=vectors.prioritize('instruments',rows);
+ assert.equal(prioritized[0].id,'violin');
+ assert.equal(prioritized.length,rows.length,'prioritization never excludes listings');
+});

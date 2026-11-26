@@ -8,12 +8,27 @@ use anyhow::{Result, ensure};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
-use url::Url;
+use std::sync::OnceLock;
+use url::{Origin, Url};
 
 pub const DEFAULT_URL: &str = "https://imgproxy.iris.to";
 // Public client credentials shared with Iris Chat. These are not account keys.
 const KEY: &str = "f66233cb160ea07078ff28099bfa3e3e654bc10aa4a745e12176c433d79b8996";
 const SALT: &str = "5e608e60945dcd2a787e8465d76ba34149894765061d39287609fb9d776caa0c";
+
+fn credentials() -> &'static ([u8; 32], [u8; 32]) {
+    static CREDS: OnceLock<([u8; 32], [u8; 32])> = OnceLock::new();
+    CREDS.get_or_init(|| {
+        let decode = |input: &str| {
+            let mut out = [0u8; 32];
+            for (i, byte) in out.iter_mut().enumerate() {
+                *byte = u8::from_str_radix(&input[i * 2..i * 2 + 2], 16).expect("valid hex");
+            }
+            out
+        };
+        (decode(KEY), decode(SALT))
+    })
+}
 
 pub fn validate(settings: &ImageProxySettings) -> Result<()> {
     if !settings.enabled {
@@ -31,6 +46,101 @@ pub fn validate(settings: &ImageProxySettings) -> Result<()> {
     );
     Ok(())
 }
+
+/// Pre-validated proxy configuration reused across all URLs in one snapshot.
+enum Mode {
+    Direct,
+    Invalid,
+    Proxy {
+        base: String,
+        origin: Origin,
+        prefix: String,
+    },
+}
+pub(crate) struct ProxySigner(Mode);
+impl ProxySigner {
+    pub(crate) fn new(settings: &ImageProxySettings) -> Self {
+        if !settings.enabled {
+            return Self(Mode::Direct);
+        }
+        if validate(settings).is_err() {
+            return Self(Mode::Invalid);
+        }
+        let trimmed = settings.url.trim();
+        let Ok(proxy) = Url::parse(trimmed) else {
+            return Self(Mode::Invalid);
+        };
+        Self(Mode::Proxy {
+            base: trimmed.trim_end_matches('/').to_owned(),
+            prefix: proxy.path().trim_end_matches('/').to_owned(),
+            origin: proxy.origin(),
+        })
+    }
+    pub(crate) fn url(
+        &self,
+        source: &str,
+        width: u32,
+        height: u32,
+        square: bool,
+    ) -> Option<String> {
+        if matches!(self.0, Mode::Invalid) {
+            return None;
+        }
+        let source = source.trim();
+        let original = Url::parse(source).ok()?;
+        if !matches!(original.scheme(), "https" | "http") || original.host_str().is_none() {
+            return None;
+        }
+        let Mode::Proxy {
+            base,
+            origin,
+            prefix,
+        } = &self.0
+        else {
+            return Some(source.into());
+        };
+        if origin == &original.origin()
+            && (original.path() == prefix
+                || original
+                    .path()
+                    .strip_prefix(prefix.as_str())
+                    .is_some_and(|suffix| suffix.starts_with('/')))
+        {
+            return Some(source.into());
+        }
+        let mode = if square { "fill" } else { "fit" };
+        let path = format!(
+            "/rs:{mode}:{}:{}/dpr:2/{}",
+            width.clamp(1, 2048),
+            height.clamp(1, 2048),
+            URL_SAFE_NO_PAD.encode(source.as_bytes())
+        );
+        let (key, salt) = credentials();
+        let mut mac = Hmac::<Sha256>::new_from_slice(key).ok()?;
+        mac.update(salt);
+        mac.update(path.as_bytes());
+        let signature = URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
+        Some(format!("{base}/{signature}{path}"))
+    }
+    pub(crate) fn person(&self, person: &mut Person) {
+        person.picture_url = person
+            .picture_url
+            .as_deref()
+            .and_then(|url| self.url(url, 128, 128, true));
+    }
+    pub(crate) fn profile(&self, profile: &mut Profile) {
+        self.person(&mut profile.person);
+        for person_value in profile
+            .following
+            .iter_mut()
+            .chain(profile.followers.iter_mut())
+            .chain(profile.followed_by_known.iter_mut())
+        {
+            self.person(person_value);
+        }
+    }
+}
+
 pub fn image_url(
     source: &str,
     settings: &ImageProxySettings,
@@ -38,67 +148,13 @@ pub fn image_url(
     height: u32,
     square: bool,
 ) -> Option<String> {
-    let source = source.trim();
-    let original = Url::parse(source).ok()?;
-    if !matches!(original.scheme(), "https" | "http") || original.host_str().is_none() {
-        return None;
-    }
-    if !settings.enabled {
-        return Some(source.into());
-    }
-    validate(settings).ok()?;
-    let proxy = Url::parse(settings.url.trim()).ok()?;
-    let prefix = proxy.path().trim_end_matches('/');
-    if original.origin() == proxy.origin()
-        && (original.path() == prefix
-            || original
-                .path()
-                .strip_prefix(prefix)
-                .is_some_and(|suffix| suffix.starts_with('/')))
-    {
-        return Some(source.into());
-    }
-    let mode = if square { "fill" } else { "fit" };
-    let path = format!(
-        "/rs:{mode}:{}:{}/dpr:2/{}",
-        width.clamp(1, 2048),
-        height.clamp(1, 2048),
-        URL_SAFE_NO_PAD.encode(source.as_bytes())
-    );
-    let mut mac = Hmac::<Sha256>::new_from_slice(&decode_hex(KEY)?).ok()?;
-    mac.update(&decode_hex(SALT)?);
-    mac.update(path.as_bytes());
-    let signature = URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
-    Some(format!(
-        "{}/{signature}{path}",
-        settings.url.trim().trim_end_matches('/')
-    ))
-}
-fn decode_hex(input: &str) -> Option<Vec<u8>> {
-    if !input.is_ascii() || !input.len().is_multiple_of(2) {
-        return None;
-    }
-    (0..input.len())
-        .step_by(2)
-        .map(|index| u8::from_str_radix(&input[index..index + 2], 16).ok())
-        .collect()
+    ProxySigner::new(settings).url(source, width, height, square)
 }
 pub fn person(person: &mut Person, settings: &ImageProxySettings) {
-    person.picture_url = person
-        .picture_url
-        .as_deref()
-        .and_then(|url| image_url(url, settings, 128, 128, true));
+    ProxySigner::new(settings).person(person);
 }
 pub fn profile(profile: &mut Profile, settings: &ImageProxySettings) {
-    person(&mut profile.person, settings);
-    for person_value in profile
-        .following
-        .iter_mut()
-        .chain(profile.followers.iter_mut())
-        .chain(profile.followed_by_known.iter_mut())
-    {
-        person(person_value, settings);
-    }
+    ProxySigner::new(settings).profile(profile);
 }
 #[cfg(test)]
 mod tests {

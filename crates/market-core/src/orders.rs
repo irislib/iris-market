@@ -1734,6 +1734,20 @@ impl OrderBook {
     pub(crate) fn can_publish(&self, id: &str) -> bool {
         self.can_publish_at(id, crate::listing::now())
     }
+    pub(crate) fn next_expiry(&self, at: u64) -> Option<u64> {
+        self.records
+            .values()
+            .filter_map(|r| {
+                r.order
+                    .shipment
+                    .location
+                    .as_ref()
+                    .map(|p| p.at.saturating_add(LOCATION_TTL))
+            })
+            .chain(self.ephemeral.iter().map(|item| item.expires_at))
+            .filter(|&t| t > at)
+            .min()
+    }
     fn can_publish_at(&self, id: &str, now: u64) -> bool {
         if self.blocked.contains(id) {
             return false;

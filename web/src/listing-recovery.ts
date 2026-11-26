@@ -1,6 +1,7 @@
 import {BITCOIN_KIND,readEscrowOffer} from './escrow-offer.ts';
-import {verifyEvent, type Event, type Filter} from 'nostr-tools';
+import type { Event, Filter } from 'nostr-tools';
 import type {PublicEventRuntime} from './nostr-runtime.ts';
+import {verifyCleanEvent} from './verified-event.ts';
 
 interface Options {
   runtime: Pick<PublicEventRuntime,'ingest'|'subscribe'>;
@@ -19,9 +20,8 @@ export function createListingRecovery({runtime,readCache,readMemory=()=>[],onEve
   let closed=false,seeded=false,seeding:Promise<void>|undefined,writing:Promise<void>|undefined;
   function retained(input:Event):Event|null {
     try {
-      const event={id:input.id,pubkey:input.pubkey,kind:input.kind,created_at:input.created_at,
-        content:input.content,tags:input.tags.map(tag=>[...tag]),sig:input.sig};
-      if(![30402,BITCOIN_KIND].includes(event.kind)||new TextEncoder().encode(JSON.stringify(event)).length>65536||!verifyEvent(event))return null;
+      const event=verifyCleanEvent(input,65536,2048);
+      if(!event||![30402,BITCOIN_KIND].includes(event.kind))return null;
       if(event.kind===BITCOIN_KIND && readEscrowOffer(event.kind,event.tags).expiration<=Math.floor(now()/1000))return null;
       const expiry=event.tags.filter(tag=>tag[0]==='expiration');
       // The shared worker excludes expired records. Market's own authoritative

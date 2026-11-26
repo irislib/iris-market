@@ -14,13 +14,13 @@ class Element extends EventTarget {
 }
 function setView(field,value){const button=field('result-view');assert.equal(button.textContent,value==='all'?'Show all':'Show AI selected');return button.onclick();}
 const bicycle={id:'bicycle',title:'Bicycle',description:'City bicycle',side:'offer',category:'transport'};
-function fixture({rows=[bicycle],query='',gpu=true,client:provided,fetchMoreCandidates,onTextSearch,autoPrepare=false,mode='ai',storage,saveData,browserClient,homeFeed,isHomeVisible,onSubmit,onRender=()=>{}}={}){
+function fixture({rows=[bicycle],query='',gpu=true,client:provided,fetchMoreCandidates,prioritizeCandidates,onTextSearch,autoPrepare=false,mode='ai',storage,saveData,browserClient,homeFeed,isHomeVisible,onSubmit,onRender=()=>{}}={}){
   const elements=new Map(),calls=[];
   const field=id=>{if(!elements.has(id))elements.set(id,new Element());return elements.get(id);};
   globalThis.document={querySelector:selector=>field(selector.slice(1)),createElement:()=>new Element()};globalThis.window=new EventTarget();
   field('search-mode').value=mode;field('search').value=query;field('ai-model').value='deberta';field('ai-threshold').value='0.5';field('ai-threshold').options=['0.5','0.3','0.1'].map(value=>({value}));
   const client=provided??{info:null,async load(model,device,progress){calls.push(['load',model,device]);progress('Downloading model…');this.info={model,device};return this.info;},async classify(condition,text){calls.push(['classify',condition,text]);return{score:.8};},dispose(){calls.push(['dispose']);this.info=null;}};
-  const ui=setupAI({getCandidates:()=>rows,onChange:()=>{onRender();ui.refresh();},client,hasWebGPU:()=>gpu,fetchMoreCandidates,onTextSearch,autoPrepare,storage,saveData,browserClient,homeFeed,isHomeVisible,onSubmit});ui.refresh();
+  const ui=setupAI({getCandidates:()=>rows,onChange:()=>{onRender();ui.refresh();},client,hasWebGPU:()=>gpu,fetchMoreCandidates,prioritizeCandidates,onTextSearch,autoPrepare,storage,saveData,browserClient,homeFeed,isHomeVisible,onSubmit});ui.refresh();
   return{ui,client,calls,field,setRows(value){rows=value;ui.refresh();}};
 }
 
@@ -894,4 +894,41 @@ test('Home keeps unreviewed listings on screen until its first run has finished'
   assert.deepEqual(rows.filter(ui.isVisible).map(row=>row.id),['wanted','other']);
   release();await run;
   assert.deepEqual(rows.filter(ui.isVisible).map(row=>row.id),['wanted']);
+});
+
+test('work-stealing keeps fast workers busy while another worker reviews a slow listing, and prioritization orders review',async()=>{
+  let releaseSlow;const slowHeld=new Promise(resolve=>{releaseSlow=resolve;});
+  const rows=Array.from({length:12},(_,i)=>({id:String(i),eventId:'ev-'+i,title:i===11?'Target violin':'Item '+i}));
+  const seen=[];let fastCompletedWhileSlowBusy=0,slowActive=false;
+  const extra={
+    info:{model:'deberta'},
+    async classify(_cond,_text,{eventId}){
+      seen.push(eventId);
+      if(slowActive)fastCompletedWhileSlowBusy++;
+      await new Promise(resolve=>setImmediate(resolve));
+      return {score:eventId==='ev-11'?.9:.01,cached:false};
+    },
+    dispose(){},
+  };
+  const client={
+    info:{model:'deberta'},
+    async classify(_cond,_text,{eventId}){
+      seen.push(eventId);
+      if(eventId==='ev-0'){slowActive=true;await slowHeld;slowActive=false;return {score:.01,cached:false};}
+      await new Promise(resolve=>setImmediate(resolve));
+      return {score:eventId==='ev-11'?.9:.01,cached:false};
+    },
+    startSearchWorkers:()=>[extra],
+    dispose(){},
+  };
+  const {ui}=fixture({
+    rows,client,
+    prioritizeCandidates:(_q,list)=>[...list].sort((a,b)=>Number(b.id==='11')-Number(a.id==='11')),
+  });
+  const run=ui.submit('instruments');
+  await until(()=>fastCompletedWhileSlowBusy>=4);
+  assert.equal(seen[0],'ev-11','prioritized candidate is reviewed first');
+  assert(fastCompletedWhileSlowBusy>=4,'fast worker kept stealing work while slow worker was blocked');
+  releaseSlow();await run;
+  assert.equal(ui.pagination().reviewed,12);assert.equal(ui.pagination().matches,1);
 });

@@ -62,6 +62,36 @@ impl Messaging {
         })
     }
 
+    pub(crate) fn next_expiry(&self, at: u64) -> Option<u64> {
+        let p = self.retention();
+        self.state
+            .conversations
+            .values()
+            .flat_map(|c| c.messages.iter())
+            .chain(self.state.aliases.messages())
+            .flat_map(|m| {
+                [
+                    p.deadline(m.created_at, m.expires_at),
+                    (m.mine && m.delivery == "pending")
+                        .then_some(m.expires_at)
+                        .flatten(),
+                ]
+            })
+            .flatten()
+            .chain(
+                self.state
+                    .notice_history
+                    .values()
+                    .flatten()
+                    .filter_map(|&created| p.deadline(created, None)),
+            )
+            .chain(self.state.outbox.values().filter_map(|q| q.expires_at))
+            .chain(self.state.matches.next_expiry(at))
+            .chain(self.state.orders.next_expiry(at))
+            .filter(|&t| t > at)
+            .min()
+    }
+
     pub(super) fn history_due(&self, at: u64) -> bool {
         let p = self.retention();
         self.state.conversations.values().any(|c| {

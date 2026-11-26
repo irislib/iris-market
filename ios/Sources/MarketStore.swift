@@ -54,6 +54,8 @@ final class MarketStore: ObservableObject {
     #endif
     private var timer: Timer?
     private var snapshotRefreshInFlight = false
+    // Updated on MainActor to skip decoding and SwiftUI re-renders when 2s polls return identical JSON.
+    private var lastSnapshotJSON: String?
     @Published private(set) var pushEnabled = false
     @Published var pushRoute: NativePushRoute?
     var activePushPeerID: String?
@@ -156,7 +158,7 @@ final class MarketStore: ObservableObject {
         let previous = app
         pushRoute = nil; activePushPeerID = nil; activePushThreadID = nil
         invalidateAITest()
-        app = nil; ready = false; activeOrderID = nil; dismissProfileSetup(); stopPolling(); accountGeneration += 1; operationCount = 0; busy = false
+        app = nil; ready = false; activeOrderID = nil; lastSnapshotJSON = nil; dismissProfileSetup(); stopPolling(); accountGeneration += 1; operationCount = 0; busy = false
         _ = aiIntentGate.advance()
         let generation = accountGeneration
         let observer = signerObserver()
@@ -232,6 +234,7 @@ final class MarketStore: ObservableObject {
                 Task { @MainActor in
                     guard let self, self.accountGeneration == generation else { app.shutdown(); return }
                     self.app = app
+                    self.lastSnapshotJSON = initial
                     #if DEBUG
                     self.snapshot = self.messageFixture.project(snapshot)
                     #else
@@ -280,12 +283,25 @@ final class MarketStore: ObservableObject {
         guard let app, !snapshotRefreshInFlight else { return }
         snapshotRefreshInFlight = true
         let generation = accountGeneration
+        let hadProblem = refreshProblem != nil
+        let previousJSON = onOpen || hadProblem ? nil : lastSnapshotJSON
         queue.async { [weak self] in
             do {
-                let next = try MarketJSON.decoder().decode(MarketSnapshot.self, from: Data(try app.snapshot().utf8))
+                let raw = try app.snapshot()
+                if let previousJSON, raw == previousJSON {
+                    Task { @MainActor in
+                        self?.snapshotRefreshInFlight = false
+                        if let self, self.accountGeneration == generation, self.timer != nil {
+                            self.continueLocalSearch()
+                        }
+                    }
+                    return
+                }
+                let next = try MarketJSON.decoder().decode(MarketSnapshot.self, from: Data(raw.utf8))
                 Task { @MainActor in
                     self?.snapshotRefreshInFlight = false
                     if let self, self.accountGeneration == generation, (onOpen || self.timer != nil) {
+                        self.lastSnapshotJSON = raw
                         if self.refreshProblem != nil { self.refreshProblem = nil }
                         self.acceptSnapshot(next); self.refreshAIAvailability(); self.continueLocalSearch()
                     }
@@ -380,6 +396,7 @@ final class MarketStore: ObservableObject {
                     let pass = try onHandoffPass == nil ? nil : MarketJSON.decoder().decode(HandoffReply.self, from: data).handoffPass
                     Task { @MainActor in
                         guard self?.accountGeneration == generation else { completion?(false); return }
+                        if onHandoffPass == nil { self?.lastSnapshotJSON = response }
                         self?.acceptSnapshot(next)
                         if showsBusy { self?.operationCount -= 1; self?.busy = (self?.operationCount ?? 0) > 0 }
                         if let error = next.error, !error.isEmpty { if !backgroundReview { self?.alert = error }; completion?(false) }

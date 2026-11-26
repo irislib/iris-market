@@ -1,7 +1,7 @@
 // Fact-envelope layout reused from Iris Maps src/lib/mapFactEvents.ts (MIT).
 // Reviews are public statements by their signer, never purchase verification.
-import {verifyEvent} from 'nostr-tools/pure';
 import type {Event,EventTemplate,Filter,UnsignedEvent,VerifiedEvent} from 'nostr-tools';
+import {utf8Bytes,verifyCleanEvent} from './verified-event.ts';
 export {PRODUCT_REVIEW_KIND,PRODUCT_REVIEW_LIMITS,productReviewTarget,parseProductReview,productReviewsFromEvents,productReviewSummary,loadProductReviews} from './product-reviews.ts';
 export type {ProductReview} from './product-reviews.ts';
 
@@ -12,8 +12,7 @@ export interface ReviewDraftInput {target:string;author:string;rating:number;bod
 export type ReviewQuery=(filters:Filter[],options?:{signal?:AbortSignal;deadline?:number;limit?:number;cache?:'cache-first'|'network-only'|'cache-only'})=>Promise<{events:Event[];complete?:boolean;reason?:string}>;
 export interface ReviewAccount {owner?:string;canSign:boolean;pending?:Event[]}
 export type PublishReview=(draft:EventTemplate)=>Promise<{event:Event;delivery:string}>;
-const key=/^[a-f0-9]{64}$/,uuid=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
-const encoder=new TextEncoder(),seconds=()=>Math.floor(Date.now()/1000);
+const key=/^[a-f0-9]{64}$/,uuid=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/,seconds=()=>Math.floor(Date.now()/1000);
 const cache=new Map<string,Review[]>();
 const assert=(condition:unknown,message:string):void=>{if(!condition)throw new Error(message);};
 export function reviewTarget(pubkey:string):string {assert(key.test(pubkey),'Invalid profile.');return `iris-market:profile:${pubkey}`;}
@@ -25,7 +24,7 @@ function fields(event:UnsignedEvent,now:number) {
   assert(event&&event.kind===REVIEW_KIND&&event.content===''&&key.test(event.pubkey),'Invalid review.');
   assert(Number.isSafeInteger(event.created_at)&&event.created_at>=0&&event.created_at<=now+300,'Invalid review time.');
   assert(Array.isArray(event.tags)&&event.tags.length<=24&&event.tags.every(tag=>Array.isArray(tag)&&tag.length>=2&&tag.length<=4&&tag.every(value=>typeof value==='string'&&value.length<=12000)),'Invalid review fields.');
-  assert(encoder.encode(JSON.stringify(event)).length<=REVIEW_LIMITS.eventBytes,'Review is too large.');
+  assert(utf8Bytes(JSON.stringify(event))<=REVIEW_LIMITS.eventBytes,'Review is too large.');
   const subjectTags=event.tags.filter(tag=>tag[0]==='i'&&tag[2]==='subject');
   assert(subjectTags.length===1&&subjectTags[0].length===3&&uuid.test(subjectTags[0][1]),'Invalid review identifier.');
   const subject=subjectTags[0][1],targetTag=single(event.tags,'review_of'),reviewer=single(event.tags,'reviewer');
@@ -62,11 +61,10 @@ export function buildReviewDraft({target,author,rating,body='',subject=crypto.ra
 }
 export function parseReview(input:Event,target?:string,now=seconds()):Review {
   assert(input&&key.test(input.id)&&typeof input.sig==='string'&&/^[a-f0-9]{128}$/.test(input.sig),'Invalid review signature.');
-  // Never trust nostr-tools' cached verification symbol on mutable input.
-  const event={id:input.id,pubkey:input.pubkey,created_at:input.created_at,kind:input.kind,content:input.content,tags:input.tags?.map(tag=>Array.isArray(tag)?[...tag]:tag),sig:input.sig};
-  const review=fields(event,now);assert(!target||review.target===target,'Review belongs to another profile.');
-  assert(verifyEvent(event),'Invalid review signature.');
-  return {...review,id:event.id,event:event as VerifiedEvent,delivery:'published'};
+  const review=fields({id:input.id,pubkey:input.pubkey,created_at:input.created_at,kind:input.kind,content:input.content,tags:input.tags,sig:input.sig} as UnsignedEvent,now);
+  assert(!target||review.target===target,'Review belongs to another profile.');
+  const event=verifyCleanEvent(input,REVIEW_LIMITS.eventBytes,24);assert(event,'Invalid review signature.');
+  return {...review,id:event.id,event,delivery:'published'};
 }
 const newer=(a:Review,b:Review)=>a.event.created_at>b.event.created_at||a.event.created_at===b.event.created_at&&a.id<b.id;
 export function mergeReviews(...groups:Review[][]):Review[] {
@@ -99,7 +97,7 @@ export async function loadReviews(target:string,{query,signal,pending=[]}:{query
     if(controller.signal.aborted)throw new DOMException('Review lookup cancelled.','AbortError');
     let bytes=0,limited=result.events.length>REVIEW_LIMITS.events;const observed:Review[]=[];
     for(const event of result.events.slice(0,REVIEW_LIMITS.events)){
-      bytes+=encoder.encode(JSON.stringify(event)).length;if(bytes>REVIEW_LIMITS.queryBytes){limited=true;break;}
+      bytes+=utf8Bytes(JSON.stringify(event));if(bytes>REVIEW_LIMITS.queryBytes){limited=true;break;}
       try{observed.push(parseReview(event,target));}catch{/* Untrusted reviews do not enter projections. */}
     }
     const reviews=mergeReviews(cachedReviews(target,pending),observed);for(const review of reviews)rememberReview(review);

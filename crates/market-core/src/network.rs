@@ -37,18 +37,20 @@ pub(crate) async fn run(state: Arc<Mutex<State>>, notify: Arc<Notify>, stopped: 
     while !stopped.load(Ordering::Acquire) {
         let relays = { state.lock().unwrap().settings.relays.clone() };
         if relays.is_empty() {
-            {
-                let mut s = state.lock().unwrap();
-                s.status = "Offline · saved listings available".into();
-                s.revision += 1;
-            }
+            state
+                .lock()
+                .unwrap()
+                .set_status("Offline · saved listings available");
             notify.notified().await;
             continue;
         }
         let bus = match RelayEventBus::new(relays.clone(), Duration::from_secs(5)).await {
             Ok(bus) => bus,
             Err(_) => {
-                state.lock().unwrap().status = "Could not connect · retrying".into();
+                state
+                    .lock()
+                    .unwrap()
+                    .set_status("Could not connect · retrying");
                 tokio::select! { _=notify.notified()=>{}, _=tokio::time::sleep(Duration::from_secs(15))=>{} }
                 continue;
             }
@@ -75,7 +77,7 @@ pub(crate) async fn run(state: Arc<Mutex<State>>, notify: Arc<Notify>, stopped: 
             Ok(subscription) => subscription,
             Err(_) => {
                 bus.client().shutdown().await;
-                state.lock().unwrap().status = "Offline · reconnecting".into();
+                state.lock().unwrap().set_status("Offline · reconnecting");
                 tokio::select! { _=notify.notified()=>{}, _=tokio::time::sleep(Duration::from_secs(10))=>{} }
                 continue;
             }
@@ -149,16 +151,18 @@ pub(crate) async fn run(state: Arc<Mutex<State>>, notify: Arc<Notify>, stopped: 
                 }
             }
             // These are authors of the public marketplace feed, never inbox peers.
-            let authors = {
+            let (authors, public_cache) = {
                 let s = state.lock().unwrap();
-                s.store
-                    .listings(&s.owner.to_hex(), listing::now())
+                let authors = s
+                    .store
+                    .listing_authors()
                     .unwrap_or_default()
                     .into_iter()
-                    .filter_map(|listing| nostr::PublicKey::from_hex(&listing.author).ok())
+                    .filter_map(|author| nostr::PublicKey::from_hex(&author).ok())
                     .filter(|author| metadata_queried.insert(*author))
                     .take(64)
-                    .collect::<Vec<_>>()
+                    .collect::<Vec<_>>();
+                (authors, s.public_cache.clone())
             };
             if !authors.is_empty()
                 && let Ok(report) = bus
@@ -173,16 +177,33 @@ pub(crate) async fn run(state: Arc<Mutex<State>>, notify: Arc<Notify>, stopped: 
                     )
                     .await
             {
-                let mut s = state.lock().unwrap();
-                for received in report.events {
-                    let event = received.event.into_event();
-                    if matches!(event.kind, Kind::Metadata | Kind::EventDeletion)
-                        && authors.contains(&event.pubkey)
-                    {
-                        let _ = s.profiles.ingest_public(event);
+                let matching: Vec<_> = report
+                    .events
+                    .into_iter()
+                    .map(|received| received.event.into_event())
+                    .filter(|event| {
+                        matches!(event.kind, Kind::Metadata | Kind::EventDeletion)
+                            && authors.contains(&event.pubkey)
+                    })
+                    .collect();
+                if !matching.is_empty() {
+                    // Verify and commit to disk outside the global state mutex so
+                    // snapshots and UI commands stay responsive during metadata sync.
+                    let persisted = public_cache
+                        .as_ref()
+                        .and_then(|cache| cache.ingest_batch(&matching).ok())
+                        .unwrap_or(0);
+                    let mut s = state.lock().unwrap();
+                    let accepted = s.profiles.ingest_batch(
+                        matching
+                            .into_iter()
+                            .filter(|event| event.kind == Kind::Metadata),
+                    );
+                    s.profiles.refresh_public_cache();
+                    if accepted > 0 || persisted > 0 {
+                        s.revision += 1;
                     }
                 }
-                s.revision += 1;
             }
             let connected = bus
                 .client()
@@ -190,16 +211,11 @@ pub(crate) async fn run(state: Arc<Mutex<State>>, notify: Arc<Notify>, stopped: 
                 .await
                 .values()
                 .any(|r| r.is_connected());
-            {
-                let mut s = state.lock().unwrap();
-                s.status = if connected {
-                    "Connected"
-                } else {
-                    "Offline · changes queued"
-                }
-                .into();
-                s.revision += 1;
-            }
+            state.lock().unwrap().set_status(if connected {
+                "Connected"
+            } else {
+                "Offline · changes queued"
+            });
             let changed = {
                 let s = state.lock().unwrap();
                 s.buying_request != buying_request || s.map_cells != queried_cells

@@ -119,3 +119,20 @@ test('a prolific well-connected seller cannot take over Home',()=>{
   assert.deepEqual(first12.slice(0,9).filter(a=>a==='painter'),['painter']);assert.equal(new Set(first12.slice(0,9)).size,9);
   assert.equal(ranked.length,48);
 });
+
+test('plural queries still match singular listing words without matching unrelated substrings',()=>{
+  const listings=[
+    item('carpet','a',{title:'Wool carpet'}),
+    item('bike','b',{title:'City bike'}),
+    item('bicycle','c',{title:'Road bicycle'}),
+    item('table','d',{title:'Oak table'}),
+    item('box','e',{title:'Storage box'}),
+    item('battery','f',{title:'AA battery'}),
+  ];
+  assert.equal(rankListings(listings,{now,query:'bikes'})[0].id,'bike');
+  assert.equal(rankListings(listings,{now,query:'bicycles'})[0].id,'bicycle');
+  assert.equal(rankListings(listings,{now,query:'tables'})[0].id,'table');
+  assert.equal(rankListings(listings,{now,query:'boxes'})[0].id,'box');
+  assert.equal(rankListings(listings,{now,query:'batteries'})[0].id,'battery');
+  assert.equal(rankListings([item('carpet','a',{title:'Wool carpet'}),item('car','b',{title:'Electric car'})],{now,query:'cars'})[0].id,'car');
+});

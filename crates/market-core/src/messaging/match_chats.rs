@@ -84,6 +84,9 @@ impl Aliases {
     pub(super) fn forget_pending(&mut self) {
         self.prune(u64::MAX);
     }
+    pub(super) fn messages(&self) -> impl Iterator<Item = &Message> {
+        self.chats.values().flat_map(|c| c.messages.iter())
+    }
     #[cfg(test)]
     pub(super) fn pubkey(&self, chat: Uuid) -> Option<PublicKey> {
         self.chats.get(&chat).map(|c| c.pubkey)

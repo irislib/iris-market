@@ -54,6 +54,7 @@ pub struct Profile {
 #[derive(Clone)]
 pub struct Profiles {
     events: BTreeMap<(String, u16), Event>,
+    event_sizes: std::collections::HashMap<(String, u16), usize>,
     graph: SocialGraph,
     viewer: Option<String>,
     home_graph: std::sync::OnceLock<std::sync::Arc<SocialGraph>>,
@@ -67,6 +68,7 @@ impl Default for Profiles {
     fn default() -> Self {
         Self {
             events: BTreeMap::new(),
+            event_sizes: std::collections::HashMap::new(),
             graph: SocialGraph::new(DEFAULT_ROOT),
             viewer: None,
             home_graph: Default::default(),
@@ -87,6 +89,9 @@ impl Profiles {
         profiles.refresh_public_cache();
         profiles
     }
+    pub(crate) fn next_expiration(&self) -> Option<u64> {
+        self.next_expiration
+    }
     /// Called once before a snapshot. Expiry/deletion can remove visible edges
     /// without a new relay reply, while signed authority remains on disk.
     pub fn refresh_public_cache(&mut self) {
@@ -95,33 +100,40 @@ impl Profiles {
             .as_ref()
             .map(PublicEventCache::revision)
             .unwrap_or(0);
-        if revision == self.public_cache_revision
-            && self
-                .next_expiration
-                .is_none_or(|at| at > crate::listing::now())
+        let now = crate::listing::now();
+        if revision == self.public_cache_revision && self.next_expiration.is_none_or(|at| at > now)
         {
             return;
         }
         self.public_cache_revision = revision;
-        let before = self.events.len();
-        self.events.retain(|_, event| {
-            crate::public_cache::current(event, crate::listing::now())
+        let mut graph_dirty = false;
+        self.events.retain(|key, event| {
+            let keep = crate::public_cache::current(event, now)
                 && backing
                     .as_ref()
-                    .is_none_or(|cache| cache.permits(event).unwrap_or(false))
+                    .is_none_or(|cache| cache.permits(event).unwrap_or(false));
+            if !keep {
+                if let Some(size) = self.event_sizes.remove(key) {
+                    self.bytes = self.bytes.saturating_sub(size);
+                }
+                if key.1 == 3 {
+                    graph_dirty = true;
+                } else if key.1 == 10000 {
+                    self.home_graph.take();
+                }
+            }
+            keep
         });
-        self.bytes = self
-            .events
-            .values()
-            .map(|event| event.as_json().len())
-            .sum();
-        if before != self.events.len() {
-            self.rebuild_graph();
-        }
         if let Some(cache) = backing {
             for event in cache.profile_records(512).unwrap_or_default() {
-                let _ = self.ingest(event);
+                let kind = event.kind.as_u16();
+                if matches!(self.ingest_inner(event, false, false), Ok(true)) && kind == 3 {
+                    graph_dirty = true;
+                }
             }
+        }
+        if graph_dirty {
+            self.rebuild_graph();
         }
         self.context_loaded = self
             .events
@@ -129,18 +141,64 @@ impl Profiles {
             .is_some_and(supported_contacts);
         self.next_expiration = self.events.values().filter_map(expiration).min();
     }
+    fn sync_public_cache(&mut self, prev_revision: u64, has_deletion: bool) {
+        if !has_deletion
+            && self.public_cache_revision == prev_revision
+            && self
+                .next_expiration
+                .is_none_or(|at| at > crate::listing::now())
+        {
+            if let Some(cache) = &self.public_cache {
+                self.public_cache_revision = cache.revision();
+            }
+            self.context_loaded = self
+                .events
+                .get(&(DEFAULT_ROOT.into(), 3))
+                .is_some_and(supported_contacts);
+        } else {
+            self.refresh_public_cache();
+        }
+    }
     /// Public discovery alone writes the public cache. Private-peer hydration
     /// may use ingest(), but cannot reveal its peer set through persistent indexes.
     pub fn ingest_public(&mut self, event: Event) -> Result<bool> {
+        let prev_revision = self
+            .public_cache
+            .as_ref()
+            .map(PublicEventCache::revision)
+            .unwrap_or(0);
         if let Some(cache) = &self.public_cache {
             cache.ingest(&event)?;
         }
+        let is_deletion = event.kind == Kind::EventDeletion;
         let accepted = if matches!(event.kind.as_u16(), 0 | 3) {
             self.ingest(event)?
         } else {
             false
         };
-        self.refresh_public_cache();
+        self.sync_public_cache(prev_revision, is_deletion);
+        Ok(accepted)
+    }
+    /// Ingest a batch of public records with one cache transaction and one graph rebuild.
+    pub fn ingest_public_batch(&mut self, events: Vec<Event>) -> Result<usize> {
+        if events.is_empty() {
+            return Ok(0);
+        }
+        let prev_revision = self
+            .public_cache
+            .as_ref()
+            .map(PublicEventCache::revision)
+            .unwrap_or(0);
+        if let Some(cache) = &self.public_cache {
+            cache.ingest_batch(&events)?;
+        }
+        let has_deletion = events.iter().any(|e| e.kind == Kind::EventDeletion);
+        let accepted = self.ingest_batch(
+            events
+                .into_iter()
+                .filter(|e| matches!(e.kind.as_u16(), 0 | 3)),
+        );
+        self.sync_public_cache(prev_revision, has_deletion);
         Ok(accepted)
     }
     pub fn metadata_event(&self, author: &str) -> Option<&Event> {
@@ -149,35 +207,63 @@ impl Profiles {
     /// Winner checks preserve newer observations when independent profile requests finish.
     pub fn retain_from(&mut self, previous: &Self) {
         self.refresh_public_cache();
-        for event in previous.events.values() {
-            let _ = self.ingest(event.clone());
-        }
+        self.ingest_batch(previous.events.values().cloned());
         self.context_loaded = self
             .events
             .get(&(DEFAULT_ROOT.into(), 3))
             .is_some_and(supported_contacts);
     }
     pub fn retain_metadata_from(&mut self, previous: &Self) {
-        for event in previous
-            .events
-            .values()
-            .filter(|event| event.kind == Kind::Metadata)
-        {
-            let _ = self.ingest(event.clone());
+        self.ingest_batch(
+            previous
+                .events
+                .values()
+                .filter(|event| event.kind == Kind::Metadata)
+                .cloned(),
+        );
+    }
+    /// Ingest multiple events, rebuilding the social graph at most once at the end.
+    pub fn ingest_batch(&mut self, events: impl IntoIterator<Item = Event>) -> usize {
+        let mut accepted = 0;
+        let mut graph_dirty = false;
+        for event in events {
+            let kind = event.kind.as_u16();
+            if matches!(self.ingest_inner(event, true, false), Ok(true)) {
+                accepted += 1;
+                if kind == 3 {
+                    graph_dirty = true;
+                }
+            }
         }
+        if graph_dirty {
+            self.rebuild_graph();
+        }
+        accepted
     }
     pub fn ingest(&mut self, event: Event) -> Result<bool> {
+        self.ingest_inner(event, true, true)
+    }
+    fn ingest_inner(&mut self, event: Event, verify: bool, rebuild: bool) -> Result<bool> {
         let kind = event.kind.as_u16();
         if ![0, 3, 10000].contains(&kind)
             || event.created_at.as_secs() > crate::listing::now() + 600
         {
             bail!("Invalid profile event");
         }
+        let key = (event.pubkey.to_hex(), kind);
+        let previous = self.events.get(&key);
+        // An identical event already verified and stored in memory needs no
+        // re-serialization or re-verification. Any modified field still verifies.
+        if previous == Some(&event) {
+            return Ok(false);
+        }
         let size = event.as_json().len();
         if size > MAX_EVENT_BYTES {
             bail!("Profile event is too large");
         }
-        event.verify()?;
+        if verify {
+            event.verify()?;
+        }
         if !crate::public_cache::current(&event, crate::listing::now())
             || self
                 .public_cache
@@ -189,15 +275,13 @@ impl Profiles {
         // Retain the signed winner even when its list cannot be projected.
         // Otherwise an older edge could regain a Home boost from the snapshot.
         let unsupported = kind != 0 && !supported_contacts(&event);
-        let key = (event.pubkey.to_hex(), kind);
-        let previous = self.events.get(&key);
         if previous.is_some_and(|old| {
             old.created_at > event.created_at
                 || old.created_at == event.created_at && old.id <= event.id
         }) {
             return Ok(false);
         }
-        let old_size = previous.map(|e| e.as_json().len()).unwrap_or(0);
+        let old_size = self.event_sizes.get(&key).copied().unwrap_or(0);
         if self.bytes - old_size + size > MAX_CACHE_BYTES
             || previous.is_none() && self.events.len() >= 512
         {
@@ -207,8 +291,9 @@ impl Profiles {
         if let Some(at) = expiration(&event) {
             self.next_expiration = Some(self.next_expiration.map_or(at, |old| old.min(at)));
         }
+        self.event_sizes.insert(key.clone(), size);
         self.events.insert(key, event);
-        if kind == 3 {
+        if kind == 3 && rebuild {
             self.rebuild_graph();
         }
         if kind == 10000 {
@@ -524,6 +609,7 @@ async fn query(
         authors.sort();
         authors.dedup();
         authors.truncate(64);
+        let mut batch = Vec::new();
         if !authors.is_empty()
             && let Ok(deletions) = bus
                 .query(
@@ -537,13 +623,10 @@ async fn query(
                 )
                 .await
         {
-            for event in deletions.events {
-                let _ = cache.ingest(event.event.as_event());
-            }
+            batch.extend(deletions.events.into_iter().map(|q| q.event.into_event()));
         }
-        for event in &live {
-            let _ = cache.ingest(event);
-        }
+        batch.extend(live.iter().cloned());
+        let _ = cache.ingest_batch(&batch);
         if cache.disabled() {
             return Ok(Vec::new());
         }
@@ -566,13 +649,10 @@ fn retain_events(
     authors: &[PublicKey],
     kind: Option<Kind>,
 ) {
-    for event in events {
-        if (authors.is_empty() || authors.contains(&event.pubkey))
+    cache.ingest_batch(events.into_iter().filter(|event| {
+        (authors.is_empty() || authors.contains(&event.pubkey))
             && kind.is_none_or(|k| k == event.kind)
-        {
-            let _ = cache.ingest(event);
-        }
-    }
+    }));
 }
 /// Fresh bounded context avoids unbounded growth across profiles and stale filtered follower hits.
 pub async fn fetch(relays: Vec<String>, author: Option<String>) -> Result<Profiles> {
@@ -1000,5 +1080,55 @@ mod tests {
             forward.profile(&keys.public_key().to_hex()).following_count,
             reverse.profile(&keys.public_key().to_hex()).following_count
         );
+    }
+    #[test]
+    fn batch_ingest_matches_sequential_and_rejects_tampered_events() {
+        let dir_seq = tempfile::tempdir().unwrap();
+        let dir_batch = tempfile::tempdir().unwrap();
+        let mut seq = Profiles::from_public_cache(Some(
+            PublicEventCache::open(&dir_seq.path().join("public.sqlite")).unwrap(),
+        ));
+        let mut batch = Profiles::from_public_cache(Some(
+            PublicEventCache::open(&dir_batch.path().join("public.sqlite")).unwrap(),
+        ));
+        let a = Keys::generate();
+        let b = Keys::generate();
+        let now = crate::listing::now();
+        let meta_a = EventBuilder::new(Kind::Metadata, r#"{"name":"Alice"}"#)
+            .custom_created_at(Timestamp::from(now - 5))
+            .tags([Tag::parse(["expiration", &(now + 300).to_string()]).unwrap()])
+            .sign_with_keys(&a)
+            .unwrap();
+        let meta_b = EventBuilder::new(Kind::Metadata, r#"{"name":"Bob"}"#)
+            .custom_created_at(Timestamp::from(now - 5))
+            .sign_with_keys(&b)
+            .unwrap();
+        let contacts_a = follows(&a, &[b.public_key()], now - 5);
+        let del_b = EventBuilder::new(Kind::EventDeletion, "")
+            .custom_created_at(Timestamp::from(now - 2))
+            .tags([Tag::parse(["a", &format!("0:{}:", b.public_key().to_hex())]).unwrap()])
+            .sign_with_keys(&b)
+            .unwrap();
+        let events = vec![meta_a.clone(), meta_a.clone(), meta_b, contacts_a, del_b];
+        for ev in &events {
+            seq.ingest_public(ev.clone()).unwrap();
+        }
+        batch.ingest_public_batch(events).unwrap();
+        assert_eq!(
+            batch.person(&a.public_key().to_hex()).name,
+            seq.person(&a.public_key().to_hex()).name
+        );
+        assert_eq!(
+            batch.person(&b.public_key().to_hex()).name,
+            seq.person(&b.public_key().to_hex()).name
+        );
+        assert_eq!(
+            batch.profile(&a.public_key().to_hex()).following_count,
+            seq.profile(&a.public_key().to_hex()).following_count
+        );
+        assert_eq!(batch.next_expiration(), Some(now + 300));
+        let mut tampered = meta_a;
+        tampered.content = r#"{"name":"Eve"}"#.into();
+        assert!(batch.ingest(tampered).is_err());
     }
 }

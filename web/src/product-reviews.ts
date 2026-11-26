@@ -2,9 +2,9 @@
 // https://github.com/GammaMarkets/market-spec/blob/5dc79c5db0d41c0bea774debf445cce041192840/spec.md#5-product-reviews-kind-31555
 // https://github.com/shopstr-eng/shopstr/blob/2e11d0b6d7b8d5d3007c5393882a77dc2f0721e2/packages/shopstr-mcp/src/tools/utils/review-helpers.ts
 // Preserve each dimension's native 0..1 scale: clients disagree about overall weighting.
-import {verifyEvent} from 'nostr-tools/pure';
 import type {Event, Filter, VerifiedEvent} from 'nostr-tools';
 import type {ReviewQuery} from './reviews.ts';
+import {utf8Bytes, verifyCleanEvent} from './verified-event.ts';
 
 export const PRODUCT_REVIEW_KIND=31555;
 export const PRODUCT_REVIEW_LIMITS=Object.freeze({reviews:128,events:512,eventBytes:8192,queryBytes:1024*1024,timeoutMs:6000,body:3000});
@@ -13,7 +13,7 @@ export interface ProductReview {
   id:string;subject:string;author:string;targetAddress:string;rating:number;ratingMax:1;
   ratings:Readonly<Record<string,number>>;body:string;updatedAt:number;event:VerifiedEvent;
 }
-const key=/^[a-f0-9]{64}$/,encoder=new TextEncoder(),seconds=()=>Math.floor(Date.now()/1000);
+const key=/^[a-f0-9]{64}$/,seconds=()=>Math.floor(Date.now()/1000);
 const newer=(a:Event,b:Event)=>a.created_at>b.created_at||a.created_at===b.created_at&&a.id<b.id;
 const requireValue=(condition:unknown,message:string):void=>{if(!condition)throw new Error(message);};
 
@@ -29,10 +29,12 @@ function checkedEvent(input:Event,now:number):VerifiedEvent {
   requireValue(input&&(input.kind===PRODUCT_REVIEW_KIND||input.kind===5)&&key.test(input.id)&&key.test(input.pubkey)&&/^[a-f0-9]{128}$/.test(input.sig),'Invalid review signature.');
   requireValue(Number.isSafeInteger(input.created_at)&&input.created_at>=0&&input.created_at<=now+300,'Invalid review time.');
   requireValue(typeof input.content==='string'&&input.content.length<=12000&&Array.isArray(input.tags)&&input.tags.length<=64&&input.tags.every(tag=>Array.isArray(tag)&&tag.length>=1&&tag.length<=4&&tag.every(value=>typeof value==='string'&&value.length<=2048)),'Invalid review fields.');
-  // Copy canonical fields so a cached nostr-tools verification symbol cannot bless mutated data.
-  const event={id:input.id,pubkey:input.pubkey,created_at:input.created_at,kind:input.kind,content:input.content,tags:input.tags.map(tag=>[...tag]),sig:input.sig};
-  requireValue(encoder.encode(JSON.stringify(event)).length<=PRODUCT_REVIEW_LIMITS.eventBytes,'Review is too large.');
-  requireValue(verifyEvent(event),'Invalid review signature.');return event as VerifiedEvent;
+  const event=verifyCleanEvent(input,PRODUCT_REVIEW_LIMITS.eventBytes,64);
+  if(!event){
+    requireValue(utf8Bytes(JSON.stringify({id:input.id,pubkey:input.pubkey,created_at:input.created_at,kind:input.kind,content:input.content,tags:input.tags,sig:input.sig}))<=PRODUCT_REVIEW_LIMITS.eventBytes,'Review is too large.');
+    throw new Error('Invalid review signature.');
+  }
+  return event;
 }
 function subject(event:Event):string|undefined {return event.tags.find(tag=>tag[0]==='d')?.[1];}
 function coordinate(event:Event):string|undefined {const d=subject(event);return d?`${PRODUCT_REVIEW_KIND}:${event.pubkey}:${d}`:undefined;}
@@ -94,7 +96,7 @@ function projectVerified(events:VerifiedEvent[],target:string,now:number):Produc
 export function productReviewsFromEvents(inputs:Event[],target:string,now=seconds()):ProductReview[] {
   productReviewTarget(target);const verified:VerifiedEvent[]=[];let bytes=0;
   for(const input of inputs.slice(0,PRODUCT_REVIEW_LIMITS.events))try {
-    bytes+=encoder.encode(JSON.stringify(input)).length;if(bytes>PRODUCT_REVIEW_LIMITS.queryBytes)break;
+    bytes+=utf8Bytes(JSON.stringify(input));if(bytes>PRODUCT_REVIEW_LIMITS.queryBytes)break;
     verified.push(checkedEvent(input,now));
   }catch{/* Untrusted input never enters projections. */}
   return projectVerified(verified,target,now);
@@ -121,7 +123,7 @@ export async function loadProductReviews(target:string,{query,signal}:{query:Rev
     if(controller.signal.aborted)throw new DOMException('Review lookup cancelled.','AbortError');
     incomplete ||= result.complete!==true;limited ||= result.events.length>=limit;const events:VerifiedEvent[]=[];
     for(const input of result.events.slice(0,limit))try {
-      bytes+=encoder.encode(JSON.stringify(input)).length;if(bytes>PRODUCT_REVIEW_LIMITS.queryBytes){limited=true;break;}
+      bytes+=utf8Bytes(JSON.stringify(input));if(bytes>PRODUCT_REVIEW_LIMITS.queryBytes){limited=true;break;}
       events.push(checkedEvent(input,now));
     }catch{/* Invalid signed data consumes the read budget, not the review count. */}
     return events;

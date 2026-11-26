@@ -1,6 +1,7 @@
 import {keywordSearches} from './lexical-search.ts'
 import {BITCOIN_KIND,readEscrowOffer} from './escrow-offer.ts';
-import { verifyEvent, type Event } from 'nostr-tools/pure'
+import type { Event } from 'nostr-tools/pure'
+import { verifyCleanEvent } from './verified-event.ts'
 
 export type SearchTagExpansion = 'literal' | 'expanded'
 
@@ -38,9 +39,9 @@ export class SeenTags {
   private pairs=new Map<string,Set<string>>()
   observe(input:Event,now=Math.floor(Date.now()/1000)):boolean {
     try{
-      if(![30402,BITCOIN_KIND].includes(input?.kind)||this.events.has(input.id)||!Array.isArray(input.tags)||input.tags.length>2048||!Number.isSafeInteger(input.created_at)||input.created_at<0||input.created_at>now+300)return false
-      const event={id:input.id,pubkey:input.pubkey,created_at:input.created_at,kind:input.kind,content:input.content,tags:input.tags.map(tag=>[...tag]),sig:input.sig}
-      if(JSON.stringify(event).length>65536||!verifyEvent(event)||event.tags.filter(tag=>tag[0]==='d'&&tag[1]).length!==1||event.tags.filter(tag=>tag[0]==='title'&&tag[1]).length!==1)return false
+      if(![30402,BITCOIN_KIND].includes(input?.kind)||this.events.has(input.id)||!Number.isSafeInteger(input.created_at)||input.created_at<0||input.created_at>now+300)return false
+      const event=verifyCleanEvent(input,65536,2048)
+      if(!event||event.tags.filter(tag=>tag[0]==='d'&&tag[1]).length!==1||event.tags.filter(tag=>tag[0]==='title'&&tag[1]).length!==1)return false
       this.events.add(event.id);if(this.events.size>TAG_LIMITS.events)this.events.delete(this.events.values().next().value)
       if(event.kind===BITCOIN_KIND)readEscrowOffer(event.kind,event.tags);
       const selected=new Map<string,string>()

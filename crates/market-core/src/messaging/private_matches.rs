@@ -168,6 +168,22 @@ pub enum Action {
 
 type Dispatch = (PublicKey, Wire, u64);
 impl Book {
+    pub(super) fn next_expiry(&self, at: u64) -> Option<u64> {
+        self.enabled
+            .then(|| {
+                self.sent
+                    .values()
+                    .chain(self.received.values())
+                    .map(|r| r.entry.expires_at)
+                    .chain(self.pairs.values().map(|r| r.expires_at))
+                    .chain(self.interests.values().map(|r| r.expires_at))
+                    .chain(self.public_leads.values().map(|r| r.expires_at))
+                    .filter(|&t| t > at)
+                    .min()
+            })
+            .flatten()
+    }
+
     pub(super) fn expired(&self, at: u64) -> bool {
         self.sent
             .values()

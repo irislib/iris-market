@@ -60,10 +60,9 @@ export function buildReviewDraft({target,author,rating,body='',subject=crypto.ra
   return validateReviewDraft(draft,author,now);
 }
 export function parseReview(input:Event,target?:string,now=seconds()):Review {
-  assert(input&&key.test(input.id)&&typeof input.sig==='string'&&/^[a-f0-9]{128}$/.test(input.sig),'Invalid review signature.');
-  const review=fields({id:input.id,pubkey:input.pubkey,created_at:input.created_at,kind:input.kind,content:input.content,tags:input.tags,sig:input.sig} as UnsignedEvent,now);
-  assert(!target||review.target===target,'Review belongs to another profile.');
   const event=verifyCleanEvent(input,REVIEW_LIMITS.eventBytes,24);assert(event,'Invalid review signature.');
+  const review=fields(event,now);
+  assert(!target||review.target===target,'Review belongs to another profile.');
   return {...review,id:event.id,event,delivery:'published'};
 }
 const newer=(a:Review,b:Review)=>a.event.created_at>b.event.created_at||a.event.created_at===b.event.created_at&&a.id<b.id;

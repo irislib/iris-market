@@ -706,6 +706,7 @@ export class MarketRelayClient {
   }
 
   close() {
+    void this.offlineCache?.flush()
     this.running = false
     this.recovery?.close();this.recovery=null
     this.cacheGeneration++

@@ -141,3 +141,14 @@ test('offline cache coalesces burst saves and relay client deduplicates exact fr
   assert.equal(client.listings().length,0)
   client.close()
 })
+
+test('closing the feed starts persisting a pending sold revision before the debounce timer',async()=>{
+  const initial=signed(),sold=signed({status:'sold',at:now-1})
+  const backend=memoryBackend([initial]),storage=cache(backend)
+  await storage.load()
+  const client=new MarketRelayClient({relays:[],now:()=>now,offlineCache:storage})
+  client.parseIncoming(sold)
+  client.close()
+  await new Promise(resolve=>setImmediate(resolve))
+  assert.equal(backend.rows.get(validate(sold).id).id,sold.id)
+})

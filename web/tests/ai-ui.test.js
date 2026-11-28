@@ -932,3 +932,33 @@ test('work-stealing keeps fast workers busy while another worker reviews a slow 
   releaseSlow();await run;
   assert.equal(ui.pagination().reviewed,12);assert.equal(ui.pagination().matches,1);
 });
+
+test('leaving Home waits for the current auxiliary call and schedules no further work', {timeout:3000}, async()=>{
+  let visible=true, releaseAux, running=false, returnedWhileBusy=false, disposed=0, hiddenCalls=0
+  const rows=Array.from({length:32},(_,i)=>({id:String(i),eventId:String(i),title:'Listing '+i}))
+  const result={score:.9,cached:false}
+  const client={info:{model:'deberta'},async classify(){
+    if(!visible) hiddenCalls++
+    await new Promise(resolve=>setImmediate(resolve))
+    return result
+  },startSearchWorkers:()=>[{
+    info:{model:'deberta'},async classify(){
+      running=true
+      await new Promise(resolve=>{releaseAux=resolve})
+      running=false
+      return result
+    },dispose(){disposed++;returnedWhileBusy=running}
+  }],dispose(){}}
+  const {ui}=fixture({rows,client,homeFeed:{enabled:true,prompt:'Useful things'},isHomeVisible:()=>visible})
+  const run=ui.submit('')
+  await until(()=>running)
+  visible=false
+  ui.viewChanged()
+  await new Promise(resolve=>setImmediate(resolve))
+  assert.equal(disposed,0)
+  releaseAux()
+  await run
+  assert.equal(disposed,1)
+  assert.equal(returnedWhileBusy,false)
+  assert.equal(hiddenCalls,0)
+})

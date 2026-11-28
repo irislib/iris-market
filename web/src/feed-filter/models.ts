@@ -43,7 +43,7 @@ export const FEED_MODELS: Readonly<Record<FeedModelId, Readonly<FeedModelSpec>>>
 export const DEFAULT_FEED_MODEL = 'deberta'
 export const MAX_CONDITION_LENGTH = 500
 export const MAX_LISTING_LENGTH = 2000
-export const FILTER_VERSION = 4
+export const FILTER_VERSION = 5
 export const isFeedModel = (id: unknown): id is FeedModelId => typeof id === 'string' && Object.hasOwn(FEED_MODELS, id)
 export function validateModel(id: string, device: string): asserts id is FeedModelId {
   if (!isFeedModel(id)) throw new Error('Choose a supported local model.')

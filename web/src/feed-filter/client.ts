@@ -22,6 +22,7 @@ export class FeedFilterClient {
   queued: number
   idleTimer: ReturnType<typeof setTimeout> | null
   private pins = 0
+  private leased = new Set<FeedFilterClient>()
   private auxPool: FeedFilterClient[] = []
   private auxIdleTimer: ReturnType<typeof setTimeout> | null = null
   constructor({ WorkerImpl = globalThis.Worker, workerUrl = assetUrl('feed-filter.worker.js'), decisionCache=new DecisionCache() } = {}) {
@@ -116,17 +117,20 @@ export class FeedFilterClient {
     ;(this.auxIdleTimer as unknown as { unref?: () => void }).unref?.()
   }
   private leaseAuxiliary(worker: FeedFilterClient): FeedFilterClient {
+    this.leased.add(worker)
     let released = false
-    const generation = this.generation
     const owner = this
     return {
-      get info() { return released ? null : worker.info },
-      classify: (condition, listingText, options) => worker.classify(condition, listingText, options),
+      get info() { return released || !owner.leased.has(worker) ? null : worker.info },
+      classify: (condition, listingText, options) => released || !owner.leased.has(worker)
+        ? Promise.reject(new Error('Local filter stopped.'))
+        : worker.classify(condition, listingText, options),
       dispose(message?: string) {
         if (released) return
         released = true
+        if (!owner.leased.delete(worker)) return
         // Keep healthy warm workers across back-to-back searches; terminate on error or owner reset.
-        if (message || generation !== owner.generation || !worker.info || !worker.worker) {
+        if (message || !worker.info || !worker.worker || worker.queued) {
           worker.dispose(message)
         } else {
           owner.auxPool.push(worker)
@@ -136,10 +140,9 @@ export class FeedFilterClient {
     } as FeedFilterClient
   }
   /** Bounded pool of warm CPU workers sharing the decision cache across searches. */
-  startSearchWorkers(): FeedFilterClient[] {
-    const count = this.auxiliaryWorkerCount()
-    if (!count) return []
-    clearTimeout(this.auxIdleTimer); this.auxIdleTimer = null
+  startSearchWorkers(limit = Infinity): FeedFilterClient[] {
+    const count = Math.min(limit, this.auxiliaryWorkerCount() - this.leased.size)
+    if (count <= 0) return []
     const workers: FeedFilterClient[] = []
     while (workers.length < count && this.auxPool.length) {
       const reused = this.auxPool.pop()!
@@ -155,7 +158,7 @@ export class FeedFilterClient {
   }
   /** An auxiliary CPU worker belongs to one search and shares its decision cache. */
   startSearchWorker(): FeedFilterClient | null {
-    return this.startSearchWorkers()[0] ?? null
+    return this.startSearchWorkers(1)[0] ?? null
   }
   load(modelId: string, device = 'auto', onProgress?: ProgressHandler, cacheOnly=false) {
     try { validateModel(modelId, device) } catch (error) { return Promise.reject(error) }
@@ -205,6 +208,8 @@ export class FeedFilterClient {
     this.pins = 0
     clearTimeout(this.idleTimer); this.idleTimer = null
     clearTimeout(this.auxIdleTimer); this.auxIdleTimer = null
+    for (const aux of this.leased) aux.dispose(message)
+    this.leased.clear()
     for (const aux of this.auxPool.splice(0)) aux.dispose(message)
     if (this.worker) {
       this.worker.onmessage = this.worker.onerror = this.worker.onmessageerror = null

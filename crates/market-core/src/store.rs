@@ -7,7 +7,7 @@ use nostr::{Event, JsonUtil};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::{
     cell::RefCell,
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     path::Path,
     sync::Arc,
 };
@@ -43,6 +43,39 @@ mod snapshot_cpu_tests {
         store.consume_basket_order("second", "scarf", 3).unwrap();
         assert_eq!(store.basket().unwrap(), vec![("mittens".into(), 1)]);
     }
+    #[test]
+    fn metadata_uses_only_signed_authors_of_visible_listings() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("market.sqlite")).unwrap();
+        let at = listing::now() - 600;
+        let draft: Draft = serde_json::from_value(serde_json::json!({
+            "title":"Chair", "description":"Wooden chair", "side":"offer"
+        }))
+        .unwrap();
+        let active = Keys::generate();
+        for id in ["chair", "table"] {
+            store
+                .ingest(
+                    &listing::build(&active, &draft, id, at, false).unwrap(),
+                    at,
+                    false,
+                )
+                .unwrap();
+        }
+        let sold = listing::build(&Keys::generate(), &draft, "sold", at, true).unwrap();
+        store.ingest(&sold, at, false).unwrap();
+        let timed = Draft {
+            expires_at: Some(at + 10),
+            ..draft
+        };
+        let expired = listing::build(&Keys::generate(), &timed, "old", at, false).unwrap();
+        store.ingest(&expired, at, false).unwrap();
+        assert_eq!(
+            store.listing_authors().unwrap(),
+            vec![active.public_key().to_hex()]
+        );
+    }
+
     #[test]
     fn warm_thousand_listing_polls_do_not_repeat_signature_verification() {
         let dir = tempfile::tempdir().unwrap();
@@ -451,13 +484,25 @@ impl Store {
     ) -> Result<(Vec<Listing>, Option<u64>)> {
         self.listings_for_scope(owner, at, None)
     }
-    /// Distinct hex authors of stored public listings without cloning full payloads.
+    /// Select metadata peers from the same verified, visible winners as the feed.
     pub(crate) fn listing_authors(&self) -> Result<Vec<String>> {
-        let mut stmt = self.db.prepare(
-            "SELECT DISTINCT CASE WHEN coordinate LIKE '38383:%' THEN substr(coordinate, 7, 64) ELSE substr(coordinate, 1, 64) END FROM events LIMIT 5000",
-        )?;
-        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+        let at = listing::now();
+        let mut stmt = self
+            .db
+            .prepare("SELECT raw FROM events ORDER BY created_at DESC,event_id LIMIT 5000")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let mut cache = self.verified_listings.borrow_mut();
+        let mut seen = HashSet::new();
+        let mut authors = Vec::new();
+        for raw in rows {
+            let verified = cache.parse(&raw?, at)?;
+            let listing = &verified.listing;
+            if listing.visible_at(at) && !seen.contains(&listing.author) {
+                seen.insert(listing.author.clone());
+                authors.push(listing.author.clone());
+            }
+        }
+        Ok(authors)
     }
     /// Only already-verified projections can add spellings. Read the winning IDs,
     /// so stale revisions cannot teach the next search tags that sellers removed.
@@ -479,9 +524,7 @@ impl Store {
             if !winners.contains(&item.listing.event_id) {
                 continue;
             }
-            if item.listing.status != "active"
-                || item.listing.expires_at.is_some_and(|expires| expires <= at)
-            {
+            if !item.listing.visible_at(at) {
                 continue;
             }
             for tag in &item.relay_tags {
@@ -528,7 +571,7 @@ impl Store {
                 .parse(&raw, at)?
                 .listing
                 .clone();
-            if l.status != "active" || l.expires_at.is_some_and(|x| x <= at) {
+            if !l.visible_at(at) {
                 continue;
             }
             if let Some(exp) = l.expires_at {

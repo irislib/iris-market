@@ -280,7 +280,11 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
         approval.value = null
     }
     @Volatile private var active = true
-    @Volatile private var lastSnapshotRaw: String? = null
+    @Volatile private var lastSnapshot: Pair<String, MarketSnapshot>? = null
+    private fun snapshotIsCurrent(raw: String): Boolean {
+        val cached = lastSnapshot ?: return false
+        return cached.second === state.value && cached.first == raw
+    }
     private var operationCount = 0
     @Volatile private var accountGeneration = 0L
     private val linking = MutableStateFlow<String?>(null)
@@ -396,7 +400,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
         }
         mutablePushRoute.value=null;activePushPeerID=null;activePushThreadID=null
         accountGeneration += 1
-        lastSnapshotRaw = null
+        lastSnapshot = null
         aiIntentGate.advance()
         core?.shutdown();core?.close();core=null
         val application=getApplication<Application>()
@@ -590,12 +594,11 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
     fun closeDeviceLink() {linkJob?.cancel();linkJob=null;linking.value=null}
     fun setActive(value: Boolean) { active = value; if (!value) { setActivePushContext(null,null);cancelLocalAI() } else { homeStartedContext=null;syncPush(); updates.checkIfDue() } }
     private fun publishSnapshot(next: MarketSnapshot, raw: String? = null) {
-        var accepted = false
         mutable.update { previous ->
-            if (previous.publicKey == next.publicKey && next.revision < previous.revision) previous
-            else { accepted = true; next }
+            if (previous.publicKey == next.publicKey && next.revision < previous.revision) previous else next
         }
-        if (accepted) lastSnapshotRaw = raw
+        val current = state.value
+        if (current == next) lastSnapshot = raw?.let { it to current }
         if (!state.value.profileNameRequired || state.value.demo) dismissProfileSetup()
         viewModelScope.launch { continueLocalSearch(); syncPush() }
     }
@@ -606,7 +609,7 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
         // A completed/closed lease is harmless: discard its snapshot or closed-object error.
         runCatching {
             val raw = lease.first.snapshot()
-            if (raw == lastSnapshotRaw) return@runCatching null
+            if (snapshotIsCurrent(raw)) return@runCatching null
             raw to MarketSnapshot.parse(raw)
         }.getOrNull()?.let { (raw, next) ->
             if (remoteSnapshotLease === lease && accountGeneration == lease.second && core === lease.first) {
@@ -616,9 +619,13 @@ class MarketModel(application: Application, private val preview: Boolean) : Andr
     }
     private fun refreshSnapshot(reset: Boolean = false) { core?.let {
         val raw = it.snapshot()
-        if (!reset && raw == lastSnapshotRaw) return
+        if (!reset && snapshotIsCurrent(raw)) return
         val next = MarketSnapshot.parse(raw)
-        if (reset) { lastSnapshotRaw = raw; mutable.value = next } else publishSnapshot(next, raw)
+        if (reset) {
+            mutable.value = next
+            val current = state.value
+            if (current == next) lastSnapshot = raw to current
+        } else publishSnapshot(next, raw)
     } }
     fun dismissNotice() { alert.value = null }
     internal suspend fun uploadMedia(file:PreparedListingFile,expectedOwner:String):ListingMediaUpload {

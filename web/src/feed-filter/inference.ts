@@ -38,10 +38,9 @@ async function ensureRuntime(device: 'wasm' | 'webgpu') {
 }
 let tokenizer, model, info: FeedModelInfo, loadedKey = ''
 const conditionTokens = new Map<string, number>()
-let yesNoIds: { yes: number[]; no: number[] } | null = null
 export async function disposeModel() {
   const previous = model
-  tokenizer = model = info = undefined; loadedKey = ''; conditionTokens.clear(); yesNoIds = null
+  tokenizer = model = info = undefined; loadedKey = ''; conditionTokens.clear()
   await previous?.dispose()
 }
 export async function loadModel(id: string, requested: string, progress: ProgressHandler = () => {}, cacheOnly=false): Promise<FeedModelInfo> {
@@ -85,29 +84,6 @@ function conditionTokenLength(condition: string): number {
   }
   return length
 }
-function resolveYesNoIds(): { yes: number[]; no: number[] } {
-  if (yesNoIds) return yesNoIds
-  const single = (variants: string[]) => [...new Set(variants.flatMap(word => {
-    const ids = tokenizer.encode(word, { add_special_tokens: false })
-    return ids.length === 1 ? [ids[0]] : []
-  }))]
-  yesNoIds = { yes: single(['yes', 'Yes', 'YES', ' yes', ' Yes']), no: single(['no', 'No', 'NO', ' no', ' No']) }
-  return yesNoIds
-}
-function yesNoProbability(logits: { dims: number[]; data: ArrayLike<number> }, ids: { yes: number[]; no: number[] }): number | null {
-  const vocab = logits.dims.at(-1)
-  if (!vocab || !ids.yes.length || !ids.no.length) return null
-  const offset = logits.data.length - vocab
-  const all = [...ids.yes, ...ids.no]
-  let max = -Infinity
-  for (const id of all) { const v = logits.data[offset + id]; if (v > max) max = v }
-  if (!Number.isFinite(max)) return null
-  let yes = 0, no = 0
-  for (const id of ids.yes) yes += Math.exp(logits.data[offset + id] - max)
-  for (const id of ids.no) no += Math.exp(logits.data[offset + id] - max)
-  const total = yes + no
-  return total > 0 ? yes / total : null
-}
 export async function classifyListing(condition: string, content: string, searchHead = false): Promise<ClassificationResult> {
   validateInput(condition, content)
   if (!model || !tokenizer || !info) throw new Error('Load a local model first.')
@@ -115,15 +91,9 @@ export async function classifyListing(condition: string, content: string, search
   const clipped = content.slice(0, MAX_LISTING_LENGTH)
   const budget = maxTokens - conditionTokenLength(condition) - (info.model === 'deberta' ? 32 : 160)
   if (budget < 1) throw new Error('Please shorten the filter condition.')
-  let shortened = false, listing = clipped
-  // Skip pre-tokenizing short listings: a string shorter than the token budget cannot exceed it.
-  if (clipped.length > budget) {
-    const tokens = tokenizer.encode(clipped, { add_special_tokens: false })
-    if (tokens.length > budget) {
-      shortened = true
-      listing = tokenizer.decode(tokens.slice(0, budget), { skip_special_tokens: true })
-    }
-  }
+  const tokens = tokenizer.encode(clipped, { add_special_tokens: false })
+  const shortened = tokens.length > budget
+  const listing = shortened ? tokenizer.decode(tokens.slice(0, budget), { skip_special_tokens: true }) : clipped
   let inputs, output
   try {
     let score
@@ -139,19 +109,11 @@ export async function classifyListing(condition: string, content: string, search
         { role: 'user', content: `Filter condition: ${condition}\n\nListing: ${JSON.stringify(listing)}\n\nDoes this listing match?` },
       ], { tokenize: false, add_generation_prompt: true, enable_thinking: false })
       inputs = tokenizer(prompt, { truncation: true, max_length: 1024 })
-      const ids = resolveYesNoIds()
-      if (ids.yes.length && ids.no.length) {
-        // One forward pass yields calibrated yes/no probability instead of 4 sequential decode steps.
-        output = await model(inputs)
-        score = yesNoProbability(output.logits, ids)
-      }
-      if (score === undefined || score === null) {
-        output = await model.generate({ ...inputs, max_new_tokens: 4, do_sample: false })
-        const sequences = output.sequences ?? output
-        const answer = tokenizer.decode(sequences.tolist()[0].slice(inputs.input_ids.dims.at(-1)), { skip_special_tokens: true }).trim().toLowerCase()
-        if (!/^(yes|no)[.!]?$/.test(answer)) throw new Error('The local model did not return a yes or no decision.')
-        score = answer.startsWith('yes') ? 1 : 0
-      }
+      output = await model.generate({ ...inputs, max_new_tokens: 4, do_sample: false })
+      const sequences = output.sequences ?? output
+      const answer = tokenizer.decode(sequences.tolist()[0].slice(inputs.input_ids.dims.at(-1)), { skip_special_tokens: true }).trim().toLowerCase()
+      if (!/^(yes|no)[.!]?$/.test(answer)) throw new Error('The local model did not return a yes or no decision.')
+      score = answer.startsWith('yes') ? 1 : 0
     }
     if (!Number.isFinite(score)) throw new Error('The local model returned an invalid score.')
     const inputTokens = inputs.input_ids.dims.at(-1)

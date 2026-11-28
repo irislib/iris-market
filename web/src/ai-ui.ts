@@ -176,6 +176,7 @@ export function setupAI({ getCandidates, getOrderCount=()=>0, onChange, onTextSe
     phase=selected.info?'searching':'loading';onChange();
     if(selected.info&&!submittedQuery&&!homeRun){phase='idle';refresh();releaseModel();if(runController===controller)runController=null;return;}
     let extraWorkers:FeedFilterClient[]=[],failedOrCancelled=false;
+    const activeTasks=new Set<Promise<void>>();
     try {
       if (!selected.info) {
         phase='loading';progress.removeAttribute('value');$('ai-progress').textContent='Loading model…';refresh();
@@ -227,7 +228,7 @@ export function setupAI({ getCandidates, getOrderCount=()=>0, onChange, onTextSe
       };
       type WorkerSlot={worker:Pick<FeedFilterClient,'classify'>|BrowserFeedFilterClient;main:boolean;busy:boolean};
       let slots:WorkerSlot[]=[{worker:selected,main:true,busy:false}];
-      const inFlight=new Set<string>(),activeTasks=new Set<Promise<void>>();
+      const inFlight=new Set<string>();
       let uncached=0,attemptedWorkers=false,fatalError:unknown=null,needsYield=false;
       let sourceRequests=0,unpainted=0,painted=false,lastPaint=performance.now();
       phase='searching';refresh();
@@ -303,7 +304,7 @@ export function setupAI({ getCandidates, getOrderCount=()=>0, onChange, onTextSe
             }finally{
               slot.busy=false;inFlight.delete(key);activeTasks.delete(task);
             }
-            if(current!==generation)return;
+            if(current!==generation||homeRun&&!homeActive())return;
             const {score,cached}=outcome;
             if(score&&typeof score==='object'&&score.upperBound>=threshold()){
               reviewRows=undefined;return;
@@ -359,6 +360,7 @@ export function setupAI({ getCandidates, getOrderCount=()=>0, onChange, onTextSe
       failedOrCancelled=true;
       if (current === generation) { paused=true;homeStopped=true;selected.dispose(); $('ai-error').textContent = `${error.message || 'Search failed'}. Choose All results to continue browsing.`; }
     } finally {
+      if(activeTasks.size)await Promise.allSettled(activeTasks);
       const releaseMsg=failedOrCancelled||current!==generation||controller.signal.aborted?'Local filter stopped.':undefined;
       for(const worker of extraWorkers)worker.dispose(releaseMsg);
       releaseModel();if(runController===controller)runController=null;

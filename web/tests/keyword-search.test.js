@@ -304,3 +304,14 @@ test('plural topic queries fall back to singular stems and semantic prioritizati
  assert.equal(prioritized[0].id,'violin');
  assert.equal(prioritized.length,rows.length,'prioritization never excludes listings');
 });
+
+test('semantic relevance is independent of inventory depth and equal scores preserve arrival order',()=>{
+ const vectors=readTopicVectors(readFileSync(new URL('../assets/topic-vectors.bin',import.meta.url)));
+ const desk=Object.freeze({title:'Wooden desk',description:'Office table'});
+ const violin=Object.freeze({title:'Student violin',description:'Full size with bow'});
+ const peer={...violin};
+ const rows=[...Array(5000).fill(desk),violin,peer];
+ const result=vectors.prioritize('instruments',rows);
+ assert.equal(result[0],violin);
+ assert.equal(result[1],peer);
+});

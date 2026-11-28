@@ -162,6 +162,12 @@ pub struct Listing {
     pub coordinates: Option<[f64; 2]>,
 }
 
+impl Listing {
+    pub(crate) fn visible_at(&self, at: u64) -> bool {
+        self.status == "active" && self.expires_at.is_none_or(|expires| expires > at)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct AiSettings {

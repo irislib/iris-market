@@ -151,7 +151,7 @@ function buildIndex(bytes:Uint8Array){
     }
     if(!qOffsets.length&&!qStems.length)return [...listings]
     // Keep direct/stemmed matches first, then surface semantically closest candidates ahead of unrelated items.
-    const scored=listings.map((item,index)=>{
+    const scored=listings.map(item=>{
       const {offsets:lOffsets,stems:lStems}=listingFeatures(item)
       const lex=qStems.length?qStems.filter(s=>lStems.has(s)).length/qStems.length:0
       let sem=0
@@ -164,7 +164,7 @@ function buildIndex(bytes:Uint8Array){
         }
         sem=sum/qOffsets.length
       }
-      return {item,key:lex+.8*sem-index*1e-4}
+      return {item,key:lex+.8*sem}
     })
     scored.sort((a,b)=>b.key-a.key)
     return scored.map(row=>row.item)

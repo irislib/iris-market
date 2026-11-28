@@ -252,3 +252,32 @@ test('auxiliary CPU workers work without deviceMemory, reuse warm sessions acros
     if (originalNavigator) Object.defineProperty(globalThis, 'navigator', originalNavigator);
   }
 });
+
+test('one-worker requests and overlapping searches share the owner limit, including checked-out workers', async () => {
+  const original = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { hardwareConcurrency: 8 } })
+  const client = make()
+  try {
+    await load(client)
+    const first = client.startSearchWorker()
+    await tick()
+    assert.equal(FakeWorker.instances.length, 2)
+    FakeWorker.instances[1].respond({ device: 'wasm' })
+    await tick()
+    const rest = client.startSearchWorkers()
+    assert.equal(rest.length, 1)
+    assert.deepEqual(client.startSearchWorkers(), [])
+    first.dispose()
+    const replacement = client.startSearchWorker()
+    assert(replacement.info)
+    await assert.rejects(first.classify('chair', 'pine chair'), /stopped|released/i)
+    first.dispose()
+    client.dispose()
+    assert.equal(replacement.info, null)
+    assert(FakeWorker.instances.every(worker => worker.terminated))
+  } finally {
+    client.dispose()
+    if (original) Object.defineProperty(globalThis, 'navigator', original)
+    else delete globalThis.navigator
+  }
+})

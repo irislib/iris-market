@@ -19,7 +19,11 @@ tokenizer.apply_chat_template = messages => (prompt=messages[1].content)
 export const AutoTokenizer = {from_pretrained:async()=>tokenizer}
 // Token 0 ("unclear") has the largest logit. Restricting the denominator
 // to yes/no alone would report a strong negative for that answer.
-const fakeModel = async () => ({logits:{dims:[1,1,3],data:[12,-6,-1]},dispose(){ released.push('output') }})
+const fakeModel = async () => ({
+  logits:{dims:[1,1,3],data:answer==='unclear' ? [12,-6,-1] : answer==='no' ? [-6,-1,12] : [-6,12,-1]},
+  dispose(){ released.push('output') }
+})
+fakeModel.dispose = async () => {}
 fakeModel.generate = async () => ({tolist:()=>[[0,1]], dispose(){ released.push('output') }})
 export const AutoModelForCausalLM = {from_pretrained:async()=>fakeModel}
 export const AutoModelForSequenceClassification = AutoModelForCausalLM

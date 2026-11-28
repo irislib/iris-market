@@ -204,7 +204,7 @@ export function setupAI({ getCandidates, getOrderCount=()=>0, onChange, onTextSe
           controller.signal.throwIfAborted();
           const input=productConfirmation?homeProductText(item):text;
           const result=await classify(condition,input);
-          if(current!==generation)break;
+          if(current!==generation||!homeActive())break;
           cached&&=!!result.cached;
           if(!Number.isFinite(result.score))throw new Error('The model returned an invalid decision');
           let evidence=result.score;
@@ -212,7 +212,7 @@ export function setupAI({ getCandidates, getOrderCount=()=>0, onChange, onTextSe
           // before this additional exclusion can lower the full-listing score.
           if(productConfirmation&&evidence>1-score){
             const confirmation=await classify(productConfirmation,input);
-            if(current!==generation)break;
+            if(current!==generation||!homeActive())break;
             if(!Number.isFinite(confirmation.score))throw new Error('The model returned an invalid decision');
             cached&&=!!confirmation.cached;
             evidence=Math.min(evidence,confirmation.score);
@@ -294,7 +294,8 @@ export function setupAI({ getCandidates, getOrderCount=()=>0, onChange, onTextSe
             try{
               outcome=await review(item,slot.worker);
             }catch(error){
-              if(slot.main||current!==generation||controller.signal.aborted){fatalError=error;return;}
+              if(current!==generation||homeRun&&!homeActive())return;
+              if(slot.main||controller.signal.aborted){fatalError=error;return;}
               // Auxiliary failure must not lose a candidate. Drop the failed worker and retry on main.
               slots=slots.filter(s=>s!==slot);
               extraWorkers=extraWorkers.filter(w=>w!==slot.worker);
